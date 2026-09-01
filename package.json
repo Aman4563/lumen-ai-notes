@@ -19,7 +19,7 @@
     "audit:notes": "ruby scripts/audit_notes.rb",
     "audit:app": "npm run build && node scripts/audit_app.mjs",
     "audit:unit": "node scripts/unit_audit.mjs",
-    "audit:scale": "node --test src/lib/annotations.scale.test.mjs src/lib/review.scale.test.mjs",
+    "audit:scale": "node --test src/lib/annotations.scale.test.mjs src/lib/review.scale.test.mjs src/lib/search.scale.test.mjs",
     "audit:visual": "node scripts/visual_audit.mjs",
     "audit:workflow": "node scripts/workflow_audit.mjs",
     "audit:audio": "node scripts/audio_audit.mjs",

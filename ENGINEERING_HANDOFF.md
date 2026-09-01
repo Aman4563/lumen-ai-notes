@@ -1142,10 +1142,15 @@ changing the bundle.
    derivation/analogy/challenge need distinct UX or prompt controls remains open.
 5. ~~Add an explicit saved no-AI preference and configurable Mac history retention~~ —
    done 2026-09-01.
-6. Move library full-text parsing/ranking to a worker; benchmark worst-case custom corpus.
-7. Complete BUG-002/003: pointer matrix, transforms/export/restore, every critical action,
-   disabled reason, dialog focus loop, Mobile Safari, and VoiceOver.
-8. Complete annotation relocation/orphan/restore and review scheduler acceptance.
+6. ~~Move library full-text parsing/ranking to a worker; benchmark worst-case custom
+   corpus~~ — done 2026-09-01 (librarySearch worker + 643-document scale gate).
+7. ~~Complete BUG-002/003 pointer matrix and dialog focus loops~~ — line matrix and
+   five-dialog focus contract delivered 2026-09-01 (a real focus-restoration defect
+   was found and fixed); every-critical-action contracts, Mobile Safari, and
+   VoiceOver remain.
+8. ~~Complete annotation relocation/orphan/restore acceptance~~ — delivered
+   2026-09-01 (unit semantics + full browser matrix incl. backup restore);
+   the calibrated review scheduler remains.
 9. Profile/split the WebLLM runtime and worker without breaking integrity/cache/lazy-load
    contracts.
 10. Decide whether Mac exact-query preview/edit is required; preserve per-request consent.

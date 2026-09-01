@@ -74,6 +74,7 @@ accessibility, board, search, synchronization, and later milestones.
 | 2026-09-01 | Client/server request-contract identity handshake (BUG-004) | `src/lib/aiContract.js` now defines the single request-contract identity (introduced as `lumen.ai.request.v1`, advanced to v2 by the same-day mode addition below) imported by both the server and the built UI. `/api/health` and `/api/ai/config` publish it as `requestContract`; `validateAiRequest` requires it as the `contract` request field and a mismatch returns typed HTTP 409 `AI_CONTRACT_MISMATCH` with reload/restart guidance before any field-level validation detail. The browser client refuses to cache or report Ready for a configuration whose advertised contract differs from its compiled value, rejects contract-less payloads before transport so the measured canonical bytes cannot skew, and the tutor surfaces the mismatch with recovery guidance. `audit:ai` passes 232/232 including new contract tests; `audit:ai-ui` passes with a new version-skew scenario asserting fail-closed guidance and zero respond calls; the production build passes. The real-host atomic deployment/update drill remains open. |
 | 2026-09-01 | AI capability gating, code review, answer-to-note, exact citations, and AI preferences (AI-001/AI-002/AI-004) | The request contract advanced to `lumen.ai.request.v2`. The Deep profile is now capability-gated: the server rejects Deep with typed `AI_PROFILE_UNSUPPORTED` unless the installed model attests Ollama thinking support, and the UI disables the option with the reason and falls back to Balanced. A code-review mode ships end to end (task allowlist, senior-review server instruction, composer template). Completed prose answers can be saved to the Notebook as labeled AI-origin clippings with materialized `[W#]` links, a plain-text `[S#]` source footer, and a bounded 4,000-character body; the Notebook labels them as AI drafts. Structured quiz/flashcard/study-plan string fields render navigable `[S#]`/`[W#]` citations on both Mac and phone (including options, hints, and milestone titles), and a personal-note citation now opens the Reader's Notes drawer and focuses the exact note editor. A saved no-AI preference hides AI surfaces without touching study data, and Mac tutor history retention is configurable (50/25/10/session-only) with immediate tombstoned trims. Evidence: `audit:ai` 234/234; `audit:ai-ui` adds thinking-gate, save-to-note, and personal-note deep-link scenarios; `audit:phone-ai-ui` adds structured-citation navigation; workflow/annotation/control audits and the production build pass. |
 | 2026-09-01 | Versioned deterministic AI evaluation tier and learner pairing (P0-4 partial, P0-5, AI-002, AI-003 partial) | `eval/fixtures/v1/retrieval.json` + `scripts/ai_eval.mjs` now run the real Library-first retrieval over the real generated corpus in plain Node: 27 versioned cases covering document hit@1/hit@3 across curriculum Parts, exact personal-note and saved-edit provenance, web-fallback decision codes, byte budgets, retrieval laziness, replay determinism, and adversarial injection-shaped queries, with suite thresholds (hit@1 ≥ 0.8 — measured 0.913; hit@3, fallback-code accuracy, and determinism at 1.0). The suite gates `npm run check` as `audit:ai-eval`; the live-Qwen tier remains the operator-run `scripts/live_ai_smoke.mjs` and the phone model remains a device gate (eval/README.md). Learner pairing shipped: `AI_AUTH=pairing` + `AI_PAIRING_CODE` guard `/api/ai/respond`, `/api/ai/respond/stream`, and `/api/local-search` behind a stateless HMAC session in an HttpOnly SameSite=Strict cookie minted by `POST /api/auth/pair` (constant-time compare, five attempts per client per five minutes, TTL `AI_SESSION_TTL_HOURS`, revocation via code/secret rotation or restart); non-loopback AI/search startup fails closed without pairing or `AI_ALLOW_UNAUTHENTICATED_LAN=true`; config reports `auth.sessionActive`; the tutor shows a pairing gate, and the On-device tutor gains a save-to-notes action completing answer-to-note on both engines. Evidence: `audit:ai` 237/237 including pairing/session/rate-limit/startup suites; `audit:ai-eval` passes; `audit:ai-ui` adds the pairing scenario; `audit:phone-ai-ui` adds phone save-to-note; production build passes. |
+| 2026-09-01 | Search worker, annotation relocation/repair evidence, whiteboard line matrix, and dialog focus contract (PERF-001, LEARN-001, BUG-002, BUG-003) | Ordinary library full-text parsing/ranking moved into a dedicated Web Worker (`src/workers/librarySearch.worker.js` + `src/lib/librarySearchClient.js`): one-time pre-normalized corpus transfer, incremental custom-document updates, latest-wins request correlation with typed errors and a main-thread fallback, plus a 643-document worst-case scale gate in `audit:scale` and a worker-client unit suite. `audit:annotations` now covers relocation after real source edits (asserting the documented display-only no-writeback), orphan detection with selection-gated Relink, id- and review-link-preserving repair, backup export/two-phase restore of annotations and linked cards, the non-CSS-Highlight fallback, and new Notebook highlight copy/Markdown-export actions. `audit:workflow` gains the complete straight-line matrix (mouse and pen-pressure creation proven by stored width, tap rejection with visible feedback, redraw/page-switch/reload persistence, undo/redo transitions, move/recolor/resize, PNG export verified by magic bytes). `audit:controls` gains a five-dialog focus contract (inert background, Tab trap/wrap, Shift+Tab wrap, Escape, exact opener restore) that surfaced and fixed a real defect: three dialogs plus the nested install sheet restored focus while the opener was still inert, a silent no-op; the repair defers restoration one frame past inert cleanup. The server app-shell test became hermetic (fixture dist) so CI passes on fresh clones. |
 
 ## Comprehensive status and evidence audit — baseline 2026-08-24, rechecked 2026-09-01
 
@@ -85,15 +86,15 @@ not evidence that the product implements it.
 | Milestone | ID | Audited status | Shipped evidence | Required before promotion |
 |---|---|---|---|---|
 | M0 | BUG-001 | `Implemented` | Menu semantics, close/scrim/Escape handling, inert background, scroll lock, focus management, and narrow-viewport workflow coverage | Assert focus return, body scroll lock, route/sidebar-action close, and repeated-toggle consistency; record Mobile Safari evidence |
-| M0 | BUG-002 | `Partial` | Two-point touch line, minimum-drag guard, generic object history/actions, persistence, and PNG implementation | Exercise a line with mouse and pen, rejected tap, redraw/page/reload, imported-backup restore, undo/redo, select/move/recolor/geometry resize/duplicate/delete, and PNG download |
-| M0 | BUG-003 | `Partial` | Visible-control accessible-name and rendered-size audit across current surfaces | Invoke critical controls and assert state/feedback/disabled reason; test every dialog's inert background, Tab cycle, Escape, and focus restoration |
+| M0 | BUG-002 | `Partial` | Two-point touch line, minimum-drag guard, generic object history/actions, persistence, and PNG implementation | Delivered 2026-09-01 in `audit:workflow`: mouse and pen-pressure line creation (stored width proves the pen path), rejected tap with visible feedback, redraw/page-switch/reload persistence, undo/redo with disabled-state transitions, select/drag-move/recolor/stroke-resize, duplicate/delete, and a captured PNG export with magic-byte verification. Remaining: imported-backup board restore drill and physical Apple Pencil evidence |
+| M0 | BUG-003 | `Partial` | Visible-control accessible-name and rendered-size audit across current surfaces | Dialog contract delivered 2026-09-01 in `audit:controls`: five dialogs (reader actions menu, create-note, review card, settings drawer, nested install sheet) verify inert background, Tab trap/wrap, Shift+Tab wrap, Escape close, and exact opener focus-restore — which surfaced and fixed a real defect where focus was restored while the opener was still inert. Remaining: invoke every critical action with state/feedback/disabled-reason assertions across all surfaces |
 | M0 | BUG-004 | `Implemented` | Build-specific service-worker/cache identity, fail-closed shell install, one bounded online reload, selective manual repair, and browser regression for stale Whiteboard JS and phone-AI CSS while local data survives | Perform an assets-first/index-and-worker-last deployment/update drill on the real host and Mobile Safari; retain an older shell through deployment and prove recovery without a reload loop or data/cache loss |
 | M1 | DATA-001 | `Partial` | Profile/backup v4 normalization; SHA-256/FNV integrity; restore preflight and recovery snapshot; v1-v3 compatibility; failure-injected fallback journal, tombstones, retry, and authoritative replacement | Independent stores and per-record schema versions; broader real-device migration/idempotence fixtures; complete concurrent-tab conflict evidence |
 | M1 | DATA-002 | `Partial` | Usage/quota/persistence and last-backup health; profile/board/offline-cache breakdown; atomic 20 MiB/250-board backup-safe budget with typed failures; online-verified optional-cache cleanup; On-device Lite download/storage warning plus cache status/release/delete controls | Integrate measured WebLLM bytes into the main category breakdown; add audio/dataset categories when shipped; record Mobile Safari quota/eviction and model redownload evidence |
 | M1 | DATA-003 | `Partial` | Recently opened document list and destructive-action confirmations | Local activity model, recoverable trash, document revisions/diff, and privacy-selective diagnostic export |
-| M2 | PERF-001 | `Partial` | Metadata-only startup, 143 on-demand lecture chunks, separate search corpus, lazy Reader/Whiteboard/Mac AI/phone AI/WebLLM boundaries, proportional visited caching, single-index annotation paint, paginated review deck, and automated 5k-highlight/10k-card/50k-attempt scale gates | Move full-text parse/ranking to an incremental worker; add physical-iPhone startup/interaction/memory/thermal budgets, including the optional phone model runtime |
+| M2 | PERF-001 | `Partial` | Metadata-only startup, 143 on-demand lecture chunks, separate search corpus, lazy Reader/Whiteboard/Mac AI/phone AI/WebLLM boundaries, proportional visited caching, single-index annotation paint, paginated review deck, and automated 5k-highlight/10k-card/50k-attempt scale gates | Delivered 2026-09-01: ordinary library full-text parsing/ranking now runs in a dedicated Web Worker with a one-time pre-normalized corpus transfer, incremental custom-document updates, latest-wins request correlation, and a main-thread fallback; a 643-document worst-case scale gate joined `audit:scale`. Remaining: physical-iPhone startup/interaction/memory/thermal budgets, including the optional phone model runtime |
 | M5 | PERF-002 | `Partial` | Fast/Balanced/Deep budgets, live phases/heartbeats/cancellation, and several dated real-Qwen smokes with elapsed/token metadata | Define and measure versioned cold/warm p50/p95 time-to-progress, source-free time-to-first-token, grounded time-to-validated-answer, tokens/second, failure rate, memory, energy, and thermal SLOs on the reviewed Mac and physical iPhone |
-| M3 | LEARN-001 | `Partial` | Anchored colored highlight creation, metadata, inline CSS painting, Reader/Notebook navigation and filtering, edit/delete, review conversion, persistence, and reload | Test relocation after source edits, orphan detection and repair; add copy/export; verify annotation and linked-card backup restore and non-CSS-Highlight fallback behavior |
+| M3 | LEARN-001 | `Partial` | Anchored colored highlight creation, metadata, inline CSS painting, Reader/Notebook navigation and filtering, edit/delete, review conversion, persistence, and reload | Delivered 2026-09-01: deterministic relocation-semantics unit suite plus browser scenarios for relocation, orphan+relink repair, backup restore of annotations and linked cards, non-CSS-Highlight fallback, and Notebook copy/Markdown export. Remaining: decide whether relocated offsets should persist (cross-tab merge interaction) and record real-device evidence |
 | M3 | LEARN-002 | `Partial` | Eight required item types; blank, clipping, annotation, and AI-card sources; exact duplicate detection; post-save edit/archive/restore; source provenance; safe Markdown/code preview | Add heading and mistake sources, MathML/Mermaid card preview, similarity-based duplicate review, and explicit backup-restore coverage |
 | M3 | LEARN-003 | `Partial` | Deterministic due-before-new queue; durable local-day counters; four ratings with latency/confidence; pause, bury, undo, crunch; live clock; analytics/forecast; timezone/DST tests | Make overdue and learning queues explicit and mutually tested; replace the heuristic interval update with a calibrated complete-history scheduler and migration/evaluation evidence |
 | M3 | LEARN-004 | `Partial` | Due, learning, mastered, suspended, and recent recall aggregates | Seven-state evidence ladder; review/assessment/lab/explanation evidence; concept/lecture/Part/role/prerequisite aggregation; state-change explanation and next action |
@@ -163,9 +164,13 @@ Acceptance criteria:
 
 Status: `Partial`
 
-Delivered slice: a touch drag creates and persists a two-point line, and a short drag
-is rejected. Line-specific mouse/pen input, every transform/history action, PNG
-download, and backup-restore behavior do not yet have complete acceptance coverage.
+Delivered slice: the complete line matrix now has browser acceptance coverage in
+`audit:workflow` — touch, mouse, and pen-pressure creation (the stored stroke width
+proves the pen path executed), rejected taps with visible feedback, redraw,
+page-switch and reload persistence, undo/redo with disabled-state transitions,
+select/drag-move/recolor/stroke-resize, duplicate/delete, and a captured PNG export
+verified by magic bytes. The imported-backup board-restore drill and physical
+Apple Pencil evidence remain open.
 
 Acceptance criteria:
 
@@ -180,8 +185,14 @@ Acceptance criteria:
 Status: `Partial`
 
 Delivered slice: visible controls are inspected for a computed name and rendered
-size. The audit is not yet an interaction contract: it does not invoke every action,
-verify every disabled reason, or complete every dialog focus cycle.
+size (190 across the current surfaces), and the dialog focus contract is now
+enforced for five dialogs — reader actions menu, create-note, review card, settings
+drawer, and the nested install sheet — covering inert background, Tab trap and
+wrap, Shift+Tab wrap, Escape close, and exact opener focus-restore. Building that
+coverage surfaced a real defect (focus restored while the opener was still inert
+was a silent no-op in three dialogs plus the nested sheet); the repair defers the
+restore one frame past inert cleanup and is verified by the same audit. Invoking
+every critical action with state/feedback/disabled-reason assertions remains open.
 
 Acceptance criteria:
 
@@ -292,8 +303,14 @@ mode switch never starts the model-weight download. Service-worker upgrades dele
 only old Lumen shell caches and preserve the separately owned WebLLM model cache.
 The production entry budget, full visited-lecture offline revisit, shared-index 5,000-
 annotation paint, paginated 10,000-card deck, and single-pass 50,000-attempt analytics
-have automated desktop budgets. Search parsing/ranking still runs on the main thread,
-and physical-iPhone interaction/memory/thermal budgets remain open.
+have automated desktop budgets. Ordinary library search now parses and ranks in a
+dedicated Web Worker (`src/workers/librarySearch.worker.js` +
+`src/lib/librarySearchClient.js`): the immutable corpus transfers once and is
+normalized at ingestion, custom documents update incrementally, responses use
+latest-wins correlation so stale results never paint, and a synchronous
+metadata-only fallback covers worker-less or pre-corpus moments. A worst-case
+643-document scale gate (143 built-ins plus 500 custom documents) runs in
+`audit:scale`. Physical-iPhone interaction/memory/thermal budgets remain open.
 
 Acceptance criteria:
 
@@ -333,9 +350,19 @@ Status: `Partial`
 Delivered core (covered by `npm run audit:annotations`): exact quote/context/offset/
 heading/source-hash capture, colored inline rendering, purpose/comment/tags, Reader
 and Notebook lists and filtering, edit/recolor/delete, review-card conversion,
-persistence, and reload. Relocation after a moderate source edit, orphan detection and
-repair, copy/export, fallback rendering, and annotation/linked-card backup restore
-still need acceptance coverage.
+persistence, and reload. Copy and Markdown export are delivered in the Notebook
+(per-highlight copy with source attribution and a filtered bulk export). The
+relocation semantics — exact offsets, context-scored relocation that beats a
+closer decoy occurrence, typed `quote-not-found`/`missing-anchor` orphaning, and
+resolution without CSS Highlight painting — are pinned by a deterministic unit
+suite (`annotations.relocation.test.mjs`), and `audit:annotations` now drives the full
+browser matrix: relocation after a real source edit (including the documented
+display-only behavior in which relocated offsets are not written back), orphan
+detection with a selection-gated Relink, manual relink that preserves the
+annotation id and its review-card link, backup export and two-phase preflight
+restore of annotations plus linked cards, the non-CSS-Highlight fallback reader,
+and Notebook copy/Markdown export. Persisting relocated offsets automatically
+remains an open design question (a write-back interacts with cross-tab merge).
 
 Acceptance criteria:
 

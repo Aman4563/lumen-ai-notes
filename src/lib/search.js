@@ -46,7 +46,9 @@ export const searchDocuments = (documents, query) => {
       const title = normalize(doc.title);
       const part = normalize(doc.partTitle);
       const description = normalize(doc.description);
-      const body = normalize(doc.searchText);
+      // The worker pre-normalizes immutable corpus text once; recomputing the
+      // NFKD pass over ~1 MB per keystroke was the dominant search cost.
+      const body = typeof doc.normalizedSearchText === "string" ? doc.normalizedSearchText : normalize(doc.searchText);
       const all = `${title} ${part} ${description} ${body}`;
       if (!terms.every((term) => all.includes(term))) return null;
       let score = exact && title.includes(exact) ? 45 : 0;

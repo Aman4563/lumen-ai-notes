@@ -74,7 +74,14 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      previous?.focus?.();
+      // This cleanup runs during child unmount, before the host un-inerts the
+      // background; focusing an inert opener is a silent no-op, so defer a
+      // frame (BUG-003 focus-restoration defect).
+      const target = previous;
+      requestAnimationFrame(() => {
+        if (target?.isConnected && !target.closest?.("[inert]")) target.focus?.();
+        else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected) target.focus?.(); });
+      });
     };
   }, [draft, onClose]);
 
