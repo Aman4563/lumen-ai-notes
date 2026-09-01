@@ -608,6 +608,43 @@ try {
     },
     { timeout: 10_000 },
   ).catch(() => assert.fail("-term exclusion still returned the excluded document"));
+  // Field filters, plural folding, and per-Part facet counts (Wave 8).
+  await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "title:uploaded");
+  await page.waitForFunction(
+    () => document.querySelector(".library-results-meta")?.textContent.includes("1 results")
+      && document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"),
+    { timeout: 10_000 },
+  ).catch(() => assert.fail("the title: field filter did not restrict to title matches"));
+  await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "gradients");
+  await page.waitForFunction(
+    () => (document.querySelector(".document-grid")?.innerText || "").toLocaleLowerCase().includes("gradient"),
+    { timeout: 10_000 },
+  ).catch(() => assert.fail("plural folding did not match the singular form"));
+  await page.waitForSelector(".library-facets", { timeout: 5_000 });
+  const facetLabel = await page.$eval(".library-facets button", (node) => node.textContent);
+  assert.match(facetLabel, /Part \d+\s*\d+/, `facet chips must show a part and its count, saw “${facetLabel}”`);
+  await page.$eval(".library-facets button", (node) => node.click());
+  await page.waitForFunction(() => document.querySelector(".filter-row button.active")?.textContent !== "All", { timeout: 5_000 })
+    .catch(() => assert.fail("clicking a facet chip did not focus its Part"));
+  await page.$$eval(".filter-row button", (nodes) => nodes.find((node) => node.textContent === "All")?.click());
+  await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "has:formula attention");
+  await page.waitForFunction(
+    () => document.querySelector(".library-results-meta")?.textContent.match(/\b\d+ results/),
+    { timeout: 10_000 },
+  );
+  const formulaCount = Number((await page.$eval(".library-results-meta", (node) => node.textContent)).match(/(\d+) results/)?.[1] || 0);
+  await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "attention");
+  await page.waitForFunction(
+    () => document.querySelector(".library-results-meta")?.textContent.match(/\b\d+ results/),
+    { timeout: 10_000 },
+  );
+  const plainCount = Number((await page.$eval(".library-results-meta", (node) => node.textContent)).match(/(\d+) results/)?.[1] || 0);
+  assert.ok(formulaCount > 0 && formulaCount <= plainCount, `has:formula must narrow results (${formulaCount} of ${plainCount})`);
+
   await page.click('button[aria-label="Clear search"]');
   await page.$$eval(".library-search-shortcuts .search-chip button", (nodes) => nodes.find((node) => node.getAttribute("aria-label")?.startsWith("Remove saved search"))?.click());
   await page.waitForFunction(() => !document.querySelector('.library-search-shortcuts .search-chip button[aria-label^="Remove saved search"]'), { timeout: 5_000 });
@@ -701,7 +738,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, advanced search (saved-search chips, typo tolerance, -term exclusion, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

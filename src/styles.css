@@ -7090,3 +7090,27 @@ input[type="range"] {
 .diff-removed code { color: #a84a33; text-decoration: line-through; }
 
 .import-cards-label { cursor: pointer; }
+
+/* Wave 8: search facets, notebook mistake results */
+.library-facets { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 13px; }
+.library-facets button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--paper); color: var(--ink-soft); font-size: 0.68rem; font-weight: 750; }
+.library-facets button strong { color: var(--ink); font-size: 0.7rem; }
+.notebook-mistake-list { display: grid; gap: 8px; }
+.notebook-mistake-row { display: flex; align-items: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); text-align: left; }
+.notebook-mistake-row svg { flex-shrink: 0; margin-top: 2px; color: var(--coral); }
+.notebook-mistake-copy { min-width: 0; }
+.notebook-mistake-copy strong { display: block; overflow: hidden; color: var(--ink); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
+.notebook-mistake-copy small { display: block; overflow: hidden; color: var(--ink-faint); font-size: 0.66rem; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Wave 8: curriculum concept map */
+.concept-map { display: block; width: 100%; height: auto; padding: 6px 0; }
+.concept-edge { stroke: var(--line-strong); stroke-width: 0.55; }
+.concept-node { cursor: pointer; }
+.concept-node circle { fill: var(--paper-3); stroke: var(--line-strong); stroke-width: 0.5; transition: transform 120ms ease; }
+.concept-node text { fill: var(--ink-soft); font-size: 4px; font-weight: 800; text-anchor: middle; pointer-events: none; }
+.concept-node.state-reading circle { fill: #f6dfae; stroke: #c9a24d; }
+.concept-node.state-read circle { fill: #cfe3d9; stroke: #5f9481; }
+.concept-node.state-practicing circle { fill: #bcd9f2; stroke: #4c82b4; }
+.concept-node.state-mastered circle { fill: #2e8b76; stroke: #1f6a59; }
+.concept-node.state-mastered text { fill: #ffffff; }
+.concept-node:hover circle { stroke-width: 1; }

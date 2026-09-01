@@ -1,7 +1,60 @@
 const normalize = (value) => String(value || "").toLocaleLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
 
+/**
+ * Field filters (SEARCH-001): `title:term`, `part:5` / `part:math`,
+ * `tag:interview`, and `has:code` / `has:formula`. Values may be quoted for
+ * phrases. Filter tokens are stripped before ordinary term tokenization so
+ * they never double as body terms.
+ */
+const FIELD_FILTER_PATTERN = /(?:^|\s)(title|part|tag|has):("[^"]*"|[^\s]+)/g;
+
+export const tokenizeFieldFilters = (query) => {
+  const filters = { title: [], part: [], tag: [], has: [] };
+  for (const match of normalize(query).matchAll(FIELD_FILTER_PATTERN)) {
+    const value = match[2].replaceAll('"', "").trim();
+    if (value && filters[match[1]].length < 4) filters[match[1]].push(value);
+  }
+  filters.has = filters.has.filter((value) => value === "code" || value === "formula");
+  return filters;
+};
+
+export const stripFieldFilters = (query) => String(query || "").replace(FIELD_FILTER_PATTERN, " ");
+
+export const hasFieldFilters = (filters) => filters.title.length > 0 || filters.part.length > 0 || filters.tag.length > 0 || filters.has.length > 0;
+
+/**
+ * Content-capability flags computed once per document at corpus ingestion:
+ * fenced/indented code and TeX-style formula markers.
+ */
+export const contentCapabilities = (text) => {
+  // Mermaid blocks are diagrams, not code — remove them whole so their
+  // closing fence cannot count as a code fence.
+  const value = String(text || "").replace(/```mermaid[\s\S]*?```/g, " ");
+  return {
+    hasCode: /```|~~~/.test(value),
+    // Formulas in this corpus are TeX-style ($$, \( \[, inline $…$) or the
+    // curriculum's house style: <sub>/<sup> markup and blockquote lines
+    // carrying =/≈/≤/≥ math (e.g. "> f′(x) = lim …").
+    hasFormula: /\$\$|\\\(|\\\[|<su[bp]>|(?:^|[^$\\])\$[^\s$][^$\n]{0,200}\$/.test(value)
+      || /^>\s[^\n]*[=≈≤≥][^\n]*$/m.test(value),
+  };
+};
+
+/**
+ * Deterministic plural folding (SEARCH-001): a term may match its simple
+ * singular ("optimizers" → "optimizer", "queries" → "query") or its plain
+ * plural. No dictionary — just the three regular English suffixes.
+ */
+export const foldPluralTerm = (term) => {
+  if (term.length < 4) return term;
+  if (term.endsWith("ies")) return `${term.slice(0, -3)}y`;
+  if (term.endsWith("ses") || term.endsWith("xes") || term.endsWith("hes")) return term.slice(0, -2);
+  if (term.endsWith("s") && !term.endsWith("ss")) return term.slice(0, -1);
+  return term;
+};
+
 export const tokenizeQuery = (query) => {
-  const normalized = normalize(query).trim();
+  const normalized = normalize(stripFieldFilters(query)).trim();
   if (!normalized) return [];
   const phrases = [...normalized.matchAll(/"([^"]+)"/g)].map((match) => match[1].trim()).filter(Boolean);
   const remainder = normalized.replace(/"[^"]+"/g, " ");
@@ -14,7 +67,7 @@ export const tokenizeQuery = (query) => {
  * A bare "-" or quoted phrase is never treated as an exclusion.
  */
 export const tokenizeExclusions = (query) => {
-  const normalized = normalize(query).trim();
+  const normalized = normalize(stripFieldFilters(query)).trim();
   if (!normalized) return [];
   const remainder = normalized.replace(/"[^"]+"/g, " ");
   const exclusions = [...remainder.matchAll(/(?:^|\s)-([a-z0-9+#.-]{2,})/g)].map((match) => match[1]);
@@ -93,9 +146,11 @@ const fuzzyWordMatch = (words, term) => {
 
 export const searchDocuments = (documents, query) => {
   const terms = tokenizeQuery(query);
-  if (!terms.length) return documents;
+  const filters = tokenizeFieldFilters(query);
+  const filtered = hasFieldFilters(filters);
+  if (!terms.length && !filtered) return documents;
   const exclusions = tokenizeExclusions(query);
-  const exact = normalize(query).replaceAll('"', "").trim();
+  const exact = normalize(stripFieldFilters(query)).replaceAll('"', "").trim();
 
   return documents
     .map((doc) => {
@@ -107,6 +162,16 @@ export const searchDocuments = (documents, query) => {
       const body = typeof doc.normalizedSearchText === "string" ? doc.normalizedSearchText : normalize(doc.searchText);
       const all = `${title} ${part} ${description} ${body}`;
       if (exclusions.some((exclusion) => all.includes(exclusion))) return null;
+      if (filters.title.some((value) => !title.includes(value))) return null;
+      if (filters.part.length && !filters.part.every((value) => String(doc.partNumber) === value || part.includes(value))) return null;
+      if (filters.tag.length) {
+        const tags = (doc.tags || []).map((tag) => normalize(tag));
+        if (!filters.tag.every((value) => tags.some((tag) => tag.includes(value)))) return null;
+      }
+      for (const capability of filters.has) {
+        if (capability === "code" && !doc.hasCode) return null;
+        if (capability === "formula" && !doc.hasFormula) return null;
+      }
       // Every term must match; a term of five or more characters may match a
       // document word within one edit so a single typo does not zero results.
       let fuzzyTerms = 0;
@@ -114,6 +179,17 @@ export const searchDocuments = (documents, query) => {
       for (const term of terms) {
         if (all.includes(term)) {
           matchedTerms.push(term);
+          continue;
+        }
+        // Plural folding: the singular or plain plural counts as a match and
+        // stays highlightable, ranking just below the exact form.
+        const folded = foldPluralTerm(term);
+        if (folded !== term && all.includes(folded)) {
+          matchedTerms.push(folded);
+          continue;
+        }
+        if (!term.includes(" ") && all.includes(`${term}s`)) {
+          matchedTerms.push(`${term}s`);
           continue;
         }
         if (term.length >= 5 && !term.includes(" ")) {
@@ -137,8 +213,8 @@ export const searchDocuments = (documents, query) => {
       // A typo-tolerant hit keeps the document visible but ranks below any
       // exact match of the same shape.
       score += fuzzyTerms * 1;
-      const snippetTerm = matchedTerms[0] || terms[0];
-      return { ...doc, description: snippetAround(doc, snippetTerm), searchScore: score, matchedTerms };
+      const snippetTerm = matchedTerms[0] || terms[0] || filters.title[0] || filters.tag[0] || "";
+      return { ...doc, description: snippetTerm ? snippetAround(doc, snippetTerm) : doc.description, searchScore: score, matchedTerms };
     })
     .filter(Boolean)
     .sort((a, b) => b.searchScore - a.searchScore || a.partNumber - b.partNumber || a.chapterNumber - b.chapterNumber)
