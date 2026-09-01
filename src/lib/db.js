@@ -1,4 +1,5 @@
 import { createId } from "./id.js";
+import { normalizeMistakes } from "./mistakes.js";
 import {
   assertOwnedDataBudgetTransition,
   isOwnedDataKey,
@@ -849,6 +850,7 @@ export const initialProfile = {
   bookmarks: [],
   personalNotes: {},
   clippings: [],
+  mistakes: [],
   annotations: [],
   reviewItems: [],
   reviewAttempts: [],
@@ -887,6 +889,8 @@ export const initialProfile = {
     aiFeaturesEnabled: true,
     // Durable Mac-tutor messages kept locally; 0 keeps history session-only.
     aiHistoryRetention: 50,
+    // Saved library searches (SEARCH-001); recents stay device-local.
+    savedSearches: [],
   },
 };
 
@@ -1281,11 +1285,15 @@ export const normalizeProfile = (value) => {
       aiHistoryRetention: [0, 10, 25, 50].includes(rawSettings.aiHistoryRetention)
         ? rawSettings.aiHistoryRetention
         : initialProfile.settings.aiHistoryRetention,
+      savedSearches: [...new Set((Array.isArray(rawSettings.savedSearches) ? rawSettings.savedSearches : [])
+        .filter((entry) => typeof entry === "string" && entry.trim())
+        .map((entry) => entry.trim().slice(0, 120)))].slice(0, 20),
     },
     bookmarks: uniqueStrings(input.bookmarks),
     customDocuments,
     deletedCustomDocumentIds: uniqueStrings(input.deletedCustomDocumentIds, 1_000).map((id) => id.slice(0, 500)),
     clippings,
+    mistakes: normalizeMistakes(input.mistakes),
     annotations,
     reviewItems,
     reviewAttempts,

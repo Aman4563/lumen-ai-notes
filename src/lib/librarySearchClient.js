@@ -97,6 +97,7 @@ export const createLibrarySearchClient = ({ workerFactory = defaultWorkerFactory
           id: document.id,
           searchScore: document.searchScore,
           snippet: document.description,
+          matchedTerms: document.matchedTerms || [],
         }));
         return Promise.resolve({ stale: requestId !== requestCounter, results });
       }

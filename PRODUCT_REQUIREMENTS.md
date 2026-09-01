@@ -75,6 +75,7 @@ accessibility, board, search, synchronization, and later milestones.
 | 2026-09-01 | AI capability gating, code review, answer-to-note, exact citations, and AI preferences (AI-001/AI-002/AI-004) | The request contract advanced to `lumen.ai.request.v2`. The Deep profile is now capability-gated: the server rejects Deep with typed `AI_PROFILE_UNSUPPORTED` unless the installed model attests Ollama thinking support, and the UI disables the option with the reason and falls back to Balanced. A code-review mode ships end to end (task allowlist, senior-review server instruction, composer template). Completed prose answers can be saved to the Notebook as labeled AI-origin clippings with materialized `[W#]` links, a plain-text `[S#]` source footer, and a bounded 4,000-character body; the Notebook labels them as AI drafts. Structured quiz/flashcard/study-plan string fields render navigable `[S#]`/`[W#]` citations on both Mac and phone (including options, hints, and milestone titles), and a personal-note citation now opens the Reader's Notes drawer and focuses the exact note editor. A saved no-AI preference hides AI surfaces without touching study data, and Mac tutor history retention is configurable (50/25/10/session-only) with immediate tombstoned trims. Evidence: `audit:ai` 234/234; `audit:ai-ui` adds thinking-gate, save-to-note, and personal-note deep-link scenarios; `audit:phone-ai-ui` adds structured-citation navigation; workflow/annotation/control audits and the production build pass. |
 | 2026-09-01 | Versioned deterministic AI evaluation tier and learner pairing (P0-4 partial, P0-5, AI-002, AI-003 partial) | `eval/fixtures/v1/retrieval.json` + `scripts/ai_eval.mjs` now run the real Library-first retrieval over the real generated corpus in plain Node: 27 versioned cases covering document hit@1/hit@3 across curriculum Parts, exact personal-note and saved-edit provenance, web-fallback decision codes, byte budgets, retrieval laziness, replay determinism, and adversarial injection-shaped queries, with suite thresholds (hit@1 ≥ 0.8 — measured 0.913; hit@3, fallback-code accuracy, and determinism at 1.0). The suite gates `npm run check` as `audit:ai-eval`; the live-Qwen tier remains the operator-run `scripts/live_ai_smoke.mjs` and the phone model remains a device gate (eval/README.md). Learner pairing shipped: `AI_AUTH=pairing` + `AI_PAIRING_CODE` guard `/api/ai/respond`, `/api/ai/respond/stream`, and `/api/local-search` behind a stateless HMAC session in an HttpOnly SameSite=Strict cookie minted by `POST /api/auth/pair` (constant-time compare, five attempts per client per five minutes, TTL `AI_SESSION_TTL_HOURS`, revocation via code/secret rotation or restart); non-loopback AI/search startup fails closed without pairing or `AI_ALLOW_UNAUTHENTICATED_LAN=true`; config reports `auth.sessionActive`; the tutor shows a pairing gate, and the On-device tutor gains a save-to-notes action completing answer-to-note on both engines. Evidence: `audit:ai` 237/237 including pairing/session/rate-limit/startup suites; `audit:ai-eval` passes; `audit:ai-ui` adds the pairing scenario; `audit:phone-ai-ui` adds phone save-to-note; production build passes. |
 | 2026-09-01 | Search worker, annotation relocation/repair evidence, whiteboard line matrix, and dialog focus contract (PERF-001, LEARN-001, BUG-002, BUG-003) | Ordinary library full-text parsing/ranking moved into a dedicated Web Worker (`src/workers/librarySearch.worker.js` + `src/lib/librarySearchClient.js`): one-time pre-normalized corpus transfer, incremental custom-document updates, latest-wins request correlation with typed errors and a main-thread fallback, plus a 643-document worst-case scale gate in `audit:scale` and a worker-client unit suite. `audit:annotations` now covers relocation after real source edits (asserting the documented display-only no-writeback), orphan detection with selection-gated Relink, id- and review-link-preserving repair, backup export/two-phase restore of annotations and linked cards, the non-CSS-Highlight fallback, and new Notebook highlight copy/Markdown-export actions. `audit:workflow` gains the complete straight-line matrix (mouse and pen-pressure creation proven by stored width, tap rejection with visible feedback, redraw/page-switch/reload persistence, undo/redo transitions, move/recolor/resize, PNG export verified by magic bytes). `audit:controls` gains a five-dialog focus contract (inert background, Tab trap/wrap, Shift+Tab wrap, Escape, exact opener restore) that surfaced and fixed a real defect: three dialogs plus the nested install sheet restored focus while the opener was still inert, a silent no-op; the repair defers restoration one frame past inert cleanup. The server app-shell test became hermetic (fixture dist) so CI passes on fresh clones. |
+| 2026-09-01 | Advanced lexical search and mistake notebook (SEARCH-001, LEARN-005, LEARN-002 partials) | Library search gains one-edit typo tolerance for long terms (exact always outranks fuzzy), `-term` exclusions that ignore quoted phrases, profile-synced saved searches with star/chip management plus device-local recents, and `<mark>`-highlighted snippets; word sets are precomputed in the search worker, and unit (`audit:unit`), worst-case scale (`audit:scale`), and browser (`audit:workflow`) coverage all pass. The mistake notebook ships: an “Again” grade auto-logs a mistake linked to the card/document with a derived category; repeats merge and reopen corrected entries; the Review Center edits blur-committed corrections, filters by category/corrected state, and schedules corrective review (linked card due now, or a new tagged card — delivering LEARN-002's mistake source); records are bounded at 2,000, merge across tabs (`audit:sync` collection), and travel through backups. Building the audit surfaced and fixed a real dropped-keystroke defect: per-keystroke profile writes re-rendered the center and lost characters typed between commits; the correction field now keeps keystrokes local and commits on blur. `audit:ai` includes the new mistakes suite; `audit:review` covers the end-to-end notebook flow. |
 
 ## Comprehensive status and evidence audit — baseline 2026-08-24, rechecked 2026-09-01
 
@@ -98,7 +99,7 @@ not evidence that the product implements it.
 | M3 | LEARN-002 | `Partial` | Eight required item types; blank, clipping, annotation, and AI-card sources; exact duplicate detection; post-save edit/archive/restore; source provenance; safe Markdown/code preview | Add heading and mistake sources, MathML/Mermaid card preview, similarity-based duplicate review, and explicit backup-restore coverage |
 | M3 | LEARN-003 | `Partial` | Deterministic due-before-new queue; durable local-day counters; four ratings with latency/confidence; pause, bury, undo, crunch; live clock; analytics/forecast; timezone/DST tests | Make overdue and learning queues explicit and mutually tested; replace the heuristic interval update with a calibrated complete-history scheduler and migration/evaluation evidence |
 | M3 | LEARN-004 | `Partial` | Due, learning, mastered, suspended, and recent recall aggregates | Seven-state evidence ladder; review/assessment/lab/explanation evidence; concept/lecture/Part/role/prerequisite aggregation; state-change explanation and next action |
-| M3 | LEARN-005 | `Backlog` | None | Mistake schema/UI, source and concept links, repeated-error merge, corrective scheduling, category filters, and end-to-end tests |
+| M3 | LEARN-005 | `Partial` | Auto-capture from failed reviews with card/document links and derived categories, repeat merge with reopening, blur-committed corrections, category/corrected filters, corrective scheduling (due-now or new tagged card), 2,000-record bound, cross-tab merge, backup flow-through, and unit + browser tests | Assessment-driven capture, a manual capture form with response/hints, and repeated-error analytics |
 | M4 | ASSESS-001 | `Backlog` | None | Versioned question schema, every required response type, scoring, explanation/source citation, retry behavior, and attempt persistence |
 | M4 | ASSESS-002 | `Backlog` | None | Diagnostic/mastery pools, deterministic partial-credit rubrics, recommendations, and mastery/mistake integration |
 | M4 | PLAN-001 | `Backlog` | Review queue is a prerequisite, not a learning-plan implementation | Goal/profile capture, prerequisite scheduler, 15/30/60-minute mixed sessions, reschedule/catch-up/pause, and missed-day recalculation tests |
@@ -108,7 +109,7 @@ not evidence that the product implements it.
 | M6 | LAB-003 | `Backlog` | None | Safe parameterized ML/system simulations, intermediate-state visualizations, and explicit external-notebook handoff |
 | M6 | INTERVIEW-001 | `Backlog` | Interview-oriented curriculum prose exists, but no product data model | Structured role/seniority/duration/concept/rubric mappings and coverage audit for every required track |
 | M6 | INTERVIEW-002 | `Backlog` | None | Round templates, preparation/response timers, typed/recorded answers, rubric scoring, and weakness-to-review conversion |
-| M2 | SEARCH-001 | `Partial` | Exact phrases, AND matching, ranking, basic snippets, Part/source filters | Typo tolerance, stemming/synonyms, exclusions, field/content-type filters, annotation/user-content search, saved/recent queries, and highlighted snippets |
+| M2 | SEARCH-001 | `Partial` | Exact phrases, AND matching, ranking, Part/source filters, worker-side execution, one-edit typo tolerance for long terms, `-term` exclusions, saved searches (profile-synced) and device-local recents with one-tap chips, and highlighted snippets | Stemming/synonyms, field/content-type filters, and annotation/user-content search |
 | M5 | SEARCH-002 | `Backlog` | None | Versioned embedding index, local/selected-provider controls, privacy/source disclosure, lexical evidence pairing, and relevance/privacy tests |
 | M2 | GRAPH-001 | `Backlog` | None | Versioned concept/edge model, backlinks/path explanations, mastery overlay, weak-cluster UI, and integrity tests |
 | M2 | CONTENT-001 | `Partial` | Custom-document tags, duplicate/delete, bookmarks, and editable local copies | Collections, rename/tag management, move/archive/restore/batch actions, revisions/diff, duplicate detection, and broken-link audit |
@@ -381,9 +382,9 @@ Delivered slice: users can author basic, cloze, formula, derivation, compare,
 debugging, code-output, and production-scenario cards from a blank form, clipping,
 highlight, or reviewed AI flashcard draft. Exact duplicates are rejected; source
 provenance, safe Markdown/code preview, post-save edit without schedule reset,
-suspend/resume, archive/restore, and delete are implemented. Heading/mistake sources,
-similarity review, MathML/Mermaid card rendering, and explicit backup-restore evidence
-remain open.
+suspend/resume, archive/restore, and delete are implemented. Mistake sources are delivered via the mistake notebook's corrective scheduling
+(LEARN-005). Heading sources, similarity review, MathML/Mermaid card rendering,
+and explicit backup-restore evidence remain open.
 
 Acceptance criteria:
 
@@ -430,7 +431,23 @@ Acceptance criteria:
 
 ### LEARN-005 — Mistake notebook
 
-Status: `Backlog`
+Status: `Partial`
+
+Delivered slice: grading a card “Again” automatically logs a mistake linked to
+the card, the source document, and a category derived from the card type/tags
+(misconception, formula, code, system design, interview); repeats of the same
+card — or the same category+prompt pair for free-text entries — merge into one
+record with a rising occurrence count, and a recurrence reopens a corrected
+mistake. The Review Center's Mistake notebook edits corrections in place
+(committed on blur so fast typing cannot drop keystrokes), filters by category
+and corrected state, marks entries corrected/reopened, deletes them, and
+schedules corrective review: a still-linked card becomes due immediately and an
+unlinked mistake becomes a new tagged card, which also delivers LEARN-002's
+mistake card source. Records live in the profile (bounded at 2,000), merge
+across tabs, and travel through backups. Unit and browser coverage exist for
+capture, merge/reopen, correction persistence, corrective scheduling, and
+filters. Capture from assessments (ASSESS-00x is Backlog), a manual capture
+form with response/hints fields, and repeated-error analytics remain open.
 
 Acceptance criteria:
 
@@ -544,9 +561,14 @@ Acceptance criteria:
 Status: `Partial`
 
 Delivered slice: exact-phrase tokenization, AND matching, title/body weighting,
-context snippets, and basic library filters. Typo tolerance, stemming/synonyms,
-exclusions, field/content-type and user-content filters, saved/recent searches, and
-highlighted snippets remain open.
+context snippets, and basic library filters — now executed in the search worker —
+plus one-edit typo tolerance for terms of five or more characters (exact matches
+always outrank fuzzy ones), `-term` exclusions that never fire inside quoted
+phrases, saved searches persisted in profile settings with star/chip management,
+device-local recent-search chips, and `<mark>` highlighting of matched terms in
+result snippets. Unit, worst-case scale, and browser coverage exist for each.
+Stemming/synonyms, field/content-type filters, and annotation/user-content search
+remain open.
 
 Acceptance criteria:
 

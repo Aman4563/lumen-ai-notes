@@ -38,6 +38,7 @@ try {
     args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check"],
   });
   const page = await browser.newPage();
+  page.on("dialog", (dialog) => dialog.accept());
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
@@ -114,6 +115,66 @@ try {
   await page.waitForSelector(".review-deck-card");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("1 day interval"), "scheduled card did not survive reload");
 
+  // LEARN-005 mistake notebook: a failed recall logs a mistake, repeats merge,
+  // the correction persists, and corrective review reschedules the card.
+  await clickByText(page, ".review-title button", "New card");
+  await page.waitForSelector(".review-card-dialog");
+  const mistakeFields = await page.$$(".review-card-dialog textarea");
+  await mistakeFields[0].type("Which split tunes hyperparameters?");
+  await mistakeFields[1].type("The validation split, never the test split.");
+  await clickByText(page, ".review-card-dialog button", "Add to review");
+  await page.waitForFunction(() => document.querySelector(".review-hero strong")?.textContent === "1");
+  await clickByText(page, ".review-hero button", "Start review");
+  await clickByText(page, ".review-session-page button", "Show answer");
+  await clickByText(page, ".review-rating", "Again");
+  await page.waitForSelector(".review-mistakes");
+  assert.equal((await page.$$(".mistake-card")).length, 1, "an Again grade did not log exactly one mistake");
+  const mistakeCopy = await page.$eval(".mistake-card", (node) => node.textContent);
+  assert.ok(mistakeCopy.includes("Which split tunes hyperparameters?"), "the mistake did not capture the failed prompt");
+  assert.ok(mistakeCopy.includes("Misconception"), "the mistake category chip is missing");
+
+  await page.type(".mistake-card textarea", "Only validation data may steer choices; the test split stays untouched.");
+  // The field commits on blur so per-keystroke profile writes cannot drop keys.
+  await page.$eval(".mistake-card textarea", (node) => node.blur());
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const withMistake = await readProfile(page);
+  assert.equal(withMistake.mistakes.length, 1);
+  assert.equal(withMistake.mistakes[0].occurrences, 1);
+  assert.ok(withMistake.mistakes[0].correction.includes("stays untouched"), "the correction was not persisted");
+  assert.equal(withMistake.mistakes[0].reviewItemId, withMistake.reviewItems.find((item) => item.front.startsWith("Which split")).id, "the mistake lost its card link");
+
+  // The lapsed card sits in a short relearning delay; corrective scheduling
+  // must make it due immediately.
+  await clickByText(page, ".mistake-card button", "Schedule corrective review");
+  await page.waitForFunction(() => document.querySelector(".review-hero strong")?.textContent === "1");
+  await clickByText(page, ".review-hero button", "Start review");
+  await clickByText(page, ".review-session-page button", "Show answer");
+  await clickByText(page, ".review-rating", "Again");
+  await page.waitForSelector(".review-mistakes");
+  await page.waitForFunction(() => document.querySelector(".mistake-card")?.textContent.includes("×2"), { timeout: 5_000 });
+  assert.equal((await page.$$(".mistake-card")).length, 1, "a repeated failure duplicated the mistake instead of merging");
+
+  await clickByText(page, ".mistake-card button", "Mark corrected");
+  await page.waitForFunction(() => !document.querySelector(".mistake-card"), { timeout: 5_000 });
+  await page.click(".mistake-corrected-toggle input");
+  await page.waitForFunction(() => document.querySelector(".mistake-card")?.textContent.includes("Corrected"), { timeout: 5_000 });
+  const categoryFilter = await page.$(".mistake-controls select");
+  await categoryFilter.select("code");
+  await page.waitForFunction(() => !document.querySelector(".mistake-card"), { timeout: 5_000 });
+  await categoryFilter.select("misconception");
+  await page.waitForFunction(() => Boolean(document.querySelector(".mistake-card")), { timeout: 5_000 });
+  await categoryFilter.select("all");
+  await page.click(".mistake-corrected-toggle input");
+  // Clean up the second card so the original deck assertions stay untouched.
+  await page.waitForSelector(".review-deck-card");
+  const deleteButtons = await page.$$('button[aria-label="Delete review card"]');
+  assert.ok(deleteButtons.length >= 1, "delete control missing for cleanup");
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll(".review-deck-card")];
+    const target = cards.find((card) => card.textContent.includes("Which split tunes hyperparameters?"));
+    target?.querySelector('button[aria-label="Delete review card"]')?.click();
+  });
+
   // Exercise the maximum persisted deck size. The center must keep the DOM
   // bounded on an iPhone instead of rendering 10,000 Markdown cards at once.
   await page.evaluate(() => new Promise((resolve, reject) => {
@@ -160,7 +221,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, persisted corrections, corrective scheduling, corrected/category filters), analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
