@@ -5955,6 +5955,17 @@ input[type="range"] {
   flex-basis: 100%;
 }
 
+/* The trend is the grid's fifth card: without an explicit full-row span its
+   twelve fixed-width bars overflow the narrow first column and force the
+   mobile layout viewport wider than the screen. */
+.review-retention-trend {
+  grid-column: 1 / -1;
+}
+
+.review-retention-trend .forecast-bars {
+  width: 188px;
+}
+
 .review-retention-trend .forecast-bars span.is-empty {
   opacity: 0.3;
 }
