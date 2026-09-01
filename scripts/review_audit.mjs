@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -7,6 +7,7 @@ import puppeteer from "puppeteer-core";
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-review-profile-"));
+const downloadDirectory = await mkdtemp(join(tmpdir(), "lumen-review-downloads-"));
 const errors = [];
 let browser;
 
@@ -39,6 +40,8 @@ try {
   });
   const page = await browser.newPage();
   page.on("dialog", (dialog) => dialog.accept());
+  const cdp = await page.createCDPSession();
+  await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDirectory, eventsEnabled: true });
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
@@ -216,6 +219,23 @@ try {
   await clickByText(page, ".mistake-dialog button", "Log mistake");
   await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("×2")), { timeout: 5_000 })
     .catch(() => assert.fail("a repeated manual mistake did not merge"));
+
+  // LEARN-005: the notebook exports to Markdown with category and occurrences.
+  await clickByText(page, ".mistake-controls button", "Export");
+  {
+    let exportPath = "";
+    const exportDeadline = Date.now() + 10_000;
+    while (Date.now() < exportDeadline && !exportPath) {
+      const files = await readdir(downloadDirectory);
+      const name = files.find((file) => file.startsWith("lumen-mistakes-") && file.endsWith(".md"));
+      if (name) exportPath = join(downloadDirectory, name);
+      else await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(exportPath, "the mistakes Markdown export was not downloaded");
+    const exported = await readFile(exportPath, "utf8");
+    assert.match(exported, /# Mistake notebook/);
+    assert.ok(exported.includes("softmax gradient") && exported.includes("Category: Formula") && exported.includes("×2"), "the export is missing the merged mistake's details");
+  }
   await page.evaluate(() => {
     const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("softmax gradient"));
     card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
@@ -310,4 +330,5 @@ try {
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
+  await rm(downloadDirectory, { recursive: true, force: true });
 }

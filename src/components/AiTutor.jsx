@@ -21,6 +21,7 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Download,
   Trash2,
 } from "lucide-react";
 import {
@@ -913,6 +914,7 @@ export default function AiTutor({
   sources = [],
   initialMode = "explain",
   initialPrompt = "",
+  insertPrompt = null,
   initialDifficulty = "intermediate",
   initialHistory = [],
   historyTombstones = [],
@@ -946,6 +948,15 @@ export default function AiTutor({
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState("");
   const [prompt, setPrompt] = useState(() => asTrimmedString(initialPrompt, MAX_PROMPT_CHARS) || initialModeOption.prompt);
+
+  // Quick-insert (Reader selection → prompt): a fresh nonce replaces the
+  // draft prompt with the passed excerpt, ready to edit before sending.
+  const insertNonceRef = useRef(0);
+  useEffect(() => {
+    if (!insertPrompt?.text || insertPrompt.nonce === insertNonceRef.current) return;
+    insertNonceRef.current = insertPrompt.nonce;
+    setPrompt(asTrimmedString(`Explain this excerpt from my lecture in context:\n\n"${insertPrompt.text}"`, MAX_PROMPT_CHARS));
+  }, [insertPrompt]);
   const initialTombstones = new Set((Array.isArray(historyTombstones) ? historyTombstones : []).filter((id) => typeof id === "string"));
   const [history, setHistory] = useState(() => normalizeHistory(initialHistory).filter((message) => !initialTombstones.has(message.id)));
   const [selectedSourceIds, setSelectedSourceIds] = useState(() => initiallySelectedSourceIds(sources));
@@ -1770,6 +1781,34 @@ export default function AiTutor({
       : configState.status === "pairing" ? <LockKeyhole size={16} aria-hidden="true" />
         : <AlertTriangle size={16} aria-hidden="true" />;
 
+  // Conversation export (Markdown) and session statistics (AI-002/PERF-002).
+  const sessionStats = (() => {
+    const answers = history.filter((message) => message.role === "assistant");
+    if (answers.length < 2) return null;
+    const durations = answers.map((message) => message.durationMs).filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
+    const median = durations.length ? durations[Math.floor(durations.length / 2)] : null;
+    const tokens = answers.reduce((sum, message) => sum + (message.usage?.outputTokens || 0), 0);
+    return { count: answers.length, median, tokens };
+  })();
+
+  const exportConversation = () => {
+    const lines = [`# Lumen AI Tutor conversation`, "", `Exported ${new Date().toISOString().slice(0, 10)}. Answers are model-generated from local sources — verify before relying on them.`, ""];
+    for (const message of history) {
+      lines.push(`## ${message.role === "assistant" ? "Lumen Tutor" : "You"}${message.durationMs && message.role === "assistant" ? ` · ${(message.durationMs / 1_000).toFixed(1)}s` : ""}`, "", String(message.content || "").trim(), "");
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `lumen-tutor-conversation-${new Date().toISOString().slice(0, 10)}.md`;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 2_000);
+  };
+
   return (
     <section className={`ai-tutor ${className}`.trim()} aria-labelledby={headingId}>
       <header className="ai-tutor__header">
@@ -1778,10 +1817,13 @@ export default function AiTutor({
           <div><span className="ai-tutor__eyebrow">Grounded learning assistant</span><h2 id={headingId}>Lumen AI Tutor</h2></div>
         </div>
         <div className="ai-tutor__header-actions">
+          {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={exportConversation} aria-label="Export conversation as Markdown" title="Export conversation"><Download size={18} /></button>}
           {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={clearHistory} disabled={requestState.status === "loading"} aria-label="Clear AI tutor conversation" title="Clear conversation"><Trash2 size={18} /></button>}
           {onClose && <button className="ai-tutor__button ai-tutor__button--ghost" type="button" onClick={onClose}>Close</button>}
         </div>
       </header>
+
+      {sessionStats && <p className="ai-tutor__session-stats" aria-label="Session statistics">{sessionStats.count} answers this session{sessionStats.median !== null ? ` · median ${(sessionStats.median / 1_000).toFixed(1)}s` : ""}{sessionStats.tokens ? ` · ${sessionStats.tokens.toLocaleString()} output tokens` : ""}</p>}
 
       <div className={`ai-tutor__connection ai-tutor__connection--${configState.status}`} role="status">
         {configIcon}<span>{configState.message}</span>

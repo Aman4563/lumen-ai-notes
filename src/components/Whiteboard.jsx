@@ -19,12 +19,15 @@ import {
   Square,
   StickyNote,
   Trash2,
+  ZoomIn,
+  ZoomOut,
   Type,
   Undo2,
   X,
 } from "lucide-react";
 import { getData, normalizeBoardDocument, updateDataGuarded } from "../lib/db";
 import { createId } from "../lib/id.js";
+import { boardPageToSvg } from "../lib/boardSvg.js";
 import {
   BOARD_SYNC_CHANNEL,
   BOARD_SYNC_SIGNAL_KEY,
@@ -324,7 +327,32 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   const [tool, setTool] = useState("pen");
   const [color, setColor] = useState(colors[0]);
   const [lineWidth, setLineWidth] = useState(3);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
+  // Single-selection compatibility: most tools (recolor, resize slider) act on
+  // exactly one object; group operations read selectedIds directly.
+  const setSelectedId = useCallback((id) => setSelectedIds(id ? [id] : []), []);
+  const marqueeRef = useRef(null);
+  const resizingRef = useRef(null);
+  // Zoom/pan (BOARD-003): screen = world · scale + offset, in normalized
+  // units. Identity view keeps every legacy interaction byte-identical.
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
+  const pinchRef = useRef(new Map());
+  const pinchStateRef = useRef(null);
+  const clampView = (candidate) => {
+    const scale = Math.max(1, Math.min(4, candidate.scale));
+    return {
+      scale,
+      x: Math.max(1 - scale, Math.min(0, candidate.x)),
+      y: Math.max(1 - scale, Math.min(0, candidate.y)),
+    };
+  };
+  const zoomAround = (factor, centerX = 0.5, centerY = 0.5) => setView((current) => {
+    const scale = Math.max(1, Math.min(4, current.scale * factor));
+    const worldX = (centerX - current.x) / current.scale;
+    const worldY = (centerY - current.y) / current.scale;
+    return clampView({ scale, x: centerX - worldX * scale, y: centerY - worldY * scale });
+  });
+  const clipboardRef = useRef([]);
   const [pendingText, setPendingText] = useState(null);
   const [renamingPage, setRenamingPage] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -333,7 +361,9 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   boardRef.current = board;
   const activePage = useMemo(() => board.pages.find((page) => page.id === board.activePageId) || board.pages[0], [board]);
   const objects = activePage?.objects || [];
+  const selectedId = selectedIds.length === 1 ? selectedIds[0] : "";
   const selectedObject = objects.find((object) => object.id === selectedId);
+  const selectedObjects = objects.filter((object) => selectedIds.includes(object.id));
   const activePageIndex = board.pages.findIndex((page) => page.id === activePage?.id);
 
   const syncHistoryCounts = () => setHistoryCounts({ past: historyRef.current.past.length, future: historyRef.current.future.length });
@@ -611,10 +641,28 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const context = canvas.getContext("2d");
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, rect.width, rect.height);
+    context.save();
+    context.translate(view.x * rect.width, view.y * rect.height);
+    context.scale(view.scale, view.scale);
     drawBackground(context, rect.width, rect.height, board.background);
     objects.forEach((object) => drawObject(context, object, rect.width, rect.height));
-    drawSelection(context, selectedObject, rect.width, rect.height);
-  }, [board.background, objects, selectedObject]);
+    objects.filter((object) => selectedIds.includes(object.id)).forEach((object) => drawSelection(context, object, rect.width, rect.height));
+    context.restore();
+  }, [board.background, objects, selectedIds, view]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const onWheel = (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      zoomAround(Math.exp(-event.deltaY * 0.01), (event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     redraw();
@@ -625,7 +673,12 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
 
   const pointFromEvent = (event) => {
     const rect = canvasRef.current.getBoundingClientRect();
-    return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
+    const screenX = (event.clientX - rect.left) / rect.width;
+    const screenY = (event.clientY - rect.top) / rect.height;
+    return {
+      x: Math.max(0, Math.min(1, (screenX - view.x) / view.scale)),
+      y: Math.max(0, Math.min(1, (screenY - view.y) / view.scale)),
+    };
   };
   const hitTest = (point) => [...objects].reverse().find((object) => {
     if (object.tool === "eraser") return false;
@@ -639,10 +692,63 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     event.preventDefault();
     const point = pointFromEvent(event);
     try { canvasRef.current.setPointerCapture?.(event.pointerId); } catch { /* Some iOS pointer streams do not expose capture. */ }
+    pinchRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+    if (pinchRef.current.size === 2) {
+      // Two fingers switch to pinch zoom/pan; abandon any started stroke.
+      drawingRef.current = null;
+      movingRef.current = null;
+      marqueeRef.current = null;
+      resizingRef.current = null;
+      const [first, second] = [...pinchRef.current.values()];
+      const rect = canvasRef.current.getBoundingClientRect();
+      pinchStateRef.current = {
+        startDistance: Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY),
+        startView: view,
+        midpoint: { x: ((first.clientX + second.clientX) / 2 - rect.left) / rect.width, y: ((first.clientY + second.clientY) / 2 - rect.top) / rect.height },
+      };
+      redraw();
+      return;
+    }
     if (tool === "select") {
+      // Resize (BOARD-001): with exactly one object selected, grabbing its
+      // bottom-right handle scales the object around its top-left corner.
+      if (selectedObjects.length === 1 && selectedObjects[0].tool !== "text") {
+        const bounds = objectBounds(selectedObjects[0]);
+        const rect = canvasRef.current.getBoundingClientRect();
+        const handleX = bounds.maxX + 7 / rect.width;
+        const handleY = bounds.maxY + 7 / rect.height;
+        if (Math.abs(point.x - handleX) < 14 / rect.width && Math.abs(point.y - handleY) < 14 / rect.height) {
+          const target = selectedObjects[0];
+          resizingRef.current = {
+            id: target.id,
+            bounds,
+            originalPoints: target.points.map((item) => ({ ...item })),
+            before: boardRef.current,
+            resized: false,
+          };
+          return;
+        }
+      }
       const hit = hitTest(point);
-      setSelectedId(hit?.id || "");
-      if (hit) movingRef.current = { id: hit.id, start: point, originalPoints: hit.points, before: boardRef.current, moved: false };
+      if (hit && event.shiftKey) {
+        setSelectedIds((current) => current.includes(hit.id) ? current.filter((id) => id !== hit.id) : [...current, hit.id]);
+        return;
+      }
+      if (hit) {
+        const group = selectedIds.includes(hit.id) ? selectedIds : [hit.id];
+        setSelectedIds(group);
+        movingRef.current = {
+          ids: group,
+          start: point,
+          originals: new Map(objects.filter((object) => group.includes(object.id)).map((object) => [object.id, object.points])),
+          before: boardRef.current,
+          moved: false,
+        };
+        return;
+      }
+      // Empty space starts a marquee: release selects every contained object.
+      setSelectedIds([]);
+      marqueeRef.current = { start: point, end: point };
       return;
     }
     if (tool === "text" || tool === "sticky") {
@@ -654,6 +760,39 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   const continueDrawing = (event) => {
+    if (pinchRef.current.has(event.pointerId)) pinchRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+    if (pinchStateRef.current && pinchRef.current.size === 2) {
+      event.preventDefault();
+      const [first, second] = [...pinchRef.current.values()];
+      const rect = canvasRef.current.getBoundingClientRect();
+      const pinch = pinchStateRef.current;
+      const distance = Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+      const factor = distance / Math.max(1, pinch.startDistance);
+      const midpoint = { x: ((first.clientX + second.clientX) / 2 - rect.left) / rect.width, y: ((first.clientY + second.clientY) / 2 - rect.top) / rect.height };
+      const scale = Math.max(1, Math.min(4, pinch.startView.scale * factor));
+      const worldX = (pinch.midpoint.x - pinch.startView.x) / pinch.startView.scale;
+      const worldY = (pinch.midpoint.y - pinch.startView.y) / pinch.startView.scale;
+      setView(clampView({ scale, x: midpoint.x - worldX * scale, y: midpoint.y - worldY * scale }));
+      return;
+    }
+    if (resizingRef.current) {
+      event.preventDefault();
+      const point = pointFromEvent(event);
+      const resize = resizingRef.current;
+      const { minX, minY, maxX, maxY } = resize.bounds;
+      const scaleX = Math.max(0.05, (point.x - minX) / Math.max(0.01, maxX - minX));
+      const scaleY = Math.max(0.05, (point.y - minY) / Math.max(0.01, maxY - minY));
+      resize.resized = true;
+      updateActiveObjects((current) => current.map((object) => object.id === resize.id
+        ? {
+          ...object,
+          points: resize.originalPoints.length === 1 && object.tool === "sticky"
+            ? [resize.originalPoints[0], { x: Math.min(1, minX + 0.36 * scaleX), y: Math.min(1, minY + 0.22 * scaleY) }]
+            : resize.originalPoints.map((item) => ({ ...item, x: Math.max(0, Math.min(1, minX + (item.x - minX) * scaleX)), y: Math.max(0, Math.min(1, minY + (item.y - minY) * scaleY)) })),
+        }
+        : object), false);
+      return;
+    }
     if (movingRef.current) {
       event.preventDefault();
       const point = pointFromEvent(event);
@@ -661,7 +800,29 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       const deltaX = point.x - move.start.x;
       const deltaY = point.y - move.start.y;
       move.moved = move.moved || Math.abs(deltaX) + Math.abs(deltaY) > 0.002;
-      updateActiveObjects((current) => current.map((object) => object.id === move.id ? { ...object, points: move.originalPoints.map((item) => ({ x: Math.max(0, Math.min(1, item.x + deltaX)), y: Math.max(0, Math.min(1, item.y + deltaY)) })) } : object), false);
+      updateActiveObjects((current) => current.map((object) => move.originals.has(object.id)
+        ? { ...object, points: move.originals.get(object.id).map((item) => ({ x: Math.max(0, Math.min(1, item.x + deltaX)), y: Math.max(0, Math.min(1, item.y + deltaY)) })) }
+        : object), false);
+      return;
+    }
+    if (marqueeRef.current) {
+      event.preventDefault();
+      marqueeRef.current.end = pointFromEvent(event);
+      const canvas = canvasRef.current;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const context = canvas.getContext("2d");
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      redraw();
+      const { start, end } = marqueeRef.current;
+      context.save();
+      context.translate(view.x * rect.width, view.y * rect.height);
+      context.scale(view.scale, view.scale);
+      context.strokeStyle = "#e36f4a";
+      context.setLineDash([5, 4]);
+      context.lineWidth = 1.2;
+      context.strokeRect(Math.min(start.x, end.x) * rect.width, Math.min(start.y, end.y) * rect.height, Math.abs(end.x - start.x) * rect.width, Math.abs(end.y - start.y) * rect.height);
+      context.restore();
       return;
     }
     if (!drawingRef.current) return;
@@ -677,11 +838,49 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const context = canvas.getContext("2d");
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.save();
+    context.translate(view.x * rect.width, view.y * rect.height);
+    context.scale(view.scale, view.scale);
     if (isShape) { redraw(); drawObject(context, drawingRef.current, rect.width, rect.height); }
     else drawObject(context, { ...drawingRef.current, points: [previous, ...nextPoints] }, rect.width, rect.height);
+    context.restore();
   };
 
   const finishDrawing = (event) => {
+    pinchRef.current.delete(event.pointerId);
+    if (pinchStateRef.current) {
+      if (pinchRef.current.size < 2) pinchStateRef.current = null;
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
+    if (resizingRef.current) {
+      const resize = resizingRef.current;
+      resizingRef.current = null;
+      if (resize.resized) {
+        historyRef.current.past = [...historyRef.current.past, resize.before].slice(-60);
+        historyRef.current.future = [];
+        syncHistoryCounts();
+      }
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
+    if (marqueeRef.current) {
+      const { start, end } = marqueeRef.current;
+      marqueeRef.current = null;
+      const box = { minX: Math.min(start.x, end.x), maxX: Math.max(start.x, end.x), minY: Math.min(start.y, end.y), maxY: Math.max(start.y, end.y) };
+      if ((box.maxX - box.minX) + (box.maxY - box.minY) > 0.01) {
+        const contained = objects.filter((object) => {
+          if (object.tool === "eraser") return false;
+          const bounds = objectBounds(object);
+          return bounds.minX >= box.minX && bounds.maxX <= box.maxX && bounds.minY >= box.minY && bounds.maxY <= box.maxY;
+        }).map((object) => object.id);
+        setSelectedIds(contained);
+        if (contained.length) notify?.(`${contained.length} object${contained.length === 1 ? "" : "s"} selected. Drag to move them together.`);
+      }
+      redraw();
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
     if (movingRef.current) {
       const move = movingRef.current;
       movingRef.current = null;
@@ -748,36 +947,57 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   }, []);
 
   const deleteSelected = useCallback(() => {
-    if (!selectedId) return;
-    updateActiveObjects((current) => current.filter((object) => object.id !== selectedId));
-    setSelectedId("");
-    notify?.("Selected object deleted. Undo is available.");
-  }, [notify, selectedId, updateActiveObjects]);
+    if (!selectedIds.length) return;
+    const removing = new Set(selectedIds);
+    updateActiveObjects((current) => current.filter((object) => !removing.has(object.id)));
+    setSelectedIds([]);
+    notify?.(`${removing.size === 1 ? "Selected object" : `${removing.size} objects`} deleted. Undo is available.`);
+  }, [notify, selectedIds, updateActiveObjects]);
+  const cloneWithOffset = (object, offset) => ({
+    ...object,
+    id: createId(),
+    points: object.points.map((point) => ({ ...point, x: Math.min(1, point.x + offset), y: Math.min(1, point.y + offset) })),
+  });
   const duplicateSelected = () => {
-    if (!selectedObject) return;
-    const duplicate = { ...selectedObject, id: createId(), points: selectedObject.points.map((point) => ({ x: Math.min(1, point.x + 0.025), y: Math.min(1, point.y + 0.025) })) };
-    updateActiveObjects((current) => [...current, duplicate]);
-    setSelectedId(duplicate.id);
+    if (!selectedObjects.length) return;
+    const duplicates = selectedObjects.map((object) => cloneWithOffset(object, 0.025));
+    updateActiveObjects((current) => [...current, ...duplicates]);
+    setSelectedIds(duplicates.map((object) => object.id));
   };
+  const copySelected = useCallback(() => {
+    if (!selectedObjects.length) return;
+    clipboardRef.current = selectedObjects.map((object) => ({ ...object, points: object.points.map((point) => ({ ...point })) }));
+    notify?.(`${selectedObjects.length} object${selectedObjects.length === 1 ? "" : "s"} copied. Paste with ⌘/Ctrl + V.`);
+  }, [notify, selectedObjects]);
+  const pasteClipboard = useCallback(() => {
+    if (!clipboardRef.current.length) return;
+    const pasted = clipboardRef.current.map((object) => cloneWithOffset(object, 0.03));
+    updateActiveObjects((current) => [...current, ...pasted]);
+    setSelectedIds(pasted.map((object) => object.id));
+    notify?.(`${pasted.length} object${pasted.length === 1 ? "" : "s"} pasted.`);
+  }, [notify, updateActiveObjects]);
 
   // Keyboard nudging (A11Y-001): arrow keys move the selected object by 1% of
   // the canvas (Shift: 5%) — a non-drag alternative to pointer moves that goes
   // through the same history path as any other edit.
   const nudgeSelected = useCallback((deltaX, deltaY) => {
-    if (!selectedId) return;
-    updateActiveObjects((current) => current.map((object) => object.id === selectedId
+    if (!selectedIds.length) return;
+    const moving = new Set(selectedIds);
+    updateActiveObjects((current) => current.map((object) => moving.has(object.id)
       ? { ...object, points: object.points.map((point) => ({ ...point, x: Math.max(0, Math.min(1, point.x + deltaX)), y: Math.max(0, Math.min(1, point.y + deltaY)) })) }
       : object));
-  }, [selectedId, updateActiveObjects]);
+  }, [selectedIds, updateActiveObjects]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
       const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target?.isContentEditable;
       if (typing) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
-      else if ((event.key === "Delete" || event.key === "Backspace") && selectedId) { event.preventDefault(); deleteSelected(); }
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "c" && selectedIds.length) { event.preventDefault(); copySelected(); }
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "v" && clipboardRef.current.length) { event.preventDefault(); pasteClipboard(); }
+      else if ((event.key === "Delete" || event.key === "Backspace") && selectedIds.length) { event.preventDefault(); deleteSelected(); }
       else if (event.key === "Escape") { setSelectedId(""); setPendingText(null); }
-      else if (event.key.startsWith("Arrow") && selectedId) {
+      else if (event.key.startsWith("Arrow") && selectedIds.length) {
         event.preventDefault();
         const step = event.shiftKey ? 0.05 : 0.01;
         nudgeSelected(
@@ -788,7 +1008,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelected, nudgeSelected, redo, selectedId, undo]);
+  }, [copySelected, deleteSelected, nudgeSelected, pasteClipboard, redo, selectedIds, setSelectedId, undo]);
 
   const clear = () => {
     if (!objects.length || !window.confirm("Clear every object on this page? You can undo this action.")) return;
@@ -876,8 +1096,30 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     notify?.(`${activePage.name} exported as a high-resolution PNG.`);
   };
 
+  const exportSvg = () => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const aspect = rect && rect.width ? rect.height / rect.width : 0.625;
+    const svg = boardPageToSvg(activePage, {
+      width: 1600,
+      height: Math.round(1600 * aspect),
+      background: board.background === "dark" ? "#10192a" : "#ffffff",
+    });
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = `${documentTitle.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${activePage.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.svg`;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 2_000);
+    notify?.(`${activePage.name} exported as a scalable SVG.`);
+  };
+
   return <section className="board-view advanced-board" aria-label={`Whiteboard for ${documentTitle}`}>
-    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><button className="button secondary" onClick={exportBoard} aria-label="Export current whiteboard page as PNG" type="button"><Download size={18} /> Export PNG</button></header>
+    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><div className="board-header-actions"><button className="button ghost" onClick={exportSvg} aria-label="Export current whiteboard page as SVG" type="button"><Download size={16} /> SVG</button><button className="button secondary" onClick={exportBoard} aria-label="Export current whiteboard page as PNG" type="button"><Download size={18} /> Export PNG</button></div></header>
 
     <div className="board-pagebar">
       <div className="board-page-controls"><Files size={17} /><select value={activePage.id} onChange={(event) => switchPage(event.target.value)} aria-label="Current whiteboard page">{board.pages.map((page, index) => <option value={page.id} key={page.id}>{index + 1}. {page.name}</option>)}</select><span>{activePageIndex + 1}/{board.pages.length}</span><button onClick={() => setRenamingPage(true)} aria-label="Rename whiteboard page" title="Rename page" type="button"><Pencil size={17} /></button><button onClick={addPage} aria-label="Add whiteboard page" title="New page" type="button"><Plus size={18} /></button><button onClick={duplicatePage} aria-label="Duplicate whiteboard page" title="Duplicate page" type="button"><Copy size={17} /></button><button onClick={deletePage} aria-label="Delete whiteboard page" title="Delete page" type="button"><Trash2 size={17} /></button></div>
@@ -889,12 +1131,13 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       <div className="tool-segment shape-tools"><button className={tool === "line" ? "active" : ""} onClick={() => setTool("line")} aria-label="Straight line" type="button"><Minus size={19} /></button><button className={tool === "rectangle" ? "active" : ""} onClick={() => setTool("rectangle")} aria-label="Rectangle" type="button"><Square size={18} /></button><button className={tool === "ellipse" ? "active" : ""} onClick={() => setTool("ellipse")} aria-label="Ellipse" type="button"><Circle size={18} /></button><button className={tool === "arrow" ? "active" : ""} onClick={() => setTool("arrow")} aria-label="Arrow" type="button"><MoveUpRight size={19} /></button><button className={tool === "text" ? "active" : ""} onClick={() => setTool("text")} aria-label="Text" type="button"><Type size={19} /></button><button className={tool === "sticky" ? "active" : ""} onClick={() => setTool("sticky")} aria-label="Sticky note" type="button"><StickyNote size={19} /></button></div>
       <div className="color-row" aria-label="Ink color">{colors.map((ink) => <button key={ink} className={(selectedObject?.color || color) === ink ? "color-dot active" : "color-dot"} style={{ "--ink": ink }} onClick={() => changeColor(ink)} aria-label={`Use color ${ink}`} type="button" />)}</div>
       <label className="stroke-size"><span>Size</span><input type="range" min="1" max="12" value={selectedObject && !["text", "sticky"].includes(selectedObject.tool) ? Math.min(12, selectedObject.width) : lineWidth} onChange={(event) => changeWidth(Number(event.target.value))} aria-label="Stroke size" /></label>
-      {selectedObject && <div className="tool-segment board-selection-actions"><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
+      {selectedObjects.length > 0 && <div className="tool-segment board-selection-actions"><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
       <div className="tool-segment board-history"><button onClick={undo} disabled={!historyCounts.past} aria-label="Undo" type="button"><Undo2 size={19} /></button><button onClick={redo} disabled={!historyCounts.future} aria-label="Redo" type="button"><Redo2 size={19} /></button><button onClick={clear} disabled={!objects.length} aria-label="Clear current page" type="button"><Trash2 size={19} /></button></div>
+      <div className="tool-segment board-zoom" role="group" aria-label="Zoom"><button onClick={() => zoomAround(1 / 1.25)} disabled={view.scale <= 1} aria-label="Zoom out" type="button"><ZoomOut size={18} /></button><button className="board-zoom-level" onClick={() => setView({ scale: 1, x: 0, y: 0 })} disabled={view.scale === 1} aria-label="Reset zoom" title="Reset zoom and position" type="button">{Math.round(view.scale * 100)}%</button><button onClick={() => zoomAround(1.25)} disabled={view.scale >= 4} aria-label="Zoom in" type="button"><ZoomIn size={18} /></button></div>
     </div></div>
 
     <div className={`board-canvas-wrap background-${board.background}`} ref={containerRef}>{!loaded && <div className="board-loading"><RotateCcw className="spin" size={22} /> Restoring every page…</div>}<canvas ref={canvasRef} className="board-canvas" tabIndex="0" aria-label={`${activePage.name} drawing surface. Active tool: ${tool}`} onPointerDown={startDrawing} onPointerMove={continueDrawing} onPointerUp={finishDrawing} onPointerCancel={finishDrawing} /></div>
-    <p className="board-hint"><strong>{tool === "select" ? selectedObject ? "Drag the selected object; use the toolbar to recolor, duplicate, or delete it." : "Tap an object to select and move it." : tool === "text" || tool === "sticky" ? "Tap the board to place it." : "Draw directly with touch, mouse, or Apple Pencil."}</strong><span>{objects.length} object{objects.length === 1 ? "" : "s"} · {board.pages.length} page{board.pages.length === 1 ? "" : "s"} · {saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save failed" : "Saved"}</span></p>
+    <p className="board-hint"><strong>{tool === "select" ? selectedObjects.length > 1 ? `${selectedObjects.length} objects selected — drag, nudge, duplicate, copy, or delete them together.` : selectedObject ? "Drag the selected object; Shift-tap adds more; use the toolbar to recolor, duplicate, or delete." : "Tap an object to select it, Shift-tap to add, or drag empty space to box-select." : tool === "text" || tool === "sticky" ? "Tap the board to place it." : "Draw directly with touch, mouse, or Apple Pencil."}</strong><span>{objects.length} object{objects.length === 1 ? "" : "s"} · {board.pages.length} page{board.pages.length === 1 ? "" : "s"} · {saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save failed" : "Saved"}</span></p>
     <TextEntryDialog pending={pendingText} onClose={() => setPendingText(null)} onSubmit={addTextObject} />
     <RenamePageDialog page={renamingPage ? activePage : null} onClose={() => setRenamingPage(false)} onRename={renamePage} />
   </section>;

@@ -9,7 +9,11 @@
   "orientation": "any",
   "background_color": "#f5f0e7",
   "theme_color": "#101927",
-  "categories": ["education", "productivity", "books"],
+  "categories": [
+    "education",
+    "productivity",
+    "books"
+  ],
   "icons": [
     {
       "src": "./icon.svg",
@@ -28,6 +32,44 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Review due cards",
+      "short_name": "Review",
+      "url": "./#/review",
+      "icons": [
+        {
+          "src": "./icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "AI learning studio",
+      "short_name": "AI Tutor",
+      "url": "./#/ai",
+      "icons": [
+        {
+          "src": "./icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Browse the library",
+      "short_name": "Library",
+      "url": "./#/library",
+      "icons": [
+        {
+          "src": "./icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ]
 }

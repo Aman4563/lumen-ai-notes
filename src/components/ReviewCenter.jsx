@@ -406,6 +406,29 @@ export default function ReviewCenter({
     profile.reviewSessions,
     { timeZone, crunch, crunchLimit: 20 },
   ), [crunch, profile.reviewItems, profile.reviewSessions, profile.reviewSettings, queueNow.getTime(), timeZone]);
+  const exportMistakes = () => {
+    const lines = ["# Mistake notebook", "", `Exported ${new Date().toISOString().slice(0, 10)}.`, ""];
+    for (const mistake of mistakes) {
+      const category = MISTAKE_CATEGORIES.find((entry) => entry.id === mistake.category)?.label || "Misconception";
+      lines.push(`## ${mistake.prompt}`, "", `- Category: ${category}${mistake.occurrences > 1 ? ` · seen ×${mistake.occurrences}` : ""}${mistake.correctedAt ? " · corrected" : " · open"}`);
+      if (mistake.expected) lines.push(`- Expected: ${mistake.expected}`);
+      if (mistake.response) lines.push(`- Your answer: ${mistake.response}`);
+      if (mistake.correction) lines.push(`- Correction: ${mistake.correction}`);
+      lines.push("");
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `lumen-mistakes-${new Date().toISOString().slice(0, 10)}.md`;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 2_000);
+  };
+
   const exportDeck = () => {
     const envelope = exportReviewCards(profile.reviewItems);
     const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: "application/json" });
@@ -574,7 +597,7 @@ export default function ReviewCenter({
       </section>
       <section className="review-settings-strip" aria-label="Daily review limits"><div><strong>Daily limits</strong><span>Counts persist by local date ({timeZone}) and cannot refill when a card leaves the queue.</span></div><label>New<select value={profile.reviewSettings.dailyNewLimit} onChange={(event) => onSettingsChange({ dailyNewLimit: Number(event.target.value) })}>{[5, 10, 15, 20, 30, 50].map((value) => <option value={value} key={value}>{value}</option>)}</select></label><label>Reviews<select value={profile.reviewSettings.dailyReviewLimit} onChange={(event) => onSettingsChange({ dailyReviewLimit: Number(event.target.value) })}>{[20, 50, 100, 200, 500].map((value) => <option value={value} key={value}>{value}</option>)}</select></label></section>
       {(mistakes.length > 0 || onLogMistake) && <section className="review-mistakes" aria-label="Mistake notebook">
-        <div className="section-heading"><div><span className="eyebrow">Learn from failures</span><h2>Mistake notebook</h2></div><div className="mistake-controls"><label>Category<select value={mistakeFilter} onChange={(event) => setMistakeFilter(event.target.value)}><option value="all">All</option>{MISTAKE_CATEGORIES.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label><label className="mistake-corrected-toggle"><input type="checkbox" checked={showCorrectedMistakes} onChange={(event) => setShowCorrectedMistakes(event.target.checked)} /> Show corrected</label>{onLogMistake && <button className="button ghost" onClick={() => setMistakeDialogOpen(true)} type="button"><Flame size={15} /> Log mistake</button>}</div></div>
+        <div className="section-heading"><div><span className="eyebrow">Learn from failures</span><h2>Mistake notebook</h2></div><div className="mistake-controls"><label>Category<select value={mistakeFilter} onChange={(event) => setMistakeFilter(event.target.value)}><option value="all">All</option>{MISTAKE_CATEGORIES.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label><label className="mistake-corrected-toggle"><input type="checkbox" checked={showCorrectedMistakes} onChange={(event) => setShowCorrectedMistakes(event.target.checked)} /> Show corrected</label>{mistakes.length > 0 && <button className="button ghost" onClick={exportMistakes} type="button"><Download size={15} /> Export</button>}{onLogMistake && <button className="button ghost" onClick={() => setMistakeDialogOpen(true)} type="button"><Flame size={15} /> Log mistake</button>}</div></div>
         <p className="microcopy">Grading a card “Again” logs or reopens its mistake automatically; repeats merge into one entry. Write the correction in your own words, then schedule a corrective review.</p>
         {(() => {
           const summary = mistakeAnalytics(mistakes);

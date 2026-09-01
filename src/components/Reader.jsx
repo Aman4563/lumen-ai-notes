@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   ChevronLeft,
+  BrainCircuit,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
@@ -86,6 +87,7 @@ export default function Reader({
   previousDocument,
   nextDocument,
   onOpenBoard,
+  onAskAi,
   onNotify,
 }) {
   const scrollRef = useRef(null);
@@ -618,6 +620,7 @@ export default function Reader({
   return (
     <section className="reader-view">
       <div className="reading-progress" aria-hidden="true"><span style={{ width: `${Math.round((scrollPosition || 0) * 100)}%` }} /></div>
+      {document.minutes > 2 && progress > 0.02 && progress < 0.96 && <span className="reading-time-left" role="status">~{Math.max(1, Math.ceil(document.minutes * (1 - progress)))} min left</span>}
       <header className="reader-toolbar">
         <div className="reader-crumb">
           <span>{document.partTitle}</span>
@@ -684,7 +687,7 @@ export default function Reader({
               <button className="text-button" onClick={() => { if (editing) closeEditor(); else { setEditing(true); setDraft(source); } }} type="button"><Edit3 size={17} /> {editing ? "Close editor" : "Edit copy"}</button>
               <button className={selectedText ? "text-button selection-ready" : "text-button"} onClick={clipSelection} type="button"><Highlighter size={17} /> {selectedText ? "Clip selection" : "Clip"}</button>
               <button className={selectedText ? "text-button selection-ready" : "text-button"} onClick={openNewAnnotation} type="button"><Highlighter size={17} /> {selectedText ? "Highlight selection" : "Highlight"}</button>
-              <button className="text-button" onClick={() => setTeaching(true)} type="button"><Maximize2 size={17} /> Teach</button>
+              {onAskAi && <button className={selectedText ? "text-button selection-ready" : "text-button"} onClick={() => { if (selectedText) { onAskAi(selectedText); } else onNotify?.("Select lecture text first, then ask the AI about it.", "warning"); }} type="button"><BrainCircuit size={17} /> Ask AI</button>}<button className="text-button" onClick={() => setTeaching(true)} type="button"><Maximize2 size={17} /> Teach</button>
               <button className="text-button" onClick={onOpenBoard} type="button"><Sparkles size={17} /> Whiteboard</button>
               <button className="text-button compact-more" onClick={exportMarkdown} type="button"><Download size={17} /> Export</button>
               <button className="text-button" onClick={() => { setShowActions(true); setShowSpeech(false); setShowDisplay(false); }} aria-label="Open lecture actions" type="button"><MoreHorizontal size={18} /> Actions</button>
