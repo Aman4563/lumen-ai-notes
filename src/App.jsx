@@ -15,6 +15,7 @@ import {
   Copy,
   Download,
   FileEdit,
+  Pin,
   FilePlus2,
   GraduationCap,
   Headphones,
@@ -51,6 +52,8 @@ import { useWakeLock } from "./hooks/useWakeLock";
 import { searchDocuments } from "./lib/search";
 import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
+import { addTrashEntry, appendRevision, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
+import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
@@ -180,6 +183,55 @@ function useModalKeyboard(active, dialogRef, onClose) {
   }, [active, dialogRef]);
 }
 
+/**
+ * Organize dialog (CONTENT-001): rename, tags, collection assignment (with
+ * inline creation), pin, and archive for one custom document.
+ */
+function ManageDocumentDialog({ doc, collections, onClose, onSave }) {
+  const [title, setTitle] = useState(doc?.title || "");
+  const [tags, setTags] = useState((doc?.tags || []).join(", "));
+  const [collectionId, setCollectionId] = useState(doc?.collectionId || "");
+  const [newCollection, setNewCollection] = useState("");
+  const [pinned, setPinned] = useState(Boolean(doc?.pinned));
+  const [archived, setArchived] = useState(Boolean(doc?.archived));
+  const dialogRef = useRef(null);
+  useModalKeyboard(Boolean(doc), dialogRef, onClose);
+
+  useEffect(() => {
+    if (!doc) return;
+    setTitle(doc.title || "");
+    setTags((doc.tags || []).join(", "));
+    setCollectionId(doc.collectionId || "");
+    setNewCollection("");
+    setPinned(Boolean(doc.pinned));
+    setArchived(Boolean(doc.archived));
+    // Synchronous focus: a deferred (rAF) focus can fire hundreds of
+    // milliseconds late under frame throttling and steal focus from a field
+    // the learner is already typing in.
+    dialogRef.current?.querySelector("input")?.focus();
+    // Keyed to the id, not the object: the debounced profile commit mints
+    // fresh record identities, and an identity-keyed reset mid-edit wipes
+    // typed state and steals focus back to the first input.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc?.id]);
+
+  if (!doc) return null;
+  const submit = (event) => {
+    event.preventDefault();
+    if (!title.trim()) return;
+    onSave(doc.id, {
+      title: title.trim().slice(0, 180),
+      tags: [...new Set(tags.split(",").map((tag) => tag.trim()).filter(Boolean))].slice(0, 20),
+      collectionId: collectionId === "__new__" ? "" : collectionId,
+      newCollectionName: collectionId === "__new__" ? newCollection.trim().slice(0, 60) : "",
+      pinned,
+      archived,
+    });
+  };
+
+  return <div className="modal-layer"><button className="modal-scrim" onClick={onClose} aria-label="Close organize dialog" type="button" /><form ref={dialogRef} className="create-note-dialog manage-doc-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="manage-doc-title"><div className="dialog-icon"><FileEdit size={22} /></div><span className="eyebrow">Organize</span><h2 id="manage-doc-title">Organize this document</h2><label><span>Title</span><input className="text-input" value={title} maxLength={180} onChange={(event) => setTitle(event.target.value)} required /></label><label><span>Tags <small>comma separated</small></span><input className="text-input" value={tags} maxLength={400} onChange={(event) => setTags(event.target.value)} placeholder="transformers, interview" /></label><label><span>Collection</span><select value={collectionId} onChange={(event) => setCollectionId(event.target.value)}><option value="">None</option>{collections.map((collection) => <option value={collection.id} key={collection.id}>{collection.name}</option>)}<option value="__new__">New collection…</option></select></label>{collectionId === "__new__" && <label><span>New collection name</span><input className="text-input" value={newCollection} maxLength={60} onChange={(event) => setNewCollection(event.target.value)} placeholder="e.g. Interview prep" required /></label>}<label className="setting-toggle"><span><strong>Pin to the top</strong><small>Pinned documents lead the notebook list</small></span><input type="checkbox" role="switch" checked={pinned} onChange={(event) => setPinned(event.target.checked)} /></label><label className="setting-toggle"><span><strong>Archive</strong><small>Hidden from lists; content, links, and study data stay intact</small></span><input type="checkbox" role="switch" checked={archived} onChange={(event) => setArchived(event.target.checked)} /></label><div className="modal-actions"><button className="button ghost" onClick={onClose} type="button">Cancel</button><button className="button primary" disabled={!title.trim() || (collectionId === "__new__" && !newCollection.trim())} type="submit">Save</button></div></form></div>;
+}
+
 function CreateNoteDialog({ open, onClose, onCreate }) {
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
@@ -191,7 +243,7 @@ function CreateNoteDialog({ open, onClose, onCreate }) {
     if (!open) return;
     setTitle("");
     setTags("");
-    requestAnimationFrame(() => titleRef.current?.focus());
+    titleRef.current?.focus();
   }, [open]);
 
   if (!open) return null;
@@ -348,6 +400,20 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
         </section>
       )}
 
+      {(profile.activity || []).length > 0 && (
+        <section className="page-section activity-section" aria-label="Recent activity">
+          <div className="section-heading"><div><span className="eyebrow">Local ledger</span><h2>Recent activity</h2></div></div>
+          <ul className="activity-list">
+            {profile.activity.slice(0, 6).map((entry) => {
+              const at = Date.parse(entry.at);
+              const minutesAgo = Number.isFinite(at) ? Math.max(0, Math.round((Date.now() - at) / 60_000)) : null;
+              const when = minutesAgo === null ? "" : minutesAgo < 1 ? "just now" : minutesAgo < 60 ? `${minutesAgo} min ago` : minutesAgo < 1_440 ? `${Math.round(minutesAgo / 60)} h ago` : new Date(entry.at).toLocaleDateString();
+              return <li key={entry.id}><span className={`activity-kind kind-${entry.kind}`}>{entry.kind}</span><span className="activity-label">{entry.label}</span><small>{when}</small></li>;
+            })}
+          </ul>
+        </section>
+      )}
+
       <section className="study-method-card">
         <div className="method-icon"><GraduationCap size={26} /></div>
         <div><span className="eyebrow">Better than passive reading</span><h2>Read → recall → explain → implement</h2><p>Use narration during review, personal notes for retrieval practice, teaching mode to explain aloud, and the whiteboard for derivations.</p></div>
@@ -415,7 +481,7 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
     if (upsert.length || removeIds.length) client.updateCustom(upsert, removeIds);
   }, [customDocuments, searchIndex]);
   const candidates = useMemo(() => selectedPart === "uploads"
-    ? customDocuments
+    ? customDocuments.filter((doc) => !doc.archived)
     : selectedPart === "guides"
       ? guides
       : selectedPart === "bookmarks"
@@ -503,7 +569,7 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   );
 }
 
-function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload, onCreate, onDeleteCustom, onDuplicateCustom, onDeleteClipping, onUpdateClipping, onCopyClipping, onCreateReview, onCopyAnnotation, onExportAnnotations, onDeleteAnnotation }) {
+function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload, onCreate, onDeleteCustom, onDuplicateCustom, onDeleteClipping, onUpdateClipping, onCopyClipping, onCreateReview, onCopyAnnotation, onExportAnnotations, onDeleteAnnotation, onRestoreTrash, onDeleteTrash, onManageCustom }) {
   const [notebookQuery, setNotebookQuery] = useState("");
   const [annotationPurpose, setAnnotationPurpose] = useState("all");
   const annotated = Object.entries(profile.personalNotes).filter(([, note]) => note.trim()).map(([id, note]) => ({ doc: allDocuments.find((item) => item.id === id), note })).filter((item) => item.doc);
@@ -511,7 +577,13 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
   const bookmarked = profile.bookmarks.map((id) => allDocuments.find((item) => item.id === id)).filter(Boolean);
   const normalizedQuery = notebookQuery.trim().toLocaleLowerCase();
   const matches = (...values) => !normalizedQuery || values.some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery));
-  const visibleCustom = customDocuments.filter((doc) => matches(doc.title, doc.tags?.join(" "), doc.raw));
+  const [collectionFilter, setCollectionFilter] = useState("all");
+  const collections = profile.collections || [];
+  const countFor = (filterId) => customDocuments.filter((doc) => (filterId === "archived" ? doc.archived : !doc.archived && (filterId === "all" || (doc.collectionId || "") === filterId))).length;
+  const visibleCustom = customDocuments
+    .filter((doc) => (collectionFilter === "archived" ? doc.archived : !doc.archived && (collectionFilter === "all" || (doc.collectionId || "") === collectionFilter)))
+    .filter((doc) => matches(doc.title, doc.tags?.join(" "), doc.raw))
+    .sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)));
   const visibleAnnotated = annotated.filter(({ doc, note }) => matches(doc.title, doc.partTitle, note));
   const visibleClippings = profile.clippings.filter((clip) => { const doc = allDocuments.find((item) => item.id === clip.documentId); return matches(doc?.title, clip.text, clip.note); });
   const visibleAnnotations = profile.annotations.filter((annotation) => { const doc = allDocuments.find((item) => item.id === annotation.documentId); return (annotationPurpose === "all" || annotation.purpose === annotationPurpose) && matches(doc?.title, annotation.quote, annotation.comment, annotation.tags?.join(" "), annotation.purpose); });
@@ -540,11 +612,16 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
 
       <div className="notebook-search"><Search size={18} /><input value={notebookQuery} onChange={(event) => setNotebookQuery(event.target.value)} placeholder="Search your notes, clippings, bookmarks, and uploads…" aria-label="Search notebook" />{notebookQuery && <button onClick={() => setNotebookQuery("")} aria-label="Clear notebook search" type="button"><X size={16} /></button>}</div>
 
-      {visibleCustom.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Created and uploaded</span><h2>My lectures</h2></div></div><div className="document-list">{visibleCustom.map((doc) => <div className="notebook-document-row" key={doc.id}><DocumentCard doc={doc} profile={profile} onOpen={onOpen} compact /><div className="notebook-row-actions"><button className="icon-button" onClick={() => onDuplicateCustom(doc.id)} aria-label={`Duplicate ${doc.title}`} title="Duplicate" type="button"><Copy size={17} /></button><button className="icon-button danger" onClick={() => onDeleteCustom(doc.id)} aria-label={`Delete ${doc.title}`} title="Delete" type="button"><Trash2 size={17} /></button></div></div>)}</div></section>}
+      {(customDocuments.length > 0) && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Created and uploaded</span><h2>My lectures</h2></div></div>{(collections.length > 0 || customDocuments.some((doc) => doc.archived)) && <div className="collection-chips" role="radiogroup" aria-label="Filter by collection"><button role="radio" aria-checked={collectionFilter === "all"} className={collectionFilter === "all" ? "active" : ""} onClick={() => setCollectionFilter("all")} type="button">All ({countFor("all")})</button>{collections.map((collection) => <button role="radio" aria-checked={collectionFilter === collection.id} className={collectionFilter === collection.id ? "active" : ""} onClick={() => setCollectionFilter(collection.id)} key={collection.id} type="button">{collection.name} ({countFor(collection.id)})</button>)}{customDocuments.some((doc) => doc.archived) && <button role="radio" aria-checked={collectionFilter === "archived"} className={collectionFilter === "archived" ? "active archived-chip" : "archived-chip"} onClick={() => setCollectionFilter("archived")} type="button">Archived ({countFor("archived")})</button>}</div>}{visibleCustom.length ? <div className="document-list">{visibleCustom.map((doc) => <div className="notebook-document-row" key={doc.id}>{doc.pinned && <Pin size={13} className="pinned-marker" aria-label="Pinned" />}<DocumentCard doc={doc} profile={profile} onOpen={onOpen} compact /><div className="notebook-row-actions"><button className="icon-button" onClick={() => onManageCustom(doc.id)} aria-label={`Organize ${doc.title}`} title="Organize (rename, tags, collection, pin, archive)" type="button"><FileEdit size={17} /></button><button className="icon-button" onClick={() => onDuplicateCustom(doc.id)} aria-label={`Duplicate ${doc.title}`} title="Duplicate" type="button"><Copy size={17} /></button><button className="icon-button danger" onClick={() => onDeleteCustom(doc.id)} aria-label={`Delete ${doc.title}`} title="Delete" type="button"><Trash2 size={17} /></button></div></div>)}</div> : <div className="empty-state compact"><Search size={22} /><h2>Nothing in this view</h2><p>Choose another collection or clear the notebook search.</p></div>}</section>}
       {visibleAnnotated.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Captured ideas</span><h2>Personal notes</h2></div></div><div className="note-grid">{visibleAnnotated.map(({ doc, note }) => <button className="note-card" onClick={() => onOpen(doc.id)} key={doc.id} type="button"><span>{doc.partTitle}</span><strong>{doc.title}</strong><p>{note}</p><ChevronRight size={18} /></button>)}</div></section>}
       {visibleClippings.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved excerpts</span><h2>Clippings</h2></div></div><div className="clipping-grid">{visibleClippings.map((clip) => { const doc = allDocuments.find((item) => item.id === clip.documentId); const linked = profile.reviewItems.some((item) => item.sourceClippingId === clip.id); const aiOrigin = clip.origin === "ai-tutor"; return <article className={`clipping-card${aiOrigin ? " clipping-card--ai" : ""}`} key={clip.id}>{aiOrigin ? <BrainCircuit size={18} /> : <Highlighter size={18} />}{aiOrigin && <span className="clipping-origin" title="Generated by the AI tutor and saved by you; verify before relying on it">{clip.title || "AI tutor answer"} · AI draft</span>}<blockquote>{clip.text}</blockquote><textarea value={clip.note || ""} maxLength={4_000} onChange={(event) => onUpdateClipping(clip.id, event.target.value)} placeholder="Add why this matters, a question, or an interview connection…" aria-label="Comment on this clipping" /><div>{doc || !aiOrigin ? <button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button> : <span className="clipping-no-source">No linked lecture</span>}<span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(clip)} aria-label={linked ? "Create another review card from clipping" : "Create review card from clipping"} title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyClipping(clip)} aria-label="Copy clipping" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteClipping(clip.id)} aria-label="Delete clipping" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div></section>}
       {profile.annotations.length > 0 && <section className="notebook-section"><div className="section-heading annotation-section-heading"><div><span className="eyebrow">Source anchored</span><h2>Highlights</h2></div><div className="annotation-heading-actions"><label>Purpose<select value={annotationPurpose} onChange={(event) => setAnnotationPurpose(event.target.value)}><option value="all">All</option><option value="important">Important</option><option value="definition">Definitions</option><option value="question">Questions</option><option value="interview">Interview</option></select></label><button className="button ghost" onClick={() => onExportAnnotations(visibleAnnotations)} aria-label="Export the listed highlights as Markdown" type="button"><Download size={15} /> Export</button></div></div>{visibleAnnotations.length ? <div className="notebook-annotation-grid">{visibleAnnotations.map((annotation) => { const doc = allDocuments.find((item) => item.id === annotation.documentId); return <article className={`notebook-annotation-card ${annotation.color}`} key={annotation.id}><span className="annotation-purpose">{annotation.purpose}</span><blockquote>{annotation.quote}</blockquote>{annotation.comment && <p>{annotation.comment}</p>}{annotation.tags?.length > 0 && <div className="annotation-tags">{annotation.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}<div><button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button><span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(annotation)} aria-label="Create review card from highlight" title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyAnnotation(annotation)} aria-label="Copy highlight" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteAnnotation(annotation.id)} aria-label="Delete highlight" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div> : <div className="empty-state compact"><Search size={24} /><h2>No matching highlights</h2><p>Choose another purpose or clear the notebook search.</p></div>}</section>}
       {visibleBookmarked.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved</span><h2>Bookmarks</h2></div></div><div className="document-list">{visibleBookmarked.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={onOpen} compact />)}</div></section>}
+      {(profile.trash || []).length > 0 && <section className="notebook-section notebook-trash" aria-label="Trash"><div className="section-heading"><div><span className="eyebrow">Recoverable for 30 days</span><h2>Trash</h2></div></div><div className="trash-list">{profile.trash.map((entry) => {
+        const deletedAt = Date.parse(entry.deletedAt);
+        const daysLeft = Number.isFinite(deletedAt) ? Math.max(0, 30 - Math.floor((Date.now() - deletedAt) / 86_400_000)) : 0;
+        return <article className="trash-row" key={entry.id}><Trash2 size={16} /><div className="trash-copy"><strong>{entry.title}</strong><span>Deleted {new Date(entry.deletedAt).toLocaleDateString()} · {daysLeft} day{daysLeft === 1 ? "" : "s"} left{entry.tags?.length ? ` · ${entry.tags.join(", ")}` : ""}</span></div><div className="trash-actions"><button className="button ghost" onClick={() => onRestoreTrash(entry.id)} type="button"><RotateCcw size={15} /> Restore</button><button className="icon-button danger" onClick={() => onDeleteTrash(entry.id)} aria-label={`Delete ${entry.title} forever`} title="Delete forever" type="button"><X size={16} /></button></div></article>;
+      })}</div></section>}
       {normalizedQuery && !visibleCount && <div className="empty-state"><Search size={30} /><h2>No notebook match</h2><p>Try a document title, a phrase from a clipping, a tag, or words from your own annotation.</p><button className="button secondary" onClick={() => setNotebookQuery("")} type="button">Clear search</button></div>}
       {!customDocuments.length && !annotated.length && !bookmarked.length && !profile.clippings.length && !profile.annotations.length && <div className="empty-state notebook-empty"><NotebookPen size={34} /><h2>Your notebook is ready</h2><p>Bookmark a lecture, highlight or clip an excerpt, write a personal note, edit a local copy, or upload your own Markdown.</p><button className="button primary" onClick={onCreate} type="button">Create first note</button></div>}
     </div>
@@ -635,6 +712,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [installOpen, setInstallOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [manageDocumentId, setManageDocumentId] = useState("");
   const [reviewDraft, setReviewDraft] = useState(null);
   const [backupCandidate, setBackupCandidate] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -1263,20 +1341,49 @@ export default function App() {
         return false;
       }
       const heading = raw.match(/^#\s+(.+)$/m)?.[1]?.trim();
-      setProfile((current) => ({ ...current, customDocuments: current.customDocuments.map((doc) => doc.id === currentDocument.id ? { ...doc, raw, title: heading?.slice(0, 180) || doc.title, updatedAt: new Date().toISOString() } : doc) }));
+      setProfile((current) => {
+        const previous = current.customDocuments.find((doc) => doc.id === currentDocument.id)?.raw;
+        return {
+          ...current,
+          customDocuments: current.customDocuments.map((doc) => doc.id === currentDocument.id ? { ...doc, raw, title: heading?.slice(0, 180) || doc.title, updatedAt: new Date().toISOString() } : doc),
+          revisions: typeof previous === "string" && previous !== raw && previous.length <= 400_000
+            ? appendRevision(current.revisions, revisionForDocument(currentDocument.id, previous, "before this save"))
+            : current.revisions,
+        };
+      });
     } else {
       if (utf8Bytes(raw) > MAX_LECTURE_EDIT_BYTES) {
         notify("This edited lecture exceeds the 5 MB per-lecture limit. Shorten it before saving; your editor remains open and nothing was truncated.", "error", 7000);
         return false;
       }
-      setProfile((current) => ({ ...current, edits: { ...current.edits, [currentDocument.id]: raw } }));
+      setProfile((current) => {
+        const previous = current.edits[currentDocument.id];
+        return {
+          ...current,
+          edits: { ...current.edits, [currentDocument.id]: raw },
+          revisions: typeof previous === "string" && previous !== raw && previous.length <= 400_000
+            ? appendRevision(current.revisions, revisionForDocument(currentDocument.id, previous, "before this save"))
+            : current.revisions,
+        };
+      });
     }
     notify("Your edited copy was saved.");
     return true;
   };
   const resetEdit = () => {
-    setProfile((current) => { const edits = { ...current.edits }; delete edits[currentDocument.id]; return { ...current, edits }; });
-    notify("The built-in lecture was restored.");
+    setProfile((current) => {
+      const edits = { ...current.edits };
+      const previous = edits[currentDocument.id];
+      delete edits[currentDocument.id];
+      return {
+        ...current,
+        edits,
+        revisions: typeof previous === "string" && previous.length <= 400_000
+          ? appendRevision(current.revisions, revisionForDocument(currentDocument.id, previous, "before restoring the original"))
+          : current.revisions,
+      };
+    });
+    notify("The built-in lecture was restored. Your edited copy is kept as a revision.");
   };
   const toggleBookmark = () => {
     const adding = !profile.bookmarks.includes(currentDocument.id);
@@ -1353,7 +1460,7 @@ export default function App() {
 
   const uploadNotes = async (event) => {
     const selection = selectUploadFiles(event.target.files, profileRef.current.customDocuments.length, customDocumentBytes(profileRef.current.customDocuments));
-    const { accepted, offered: files, rejectedCount: rejected, atCapacity, byteCapacityReached } = selection;
+    const { accepted, rejectedCount: rejected, atCapacity, byteCapacityReached } = selection;
     event.target.value = "";
     if (atCapacity) {
       notify("The 500-document local limit has been reached. No existing note was replaced.", "error", 6000);
@@ -1371,11 +1478,32 @@ export default function App() {
         const filename = file.name.replace(/\.(md|markdown|txt)$/i, "").replace(/[-_]/g, " ").trim();
         return { id: `custom/${createId()}.md`, title: (heading || filename || "Untitled upload").slice(0, 180), raw, createdAt: now, updatedAt: now, tags: [] };
       }));
+      // Duplicate detection (CONTENT-001): identical content — whitespace and
+      // case aside — is skipped instead of silently doubling the library.
+      const fresh = [];
+      let duplicateCount = 0;
+      for (const doc of uploaded) {
+        const existing = findDuplicateDocument([...profileRef.current.customDocuments, ...fresh], doc.raw);
+        if (existing) {
+          duplicateCount += 1;
+          continue;
+        }
+        fresh.push(doc);
+      }
+      if (!fresh.length) {
+        notify(`Every selected file matches a document already in your notebook (${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped). Nothing was imported.`, "warning", 6000);
+        return;
+      }
       setProfile((current) => {
         const remaining = Math.max(0, 500 - current.customDocuments.length);
-        return { ...current, customDocuments: [...uploaded.slice(0, remaining), ...current.customDocuments] };
+        const admitted = fresh.slice(0, remaining);
+        return {
+          ...current,
+          customDocuments: [...admitted, ...current.customDocuments],
+          activity: recordActivityEntry(current.activity, { kind: "upload", label: admitted.length === 1 ? `Uploaded “${admitted[0].title}”` : `Uploaded ${admitted.length} documents`, refId: admitted[0]?.id || "" }),
+        };
       });
-      notify(`${uploaded.length} document${uploaded.length === 1 ? "" : "s"} imported${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. No existing notes were replaced.`, rejected ? "warning" : "success", rejected ? 6000 : undefined);
+      notify(`${fresh.length} document${fresh.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. No existing notes were replaced.`, rejected || duplicateCount ? "warning" : "success", rejected || duplicateCount ? 6000 : undefined);
     } catch (error) {
       notify(`Import failed: ${error.message}`, "error", 5000);
     }
@@ -1395,6 +1523,7 @@ export default function App() {
       customDocuments: [custom, ...current.customDocuments],
       lastDocumentId: id,
       recent: [id, ...current.recent.filter((item) => item !== id)].slice(0, 20),
+      activity: recordActivityEntry(current.activity, { kind: "create", label: `Created “${title}”`, refId: id }),
     }));
     setCreateOpen(false);
     setEditRequestId(id);
@@ -1406,14 +1535,17 @@ export default function App() {
 
   const deleteCustom = (id) => {
     const doc = allDocumentMap.get(id);
-    if (!window.confirm(`Delete “${doc?.title || "this note"}” from this device?`)) return;
+    if (!window.confirm(`Move “${doc?.title || "this note"}” to the trash? Its linked notes, highlights, and cards are deleted now; the document itself stays restorable for 30 days.`)) return;
     const applyDeletion = (current) => {
       const progress = { ...current.progress }; delete progress[id];
       const readingPositions = { ...current.readingPositions }; delete readingPositions[id];
       const personalNotes = { ...current.personalNotes }; delete personalNotes[id];
       const edits = { ...current.edits }; delete edits[id];
       const removedReviewIds = new Set(current.reviewItems.filter((item) => item.documentId === id).map((item) => item.id));
-      return { ...current, progress, readingPositions, personalNotes, edits, customDocuments: current.customDocuments.filter((item) => item.id !== id), deletedCustomDocumentIds: [...new Set([...(current.deletedCustomDocumentIds || []), id])].slice(-1_000), bookmarks: current.bookmarks.filter((item) => item !== id), clippings: current.clippings.filter((clip) => clip.documentId !== id), annotations: current.annotations.filter((annotation) => annotation.documentId !== id), reviewItems: current.reviewItems.filter((item) => item.documentId !== id), reviewAttempts: current.reviewAttempts.filter((attempt) => !removedReviewIds.has(attempt.reviewItemId)), recent: current.recent.filter((item) => item !== id), lastDocumentId: current.lastDocumentId === id ? "" : current.lastDocumentId };
+      const trashedRecord = current.customDocuments.find((item) => item.id === id);
+      const trash = trashedRecord ? addTrashEntry(current.trash, trashEntryForDocument(trashedRecord)) : current.trash;
+      const activity = recordActivityEntry(current.activity, { kind: "delete", label: `Moved “${trashedRecord?.title || doc?.title || "a document"}” to trash`, refId: id });
+      return { ...current, trash, activity, progress, readingPositions, personalNotes, edits, customDocuments: current.customDocuments.filter((item) => item.id !== id), deletedCustomDocumentIds: [...new Set([...(current.deletedCustomDocumentIds || []), id])].slice(-1_000), bookmarks: current.bookmarks.filter((item) => item !== id), clippings: current.clippings.filter((clip) => clip.documentId !== id), annotations: current.annotations.filter((annotation) => annotation.documentId !== id), reviewItems: current.reviewItems.filter((item) => item.documentId !== id), reviewAttempts: current.reviewAttempts.filter((attempt) => !removedReviewIds.has(attempt.reviewItemId)), recent: current.recent.filter((item) => item !== id), lastDocumentId: current.lastDocumentId === id ? "" : current.lastDocumentId };
     };
     const baseSnapshot = profileBaseRef.current;
     const localSnapshot = applyDeletion(profileRef.current);
@@ -1446,7 +1578,7 @@ export default function App() {
       setCurrentDocumentId(initialDocumentId);
       changeView("notebook");
     }
-    notify("The local document and its linked study data were deleted.");
+    notify(`The document moved to the trash (kept ${TRASH_RETENTION_DAYS} days; restorable from the Notebook). Its linked study data was deleted.`);
   };
 
   const duplicateCustom = (id) => {
@@ -1459,9 +1591,75 @@ export default function App() {
     }
     const now = new Date().toISOString();
     const duplicate = { ...sourceDocument, id: `custom/${createId()}.md`, title: `${sourceDocument.title} copy`.slice(0, 180), createdAt: now, updatedAt: now, tags: [...(sourceDocument.tags || [])] };
-    setProfile((current) => ({ ...current, customDocuments: [duplicate, ...current.customDocuments] }));
+    setProfile((current) => ({ ...current, customDocuments: [duplicate, ...current.customDocuments], activity: recordActivityEntry(current.activity, { kind: "duplicate", label: `Duplicated “${sourceDocument.title}”`, refId: duplicate.id }) }));
     notify("Document duplicated.");
   };
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const purged = purgeExpiredTrash(profileRef.current.trash || []);
+    if (purged.length !== (profileRef.current.trash || []).length) {
+      setProfile((current) => ({ ...current, trash: purgeExpiredTrash(current.trash || []) }));
+    }
+  }, [hydrated]);
+
+  const restoreTrashEntry = (trashId) => {
+    const entry = profileRef.current.trash.find((item) => item.id === trashId);
+    if (!entry) { notify("That trash entry is no longer available.", "error"); return; }
+    if (profileRef.current.customDocuments.length >= 500) { notify("The 500-document local limit has been reached. Delete an upload before restoring.", "error", 6000); return; }
+    if (customDocumentBytes(profileRef.current.customDocuments) + utf8Bytes(entry.raw) > MAX_CUSTOM_DOCUMENT_BYTES) {
+      notify("Restoring this document would exceed the 16 MB backup-safe document budget. Delete an unneeded upload first.", "error", 7000);
+      return;
+    }
+    // The original id is tombstoned for cross-tab sync, so the restore mints
+    // a fresh id; linked notes/cards were deleted with the original document.
+    const restored = documentFromTrashEntry(entry);
+    setProfile((current) => ({
+      ...current,
+      customDocuments: [restored, ...current.customDocuments],
+      trash: current.trash.filter((item) => item.id !== trashId),
+      activity: recordActivityEntry(current.activity, { kind: "restore", label: `Restored “${entry.title}” from trash`, refId: restored.id }),
+    }));
+    notify(`“${entry.title}” is back in your notebook.`);
+  };
+
+  const manageCustomDocument = (id, changes) => {
+    const existing = profileRef.current.customDocuments.find((doc) => doc.id === id);
+    if (!existing) { notify("That document is no longer available.", "error"); return; }
+    const now = new Date().toISOString();
+    let collectionId = changes.collectionId;
+    let newCollection = null;
+    if (changes.newCollectionName) {
+      const match = profileRef.current.collections.find((collection) => collection.name.toLocaleLowerCase() === changes.newCollectionName.toLocaleLowerCase());
+      if (match) collectionId = match.id;
+      else {
+        newCollection = { id: `col-${createId()}`, name: changes.newCollectionName, createdAt: now, updatedAt: now };
+        collectionId = newCollection.id;
+      }
+    }
+    const renamed = changes.title !== existing.title;
+    setProfile((current) => ({
+      ...current,
+      collections: newCollection ? [...current.collections, newCollection].slice(0, 100) : current.collections,
+      customDocuments: current.customDocuments.map((doc) => doc.id === id
+        ? { ...doc, title: changes.title, tags: changes.tags, collectionId, pinned: changes.pinned, archived: changes.archived, updatedAt: now }
+        : doc),
+      activity: renamed
+        ? recordActivityEntry(current.activity, { kind: "rename", label: `Renamed “${existing.title}” to “${changes.title}”`, refId: id })
+        : current.activity,
+    }));
+    setManageDocumentId("");
+    notify(changes.archived && !existing.archived ? "Document archived. Find it under the Archived filter." : "Document organized.");
+  };
+
+  const deleteTrashEntry = (trashId) => {
+    const entry = profileRef.current.trash.find((item) => item.id === trashId);
+    if (!entry) return;
+    if (!window.confirm(`Permanently delete “${entry.title}”? This cannot be undone.`)) return;
+    setProfile((current) => ({ ...current, trash: current.trash.filter((item) => item.id !== trashId) }));
+    notify("Deleted forever.");
+  };
+
 
   const deleteClipping = (id) => {
     setProfile((current) => ({ ...current, clippings: current.clippings.filter((clip) => clip.id !== id) }));
@@ -1699,6 +1897,23 @@ export default function App() {
   const deleteMistake = useCallback((id) => {
     setProfile((current) => ({ ...current, mistakes: (current.mistakes || []).filter((mistake) => mistake.id !== id) }));
     notify("Mistake removed.");
+  }, [notify]);
+
+  const importCardsFile = useCallback(async (file) => {
+    const text = await file.text().catch(() => "");
+    const parsed = parseCardInterchange(text);
+    if (!parsed.ok) { notify(parsed.error, "error", 6000); return; }
+    const { added, duplicates } = importReviewCards(profileRef.current.reviewItems, parsed.cards);
+    if (!added.length) {
+      notify(duplicates ? "Every card in that file is already in your deck; nothing was imported." : "No valid cards were found in that file.", "warning", 6000);
+      return;
+    }
+    setProfile((current) => ({
+      ...current,
+      reviewItems: [...added, ...current.reviewItems].slice(0, 10_000),
+      activity: recordActivityEntry(current.activity, { kind: "import", label: `Imported ${added.length} review card${added.length === 1 ? "" : "s"}`, refId: "" }),
+    }));
+    notify(`${added.length} card${added.length === 1 ? "" : "s"} imported into the new queue${duplicates ? `; ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped` : ""}${parsed.invalid ? `; ${parsed.invalid} invalid entr${parsed.invalid === 1 ? "y" : "ies"} ignored` : ""}.`, duplicates || parsed.invalid ? "warning" : "success", 6000);
   }, [notify]);
 
   const logManualMistake = useCallback((draft) => {
@@ -2030,12 +2245,12 @@ export default function App() {
         <div className="view-container">
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
-          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
-          {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} />}
+          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
+          {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><div><span className="eyebrow">Private, source-grounded assistance</span><h1>AI learning studio</h1><p>Choose a larger local model on your Mac or a lightweight model on this phone—without a paid AI API.</p></div></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} />}
+          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} />}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </div>
 
@@ -2048,6 +2263,7 @@ export default function App() {
       {installOpen && <InstallSheet secureContext={window.isSecureContext} onClose={() => setInstallOpen(false)} />}
       <BackupImportDialog candidate={backupCandidate} busy={backupBusy} onClose={() => { if (!backupBusy) setBackupCandidate(null); }} onConfirm={confirmBackupImport} />
       <CreateNoteDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createNote} />
+      <ManageDocumentDialog doc={profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} />
       {updateRegistration && <div className="update-banner" role="status"><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={() => setToast(null)} />

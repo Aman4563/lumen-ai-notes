@@ -38,6 +38,10 @@ const records = () => ({
       correctedAt: "",
       updatedAt: fixedTime,
     }],
+    collections: [{ id: "col-1", name: "Transformers", createdAt: fixedTime, updatedAt: fixedTime }],
+    trash: [{ id: "trash-1", documentId: "custom/old.md", title: "Old upload", raw: "# old", tags: ["draft"], collectionId: "col-1", deletedAt: fixedTime, updatedAt: fixedTime }],
+    activity: [{ id: "act-1", at: fixedTime, kind: "upload", label: "Uploaded old.md", refId: "custom/old.md", updatedAt: fixedTime }],
+    revisions: [{ id: "rev-1", documentId: "notes/part-01", text: "# earlier draft", label: "before rewrite", savedAt: fixedTime, updatedAt: fixedTime }],
     reviewItems: [{
       id: "card-1",
       type: "basic",
@@ -91,6 +95,12 @@ test("v4 backup round-trips with canonical SHA-256 integrity and inventory", asy
   assert.equal(restoredMistake.correction, "Only validation data may steer choices.");
   assert.equal(restoredMistake.occurrences, 2);
   assert.equal(restoredMistake.reviewItemId, "card-1", "the mistake keeps its review-card link through a backup round trip");
+  assert.equal(checked.data.profile.collections[0].name, "Transformers");
+  const restoredTrash = checked.data.profile.trash[0];
+  assert.equal(restoredTrash.raw, "# old", "a trashed document's content survives a backup round trip");
+  assert.equal(restoredTrash.collectionId, "col-1");
+  assert.equal(checked.data.profile.activity[0].kind, "upload");
+  assert.equal(checked.data.profile.revisions[0].text, "# earlier draft");
   assert.equal(checked.data["board:notes/part-01"].pages[0].objects[0].tool, "line");
 });
 

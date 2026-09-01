@@ -550,3 +550,39 @@ test("concurrent mistake records union across tabs and edits beat stale copies",
   assert.equal(thirdCommit.mistakes.find((item) => item.id === "mistake-a").correction, "Corrected on tab A");
   assert.equal(thirdCommit.mistakes.length, 2);
 });
+
+test("Wave-7 collections, trash, activity, and revisions merge across tabs with deletion semantics", () => {
+  const base = normalizeProfile(initialProfile);
+  const tabA = normalizeProfile({
+    ...base,
+    collections: [{ id: "col-a", name: "Transformers", createdAt: NOW, updatedAt: NOW }],
+    activity: [{ id: "act-a", at: NOW, kind: "upload", label: "Uploaded a.md", refId: "custom/a.md", updatedAt: NOW }],
+    revisions: [{ id: "rev-a", documentId: "custom/a.md", text: "v1 text", label: "", savedAt: NOW, updatedAt: NOW }],
+  });
+  const tabB = normalizeProfile({
+    ...base,
+    collections: [{ id: "col-b", name: "Evaluation", createdAt: NOW, updatedAt: NOW }],
+    trash: [{ id: "trash-b", documentId: "custom/b.md", title: "B", raw: "# b", tags: [], collectionId: "", deletedAt: NOW, updatedAt: NOW }],
+  });
+  const first = mergeProfileVersions(base, tabA, base, { now: NOW, writerId: "tab-a" }).profile;
+  const second = mergeProfileVersions(base, tabB, first, { now: NOW, writerId: "tab-b" }).profile;
+  assert.deepEqual(new Set(second.collections.map((item) => item.id)), new Set(["col-a", "col-b"]), "collections from two tabs must union");
+  assert.equal(second.trash.length, 1);
+  assert.equal(second.activity.length, 1);
+  assert.equal(second.revisions.length, 1);
+
+  // A rename with a newer updatedAt must beat the stale copy.
+  const renamed = normalizeProfile({
+    ...second,
+    collections: second.collections.map((item) => item.id === "col-a"
+      ? { ...item, name: "Attention & Transformers", updatedAt: "2026-09-02T00:00:00.000Z" }
+      : item),
+  });
+  const third = mergeProfileVersions(second, renamed, second, { now: NOW, writerId: "tab-a" }).profile;
+  assert.equal(third.collections.find((item) => item.id === "col-a").name, "Attention & Transformers");
+
+  // Restoring from trash (deleting the entry) must not resurrect on merge.
+  const restored = normalizeProfile({ ...third, trash: [] });
+  const fourth = mergeProfileVersions(third, restored, third, { now: NOW, writerId: "tab-b" }).profile;
+  assert.equal(fourth.trash.length, 0, "a restored/purged trash entry must stay deleted after a three-way merge");
+});

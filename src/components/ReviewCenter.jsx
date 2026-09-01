@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { exportReviewCards } from "../lib/cardInterchange.js";
 import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound } from "../lib/interview.js";
 import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
 import {
@@ -10,6 +11,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock3,
+  Download,
   Edit3,
   Eye,
   FilePlus2,
@@ -23,6 +25,7 @@ import {
   TimerReset,
   Trash2,
   Undo2,
+  Upload,
   X,
 } from "lucide-react";
 import { renderMarkdown } from "../lib/markdown";
@@ -62,7 +65,7 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
     setType(REVIEW_CARD_TYPES.some((entry) => entry.id === draft.type) ? draft.type : "basic");
     setPreview(false);
     const previous = document.activeElement;
-    requestAnimationFrame(() => dialogRef.current?.querySelector("textarea")?.focus());
+    dialogRef.current?.querySelector("textarea")?.focus();
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -156,7 +159,7 @@ export function MistakeDialog({ open, onClose, onLog }) {
     setHints("");
     setTags("");
     const previous = document.activeElement;
-    requestAnimationFrame(() => dialogRef.current?.querySelector("textarea")?.focus());
+    dialogRef.current?.querySelector("textarea")?.focus();
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -251,7 +254,7 @@ function MistakeCorrectionField({ mistake, onEditMistake }) {
  * bounded weak-first selection. Practice-only — the scheduler is untouched —
  * and a miss logs an interview-category mistake.
  */
-function InterviewRound({ cards, onClose, onLogMistake }) {
+function InterviewRound({ cards, onClose, onLogMistake, onImportCards }) {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState("prep");
   const [secondsLeft, setSecondsLeft] = useState(INTERVIEW_PREP_SECONDS);
@@ -259,21 +262,22 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
   const card = cards[index];
 
   useEffect(() => {
-    if (phase === "prep") setSecondsLeft(INTERVIEW_PREP_SECONDS);
-    else if (phase === "answer") setSecondsLeft(INTERVIEW_ANSWER_SECONDS);
+    if (phase !== "prep" && phase !== "answer") return undefined;
+    // The updater stays pure (StrictMode double-invokes it); expiry
+    // transitions happen in the effect below, atomically with the reset.
+    const timer = window.setInterval(() => setSecondsLeft((current) => Math.max(0, current - 1)), 1_000);
+    return () => window.clearInterval(timer);
   }, [phase, index]);
 
   useEffect(() => {
-    if (phase !== "prep" && phase !== "answer") return undefined;
-    const timer = window.setInterval(() => {
-      setSecondsLeft((current) => {
-        if (current > 1) return current - 1;
-        setPhase((currentPhase) => (currentPhase === "prep" ? "answer" : "revealed"));
-        return 0;
-      });
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, [phase, index]);
+    if (secondsLeft > 0) return;
+    if (phase === "prep") {
+      setPhase("answer");
+      setSecondsLeft(INTERVIEW_ANSWER_SECONDS);
+    } else if (phase === "answer") {
+      setPhase("revealed");
+    }
+  }, [secondsLeft, phase]);
 
   if (!card && phase !== "summary") return null;
 
@@ -291,6 +295,7 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
     if (index + 1 < cards.length) {
       setIndex(index + 1);
       setPhase("prep");
+      setSecondsLeft(INTERVIEW_PREP_SECONDS);
     } else {
       setPhase("summary");
     }
@@ -328,7 +333,7 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
           {phase === "revealed" && <div className="review-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.back) }} />}
         </article>
         <div className="review-session-actions">
-          {phase === "prep" && <button className="button primary large" onClick={() => setPhase("answer")} type="button">Start answering</button>}
+          {phase === "prep" && <button className="button primary large" onClick={() => { setPhase("answer"); setSecondsLeft(INTERVIEW_ANSWER_SECONDS); }} type="button">Start answering</button>}
           {phase === "answer" && <button className="button primary large" onClick={() => setPhase("revealed")} type="button"><Eye size={18} /> Show expected answer</button>}
           {phase === "revealed" && <div className="interview-grades"><button className="button secondary" onClick={() => grade(false)} type="button"><Flame size={16} /> Missed it — log the mistake</button><button className="button primary" onClick={() => grade(true)} type="button"><CheckCircle2 size={16} /> Answered well</button></div>}
         </div>
@@ -401,6 +406,20 @@ export default function ReviewCenter({
     profile.reviewSessions,
     { timeZone, crunch, crunchLimit: 20 },
   ), [crunch, profile.reviewItems, profile.reviewSessions, profile.reviewSettings, queueNow.getTime(), timeZone]);
+  const exportDeck = () => {
+    const envelope = exportReviewCards(profile.reviewItems);
+    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `lumen-review-cards-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 2_000);
+  };
   const interviewPool = useMemo(() => selectInterviewRound(profile.reviewItems), [profile.reviewItems]);
   const queue = session && crunch ? baseQueue.filter((item) => !sessionSeen.includes(item.id)) : baseQueue;
   const queueSignature = queue.map((item) => `${String(item.id).length}:${item.id}`).join("");
@@ -594,7 +613,7 @@ export default function ReviewCenter({
       </section>}
       <MistakeDialog open={mistakeDialogOpen} onClose={() => setMistakeDialogOpen(false)} onLog={(draft) => { onLogMistake?.(draft); setMistakeDialogOpen(false); }} />
       <section className="review-deck-section" ref={deckSectionRef}>
-        <div className="section-heading review-deck-heading"><div><span className="eyebrow">Your knowledge deck</span><h2>{deckItems.length} {showArchived ? "archived" : "active"} card{deckItems.length === 1 ? "" : "s"}</h2></div><div className="review-deck-tools"><label><Search size={16} /><input value={deckQuery} onChange={(event) => setDeckQuery(event.target.value)} aria-label="Search review cards" placeholder="Search cards or tags" /></label><button className="button ghost" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived} type="button">{showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />} {showArchived ? "Show active" : `Archived (${stats.archived})`}</button></div></div>
+        <div className="section-heading review-deck-heading"><div><span className="eyebrow">Your knowledge deck</span><h2>{deckItems.length} {showArchived ? "archived" : "active"} card{deckItems.length === 1 ? "" : "s"}</h2></div><div className="review-deck-tools"><label><Search size={16} /><input value={deckQuery} onChange={(event) => setDeckQuery(event.target.value)} aria-label="Search review cards" placeholder="Search cards or tags" /></label><button className="button ghost" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived} type="button">{showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />} {showArchived ? "Show active" : `Archived (${stats.archived})`}</button><button className="button ghost" onClick={exportDeck} disabled={!profile.reviewItems.some((item) => !item.archived)} title="Download the deck as a shareable JSON file (authoring fields only — no schedule)" type="button"><Download size={16} /> Export deck</button><label className="button ghost import-cards-label" title="Import a lumen.cards.v1 JSON file; duplicates are skipped and imported cards start as new"><Upload size={16} /> Import<input type="file" accept=".json,application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onImportCards?.(file); }} /></label></div></div>
         {deckItems.length ? <><p className="review-deck-range">Showing {deckPageStart + 1}–{deckPageStart + visibleDeckItems.length} of {deckItems.length}</p><div className="review-deck-list">{visibleDeckItems.map((item) => { const source = documentMap.get(item.documentId); return <article className={item.suspended ? "review-deck-card suspended" : "review-deck-card"} key={item.id}><div className="review-card-state"><Brain size={18} /><span>{item.suspended ? "Paused" : isNewReviewItem(item) ? "New" : `${formatInterval(item.intervalDays)} interval`}</span><small>{REVIEW_CARD_TYPES.find((type) => type.id === item.type)?.label}</small></div><div className="review-card-copy"><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.front) }} /><div className="review-deck-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.back) }} />{item.tags?.length > 0 && <div className="review-tags">{item.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}{source && <button className="text-button" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={14} /> {source.title}</button>}</div><div className="review-card-actions"><button className="icon-button" onClick={() => onEdit(item)} aria-label="Edit review card" title="Edit" type="button"><Edit3 size={17} /></button><button className="icon-button" onClick={() => onToggleSuspend(item.id)} aria-label={item.suspended ? "Resume review card" : "Pause review card"} title={item.suspended ? "Resume" : "Pause"} type="button">{item.suspended ? <Play size={17} /> : <Pause size={17} />}</button><button className="icon-button" onClick={() => onToggleArchive(item.id)} aria-label={item.archived ? "Restore review card" : "Archive review card"} title={item.archived ? "Restore" : "Archive"} type="button">{item.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</button><button className="icon-button danger" onClick={() => onDelete(item.id)} aria-label="Delete review card" title="Delete permanently" type="button"><Trash2 size={17} /></button></div></article>; })}</div>{deckPageCount > 1 && <nav className="review-deck-pagination" aria-label="Review card pages"><span aria-live="polite" aria-atomic="true">Page {visibleDeckPage} of {deckPageCount}</span><div><button className="button ghost" onClick={() => changeDeckPage(1)} disabled={visibleDeckPage === 1} aria-label="First review card page" type="button">First</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage - 1)} disabled={visibleDeckPage === 1} aria-label="Previous review card page" type="button">Previous</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage + 1)} disabled={visibleDeckPage === deckPageCount} aria-label="Next review card page" type="button">Next</button><button className="button ghost" onClick={() => changeDeckPage(deckPageCount)} disabled={visibleDeckPage === deckPageCount} aria-label="Last review card page" type="button">Last</button></div></nav>}</> : <div className="empty-state review-empty"><Brain size={34} /><h2>{normalizedDeckQuery ? "No matching review card" : showArchived ? "No archived cards" : "Build your first recall prompt"}</h2><p>{normalizedDeckQuery ? "Try a broader prompt, answer, type, or tag." : "Create one manually, or turn any clipping or highlight into a source-linked card."}</p>{!normalizedDeckQuery && !showArchived && <button className="button primary" onClick={() => onCreate(null)} type="button">Create first card</button>}</div>}
       </section>
     </div>
