@@ -7183,3 +7183,19 @@ input[type="range"] {
 
 /* Wave 10: board zoom */
 .board-zoom-level { min-width: 48px; font-size: 0.68rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+.ai-tutor__session-stats { margin: 0 0 10px; color: var(--ink-faint); font-size: 0.7rem; font-weight: 700; }
+
+/* Wave 10: reading time remaining */
+.reading-time-left { position: absolute; z-index: 5; top: 8px; right: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--paper); color: var(--ink-faint); font-size: 0.62rem; font-weight: 800; pointer-events: none; }
+
+/* Wave 10: today widgets */
+.today-widgets { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 10px; margin-bottom: 16px; }
+.today-widget { display: grid; justify-items: start; gap: 3px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); text-align: left; }
+.today-widget svg { color: var(--violet); }
+.today-widget strong { overflow: hidden; max-width: 100%; color: var(--ink); font-family: "Manrope", sans-serif; font-size: 1.05rem; letter-spacing: -0.03em; text-overflow: ellipsis; white-space: nowrap; }
+.today-widget span { overflow: hidden; max-width: 100%; color: var(--ink-faint); font-size: 0.66rem; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 740px) {
+  .today-widgets { grid-template-columns: 1fr 1fr; }
+  .today-widget--wide { grid-column: 1 / -1; }
+}
