@@ -7,6 +7,7 @@ import { createId } from "../src/lib/id.js";
 import {
   buildReviewQueue,
   classifyReviewItem,
+  reviewAnalytics,
   createReviewItem,
   gradeReviewItem,
   isNewReviewItem,
@@ -86,6 +87,24 @@ assert.equal(normalized.settings.speechScope, "document");
 assert.equal(normalized.settings.keepScreenAwake, true);
 assert.deepEqual(normalized.reviewItems, [], "v2 profiles should migrate with an empty review deck");
 assert.deepEqual(normalized.reviewAttempts, [], "v2 profiles should migrate without fabricated attempts");
+
+// 12-week retention trend buckets attempts oldest-first with null-safe weeks.
+{
+  const trendNow = new Date("2026-08-21T12:00:00.000Z");
+  const attempt = (daysAgo, rating) => ({ reviewedAt: new Date(trendNow.getTime() - daysAgo * 86_400_000).toISOString(), rating, elapsedMs: 1_000 });
+  const trend = reviewAnalytics([
+    attempt(1, "good"), attempt(2, "again"),            // current week: 50%
+    attempt(10, "good"), attempt(11, "good"),           // week -1: 100%
+    attempt(80, "again"),                                // week -11: 0%
+    attempt(200, "good"),                                // outside the window
+  ], [], trendNow, "UTC").retentionTrend;
+  assert.equal(trend.length, 12);
+  assert.equal(trend[11].percent, 50);
+  assert.equal(trend[11].count, 2);
+  assert.equal(trend[10].percent, 100);
+  assert.equal(trend[0].percent, 0, "the oldest bucket holds the ~80-day-old lapse");
+  assert.equal(trend[5].percent, null, "weeks without attempts stay null, not zero");
+}
 
 // LEARN-003: queue classes are explicit and mutually exclusive with defined
 // precedence (overdue beats learning beats mature on-time due).

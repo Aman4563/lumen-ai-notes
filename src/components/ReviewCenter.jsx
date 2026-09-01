@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MISTAKE_CATEGORIES } from "../lib/mistakes.js";
+import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
 import {
   Archive,
   ArchiveRestore,
@@ -450,11 +450,22 @@ export default function ReviewCenter({
         <article><Gauge size={18} /><div><strong>{analytics.retention7 === null ? "—" : `${analytics.retention7}%`}</strong><span>7-day recall</span></div></article>
         <article><History size={18} /><div><strong>{formatLatency(analytics.medianLatencyMs)}</strong><span>Median answer time</span></div></article>
         <article className="review-forecast"><div><strong>Next 7 days</strong><span>Scheduled forecast</span></div><div className="forecast-bars" aria-label={`Seven-day review forecast: ${analytics.forecast.join(", ")}`}>{analytics.forecast.map((value, index) => <span key={index} style={{ height: `${Math.max(8, (value / Math.max(...analytics.forecast, 1)) * 100)}%` }} title={`Day ${index}: ${value} reviews`} />)}</div></article>
+        <article className="review-forecast review-retention-trend"><div><strong>12-week recall</strong><span>Weekly retention trend</span></div><div className="forecast-bars" aria-label={`Twelve-week retention trend: ${analytics.retentionTrend.map((week) => week.percent === null ? "no reviews" : `${week.percent}%`).join(", ")}`}>{analytics.retentionTrend.map((week, index) => <span key={index} className={week.percent === null ? "is-empty" : ""} style={{ height: `${week.percent === null ? 8 : Math.max(8, week.percent)}%` }} title={week.percent === null ? `Week ${index - 11}: no reviews` : `Week ${index - 11}: ${week.percent}% retained over ${week.count} attempts`} />)}</div></article>
       </section>
       <section className="review-settings-strip" aria-label="Daily review limits"><div><strong>Daily limits</strong><span>Counts persist by local date ({timeZone}) and cannot refill when a card leaves the queue.</span></div><label>New<select value={profile.reviewSettings.dailyNewLimit} onChange={(event) => onSettingsChange({ dailyNewLimit: Number(event.target.value) })}>{[5, 10, 15, 20, 30, 50].map((value) => <option value={value} key={value}>{value}</option>)}</select></label><label>Reviews<select value={profile.reviewSettings.dailyReviewLimit} onChange={(event) => onSettingsChange({ dailyReviewLimit: Number(event.target.value) })}>{[20, 50, 100, 200, 500].map((value) => <option value={value} key={value}>{value}</option>)}</select></label></section>
       {(mistakes.length > 0 || onLogMistake) && <section className="review-mistakes" aria-label="Mistake notebook">
         <div className="section-heading"><div><span className="eyebrow">Learn from failures</span><h2>Mistake notebook</h2></div><div className="mistake-controls"><label>Category<select value={mistakeFilter} onChange={(event) => setMistakeFilter(event.target.value)}><option value="all">All</option>{MISTAKE_CATEGORIES.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label><label className="mistake-corrected-toggle"><input type="checkbox" checked={showCorrectedMistakes} onChange={(event) => setShowCorrectedMistakes(event.target.checked)} /> Show corrected</label>{onLogMistake && <button className="button ghost" onClick={() => setMistakeDialogOpen(true)} type="button"><Flame size={15} /> Log mistake</button>}</div></div>
         <p className="microcopy">Grading a card “Again” logs or reopens its mistake automatically; repeats merge into one entry. Write the correction in your own words, then schedule a corrective review.</p>
+        {(() => {
+          const summary = mistakeAnalytics(mistakes);
+          if (!mistakes.length) return null;
+          return <div className="mistake-summary" aria-label="Mistake notebook summary">
+            <span><strong>{summary.open}</strong> open</span>
+            <span><strong>{summary.corrected}</strong> corrected</span>
+            {MISTAKE_CATEGORIES.filter((category) => summary.byCategory[category.id] > 0).map((category) => <span key={category.id}>{category.label}: <strong>{summary.byCategory[category.id]}</strong></span>)}
+            {summary.mostRepeated.length > 0 && <span className="mistake-summary-repeats">Most repeated: {summary.mostRepeated.map((entry) => `“${entry.prompt.slice(0, 40)}${entry.prompt.length > 40 ? "…" : ""}” ×${entry.occurrences}`).join(" · ")}</span>}
+          </div>;
+        })()}
         {mistakes.length === 0 && <div className="empty-state compact"><Flame size={24} /><h2>No mistakes logged yet</h2><p>Grade a card “Again” or log one manually — captured errors become your highest-value review material.</p></div>}
         <div className="mistake-list">
           {mistakes

@@ -122,3 +122,22 @@ export const normalizeMistakes = (input) => (Array.isArray(input) ? input : [])
     correctedAt: typeof mistake.correctedAt === "string" ? mistake.correctedAt : "",
     updatedAt: typeof mistake.updatedAt === "string" ? mistake.updatedAt : new Date().toISOString(),
   }));
+
+/** Aggregate view of the notebook for analytics surfaces (LEARN-005). */
+export const mistakeAnalytics = (mistakes = []) => {
+  const byCategory = Object.fromEntries(MISTAKE_CATEGORIES.map((category) => [category.id, 0]));
+  let open = 0;
+  let corrected = 0;
+  for (const mistake of mistakes) {
+    if (mistake.correctedAt) corrected += 1;
+    else open += 1;
+    if (byCategory[mistake.category] !== undefined && !mistake.correctedAt) byCategory[mistake.category] += 1;
+  }
+  const mostRepeated = mistakes
+    .filter((mistake) => !mistake.correctedAt && (Number(mistake.occurrences) || 1) > 1)
+    .sort((left, right) => (right.occurrences - left.occurrences)
+      || Date.parse(right.lastSeenAt || 0) - Date.parse(left.lastSeenAt || 0)
+      || String(left.id).localeCompare(String(right.id)))
+    .slice(0, 3);
+  return { open, corrected, byCategory, mostRepeated };
+};

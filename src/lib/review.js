@@ -324,6 +324,10 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
   let retained30 = 0;
   const latencies = [];
   const activeDays = new Set();
+  // Twelve weekly retention buckets covering ~90 days, oldest first.
+  const trendWeeks = 12;
+  const trendCounts = Array(trendWeeks).fill(0);
+  const trendRetained = Array(trendWeeks).fill(0);
   for (const attempt of attempts) {
     const reviewedAt = Date.parse(attempt.reviewedAt);
     if (!Number.isFinite(reviewedAt)) continue;
@@ -337,6 +341,12 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
       count30 += 1;
       if (retained) retained30 += 1;
       latencies.push(Number(attempt.elapsedMs) || 0);
+    }
+    const week = Math.floor(age / (7 * DAY_MS));
+    if (week >= 0 && week < trendWeeks) {
+      const bucket = trendWeeks - 1 - week;
+      trendCounts[bucket] += 1;
+      if (retained) trendRetained[bucket] += 1;
     }
     activeDays.add(localDayKey(new Date(reviewedAt), timeZone).split("@")[0]);
   }
@@ -365,6 +375,10 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
     medianLatencyMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
     streak,
     forecast,
+    retentionTrend: trendCounts.map((count, index) => ({
+      count,
+      percent: count ? Math.round((trendRetained[index] / count) * 100) : null,
+    })),
   };
 };
 

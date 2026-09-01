@@ -5799,6 +5799,27 @@ input[type="range"] {
   margin-top: 26px;
 }
 
+.mistake-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  margin: 10px 0 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.76rem;
+}
+
+.mistake-summary strong {
+  color: var(--ink, #172035);
+}
+
+.mistake-summary-repeats {
+  flex-basis: 100%;
+}
+
+.review-retention-trend .forecast-bars span.is-empty {
+  opacity: 0.3;
+}
+
 .review-mistakes {
   margin-top: 26px;
 }
