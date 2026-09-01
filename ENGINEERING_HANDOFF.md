@@ -1157,18 +1157,35 @@ changing the bundle.
 
 ### P2 — roadmap delivery
 
-- ~~mistake notebook~~ (shipped Partial 2026-09-01: auto-capture, merge,
-  corrective scheduling); diagnostics/assessments, plans/reminders;
-- Python/SQL/simulation labs;
-- structured interview tracks and timed rounds;
+Waves 6–10 (PRs #19–#23, 2026-09-01/02) delivered large slices of this
+roadmap; PRODUCT_REQUIREMENTS.md's verification log is the authority.
+
+- ~~mistake notebook~~ (auto-capture, merge, corrective scheduling, manual
+  dialog, Markdown export); ~~daily session builder~~ and ~~mastery ladder~~
+  (deterministic 15/30/60-minute plans, per-Part evidence ladder);
+  diagnostics/assessments and calibrated scheduling remain;
+- Python/SQL/simulation labs remain;
+- ~~timed interview rounds~~ (weak-first selection, prep/answer countdowns,
+  miss-to-notebook); structured per-track question banks remain;
 - ~~advanced lexical search~~ (typo tolerance, exclusions, saved/recent,
-  highlighted snippets shipped 2026-09-01); stemming/synonyms and field
-  filters, semantic search, and concept graph;
-- collections, revisions, richer import/export;
-- encrypted optional cross-device sync before collaboration;
-- authored teaching decks and advanced board/media/navigation/export;
-- long-form narration features and generated-audio option;
-- comprehensive WCAG 2.2 AA/VoiceOver modes and evidence.
+  highlighted snippets, title:/part:/tag: field filters, has:code/has:formula,
+  plural folding, facet counts); ~~concept map v1~~ (Part-level serpentine
+  grid with mastery overlay); synonyms, semantic search, and the concept-level
+  graph remain;
+- ~~collections/organize/pins/archive~~, ~~30-day trash~~, ~~revisions with
+  line diff~~, ~~HTML export~~, ~~review-card JSON interchange~~,
+  ~~activity ledger~~, ~~upload duplicate detection~~; PDF/EPUB/GitHub import
+  remains;
+- encrypted optional cross-device sync before collaboration (issue #18 holds
+  the encrypted-backup design);
+- ~~board multi-select/copy-paste/resize/zoom-pan/SVG export~~ and
+  ~~teaching print-to-PDF~~; authored decks, rotate/layers, and board
+  import remain;
+- ~~narration depth~~ (section skip, sleep timer, persisted resume,
+  pronunciation overrides, spoken-block follow); audio bookmarks, playlists,
+  and generated audio remain;
+- ~~high-contrast theme, keyboard board nudging, reduced-motion coverage,
+  shortcuts sheet~~; WCAG 2.2 AA/VoiceOver device evidence remains.
 
 ## 16. Operator runbook
 
