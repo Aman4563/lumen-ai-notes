@@ -395,3 +395,15 @@ export const formatLatency = (milliseconds) => {
   const seconds = Math.max(0, milliseconds) / 1_000;
   return seconds < 60 ? `${seconds.toFixed(seconds < 10 ? 1 : 0)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 };
+
+/**
+ * Cloze mechanics (LEARN-002): `{{hidden text}}` spans in a cloze card's
+ * prompt are concealed until reveal. The transform runs on the raw Markdown
+ * before rendering, so the sanitized pipeline is unchanged.
+ */
+export const hasClozeMarkup = (text) => /\{\{[^{}]+\}\}/.test(String(text || ""));
+
+export const renderClozePrompt = (text, revealed = false) => String(text || "").replace(
+  /\{\{([^{}]+)\}\}/g,
+  (_match, hidden) => (revealed ? `**${hidden.trim()}**` : "**[ … ]**"),
+);

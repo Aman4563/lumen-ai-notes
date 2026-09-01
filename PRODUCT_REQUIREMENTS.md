@@ -37,7 +37,7 @@ accessibility, board, search, synchronization, and later milestones.
 | BUG-004 | Recover safely from stale fingerprinted application chunks | `Implemented` | Build-specific service-worker caches and bounded chunk repair pass `audit:chunks`; an atomic real-host deployment/update drill remains |
 | DATA-001 | Versioned Study Loop profile schema and safe migration | `Partial` | Profile/backup v4, integrity preflight, fallback-journal recovery, and authoritative reset/restore recovery are covered; independent stores, full migration fixtures, and final cross-tab evidence remain |
 | LEARN-001 | Durable text-anchored highlights and annotations | `Partial` | Creation, paint, edit, conversion, reload, relocation/orphan/relink, backup restore, no-paint fallback, and copy/export pass `audit:annotations` + unit suites; the relocated-offset write-back decision and real-device evidence remain |
-| LEARN-002 | Convert a highlight, clipping, concept, or custom prompt into a review card | `Partial` | Eight authorable type labels, duplicate prevention, safe Markdown preview, edit/archive/restore, and blank/clipping/highlight/AI/mistake sources exist; heading sources, cloze/diagram rendering mechanics, and backup-restore evidence remain |
+| LEARN-002 | Convert a highlight, clipping, concept, or custom prompt into a review card | `Partial` | Eight authorable type labels with working cloze concealment, duplicate prevention, safe Markdown preview, edit/archive/restore, and blank/clipping/highlight/AI/mistake sources exist; heading sources, diagram card rendering, and backup-restore evidence remain |
 | LEARN-003 | Daily review queue with Again/Hard/Good/Easy scheduling | `Partial` | Durable local-day limits, four grades incl. direct Hard/Easy scheduling assertions, confidence, undo, bury/crunch/suspend queue exclusion, reload, spring-DST day keys, and explicit mutually exclusive queue classes (with overdue precedence) are tested; the calibrated complete-history scheduler remains |
 | LEARN-004 | Concept mastery states and mastery-based dashboard | `Partial` | Review aggregates exist; the evidence ladder, concept aggregation, provenance, and recommendations remain |
 | LEARN-005 | Mistake notebook generated from failed reviews and assessments | `Partial` | Auto-capture on Again, manual capture dialog, merge/reopen, blur-committed corrections, category/corrected filters, linked and unlinked corrective scheduling, per-category/most-repeated analytics, cross-tab merge, and backup round-trip all pass `audit:review`/`audit:ai` suites; assessment-driven capture remains (ASSESS-00x is Backlog) |
@@ -384,8 +384,8 @@ Status: `Partial`
 
 Delivered slice: users can label cards with the eight required types (basic, cloze,
 formula, derivation, compare, debugging, code-output, production-scenario) — the
-types are a taxonomy plus provenance today; cloze concealment mechanics ship
-separately — authored from a blank form, clipping,
+types carry provenance, and cloze cards now conceal `{{span}}` markup until
+reveal — authored from a blank form, clipping,
 highlight, or reviewed AI flashcard draft. Exact duplicates are rejected; source
 provenance, safe Markdown/code preview, post-save edit without schedule reset,
 suspend/resume, archive/restore, and delete are implemented. Mistake sources are delivered via the mistake notebook's corrective scheduling

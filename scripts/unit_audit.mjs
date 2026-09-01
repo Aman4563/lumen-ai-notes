@@ -7,6 +7,8 @@ import { createId } from "../src/lib/id.js";
 import {
   buildReviewQueue,
   classifyReviewItem,
+  hasClozeMarkup,
+  renderClozePrompt,
   reviewAnalytics,
   createReviewItem,
   gradeReviewItem,
@@ -87,6 +89,14 @@ assert.equal(normalized.settings.speechScope, "document");
 assert.equal(normalized.settings.keepScreenAwake, true);
 assert.deepEqual(normalized.reviewItems, [], "v2 profiles should migrate with an empty review deck");
 assert.deepEqual(normalized.reviewAttempts, [], "v2 profiles should migrate without fabricated attempts");
+
+// LEARN-002 cloze mechanics: {{spans}} conceal until reveal and never touch
+// text outside the braces.
+assert.equal(hasClozeMarkup("The {{validation}} split"), true);
+assert.equal(hasClozeMarkup("No cloze here"), false);
+assert.equal(renderClozePrompt("The {{validation}} split tunes {{hyperparameters}}."), "The **[ … ]** split tunes **[ … ]**.");
+assert.equal(renderClozePrompt("The {{validation}} split tunes {{hyperparameters}}.", true), "The **validation** split tunes **hyperparameters**.");
+assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single} braces stay");
 
 // LEARN-003: bury/suspend/archive exclusion, crunch weak-first ordering, and
 // Hard/Easy scheduling have direct assertions.

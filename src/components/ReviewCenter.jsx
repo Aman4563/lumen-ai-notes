@@ -29,6 +29,8 @@ import {
   currentTimeZone,
   classifyReviewItem,
   formatInterval,
+  hasClozeMarkup,
+  renderClozePrompt,
   formatLatency,
   getTodayReviewUsage,
   isNewReviewItem,
@@ -111,7 +113,7 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
         <h2 id="review-card-dialog-title">{editing ? "Edit review card" : "Create a review card"}</h2>
         <p>Use one precise retrieval task. Markdown, fenced code, and formulas are preserved and rendered safely.</p>
         <div className="review-dialog-toolbar">
-          <label><span>Card type</span><select value={type} onChange={(event) => setType(event.target.value)}>{REVIEW_CARD_TYPES.map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</select></label>
+          <label><span>Card type</span><select value={type} onChange={(event) => setType(event.target.value)}>{REVIEW_CARD_TYPES.map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</select></label>{type === "cloze" && <small className="cloze-hint">Wrap the hidden text in {"{{double braces}}"} — it shows as a blank until you reveal the answer.</small>}
           <button className={preview ? "button secondary active" : "button ghost"} onClick={() => setPreview((value) => !value)} aria-pressed={preview} type="button"><Eye size={16} /> {preview ? "Edit fields" : "Preview"}</button>
         </div>
         {preview ? (
@@ -420,7 +422,7 @@ export default function ReviewCenter({
                     : `Review · ${formatInterval(current.intervalDays)} interval`;
               return label;
             })()} · {REVIEW_CARD_TYPES.find((type) => type.id === current.type)?.label || "Basic Q&A"}</span>
-            <div className="review-markdown review-question" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.front) }} />
+            <div className="review-markdown review-question" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.type === "cloze" && hasClozeMarkup(current.front) ? renderClozePrompt(current.front, revealed) : current.front) }} />
             {source && <button className="review-source-link" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={15} /> {source.title}</button>}
             {revealed && <div className="review-answer"><span>Answer</span><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.back) }} /></div>}
           </article>
