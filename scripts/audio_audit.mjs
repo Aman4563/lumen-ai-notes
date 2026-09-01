@@ -149,6 +149,39 @@ try {
   await page.waitForSelector('button[aria-label="Pause narration"]');
   assert.equal(await page.evaluate(() => speechSynthesis.paused), false);
 
+  // AUDIO-001 queue evidence: the document scope builds a multi-segment queue
+  // with working previous/next transport; a section queue is a bounded subset.
+  await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+  await page.$eval('button[aria-label="Listen"]', (node) => node.click());
+  await page.waitForSelector('.speech-popover[role="dialog"]');
+  await clickByText(page, ".speech-scope-grid button", "Full");
+  await page.waitForFunction(() => document.querySelector(".speech-target-status")?.textContent.toLowerCase().includes("full lecture"));
+  await clickByText(page, ".speech-controls button", "Read full lecture");
+  await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
+  const documentProgress = await page.$eval(".audio-label strong", (node) => node.textContent);
+  const documentTotal = Number(documentProgress.match(/(\d+)\/(\d+)/)?.[2] || 0);
+  assert.ok(documentTotal > 1, `the document queue must contain multiple sentence segments, got "${documentProgress}"`);
+  await page.$eval('button[aria-label="Next narration sentence"]', (node) => node.click());
+  await page.waitForFunction(() => document.querySelector(".audio-label strong")?.textContent.includes(" 2/"), { timeout: 5_000 });
+  await page.$eval('button[aria-label="Previous narration sentence"]', (node) => node.click());
+  await page.waitForFunction(() => document.querySelector(".audio-label strong")?.textContent.includes(" 1/"), { timeout: 5_000 });
+  assert.equal(await page.$eval('button[aria-label="Previous narration sentence"]', (node) => node.disabled), true, "previous must disable at the first segment");
+  await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+  await page.$eval('button[aria-label="Listen"]', (node) => node.click());
+  await page.waitForSelector('.speech-popover[role="dialog"]');
+  await clickByText(page, ".speech-scope-grid button", "Section");
+  await page.waitForFunction(() => document.querySelector(".speech-target-status")?.textContent.toLowerCase().includes("section"));
+  await clickByText(page, ".speech-controls button", "Read current section");
+  await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
+  const sectionTotal = Number((await page.$eval(".audio-label strong", (node) => node.textContent)).match(/(\d+)\/(\d+)/)?.[2] || 0);
+  assert.ok(sectionTotal >= 1 && sectionTotal <= documentTotal, `a section queue (${sectionTotal}) must be a bounded subset of the document queue (${documentTotal})`);
+  await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+  await page.$eval('button[aria-label="Listen"]', (node) => node.click());
+  await page.waitForSelector('.speech-popover[role="dialog"]');
+  await clickByText(page, ".speech-scope-grid button", "Sentence");
+  await clickByText(page, ".speech-controls button", "Read current sentence");
+  await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
+
   await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
   await page.waitForSelector('button[aria-label="Resume narration"]');
   assert.equal(await page.evaluate(() => speechSynthesis.current), null, "backgrounding must cancel native autoplay while preserving the queue");
@@ -210,7 +243,7 @@ try {
   assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.viewportHeight, `audio panel overflowed vertically: ${JSON.stringify(geometry)}`);
   assert.equal(geometry.scrollable, true, "the dense iPhone audio sheet must remain internally scrollable");
   assert.deepEqual(runtimeErrors, [], `audio runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("Audio audit passed: multiple voices/languages, preview parameters, scopes, controls, iOS foreground safety, persistence, empty-voice recovery, and iPhone layout.");
+  console.log("Audio audit passed: multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, and iPhone layout.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

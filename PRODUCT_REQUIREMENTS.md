@@ -38,9 +38,9 @@ accessibility, board, search, synchronization, and later milestones.
 | DATA-001 | Versioned Study Loop profile schema and safe migration | `Partial` | Profile/backup v4, integrity preflight, fallback-journal recovery, and authoritative reset/restore recovery are covered; independent stores, full migration fixtures, and final cross-tab evidence remain |
 | LEARN-001 | Durable text-anchored highlights and annotations | `Partial` | Creation, paint, edit, conversion, reload, relocation/orphan/relink, backup restore, no-paint fallback, and copy/export pass `audit:annotations` + unit suites; the relocated-offset write-back decision and real-device evidence remain |
 | LEARN-002 | Convert a highlight, clipping, concept, or custom prompt into a review card | `Partial` | Eight authorable type labels, duplicate prevention, safe Markdown preview, edit/archive/restore, and blank/clipping/highlight/AI/mistake sources exist; heading sources, cloze/diagram rendering mechanics, and backup-restore evidence remain |
-| LEARN-003 | Daily review queue with Again/Hard/Good/Easy scheduling | `Partial` | Durable local-day limits, four grades, confidence, undo, reload, spring-DST day keys, and explicit mutually exclusive queue classes are tested; bury/crunch/suspend and Hard/Easy scheduling need direct assertions, and the calibrated scheduler remains |
+| LEARN-003 | Daily review queue with Again/Hard/Good/Easy scheduling | `Partial` | Durable local-day limits, four grades incl. direct Hard/Easy scheduling assertions, confidence, undo, bury/crunch/suspend queue exclusion, reload, spring-DST day keys, and explicit mutually exclusive queue classes (with overdue precedence) are tested; the calibrated complete-history scheduler remains |
 | LEARN-004 | Concept mastery states and mastery-based dashboard | `Partial` | Review aggregates exist; the evidence ladder, concept aggregation, provenance, and recommendations remain |
-| LEARN-005 | Mistake notebook generated from failed reviews and assessments | `Partial` | Auto-capture on Again, merge/reopen, blur-committed corrections, category/corrected filters, and linked-card corrective scheduling pass `audit:review` + unit suites; assessment-driven capture and repeat analytics evidence remain |
+| LEARN-005 | Mistake notebook generated from failed reviews and assessments | `Partial` | Auto-capture on Again, manual capture dialog, merge/reopen, blur-committed corrections, category/corrected filters, linked and unlinked corrective scheduling, per-category/most-repeated analytics, cross-tab merge, and backup round-trip all pass `audit:review`/`audit:ai` suites; assessment-driven capture remains (ASSESS-00x is Backlog) |
 
 ## Verification log
 
@@ -99,7 +99,7 @@ not evidence that the product implements it.
 | M3 | LEARN-002 | `Partial` | Eight required item types; blank, clipping, annotation, and AI-card sources; exact duplicate detection; post-save edit/archive/restore; source provenance; safe Markdown/code preview | Add heading and mistake sources, MathML/Mermaid card preview, similarity-based duplicate review, and explicit backup-restore coverage |
 | M3 | LEARN-003 | `Partial` | Deterministic due-before-new queue; durable local-day counters; four ratings with latency/confidence; pause, bury, undo, crunch; live clock; analytics/forecast; timezone/DST tests | Make overdue and learning queues explicit and mutually tested; replace the heuristic interval update with a calibrated complete-history scheduler and migration/evaluation evidence |
 | M3 | LEARN-004 | `Partial` | Due, learning, mastered, suspended, and recent recall aggregates | Seven-state evidence ladder; review/assessment/lab/explanation evidence; concept/lecture/Part/role/prerequisite aggregation; state-change explanation and next action |
-| M3 | LEARN-005 | `Partial` | Auto-capture from failed reviews with card/document links and derived categories, repeat merge with reopening, blur-committed corrections, category/corrected filters, corrective scheduling (due-now or new tagged card), 2,000-record bound, cross-tab merge, backup flow-through, and unit + browser tests | Assessment-driven capture, a manual capture form with response/hints, and repeated-error analytics |
+| M3 | LEARN-005 | `Partial` | Auto-capture from failed reviews with card/document links and derived categories, repeat merge with reopening, blur-committed corrections, category/corrected filters, corrective scheduling (due-now or new tagged card), 2,000-record bound, cross-tab merge, backup flow-through, a manual capture dialog with response/hints/category, per-category and most-repeated analytics, and unit + browser tests incl. sync-merge and backup round-trips | Assessment-driven capture (blocked on ASSESS-00x) |
 | M4 | ASSESS-001 | `Backlog` | None | Versioned question schema, every required response type, scoring, explanation/source citation, retry behavior, and attempt persistence |
 | M4 | ASSESS-002 | `Backlog` | None | Diagnostic/mastery pools, deterministic partial-credit rubrics, recommendations, and mastery/mistake integration |
 | M4 | PLAN-001 | `Backlog` | Review queue is a prerequisite, not a learning-plan implementation | Goal/profile capture, prerequisite scheduler, 15/30/60-minute mixed sessions, reschedule/catch-up/pause, and missed-day recalculation tests |
@@ -449,8 +449,9 @@ unlinked mistake becomes a new tagged card, which also delivers LEARN-002's
 mistake card source. Records live in the profile (bounded at 2,000), merge
 across tabs, and travel through backups. Unit and browser coverage exist for
 capture, merge/reopen, correction persistence, corrective scheduling, and
-filters. Capture from assessments (ASSESS-00x is Backlog), a manual capture
-form with response/hints fields, and repeated-error analytics remain open.
+filters, manual capture with response/hints fields, and per-category/most-
+repeated analytics. Capture from assessments remains open (ASSESS-00x is
+Backlog).
 
 Acceptance criteria:
 
@@ -945,7 +946,9 @@ can queue the current sentence, current section, a captured selection, or the fu
 document into short sentence-oriented utterances with pause/resume/stop,
 previous/next, speed presets, actionable errors, a compact player, and explicit
 tap-to-resume behavior after background interruption. `audit:audio` verifies these
-contracts and iPhone-sized containment with four mocked iOS voices. Spoken-text
+contracts — including multi-segment section/document queues and previous/next
+transport with first-segment disabling — and iPhone-sized containment with four
+mocked iOS voices. Spoken-text
 highlighting, precise persisted resume, heading skip, audio bookmarks, timer,
 playlists, pronunciation overrides, and physical-iPhone voice/routing/interruption
 evidence remain open.

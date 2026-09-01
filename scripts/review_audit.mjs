@@ -59,6 +59,19 @@ try {
   assert.equal((await page.$eval(".review-deck-card .review-card-copy .review-markdown", (node) => node.textContent)).trim(), "Why does data leakage invalidate an offline evaluation?");
   assert.equal(await page.$eval(".review-hero strong", (node) => node.textContent), "1");
 
+  // LEARN-002: an exact duplicate is rejected with a warning and no deck growth.
+  await clickByText(page, ".review-title button", "New card");
+  await page.waitForSelector(".review-card-dialog");
+  const duplicateFields = await page.$$(".review-card-dialog textarea");
+  await duplicateFields[0].type("Why does data leakage invalidate an offline evaluation?");
+  await duplicateFields[1].type("It exposes information unavailable at inference time, so the measured metric overestimates production generalization.");
+  await clickByText(page, ".review-card-dialog button", "Add to review");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.toLowerCase().includes("already exist"), { timeout: 5_000 })
+    .catch(() => assert.fail("duplicate card creation did not warn"));
+  await page.$eval(".review-card-dialog button[aria-label='Close review card dialog']", (node) => node.click());
+  await page.waitForFunction(() => !document.querySelector(".review-card-dialog"));
+  assert.equal(await page.$eval(".review-hero strong", (node) => node.textContent), "1", "a duplicate card must not grow the deck");
+
   await clickByText(page, ".review-hero button", "Start review");
   await page.waitForSelector(".review-session-page");
   await clickByText(page, ".review-session-page button", "Show answer");
@@ -80,22 +93,23 @@ try {
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("New"), "undo did not restore the pre-grade schedule");
   await clickByText(page, ".review-hero button", "Start review");
   await clickByText(page, ".review-session-page button", "Show answer");
-  await page.click('button[aria-label="Confidence 4 of 5"]');
+  await page.$eval("button[aria-label=\"Confidence 4 of 5\"]", (node) => node.click());
   await clickByText(page, ".review-rating", "Good");
   await page.waitForSelector(".review-center-page");
 
-  await page.click('button[aria-label="Edit review card"]');
+  await page.$eval('button[aria-label="Edit review card"]', (node) => node.click());
   await page.waitForSelector(".review-card-dialog");
-  await page.click(".review-card-dialog textarea");
+  await page.focus(".review-card-dialog textarea");
   await page.keyboard.press("End");
   await page.keyboard.type(" [edited]");
   await clickByText(page, ".review-card-dialog button", "Save changes");
   await page.waitForSelector(".review-deck-card");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("[edited]"), "card edit was not saved");
-  await page.click('button[aria-label="Archive review card"]');
+  await page.$eval('button[aria-label="Archive review card"]', (node) => node.click());
+  await page.waitForFunction(() => [...document.querySelectorAll(".review-deck-tools button")].some((node) => node.textContent.includes("Archived (1)")), { timeout: 5_000 });
   await clickByText(page, ".review-deck-tools button", "Archived (1)");
   await page.waitForSelector('button[aria-label="Restore review card"]');
-  await page.click('button[aria-label="Restore review card"]');
+  await page.$eval('button[aria-label="Restore review card"]', (node) => node.click());
   await clickByText(page, ".review-deck-tools button", "Show active");
   await page.waitForSelector(".review-deck-card");
 
@@ -154,9 +168,26 @@ try {
   await page.waitForFunction(() => document.querySelector(".mistake-card")?.textContent.includes("×2"), { timeout: 5_000 });
   assert.equal((await page.$$(".mistake-card")).length, 1, "a repeated failure duplicated the mistake instead of merging");
 
+  // Corrective scheduling for an UNLINKED mistake must create a new tagged
+  // card and back-link it (the delete leaves the mistake without its card).
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll(".review-deck-card")];
+    const target = cards.find((card) => card.textContent.includes("Which split tunes hyperparameters?"));
+    target?.querySelector('button[aria-label="Delete review card"]')?.click();
+  });
+  await page.waitForFunction(() => ![...document.querySelectorAll(".review-deck-card")].some((card) => card.textContent.includes("Which split tunes hyperparameters?")), { timeout: 5_000 });
+  await clickByText(page, ".mistake-card button", "Schedule corrective review");
+  await page.waitForFunction(() => [...document.querySelectorAll(".review-deck-card")].some((card) => card.textContent.includes("Which split tunes hyperparameters?")), { timeout: 5_000 })
+    .catch(() => assert.fail("an unlinked mistake did not create a corrective card"));
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const relinked = await readProfile(page);
+  const correctiveCard = relinked.reviewItems.find((item) => item.front === "Which split tunes hyperparameters?");
+  assert.ok(correctiveCard.tags.includes("mistake"), "the corrective card must carry the mistake tag");
+  assert.equal(relinked.mistakes[0].reviewItemId, correctiveCard.id, "the mistake must back-link to its new corrective card");
+
   await clickByText(page, ".mistake-card button", "Mark corrected");
   await page.waitForFunction(() => !document.querySelector(".mistake-card"), { timeout: 5_000 });
-  await page.click(".mistake-corrected-toggle input");
+  await page.$eval(".mistake-corrected-toggle input", (node) => node.click());
   await page.waitForFunction(() => document.querySelector(".mistake-card")?.textContent.includes("Corrected"), { timeout: 5_000 });
   const categoryFilter = await page.$(".mistake-controls select");
   await categoryFilter.select("code");
@@ -164,7 +195,33 @@ try {
   await categoryFilter.select("misconception");
   await page.waitForFunction(() => Boolean(document.querySelector(".mistake-card")), { timeout: 5_000 });
   await categoryFilter.select("all");
-  await page.click(".mistake-corrected-toggle input");
+  await page.$eval(".mistake-corrected-toggle input", (node) => node.click());
+
+  // Manual capture: the Log-mistake dialog records a categorized entry, and
+  // repeating the same prompt merges instead of duplicating.
+  await clickByText(page, ".review-mistakes button", "Log mistake");
+  await page.waitForSelector(".mistake-dialog");
+  const manualFields = await page.$$(".mistake-dialog textarea");
+  await manualFields[0].type("Wrote the softmax gradient with the wrong sign");
+  await manualFields[1].type("The Jacobian diagonal is p_i(1 - p_i); off-diagonals are -p_i p_j.");
+  await page.select(".mistake-dialog select", "formula");
+  await clickByText(page, ".mistake-dialog button", "Log mistake");
+  await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("Formula")), { timeout: 5_000 });
+  await clickByText(page, ".review-mistakes button", "Log mistake");
+  await page.waitForSelector(".mistake-dialog");
+  const repeatFields = await page.$$(".mistake-dialog textarea");
+  await repeatFields[0].type("Wrote the softmax gradient with the wrong sign");
+  await repeatFields[1].type("Different expected text, same failure.");
+  await page.select(".mistake-dialog select", "formula");
+  await clickByText(page, ".mistake-dialog button", "Log mistake");
+  await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("×2")), { timeout: 5_000 })
+    .catch(() => assert.fail("a repeated manual mistake did not merge"));
+  await page.evaluate(() => {
+    const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("softmax gradient"));
+    card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
+  });
+  await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient")), { timeout: 5_000 });
+
   // Clean up the second card so the original deck assertions stay untouched.
   await page.waitForSelector(".review-deck-card");
   const deleteButtons = await page.$$('button[aria-label="Delete review card"]');
@@ -210,10 +267,10 @@ try {
     return { width: bounds.width, height: bounds.height };
   });
   assert.ok(touchSize.width >= 44 && touchSize.height >= 44, `pagination touch target is ${touchSize.width}×${touchSize.height}`);
-  await page.click('button[aria-label="Next review card page"]');
+  await page.$eval("button[aria-label=\"Next review card page\"]", (node) => node.click());
   await page.waitForFunction(() => document.querySelector(".review-deck-pagination")?.textContent.includes("Page 2 of 417"));
   assert.equal((await page.$eval(".review-deck-card .review-card-copy", (node) => node.textContent)).trim().startsWith("Scale prompt 24"), true);
-  await page.click('button[aria-label="Last review card page"]');
+  await page.$eval("button[aria-label=\"Last review card page\"]", (node) => node.click());
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 16 && document.querySelector(".review-deck-pagination")?.textContent.includes("Page 417 of 417"));
 
   const search = await page.$('.review-deck-tools input[aria-label="Search review cards"]');
@@ -221,7 +278,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, persisted corrections, corrective scheduling, corrected/category filters), analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

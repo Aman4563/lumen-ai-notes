@@ -517,3 +517,36 @@ test("replacement generations are ordered by replacement time", () => {
   assert.deepEqual(merged.bookmarks, ["notes/00-roadmap.md"]);
   assert.equal(merged.syncMeta.generation, "generation-b");
 });
+
+test("concurrent mistake records union across tabs and edits beat stale copies", () => {
+  const base = normalizeProfile(initialProfile);
+  const mistakeRecord = (id, prompt, extra = {}) => ({
+    id,
+    prompt,
+    expected: "expected reasoning",
+    category: "misconception",
+    correction: "",
+    occurrences: 1,
+    firstSeenAt: NOW,
+    lastSeenAt: NOW,
+    correctedAt: "",
+    updatedAt: NOW,
+    ...extra,
+  });
+  const tabA = normalizeProfile({ ...base, mistakes: [mistakeRecord("mistake-a", "A failed prompt")] });
+  const tabB = normalizeProfile({ ...base, mistakes: [mistakeRecord("mistake-b", "B failed prompt")] });
+  const firstCommit = mergeProfileVersions(base, tabA, base, { now: NOW, writerId: "tab-a" }).profile;
+  const secondCommit = mergeProfileVersions(base, tabB, firstCommit, { now: NOW, writerId: "tab-b" }).profile;
+  assert.deepEqual(new Set(secondCommit.mistakes.map((item) => item.id)), new Set(["mistake-a", "mistake-b"]), "unique mistakes from two tabs must union");
+
+  // A newer correction on one tab must win over a stale unchanged copy.
+  const corrected = normalizeProfile({
+    ...secondCommit,
+    mistakes: secondCommit.mistakes.map((item) => item.id === "mistake-a"
+      ? { ...item, correction: "Corrected on tab A", updatedAt: "2026-09-02T00:00:00.000Z" }
+      : item),
+  });
+  const thirdCommit = mergeProfileVersions(secondCommit, corrected, secondCommit, { now: NOW, writerId: "tab-a" }).profile;
+  assert.equal(thirdCommit.mistakes.find((item) => item.id === "mistake-a").correction, "Corrected on tab A");
+  assert.equal(thirdCommit.mistakes.length, 2);
+});
