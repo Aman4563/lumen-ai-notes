@@ -19,6 +19,8 @@ import {
   Square,
   StickyNote,
   Trash2,
+  ZoomIn,
+  ZoomOut,
   Type,
   Undo2,
   X,
@@ -331,6 +333,25 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   const setSelectedId = useCallback((id) => setSelectedIds(id ? [id] : []), []);
   const marqueeRef = useRef(null);
   const resizingRef = useRef(null);
+  // Zoom/pan (BOARD-003): screen = world · scale + offset, in normalized
+  // units. Identity view keeps every legacy interaction byte-identical.
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
+  const pinchRef = useRef(new Map());
+  const pinchStateRef = useRef(null);
+  const clampView = (candidate) => {
+    const scale = Math.max(1, Math.min(4, candidate.scale));
+    return {
+      scale,
+      x: Math.max(1 - scale, Math.min(0, candidate.x)),
+      y: Math.max(1 - scale, Math.min(0, candidate.y)),
+    };
+  };
+  const zoomAround = (factor, centerX = 0.5, centerY = 0.5) => setView((current) => {
+    const scale = Math.max(1, Math.min(4, current.scale * factor));
+    const worldX = (centerX - current.x) / current.scale;
+    const worldY = (centerY - current.y) / current.scale;
+    return clampView({ scale, x: centerX - worldX * scale, y: centerY - worldY * scale });
+  });
   const clipboardRef = useRef([]);
   const [pendingText, setPendingText] = useState(null);
   const [renamingPage, setRenamingPage] = useState(false);
@@ -620,10 +641,28 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const context = canvas.getContext("2d");
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, rect.width, rect.height);
+    context.save();
+    context.translate(view.x * rect.width, view.y * rect.height);
+    context.scale(view.scale, view.scale);
     drawBackground(context, rect.width, rect.height, board.background);
     objects.forEach((object) => drawObject(context, object, rect.width, rect.height));
     objects.filter((object) => selectedIds.includes(object.id)).forEach((object) => drawSelection(context, object, rect.width, rect.height));
-  }, [board.background, objects, selectedIds]);
+    context.restore();
+  }, [board.background, objects, selectedIds, view]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const onWheel = (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      zoomAround(Math.exp(-event.deltaY * 0.01), (event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     redraw();
@@ -634,7 +673,12 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
 
   const pointFromEvent = (event) => {
     const rect = canvasRef.current.getBoundingClientRect();
-    return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
+    const screenX = (event.clientX - rect.left) / rect.width;
+    const screenY = (event.clientY - rect.top) / rect.height;
+    return {
+      x: Math.max(0, Math.min(1, (screenX - view.x) / view.scale)),
+      y: Math.max(0, Math.min(1, (screenY - view.y) / view.scale)),
+    };
   };
   const hitTest = (point) => [...objects].reverse().find((object) => {
     if (object.tool === "eraser") return false;
@@ -648,6 +692,23 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     event.preventDefault();
     const point = pointFromEvent(event);
     try { canvasRef.current.setPointerCapture?.(event.pointerId); } catch { /* Some iOS pointer streams do not expose capture. */ }
+    pinchRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+    if (pinchRef.current.size === 2) {
+      // Two fingers switch to pinch zoom/pan; abandon any started stroke.
+      drawingRef.current = null;
+      movingRef.current = null;
+      marqueeRef.current = null;
+      resizingRef.current = null;
+      const [first, second] = [...pinchRef.current.values()];
+      const rect = canvasRef.current.getBoundingClientRect();
+      pinchStateRef.current = {
+        startDistance: Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY),
+        startView: view,
+        midpoint: { x: ((first.clientX + second.clientX) / 2 - rect.left) / rect.width, y: ((first.clientY + second.clientY) / 2 - rect.top) / rect.height },
+      };
+      redraw();
+      return;
+    }
     if (tool === "select") {
       // Resize (BOARD-001): with exactly one object selected, grabbing its
       // bottom-right handle scales the object around its top-left corner.
@@ -699,6 +760,21 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   const continueDrawing = (event) => {
+    if (pinchRef.current.has(event.pointerId)) pinchRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+    if (pinchStateRef.current && pinchRef.current.size === 2) {
+      event.preventDefault();
+      const [first, second] = [...pinchRef.current.values()];
+      const rect = canvasRef.current.getBoundingClientRect();
+      const pinch = pinchStateRef.current;
+      const distance = Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+      const factor = distance / Math.max(1, pinch.startDistance);
+      const midpoint = { x: ((first.clientX + second.clientX) / 2 - rect.left) / rect.width, y: ((first.clientY + second.clientY) / 2 - rect.top) / rect.height };
+      const scale = Math.max(1, Math.min(4, pinch.startView.scale * factor));
+      const worldX = (pinch.midpoint.x - pinch.startView.x) / pinch.startView.scale;
+      const worldY = (pinch.midpoint.y - pinch.startView.y) / pinch.startView.scale;
+      setView(clampView({ scale, x: midpoint.x - worldX * scale, y: midpoint.y - worldY * scale }));
+      return;
+    }
     if (resizingRef.current) {
       event.preventDefault();
       const point = pointFromEvent(event);
@@ -740,6 +816,8 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       redraw();
       const { start, end } = marqueeRef.current;
       context.save();
+      context.translate(view.x * rect.width, view.y * rect.height);
+      context.scale(view.scale, view.scale);
       context.strokeStyle = "#e36f4a";
       context.setLineDash([5, 4]);
       context.lineWidth = 1.2;
@@ -760,11 +838,21 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const context = canvas.getContext("2d");
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.save();
+    context.translate(view.x * rect.width, view.y * rect.height);
+    context.scale(view.scale, view.scale);
     if (isShape) { redraw(); drawObject(context, drawingRef.current, rect.width, rect.height); }
     else drawObject(context, { ...drawingRef.current, points: [previous, ...nextPoints] }, rect.width, rect.height);
+    context.restore();
   };
 
   const finishDrawing = (event) => {
+    pinchRef.current.delete(event.pointerId);
+    if (pinchStateRef.current) {
+      if (pinchRef.current.size < 2) pinchStateRef.current = null;
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
     if (resizingRef.current) {
       const resize = resizingRef.current;
       resizingRef.current = null;
@@ -1045,6 +1133,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       <label className="stroke-size"><span>Size</span><input type="range" min="1" max="12" value={selectedObject && !["text", "sticky"].includes(selectedObject.tool) ? Math.min(12, selectedObject.width) : lineWidth} onChange={(event) => changeWidth(Number(event.target.value))} aria-label="Stroke size" /></label>
       {selectedObjects.length > 0 && <div className="tool-segment board-selection-actions"><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
       <div className="tool-segment board-history"><button onClick={undo} disabled={!historyCounts.past} aria-label="Undo" type="button"><Undo2 size={19} /></button><button onClick={redo} disabled={!historyCounts.future} aria-label="Redo" type="button"><Redo2 size={19} /></button><button onClick={clear} disabled={!objects.length} aria-label="Clear current page" type="button"><Trash2 size={19} /></button></div>
+      <div className="tool-segment board-zoom" role="group" aria-label="Zoom"><button onClick={() => zoomAround(1 / 1.25)} disabled={view.scale <= 1} aria-label="Zoom out" type="button"><ZoomOut size={18} /></button><button className="board-zoom-level" onClick={() => setView({ scale: 1, x: 0, y: 0 })} disabled={view.scale === 1} aria-label="Reset zoom" title="Reset zoom and position" type="button">{Math.round(view.scale * 100)}%</button><button onClick={() => zoomAround(1.25)} disabled={view.scale >= 4} aria-label="Zoom in" type="button"><ZoomIn size={18} /></button></div>
     </div></div>
 
     <div className={`board-canvas-wrap background-${board.background}`} ref={containerRef}>{!loaded && <div className="board-loading"><RotateCcw className="spin" size={22} /> Restoring every page…</div>}<canvas ref={canvasRef} className="board-canvas" tabIndex="0" aria-label={`${activePage.name} drawing surface. Active tool: ${tool}`} onPointerDown={startDrawing} onPointerMove={continueDrawing} onPointerUp={finishDrawing} onPointerCancel={finishDrawing} /></div>

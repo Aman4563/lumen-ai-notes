@@ -7180,3 +7180,6 @@ input[type="range"] {
 .shortcut-group dd { margin: 0; color: var(--ink-soft); font-size: 0.75rem; }
 
 .board-header-actions { display: flex; align-items: center; gap: 8px; }
+
+/* Wave 10: board zoom */
+.board-zoom-level { min-width: 48px; font-size: 0.68rem; font-weight: 800; font-variant-numeric: tabular-nums; }
