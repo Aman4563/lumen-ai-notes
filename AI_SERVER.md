@@ -352,9 +352,22 @@ validated text-delta events plus a matching terminal envelope.
   to 50 messages are automatically retained as disclosed, clearable local browser data
   and appear in backups; a separate configurable retention toggle remains unimplemented.
 - Origin and Host checks protect normal browsers, but they are **not client
-  authentication**: a custom LAN client can forge HTTP headers. This release is
-  for one learner on a trusted private network. Do not use it as a shared or
-  hostile-network service until pairing/authentication is implemented.
+  authentication**: a custom LAN client can forge HTTP headers. Learner
+  pairing closes this gap: with `AI_AUTH=pairing` and an `AI_PAIRING_CODE`
+  (minimum 8 characters), the `/api/ai/respond`, `/api/ai/respond/stream`,
+  and `/api/local-search` endpoints require a paired session. The learner
+  enters the code once in the AI studio; `POST /api/auth/pair` verifies it in
+  constant time (five attempts per client per five minutes) and issues a
+  stateless HMAC-signed session in an HttpOnly SameSite=Strict cookie
+  (`Secure` under TLS, lifetime `AI_SESSION_TTL_HOURS`, default 30 days).
+  Revoke every session by rotating the pairing code and restarting, or by
+  changing/unsetting `AI_SESSION_SECRET` (an unset secret is ephemeral per
+  boot, so a restart alone revokes). Health, configuration, pairing, and
+  static assets stay public; configuration additionally reports
+  `auth.sessionActive` so the UI can show the pairing gate before a request
+  fails. Serving AI or search beyond loopback now **fails closed at startup**
+  unless pairing is enabled or the single-learner trusted-LAN profile is
+  explicitly acknowledged with `AI_ALLOW_UNAUTHENTICATED_LAN=true`.
 - A local-LAN HTTP URL is not encrypted. Use the private trusted-certificate
   procedure in `LOCAL_HTTPS.md`, or an equivalently authenticated HTTPS reverse
   proxy. Never expose Ollama or SearXNG directly to the LAN or public internet.

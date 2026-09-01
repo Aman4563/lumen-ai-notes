@@ -157,14 +157,24 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false } = {}) => {
-  const calls = { config: [], respond: [] };
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null } = {}) => {
+  const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname === "/api/ai/config") {
       calls.config.push({ method: request.method(), url: request.url(), headers: request.headers() });
       void request.respond(jsonResponse(configFactory()));
+      return;
+    }
+    if (url.pathname === "/api/auth/pair") {
+      let body = {};
+      try { body = JSON.parse(request.postData() || "{}"); } catch { body = {}; }
+      calls.pair.push({ method: request.method(), body });
+      const outcome = pairResponder
+        ? pairResponder(body)
+        : { status: 409, payload: { ok: false, requestId: "audit-pair", error: { code: "AI_AUTH_NOT_ENABLED", message: "This server does not use learner pairing." } } };
+      void request.respond(jsonResponse(outcome.payload, outcome.status));
       return;
     }
     if (url.pathname === "/api/ai/respond" || url.pathname === "/api/ai/respond/stream") {
@@ -604,6 +614,39 @@ try {
   );
   await noteScenario.page.close();
 
+  // Pairing-protected servers (AI_AUTH=pairing) must gate generation behind
+  // the one-time pairing flow with actionable errors (P0-5).
+  let pairingSessionActive = false;
+  const pairingConfigFactory = () => ({
+    ...secureConfig,
+    auth: { mode: "pairing", pairEndpoint: "/api/auth/pair", required: true, sessionActive: pairingSessionActive },
+  });
+  const pairing = await newAuditPage("pairing", pairingConfigFactory, {
+    pairResponder: (body) => {
+      if (body.code === "correct-horse-battery") {
+        pairingSessionActive = true;
+        return { status: 200, payload: { ok: true, requestId: "audit-pair", expiresAt: new Date(Date.now() + 3_600_000).toISOString() } };
+      }
+      return { status: 401, payload: { ok: false, requestId: "audit-pair", error: { code: "PAIRING_CODE_INVALID", message: "That pairing code does not match this server. Check it with the server operator." } } };
+    },
+  });
+  await pairing.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await pairing.page.waitForSelector(".ai-tutor__connection--pairing", { timeout: 10_000 });
+  assert.equal(await pairing.page.$eval(sendSelector, (button) => button.disabled), true, "an unpaired browser could still send AI requests");
+  await pairing.page.waitForSelector(".ai-tutor__pairing input", { timeout: 5_000 });
+  await pairing.page.type(".ai-tutor__pairing input", "wrong-guess");
+  await pairing.page.$eval(".ai-tutor__pairing button[type='submit']", (button) => button.click());
+  await pairing.page.waitForSelector(".ai-tutor__pairing-error", { timeout: 8_000 });
+  assert.match(await pairing.page.$eval(".ai-tutor__pairing-error", (node) => node.textContent), /does not match/i, "a rejected pairing code did not explain itself");
+  await pairing.page.$eval(".ai-tutor__pairing input", (input) => { input.value = ""; });
+  await pairing.page.type(".ai-tutor__pairing input", "correct-horse-battery");
+  await pairing.page.$eval(".ai-tutor__pairing button[type='submit']", (button) => button.click());
+  await pairing.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  assert.equal(pairing.calls.pair.length, 2, "pairing attempts were not sent exactly twice");
+  assert.equal(pairing.calls.respond.length, 0, "an unpaired browser reached the AI response endpoint");
+  assert.equal(await pairing.page.$(".ai-tutor__pairing"), null, "the pairing panel remained after a successful pairing");
+  await pairing.page.close();
+
   // A server from an older build advertises no request contract. The UI must
   // fail closed with restart guidance instead of a misleading Ready state.
   const { requestContract: _omitted, ...skewedConfig } = secureConfig;
@@ -631,7 +674,7 @@ try {
   await disabled.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, validated quiz, answer-to-note clipping, bounded persistence/clear, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, validated quiz, answer-to-note clipping, bounded persistence/clear, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

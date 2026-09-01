@@ -137,6 +137,16 @@ export const readAiServerConfig = (env = process.env) => {
   if (expectedModelDigest && !MODEL_DIGEST_PATTERN.test(expectedModelDigest)) throw new Error("OLLAMA_MODEL_DIGEST must be an exact 64-character lowercase SHA-256 digest");
   const allowPrivateNetworkServices = readBoolean(env, "AI_ALLOW_PRIVATE_NETWORK_SERVICES", false);
   const webSearchEnabled = readBoolean(env, "WEB_SEARCH_ENABLED", false);
+  const authMode = String(env.AI_AUTH || "open").trim().toLowerCase();
+  if (!["open", "pairing"].includes(authMode)) throw new Error("AI_AUTH must be open or pairing");
+  const pairingCode = String(env.AI_PAIRING_CODE || "");
+  if (authMode === "pairing" && pairingCode.trim().length < 8) {
+    throw new Error("AI_AUTH=pairing requires AI_PAIRING_CODE with at least 8 characters");
+  }
+  const sessionSecret = String(env.AI_SESSION_SECRET || "").trim().toLowerCase();
+  if (sessionSecret && !/^[a-f0-9]{64}$/.test(sessionSecret)) {
+    throw new Error("AI_SESSION_SECRET must be a 64-character hex string (or unset for an ephemeral per-boot secret)");
+  }
   const maxOutputTokens = readInteger(env, "AI_MAX_OUTPUT_TOKENS", DEFAULTS.maxOutputTokens, 128, 8_192);
   const responseProfileOutputTokens = Object.freeze({
     fast: readInteger(env, "AI_FAST_OUTPUT_TOKENS", Math.min(DEFAULTS.fastOutputTokens, maxOutputTokens), 128, maxOutputTokens),
@@ -179,6 +189,14 @@ export const readAiServerConfig = (env = process.env) => {
     webSearchMaxResponseBytes: readInteger(env, "WEB_SEARCH_MAX_RESPONSE_BYTES", DEFAULTS.webSearchMaxResponseBytes, 16_384, 2 * 1024 * 1024),
     allowedOrigins: readAllowedOrigins(env.AI_ALLOWED_ORIGINS),
     trustProxy: readBoolean(env, "AI_TRUST_PROXY"),
+    // Learner pairing (P0-5). "pairing" guards the AI/search POST endpoints
+    // behind a session minted from AI_PAIRING_CODE; "open" preserves the
+    // documented single-learner trusted-LAN profile.
+    authMode,
+    pairingCode,
+    sessionSecret,
+    sessionTtlHours: readInteger(env, "AI_SESSION_TTL_HOURS", 720, 1, 8_760),
+    allowUnauthenticatedLan: readBoolean(env, "AI_ALLOW_UNAUTHENTICATED_LAN", false),
   };
 
   if (config.maxConcurrentPerClient > config.maxConcurrent) {
@@ -199,6 +217,8 @@ export const publicAiConfig = (config, serviceStatus = {}) => ({
   // Contract identity is published unconditionally so a version-skewed
   // deployment is detectable even while AI is disabled or degraded.
   requestContract: AI_REQUEST_CONTRACT_ID,
+  // The route handler appends per-request `sessionActive` when pairing is on.
+  auth: { mode: config.authMode, pairEndpoint: "/api/auth/pair" },
   provider: "ollama-local",
   model: config.enabled ? config.model : null,
   unavailableReason: config.enabled ? null : "disabled_by_server",

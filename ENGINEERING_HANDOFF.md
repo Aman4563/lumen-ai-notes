@@ -858,10 +858,15 @@ Loopback development allows literal localhost/127.0.0.1 Hosts. Non-loopback serv
 closed unless TLS credentials and exact HTTPS `AI_ALLOWED_ORIGINS` are configured. Ollama
 and SearXNG remain loopback-only. Host checks defend ordinary DNS-rebinding browser paths.
 
-These controls are **not authentication**. A custom client on the LAN can forge headers.
-The current deployment is for one learner on a trusted private network. Do not use it in a
-shared classroom, office, guest Wi-Fi, or hostile network until pairing/authentication,
-authorization, session revocation, and abuse controls are designed and verified.
+Origin/Host checks alone are **not authentication**. As of 2026-09-01 the server also
+supports learner pairing (`AI_AUTH=pairing` + `AI_PAIRING_CODE`): the AI/search POST
+endpoints then require a stateless HMAC session issued by `POST /api/auth/pair` into an
+HttpOnly SameSite=Strict cookie, with constant-time code comparison, a five-attempt
+per-client pairing rate limit, and revocation by code/secret rotation or restart.
+Serving AI or search beyond loopback now fails closed at startup unless pairing is
+enabled or `AI_ALLOW_UNAUTHENTICATED_LAN=true` explicitly acknowledges the documented
+single-learner trusted-LAN profile. Shared classroom/office use should enable pairing;
+hostile-network exposure remains out of scope.
 
 Use a stable certificate-covered hostname or router-reserved address. The Mac address was
 `192.168.30.96` during the latest diagnostic, but DHCP addresses change; do not hard-code
@@ -1115,11 +1120,15 @@ changing the bundle.
 3. **Complete the physical-iPhone matrix.** Trusted HTTPS, real 710 MiB download, inference,
    offline reload, storage eviction/redownload, cache deletion, cancellation, background/
    suspend, memory, latency, heat, battery, and exact-query search.
-4. **Build an AI quality/evidence suite.** Versioned prompts, expected sources/claims,
-   current-date cases, adversarial injections, structured outputs, long conversations, and
-   regression thresholds on the pinned Qwen and phone model.
-5. **Add authentication before untrusted/shared LAN.** Pairing/session design, revocation,
-   rate/abuse semantics, and privacy tests.
+4. **Build an AI quality/evidence suite.** Delivered in part 2026-09-01: the versioned
+   deterministic tier (`eval/fixtures/v1` + `npm run audit:ai-eval`, 27 cases covering
+   retrieval hit@k, personal-note/edit provenance, fallback codes, budgets, adversarial
+   queries, determinism) now gates `npm run check`; the live-Qwen tier remains the
+   operator-run `scripts/live_ai_smoke.mjs` and the phone model remains a device gate
+   (see eval/README.md).
+5. **Add authentication before untrusted/shared LAN.** Delivered 2026-09-01 as opt-in
+   learner pairing with fail-closed non-loopback startup (see §11.3); physical multi-
+   device pairing evidence on the real LAN remains an operator step.
 6. **Secure secrets.** Move CA key to encrypted offline custody; never bundle env/private
    keys; rotate the SearX secret if any external tool/session log exposed it.
 
@@ -1525,8 +1534,13 @@ Before accepting this handoff as a durable engineering baseline:
 - [ ] Run live Library-first, source-free, prose-web, and structured-web fixtures.
 - [ ] Execute the trusted-HTTPS physical-iPhone matrix in
       [PHONE_LOCAL_AI.md](./PHONE_LOCAL_AI.md).
-- [ ] Establish the versioned claim-level/search quality evaluation set.
-- [ ] Decide authentication scope before any shared-LAN use.
+- [x] Establish the versioned claim-level/search quality evaluation set.
+      (Deterministic tier delivered 2026-09-01 as `eval/fixtures/v1` +
+      `audit:ai-eval` in `npm run check`; live-Qwen and device tiers remain
+      operator/device-run evidence — see eval/README.md.)
+- [x] Decide authentication scope before any shared-LAN use. (Decided and
+      delivered 2026-09-01: opt-in learner pairing, fail-closed non-loopback
+      startup, explicit single-learner waiver flag.)
 - [ ] Record all failures as typed request IDs/log metadata without private prompt contents.
 
 ## 21. Final critical assessment

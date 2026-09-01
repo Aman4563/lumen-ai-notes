@@ -176,6 +176,7 @@ class AuditPhoneEngine {
 
 const engine = new AuditPhoneEngine();
 engine.navigations = [];
+engine.savedNotes = [];
 window.__PHONE_AI_AUDIT__ = engine;
 
 const sources = [{
@@ -217,6 +218,6 @@ const retrieveLibrary = async (query, options = {}) => {
 
 const root = createRoot(document.getElementById("root"));
 root.render(
-  <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} onNavigateSource={(target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor })} onInteractionChange={(locked) => engine.interactionStates.push(locked)} />,
+  <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} onNavigateSource={(target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor })} onSaveAnswerNote={(payload) => { engine.savedNotes.push(payload); return true; }} onInteractionChange={(locked) => engine.interactionStates.push(locked)} />,
 );
 window.__UNMOUNT_PHONE_AI_AUDIT__ = () => root.unmount();

@@ -1902,6 +1902,54 @@
   border-color: color-mix(in srgb, var(--ai-accent) 52%, transparent);
 }
 
+.ai-tutor__pairing {
+  margin: 12px 16px 0;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 30%, var(--line, rgba(23, 32, 53, 0.1)));
+  border-radius: 13px;
+  background: var(--ai-accent-soft);
+}
+
+.ai-tutor__pairing label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.74rem;
+  font-weight: 780;
+}
+
+.ai-tutor__pairing-row {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-tutor__pairing-row input {
+  flex: 1 1 180px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 12px;
+  color: var(--ink, #172035);
+  background: var(--paper, #fff);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.14));
+  border-radius: 11px;
+  font-size: 0.86rem;
+}
+
+.ai-tutor__pairing-error {
+  margin: 8px 0 0;
+  color: var(--danger, #b3323f);
+  font-size: 0.76rem;
+}
+
+.ai-tutor__pairing-note {
+  margin: 8px 0 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
 .ai-tutor__response-profiles label.is-unavailable {
   cursor: not-allowed;
 }
