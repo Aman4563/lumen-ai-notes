@@ -143,6 +143,24 @@ try {
     assert.doesNotMatch(exported, /src="https?:/, "HTML export must not reference external assets");
   }
 
+  // Quick-insert: a lecture selection lands in the AI tutor prompt.
+  await page.$eval(".markdown-body", (article) => {
+    const paragraph = [...article.querySelectorAll("p")].find((node) => node.textContent.trim().length > 80);
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForFunction(() => [...document.querySelectorAll(".document-tools button")].some((button) => button.classList.contains("selection-ready") && button.textContent.includes("Ask AI")), { timeout: 5_000 });
+  await clickByText(page, ".document-tools button", "Ask AI");
+  await page.waitForSelector(".ai-tutor__composer textarea", { timeout: 20_000 });
+  const insertedPrompt = await page.$eval(".ai-tutor__composer textarea", (field) => field.value);
+  assert.ok(insertedPrompt.includes("Explain this excerpt"), "the selection was not inserted into the AI prompt");
+  await page.goto(`${baseUrl}#/read/${encodeURIComponent(documentId)}`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+
   await page.$eval('button[aria-label="Open menu"]', (button) => button.click());
   await page.waitForFunction(() => document.querySelector(".app-sidebar")?.classList.contains("open"));
   await clickByText(page, ".sidebar-primary button", "Library");
@@ -410,6 +428,15 @@ try {
     assert.match(svgText, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
     assert.ok((svgText.match(/<path |<polyline /g) || []).length >= 2, "the SVG export is missing the drawn lines");
   }
+
+  // BOARD-003 zoom: stepping in changes the level readout; reset restores it.
+  assert.equal(await page.$eval('button[aria-label="Zoom out"]', (button) => button.disabled), true, "zoom out must disable at 100%");
+  await page.$eval('button[aria-label="Zoom in"]', (button) => button.click());
+  await page.waitForFunction(() => document.querySelector(".board-zoom-level")?.textContent === "125%", { timeout: 5_000 })
+    .catch(() => assert.fail("zooming in did not reach 125%"));
+  await page.$eval('button[aria-label="Reset zoom"]', (button) => button.click());
+  await page.waitForFunction(() => document.querySelector(".board-zoom-level")?.textContent === "100%", { timeout: 5_000 })
+    .catch(() => assert.fail("reset did not restore the identity view"));
 
   await page.$eval(".board-page-controls select", (select) => { select.value = select.options[0].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("5 objects"));
