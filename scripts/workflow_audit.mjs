@@ -33,6 +33,18 @@ const readStored = (page, key) => page.evaluate((storageKey) => new Promise((res
   };
 }), key);
 
+// Polls the persisted record until the predicate holds, so assertions target the
+// durable IndexedDB state rather than racing the debounced whiteboard save.
+const waitForStored = async (page, key, predicate, message, timeout = 10_000) => {
+  const deadline = Date.now() + timeout;
+  do {
+    const value = await readStored(page, key).catch(() => null);
+    if (value && predicate(value)) return value;
+    await delay(150);
+  } while (Date.now() < deadline);
+  return assert.fail(message);
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -266,6 +278,102 @@ try {
   await clickByText(page, ".board-rename-dialog button", "Save name");
   await page.waitForFunction(() => document.querySelector(".board-page-controls select")?.selectedOptions[0]?.textContent.includes("Core concepts"));
 
+  // BUG-002 line matrix on the empty page 2: mouse line, pen-pressure line,
+  // rejected tap, undo/redo, move/recolor/resize, page-switch + reload
+  // persistence, and PNG export.
+  const boardKey = `board:${documentId}`;
+  await page.$eval(".board-page-controls select", (select) => { select.value = select.options[1].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("0 objects"));
+  await page.click('button[aria-label="Straight line"]');
+
+  await page.mouse.move(canvasBox.left + canvasBox.width * 0.15, canvasBox.top + canvasBox.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.left + canvasBox.width * 0.6, canvasBox.top + canvasBox.height * 0.35, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"));
+  const mouseLineBoard = await waitForStored(page, boardKey, (stored) => stored.pages?.[1]?.objects?.length === 1, "mouse-drawn line was not persisted");
+  const mouseLine = mouseLineBoard.pages[1].objects[0];
+  assert.equal(mouseLine.tool, "line", "mouse-drawn object is not a line");
+  assert.equal(mouseLine.points.length, 2, "mouse-drawn line does not store exactly two points");
+
+  // CDP mouse events with pointerType "pen" reach the page as real pen pointer
+  // events; force maps to PointerEvent.pressure (verified: pressure 0.9 arrives).
+  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: canvasBox.left + canvasBox.width * 0.15, y: canvasBox.top + canvasBox.height * 0.6, button: "left", buttons: 1, clickCount: 1, pointerType: "pen", force: 0.9 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: canvasBox.left + canvasBox.width * 0.4, y: canvasBox.top + canvasBox.height * 0.65, button: "left", buttons: 1, pointerType: "pen", force: 0.9 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: canvasBox.left + canvasBox.width * 0.6, y: canvasBox.top + canvasBox.height * 0.7, button: "left", buttons: 0, clickCount: 1, pointerType: "pen" });
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"));
+  const penBoard = await waitForStored(page, boardKey, (stored) => stored.pages?.[1]?.objects?.length === 2, "pen-drawn line was not persisted");
+  const penLine = penBoard.pages[1].objects[1];
+  assert.equal(penLine.tool, "line", "pen-drawn object is not a line");
+  assert.equal(penLine.points.length, 2, "pen-drawn line does not store exactly two points");
+  assert.notEqual(penLine.width, mouseLine.width, "pen pressure did not change the stored stroke width, so the pen pointer path was not exercised");
+
+  await page.mouse.move(canvasBox.left + canvasBox.width * 0.8, canvasBox.top + canvasBox.height * 0.85);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Drag across the board"));
+  assert.equal(await page.$eval(".toast", (node) => node.getAttribute("role")), "status", "tap-rejection toast is not exposed as a status live region");
+  assert.ok((await page.$eval(".board-hint", (node) => node.textContent)).includes("2 objects"), "a rejected zero-length tap changed the object count");
+
+  assert.equal(await page.$eval('button[aria-label="Redo"]', (button) => button.disabled), true, "Redo was enabled before any undo");
+  await page.click('button[aria-label="Undo"]');
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"));
+  assert.equal(await page.$eval('button[aria-label="Redo"]', (button) => button.disabled), false, "undoing the pen line did not enable Redo");
+  await page.click('button[aria-label="Redo"]');
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"));
+  assert.equal(await page.$eval('button[aria-label="Redo"]', (button) => button.disabled), true, "Redo did not disable again after restoring the pen line");
+
+  await page.click('button[aria-label="Select and move objects"]');
+  const grabX = canvasBox.left + canvasBox.width * 0.375;
+  const grabY = canvasBox.top + canvasBox.height * 0.325;
+  await page.mouse.click(grabX, grabY);
+  await page.waitForSelector('button[aria-label="Duplicate selected object"]');
+  await page.mouse.move(grabX, grabY);
+  await page.mouse.down();
+  await page.mouse.move(grabX + canvasBox.width * 0.1, grabY + canvasBox.height * 0.18, { steps: 5 });
+  await page.mouse.up();
+  await waitForStored(page, boardKey, (stored) => {
+    const object = stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id);
+    return Boolean(object) && (object.points[0].x !== mouseLine.points[0].x || object.points[0].y !== mouseLine.points[0].y);
+  }, "dragging the selected line did not persist moved points");
+  await page.click('button[aria-label="Use color #e36f4a"]');
+  await waitForStored(page, boardKey, (stored) => stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id)?.color === "#e36f4a", "recoloring the selected line was not persisted");
+  await page.$eval('input[aria-label="Stroke size"]', (input) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "8");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await waitForStored(page, boardKey, (stored) => stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id)?.width === 8, "resizing the selected line stroke was not persisted");
+
+  await page.$eval(".board-page-controls select", (select) => { select.value = select.options[0].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("5 objects"));
+  await page.$eval(".board-page-controls select", (select) => { select.value = select.options[1].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"));
+  await waitForStored(page, boardKey, (stored) => stored.activePageId === stored.pages[1].id && stored.pages[1].objects.length === 2, "line-matrix page state was not persisted before reload");
+  await page.reload({ waitUntil: "networkidle2" });
+  await page.waitForSelector(".board-canvas", { timeout: 15_000 });
+  await page.waitForFunction(() => {
+    const hint = document.querySelector(".board-hint")?.textContent || "";
+    return hint.includes("2 objects") && hint.includes("3 pages");
+  }, { timeout: 15_000 });
+
+  await page.click('button[aria-label="Export current whiteboard page as PNG"]');
+  let boardPngPath;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const files = await readdir(downloadDirectory);
+    const pngName = files.find((name) => name.endsWith(".png"));
+    if (pngName) {
+      boardPngPath = join(downloadDirectory, pngName);
+      break;
+    }
+    await delay(100);
+  }
+  assert.ok(boardPngPath, "whiteboard PNG was not downloaded");
+  await delay(150);
+  const pngBytes = await readFile(boardPngPath);
+  assert.ok(pngBytes.length > 0, "exported whiteboard PNG is empty");
+  assert.deepEqual([...pngBytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], "exported whiteboard file does not start with the PNG signature");
+
   await clickByText(page, ".bottom-nav button", "Notebook");
   await page.waitForSelector(".notebook-page");
   const notebookText = await page.$eval(".notebook-page", (node) => node.innerText);
@@ -325,7 +433,12 @@ try {
   await page.waitForFunction(() => document.querySelector(".library-results-meta")?.textContent.includes("1 results"));
   assert.equal(await page.$eval('.library-view-controls select', (select) => select.selectedOptions[0].textContent), "Relevance", "search did not default to relevance sorting");
   await page.select('.library-view-controls select', "title");
-  assert.ok((await page.$eval(".document-grid", (node) => node.innerText)).includes("Uploaded Persistence Proof"), "uploaded document was not searchable");
+  // Library search now resolves asynchronously in a Web Worker after the corpus
+  // lazy-loads, so wait for the uploaded title instead of asserting immediately.
+  await page.waitForFunction(
+    () => document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"),
+    { timeout: 10_000 },
+  ).catch(() => assert.fail("uploaded document was not searchable"));
 
   await page.click(".document-grid .document-card");
   await page.waitForSelector(".reader-view");
@@ -402,10 +515,18 @@ try {
   assert.equal(storedBoard.pages[0].name, "Core concepts", "whiteboard page rename was not persisted");
   assert.equal(storedBoard.pages[0].objects.length, 5, "advanced whiteboard objects were not persisted");
   assert.ok(storedBoard.pages[0].objects.some((object) => object.tool === "line" && object.points.length === 2), "touch-drawn straight line was not persisted");
+  const lineMatrixObjects = storedBoard.pages[1].objects;
+  assert.equal(lineMatrixObjects.length, 2, "line-matrix page did not persist both lines");
+  assert.ok(lineMatrixObjects.every((object) => object.tool === "line" && object.points.length === 2), "line-matrix page contains a non two-point line object");
+  const storedMouseLine = lineMatrixObjects.find((object) => object.id === mouseLine.id);
+  const storedPenLine = lineMatrixObjects.find((object) => object.id === penLine.id);
+  assert.equal(storedMouseLine.color, "#e36f4a", "recolored line did not survive to the end of the session");
+  assert.equal(storedMouseLine.width, 8, "resized line stroke did not survive to the end of the session");
+  assert.notEqual(storedPenLine.width, mouseLine.width, "pen-pressure stroke width did not survive to the end of the session");
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, create, upload, search, routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, search, routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

@@ -50,6 +50,7 @@ import { searchDocuments } from "./lib/search";
 import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { copyText } from "./lib/clipboard.js";
+import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
@@ -161,7 +162,15 @@ function useModalKeyboard(active, dialogRef, onClose) {
     window.addEventListener("keydown", handleKey);
     return () => {
       window.removeEventListener("keydown", handleKey);
-      previouslyFocused?.focus?.();
+      // The separate inert-cleanup effect may run after this cleanup, and
+      // focus() on an element inside an inert region is a silent no-op.
+      // Deferring one frame restores the opener after the background is
+      // interactive again (BUG-003 focus-restoration defect).
+      const target = previouslyFocused;
+      requestAnimationFrame(() => {
+        if (target?.isConnected && !target.closest?.("[inert]")) target.focus?.();
+        else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected) target.focus?.(); });
+      });
     };
   }, [active, dialogRef]);
 }
@@ -305,6 +314,10 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   const [layout, setLayout] = useState("grid");
   const [searchIndex, setSearchIndex] = useState(null);
   const [searchIndexError, setSearchIndexError] = useState("");
+  const [workerResults, setWorkerResults] = useState(null);
+  const searchClientRef = useRef(null);
+  const corpusSentRef = useRef(false);
+  const sentCustomRef = useRef(new Map());
   const normalized = query.trim();
   useEffect(() => {
     if (!normalized || searchIndex) return undefined;
@@ -314,22 +327,76 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
       .catch(() => { if (active) setSearchIndexError("Full lecture text could not be loaded; title and summary search remains available."); });
     return () => { active = false; };
   }, [normalized, searchIndex]);
+  useEffect(() => () => {
+    searchClientRef.current?.terminate();
+    searchClientRef.current = null;
+  }, []);
+  useEffect(() => {
+    // Full-text parsing and ranking run in a Web Worker (PERF-001); the
+    // immutable built-in corpus is transferred once after its lazy load.
+    if (!searchIndex || corpusSentRef.current) return;
+    if (!searchClientRef.current) searchClientRef.current = createLibrarySearchClient();
+    searchClientRef.current.setCorpus(
+      allDocuments.filter((doc) => doc.source === "builtin"),
+      [...searchIndex.entries()],
+    );
+    corpusSentRef.current = true;
+  }, [allDocuments, searchIndex]);
+  useEffect(() => {
+    const client = searchClientRef.current;
+    if (!client || !corpusSentRef.current) return;
+    const seen = sentCustomRef.current;
+    const present = new Set();
+    const upsert = [];
+    for (const doc of customDocuments) {
+      present.add(doc.id);
+      if (seen.get(doc.id) !== doc) upsert.push(doc);
+      seen.set(doc.id, doc);
+    }
+    const removeIds = [...seen.keys()].filter((id) => !present.has(id));
+    for (const id of removeIds) seen.delete(id);
+    if (upsert.length || removeIds.length) client.updateCustom(upsert, removeIds);
+  }, [customDocuments, searchIndex]);
+  const candidates = useMemo(() => selectedPart === "uploads"
+    ? customDocuments
+    : selectedPart === "guides"
+      ? guides
+      : selectedPart === "bookmarks"
+        ? allDocuments.filter((doc) => profile.bookmarks.includes(doc.id))
+        : selectedPart === "progress"
+          ? allDocuments.filter((doc) => (profile.progress[doc.id] || 0) > 0 && (profile.progress[doc.id] || 0) < 0.96)
+          : selectedPart === "recent"
+            ? profile.recent.map((id) => allDocuments.find((doc) => doc.id === id)).filter(Boolean)
+          : selectedPart
+            ? allDocuments.filter((doc) => doc.partNumber === Number(selectedPart))
+            : allDocuments, [allDocuments, customDocuments, profile.bookmarks, profile.progress, profile.recent, selectedPart]);
+  useEffect(() => {
+    if (!normalized || !searchIndex || !searchClientRef.current) {
+      setWorkerResults(null);
+      return undefined;
+    }
+    let active = true;
+    searchClientRef.current.search(normalized, candidates.map((doc) => doc.id))
+      .then(({ stale, results }) => { if (active && !stale) setWorkerResults(results); })
+      .catch(() => { if (active) setWorkerResults(null); });
+    return () => { active = false; };
+  }, [candidates, normalized, searchIndex]);
   const visible = useMemo(() => {
-    let candidates = selectedPart === "uploads"
-      ? customDocuments
-      : selectedPart === "guides"
-        ? guides
-        : selectedPart === "bookmarks"
-          ? allDocuments.filter((doc) => profile.bookmarks.includes(doc.id))
-          : selectedPart === "progress"
-            ? allDocuments.filter((doc) => (profile.progress[doc.id] || 0) > 0 && (profile.progress[doc.id] || 0) < 0.96)
-            : selectedPart === "recent"
-              ? profile.recent.map((id) => allDocuments.find((doc) => doc.id === id)).filter(Boolean)
-            : selectedPart
-              ? allDocuments.filter((doc) => doc.partNumber === Number(selectedPart))
-              : allDocuments;
-    if (normalized && searchIndex) candidates = candidates.map((doc) => doc.source === "builtin" ? { ...doc, searchText: searchIndex.get(doc.id) || doc.searchText } : doc);
-    const results = normalized ? searchDocuments(candidates, normalized) : [...candidates];
+    let results;
+    if (normalized && workerResults) {
+      const byId = new Map(workerResults.map((entry) => [entry.id, entry]));
+      results = candidates
+        .filter((doc) => byId.has(doc.id))
+        .map((doc) => ({ ...doc, description: byId.get(doc.id).snippet || doc.description, searchScore: byId.get(doc.id).searchScore }))
+        .sort((a, b) => b.searchScore - a.searchScore || a.partNumber - b.partNumber || a.chapterNumber - b.chapterNumber);
+    } else if (normalized) {
+      // Metadata-only search covers the moments before the corpus/worker is
+      // ready and the degraded no-index path; it never parses full text on
+      // the main thread.
+      results = searchDocuments(candidates, normalized);
+    } else {
+      results = [...candidates];
+    }
     if (sortBy === "smart") return results;
     if (sortBy === "title") return results.sort((a, b) => a.title.localeCompare(b.title));
     if (sortBy === "shortest") return results.sort((a, b) => a.minutes - b.minutes || a.title.localeCompare(b.title));
@@ -340,7 +407,7 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
       return (aIndex < 0 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex < 0 ? Number.MAX_SAFE_INTEGER : bIndex);
     });
     return results.sort((a, b) => a.partNumber - b.partNumber || a.chapterNumber - b.chapterNumber || a.title.localeCompare(b.title));
-  }, [allDocuments, customDocuments, normalized, profile.bookmarks, profile.progress, profile.recent, searchIndex, selectedPart, sortBy]);
+  }, [candidates, normalized, profile.progress, profile.recent, sortBy, workerResults]);
 
   return (
     <div className="page library-page">
@@ -368,7 +435,7 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   );
 }
 
-function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload, onCreate, onDeleteCustom, onDuplicateCustom, onDeleteClipping, onUpdateClipping, onCopyClipping, onCreateReview, onDeleteAnnotation }) {
+function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload, onCreate, onDeleteCustom, onDuplicateCustom, onDeleteClipping, onUpdateClipping, onCopyClipping, onCreateReview, onCopyAnnotation, onExportAnnotations, onDeleteAnnotation }) {
   const [notebookQuery, setNotebookQuery] = useState("");
   const [annotationPurpose, setAnnotationPurpose] = useState("all");
   const annotated = Object.entries(profile.personalNotes).filter(([, note]) => note.trim()).map(([id, note]) => ({ doc: allDocuments.find((item) => item.id === id), note })).filter((item) => item.doc);
@@ -408,7 +475,7 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
       {visibleCustom.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Created and uploaded</span><h2>My lectures</h2></div></div><div className="document-list">{visibleCustom.map((doc) => <div className="notebook-document-row" key={doc.id}><DocumentCard doc={doc} profile={profile} onOpen={onOpen} compact /><div className="notebook-row-actions"><button className="icon-button" onClick={() => onDuplicateCustom(doc.id)} aria-label={`Duplicate ${doc.title}`} title="Duplicate" type="button"><Copy size={17} /></button><button className="icon-button danger" onClick={() => onDeleteCustom(doc.id)} aria-label={`Delete ${doc.title}`} title="Delete" type="button"><Trash2 size={17} /></button></div></div>)}</div></section>}
       {visibleAnnotated.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Captured ideas</span><h2>Personal notes</h2></div></div><div className="note-grid">{visibleAnnotated.map(({ doc, note }) => <button className="note-card" onClick={() => onOpen(doc.id)} key={doc.id} type="button"><span>{doc.partTitle}</span><strong>{doc.title}</strong><p>{note}</p><ChevronRight size={18} /></button>)}</div></section>}
       {visibleClippings.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved excerpts</span><h2>Clippings</h2></div></div><div className="clipping-grid">{visibleClippings.map((clip) => { const doc = allDocuments.find((item) => item.id === clip.documentId); const linked = profile.reviewItems.some((item) => item.sourceClippingId === clip.id); const aiOrigin = clip.origin === "ai-tutor"; return <article className={`clipping-card${aiOrigin ? " clipping-card--ai" : ""}`} key={clip.id}>{aiOrigin ? <BrainCircuit size={18} /> : <Highlighter size={18} />}{aiOrigin && <span className="clipping-origin" title="Generated by the AI tutor and saved by you; verify before relying on it">{clip.title || "AI tutor answer"} · AI draft</span>}<blockquote>{clip.text}</blockquote><textarea value={clip.note || ""} maxLength={4_000} onChange={(event) => onUpdateClipping(clip.id, event.target.value)} placeholder="Add why this matters, a question, or an interview connection…" aria-label="Comment on this clipping" /><div>{doc || !aiOrigin ? <button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button> : <span className="clipping-no-source">No linked lecture</span>}<span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(clip)} aria-label={linked ? "Create another review card from clipping" : "Create review card from clipping"} title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyClipping(clip)} aria-label="Copy clipping" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteClipping(clip.id)} aria-label="Delete clipping" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div></section>}
-      {profile.annotations.length > 0 && <section className="notebook-section"><div className="section-heading annotation-section-heading"><div><span className="eyebrow">Source anchored</span><h2>Highlights</h2></div><label>Purpose<select value={annotationPurpose} onChange={(event) => setAnnotationPurpose(event.target.value)}><option value="all">All</option><option value="important">Important</option><option value="definition">Definitions</option><option value="question">Questions</option><option value="interview">Interview</option></select></label></div>{visibleAnnotations.length ? <div className="notebook-annotation-grid">{visibleAnnotations.map((annotation) => { const doc = allDocuments.find((item) => item.id === annotation.documentId); return <article className={`notebook-annotation-card ${annotation.color}`} key={annotation.id}><span className="annotation-purpose">{annotation.purpose}</span><blockquote>{annotation.quote}</blockquote>{annotation.comment && <p>{annotation.comment}</p>}{annotation.tags?.length > 0 && <div className="annotation-tags">{annotation.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}<div><button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button><span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(annotation)} aria-label="Create review card from highlight" title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteAnnotation(annotation.id)} aria-label="Delete highlight" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div> : <div className="empty-state compact"><Search size={24} /><h2>No matching highlights</h2><p>Choose another purpose or clear the notebook search.</p></div>}</section>}
+      {profile.annotations.length > 0 && <section className="notebook-section"><div className="section-heading annotation-section-heading"><div><span className="eyebrow">Source anchored</span><h2>Highlights</h2></div><div className="annotation-heading-actions"><label>Purpose<select value={annotationPurpose} onChange={(event) => setAnnotationPurpose(event.target.value)}><option value="all">All</option><option value="important">Important</option><option value="definition">Definitions</option><option value="question">Questions</option><option value="interview">Interview</option></select></label><button className="button ghost" onClick={() => onExportAnnotations(visibleAnnotations)} aria-label="Export the listed highlights as Markdown" type="button"><Download size={15} /> Export</button></div></div>{visibleAnnotations.length ? <div className="notebook-annotation-grid">{visibleAnnotations.map((annotation) => { const doc = allDocuments.find((item) => item.id === annotation.documentId); return <article className={`notebook-annotation-card ${annotation.color}`} key={annotation.id}><span className="annotation-purpose">{annotation.purpose}</span><blockquote>{annotation.quote}</blockquote>{annotation.comment && <p>{annotation.comment}</p>}{annotation.tags?.length > 0 && <div className="annotation-tags">{annotation.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}<div><button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button><span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(annotation)} aria-label="Create review card from highlight" title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyAnnotation(annotation)} aria-label="Copy highlight" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteAnnotation(annotation.id)} aria-label="Delete highlight" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div> : <div className="empty-state compact"><Search size={24} /><h2>No matching highlights</h2><p>Choose another purpose or clear the notebook search.</p></div>}</section>}
       {visibleBookmarked.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved</span><h2>Bookmarks</h2></div></div><div className="document-list">{visibleBookmarked.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={onOpen} compact />)}</div></section>}
       {normalizedQuery && !visibleCount && <div className="empty-state"><Search size={30} /><h2>No notebook match</h2><p>Try a document title, a phrase from a clipping, a tag, or words from your own annotation.</p><button className="button secondary" onClick={() => setNotebookQuery("")} type="button">Clear search</button></div>}
       {!customDocuments.length && !annotated.length && !bookmarked.length && !profile.clippings.length && !profile.annotations.length && <div className="empty-state notebook-empty"><NotebookPen size={34} /><h2>Your notebook is ready</h2><p>Bookmark a lecture, highlight or clip an excerpt, write a personal note, edit a local copy, or upload your own Markdown.</p><button className="button primary" onClick={onCreate} type="button">Create first note</button></div>}
@@ -1327,6 +1394,35 @@ export default function App() {
     }
   };
 
+  const annotationExportText = useCallback((annotation) => {
+    const doc = allDocumentMap.get(annotation.documentId);
+    return `> ${annotation.quote}${annotation.comment ? `\n\nMy note: ${annotation.comment}` : ""}${annotation.tags?.length ? `\nTags: ${annotation.tags.join(", ")}` : ""}\nPurpose: ${annotation.purpose}${doc ? `\nSource: ${doc.title}` : ""}`;
+  }, [allDocumentMap]);
+
+  const copyAnnotation = useCallback(async (annotation) => {
+    try {
+      await copyText(annotationExportText(annotation));
+      notify("Highlight copied to the clipboard.");
+    } catch {
+      notify("The highlight could not be copied.", "error");
+    }
+  }, [annotationExportText, notify]);
+
+  const exportAnnotations = useCallback((annotations) => {
+    const items = Array.isArray(annotations) && annotations.length ? annotations : profileRef.current.annotations;
+    if (!items.length) {
+      notify("There are no highlights to export yet.", "error");
+      return;
+    }
+    const body = items.map((annotation) => annotationExportText(annotation)).join("\n\n---\n\n");
+    downloadText(
+      `lumen-highlights-${new Date().toISOString().slice(0, 10)}.md`,
+      `# Lumen highlights (${items.length})\n\nExported ${new Date().toISOString()}.\n\n${body}\n`,
+      "text/markdown",
+    );
+    notify(`${items.length} highlight${items.length === 1 ? "" : "s"} exported as Markdown.`);
+  }, [annotationExportText, notify]);
+
   const openReviewDraft = useCallback((sourceItem) => {
     if (!sourceItem) {
       setReviewDraft({ front: "", back: "", tags: [], documentId: "", sourceClippingId: "", sourceTitle: "" });
@@ -1781,7 +1877,7 @@ export default function App() {
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} />}
           {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
-          {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onDeleteAnnotation={deleteAnnotation} />}
+          {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><div><span className="eyebrow">Private, source-grounded assistance</span><h1>AI learning studio</h1><p>Choose a larger local model on your Mac or a lightweight model on this phone—without a paid AI API.</p></div></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} onNotify={notify} /></Suspense></div>)}
