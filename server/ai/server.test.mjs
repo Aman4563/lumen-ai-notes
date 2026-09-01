@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { afterEach, test } from "node:test";
 
+import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
 import { createApplicationServer, silentLogger } from "../server.mjs";
 
 const runningServers = new Set();
@@ -35,6 +36,7 @@ const post = (baseUrl, payload, headers = {}) => fetch(`${baseUrl}/api/ai/respon
 });
 
 const plainRequest = {
+  contract: AI_REQUEST_CONTRACT_ID,
   task: "explain",
   prompt: "Explain why validation data must not tune the final test score.",
   context: "The test split estimates performance only after all choices are fixed.",
@@ -103,6 +105,8 @@ test("disabled local AI remains healthy and never calls a service", async () => 
   assert.equal(health.status, "ok");
   assert.equal(health.ai, "disabled");
   assert.equal(health.webSearch, "disabled");
+  assert.equal(health.requestContract, AI_REQUEST_CONTRACT_ID);
+  assert.equal(config.requestContract, AI_REQUEST_CONTRACT_ID);
   assert.equal(appShellResponse.status, 200);
   assert.equal(appShellResponse.headers.get("x-frame-options"), "DENY");
   assert.equal(appShellResponse.headers.get("content-security-policy"), "frame-ancestors 'none'");
@@ -305,6 +309,7 @@ test("structured tasks use server-owned JSON Schema and validate the result", as
     },
   });
   const response = await post(baseUrl, {
+    contract: AI_REQUEST_CONTRACT_ID,
     task: "flashcards",
     prompt: "Create one card.",
     context: "Leakage makes evaluation optimistic.",
@@ -482,6 +487,30 @@ test("body limits, origins, and per-client rate limits are enforced", async () =
   assert.equal(first.status, 200);
   assert.equal(limited.status, 429);
   assert.equal((await limited.json()).error.code, "RATE_LIMITED");
+});
+
+test("version-skewed request contracts fail with one typed, actionable error", async () => {
+  const baseUrl = await start({ fetchImpl: async () => ollamaReply("ok") });
+  const { contract, ...stalePayload } = plainRequest;
+
+  const missing = await post(baseUrl, stalePayload);
+  const missingBody = await missing.json();
+  assert.equal(missing.status, 409);
+  assert.equal(missingBody.error.code, "AI_CONTRACT_MISMATCH");
+  assert.match(missingBody.error.message, /reload the app/i);
+  assert.match(missingBody.error.message, /restart the integrated lumen server/i);
+
+  const stale = await fetch(`${baseUrl}/api/ai/respond/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...plainRequest, contract: "lumen.ai.request.v0" }),
+  });
+  const staleBody = await stale.json();
+  assert.equal(stale.status, 409);
+  assert.equal(staleBody.error.code, "AI_CONTRACT_MISMATCH");
+
+  const matching = await post(baseUrl, plainRequest);
+  assert.equal(matching.status, 200);
 });
 
 test("loopback API rejects DNS-rebinding Host and Origin pairs", async () => {

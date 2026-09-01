@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
 import { readAiServerConfig, publicAiConfig } from "./config.mjs";
 import { validateAiRequest } from "./contracts.mjs";
 import { buildOllamaRequest, createOllamaResponse, fallbackWebSearchQuery, OllamaProxyError, probeLocalAiServices } from "./ollama.mjs";
 import { rankPublicSearchResults, sanitizePublicResultUrl, searchSearxng, validateSearchQuery, WebSearchError } from "./searxng.mjs";
 
 const request = Object.freeze({
+  contract: AI_REQUEST_CONTRACT_ID,
   task: "explain",
   prompt: "What changed recently?",
   context: "",
@@ -50,6 +52,31 @@ test("remote AI/search endpoints and unsupported providers are rejected at start
     SEARXNG_URL: "http://lumen-search.local:8080",
   });
   assert.equal(lan.ollamaUrl, "http://192.168.1.20:11434");
+});
+
+test("the published request-contract identity is exact and version-skewed payloads fail typed", () => {
+  const config = readAiServerConfig({ AI_ENABLED: "true" });
+  // Pin the exact published identity: an accidental edit to the shared
+  // constant must fail this test, not silently re-version the contract.
+  assert.equal(AI_REQUEST_CONTRACT_ID, "lumen.ai.request.v1");
+  assert.equal(publicAiConfig(config).requestContract, AI_REQUEST_CONTRACT_ID);
+  assert.equal(publicAiConfig(readAiServerConfig({})).requestContract, AI_REQUEST_CONTRACT_ID, "a disabled server must still advertise its contract");
+
+  const { contract, ...withoutContract } = request;
+  const missing = validateAiRequest(withoutContract, config);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.contractMismatch, true);
+  assert.equal(missing.expectedContract, AI_REQUEST_CONTRACT_ID);
+  assert.equal(missing.receivedContract, null);
+
+  const stale = validateAiRequest({ ...request, contract: "lumen.ai.request.v0" }, config);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.contractMismatch, true);
+  assert.equal(stale.receivedContract, "lumen.ai.request.v0");
+
+  const matching = validateAiRequest({ ...request }, config);
+  assert.equal(matching.ok, true);
+  assert.equal(matching.value.contract, AI_REQUEST_CONTRACT_ID);
 });
 
 test("webSearch is a strict boolean and requires server capability", () => {
@@ -114,6 +141,7 @@ test("a canonical browser request at the advertised profile byte boundary is acc
   const config = { ...readAiServerConfig({ AI_ENABLED: "true" }), model: "test-model" };
   const maximum = publicAiConfig(config).responseProfiles.maxRequestUtf8Bytes.balanced;
   const base = {
+    contract: AI_REQUEST_CONTRACT_ID,
     task: "explain",
     prompt: "Explain calibration.",
     context: "",

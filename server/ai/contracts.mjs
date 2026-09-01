@@ -1,3 +1,5 @@
+import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
+
 export const AI_TASKS = Object.freeze([
   "tutor",
   "explain",
@@ -38,6 +40,7 @@ const validateText = (errors, value, field, { required = false, maximum }) => {
 };
 
 const REQUEST_KEYS = new Set([
+  "contract",
   "task",
   "prompt",
   "context",
@@ -56,6 +59,18 @@ const REQUEST_KEYS = new Set([
 export const validateAiRequest = (payload, config) => {
   const errors = [];
   if (!asRecord(payload)) return { ok: false, errors: ["Request body must be a JSON object"] };
+  // Contract identity is checked before field validation so a version-skewed
+  // UI receives one typed, actionable mismatch error instead of a confusing
+  // list of unsupported/missing-field failures.
+  if (payload.contract !== AI_REQUEST_CONTRACT_ID) {
+    return {
+      ok: false,
+      contractMismatch: true,
+      expectedContract: AI_REQUEST_CONTRACT_ID,
+      receivedContract: typeof payload.contract === "string" ? payload.contract.slice(0, 100) : null,
+      errors: [`contract must be ${AI_REQUEST_CONTRACT_ID}`],
+    };
+  }
   if (!hasOnlyKeys(payload, REQUEST_KEYS)) errors.push("Request contains unsupported fields");
 
   const task = typeof payload.task === "string" ? payload.task : "";
@@ -148,6 +163,7 @@ export const validateAiRequest = (payload, config) => {
   return {
     ok: true,
     value: {
+      contract: AI_REQUEST_CONTRACT_ID,
       task,
       prompt,
       context,

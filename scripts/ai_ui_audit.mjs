@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 
+import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
+
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-ai-ui-profile-"));
@@ -25,6 +27,7 @@ const supportedTasks = [
 const secureConfig = Object.freeze({
   ok: true,
   enabled: true,
+  requestContract: AI_REQUEST_CONTRACT_ID,
   provider: "ollama-local",
   model: "audit-local-model",
   unavailableReason: null,
@@ -295,6 +298,7 @@ try {
   assert.equal(plainRequest.method, "POST");
   assert.equal(new URL(plainRequest.url).origin, new URL(baseUrl).origin, "AI response request was not same-origin");
   assert.equal(plainRequest.headers.authorization, undefined, "browser request exposed an Authorization header");
+  assert.equal(plainRequest.body.contract, AI_REQUEST_CONTRACT_ID, "canonical request did not declare the compiled request contract");
   assert.equal(plainRequest.body.task, "explain");
   assert.equal(plainRequest.body.responseFormat, "markdown", "plain response did not send the canonical server-normalized format field");
   assert.equal(plainRequest.body.conversationSummary, "", "plain response did not send the canonical server-normalized summary field");
@@ -480,6 +484,20 @@ try {
   assert.equal(unsafe.calls.respond.length, 0, "unsafe configuration reached the AI response endpoint");
   await unsafe.page.close();
 
+  // A server from an older build advertises no request contract. The UI must
+  // fail closed with restart guidance instead of a misleading Ready state.
+  const { requestContract: _omitted, ...skewedConfig } = secureConfig;
+  const skewed = await newAuditPage("contract-skew", () => skewedConfig);
+  await skewed.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await skewed.page.waitForSelector(".ai-tutor__connection--error", { timeout: 10_000 });
+  const skewMessage = await skewed.page.$eval(".ai-tutor__connection--error", (node) => node.textContent.replace(/\s+/g, " "));
+  assert.match(skewMessage, /different versions/i, "version-skewed server did not produce the contract-mismatch guidance");
+  assert.match(skewMessage, /restart the integrated Lumen server/i, "contract-mismatch state did not tell the operator how to recover");
+  assert.equal(await skewed.page.$(".ai-tutor__connection--ready"), null, "version-skewed server still reported Ready");
+  assert.equal(await skewed.page.$eval(sendSelector, (button) => button.disabled), true, "version-skewed configuration did not fail closed");
+  assert.equal(skewed.calls.respond.length, 0, "version-skewed configuration reached the AI response endpoint");
+  await skewed.page.close();
+
   const disabledConfig = { ...secureConfig, enabled: false, model: null, unavailableReason: "server_not_configured" };
   const disabled = await newAuditPage("disabled", () => disabledConfig);
   await disabled.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
@@ -493,7 +511,7 @@ try {
   await disabled.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations, validated quiz, bounded persistence/clear, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations, validated quiz, bounded persistence/clear, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

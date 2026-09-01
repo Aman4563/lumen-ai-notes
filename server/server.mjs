@@ -7,6 +7,7 @@ import { extname, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { publicAiConfig, readAiServerConfig } from "./ai/config.mjs";
+import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { validateAiRequest } from "./ai/contracts.mjs";
 import { createOllamaResponse, createOllamaStreamingResponse, OllamaProxyError, probeInstalledModelIdentity, probeLocalAiServices } from "./ai/ollama.mjs";
 import { searchSearxng, validateSearchQuery, WebSearchError } from "./ai/searxng.mjs";
@@ -302,6 +303,17 @@ const respondToAiRequest = async ({ request, response, config, fetchImpl, reques
 
   const validation = validateAiRequest(payload, config);
   if (!validation.ok) {
+    if (validation.contractMismatch) {
+      // A stale UI (old PWA shell) talking to a newer server, or the reverse,
+      // must fail with one clear action instead of opaque field errors.
+      sendJson(response, 409, errorPayload(
+        requestId,
+        "AI_CONTRACT_MISMATCH",
+        "This app build and the AI server use different request contracts. Reload the app to update it; if that does not help, rebuild and restart the integrated Lumen server so the server and app come from the same build.",
+        validation.errors,
+      ), rateHeaders);
+      return;
+    }
     sendJson(response, 400, errorPayload(requestId, "VALIDATION_ERROR", "The AI request is invalid.", validation.errors), rateHeaders);
     return;
   }
@@ -427,6 +439,17 @@ const respondToAiStreamRequest = async ({ request, response, config, fetchImpl, 
 
   const validation = validateAiRequest(payload, config);
   if (!validation.ok) {
+    if (validation.contractMismatch) {
+      // A stale UI (old PWA shell) talking to a newer server, or the reverse,
+      // must fail with one clear action instead of opaque field errors.
+      sendJson(response, 409, errorPayload(
+        requestId,
+        "AI_CONTRACT_MISMATCH",
+        "This app build and the AI server use different request contracts. Reload the app to update it; if that does not help, rebuild and restart the integrated Lumen server so the server and app come from the same build.",
+        validation.errors,
+      ), rateHeaders);
+      return;
+    }
     sendJson(response, 400, errorPayload(requestId, "VALIDATION_ERROR", "The AI request is invalid.", validation.errors), rateHeaders);
     return;
   }
@@ -799,6 +822,7 @@ export const createApplicationServer = ({
         ok: true,
         service: "lumen-ai-notes",
         status: "ok",
+        requestContract: AI_REQUEST_CONTRACT_ID,
         ai: config.enabled ? "configured" : "disabled",
         webSearch: config.webSearchEnabled ? "configured" : "disabled",
         requestId,

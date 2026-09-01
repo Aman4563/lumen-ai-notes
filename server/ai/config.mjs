@@ -1,3 +1,5 @@
+import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
+
 const DEFAULTS = Object.freeze({
   host: "0.0.0.0",
   port: 4173,
@@ -194,6 +196,9 @@ export const readAiServerConfig = (env = process.env) => {
 
 export const publicAiConfig = (config, serviceStatus = {}) => ({
   enabled: config.enabled,
+  // Contract identity is published unconditionally so a version-skewed
+  // deployment is detectable even while AI is disabled or degraded.
+  requestContract: AI_REQUEST_CONTRACT_ID,
   provider: "ollama-local",
   model: config.enabled ? config.model : null,
   unavailableReason: config.enabled ? null : "disabled_by_server",
