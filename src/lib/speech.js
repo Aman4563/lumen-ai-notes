@@ -176,6 +176,33 @@ const PREVIEW_TEXT = Object.freeze({
   zh: "这是所选学习语音的试听。",
 });
 
+/**
+ * Pronunciation overrides (AUDIO-001): learner-defined replacements applied
+ * to narration text before chunking. Whole-word, case-insensitive, single
+ * pass (a replacement never re-triggers another term), bounded to 50 terms.
+ */
+export const MAX_PRONUNCIATIONS = 50;
+
+export const normalizePronunciations = (value) => (Array.isArray(value) ? value : [])
+  .filter((entry) => entry && typeof entry.term === "string" && typeof entry.spoken === "string" && entry.term.trim() && entry.spoken.trim())
+  .map((entry) => ({ term: entry.term.trim().slice(0, 60), spoken: entry.spoken.trim().slice(0, 120) }))
+  .filter((entry, index, list) => list.findIndex((other) => other.term.toLocaleLowerCase() === entry.term.toLocaleLowerCase()) === index)
+  .slice(0, MAX_PRONUNCIATIONS);
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export const applyPronunciations = (text, pronunciations) => {
+  const list = normalizePronunciations(pronunciations);
+  if (!list.length) return String(text || "");
+  let output = String(text || "");
+  for (const { term, spoken } of list) {
+    const boundary = /^[a-z0-9]/i.test(term) && /[a-z0-9]$/i.test(term);
+    const pattern = new RegExp(boundary ? `\\b${escapeRegExp(term)}\\b` : escapeRegExp(term), "gi");
+    output = output.replace(pattern, spoken);
+  }
+  return output;
+};
+
 export const speechPreviewText = (language, selectedVoice) => {
   const candidate = normalizeSpeechLanguage(selectedVoice?.lang || language);
   return PREVIEW_TEXT[candidate.split("-")[0]] || PREVIEW_TEXT.en;

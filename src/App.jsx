@@ -40,6 +40,7 @@ import {
   Sun,
   Trash2,
   Upload,
+  Volume2,
   Wifi,
   WifiOff,
   X,
@@ -679,6 +680,28 @@ function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, 
         {wakeLock.error && <p className="inline-warning">{wakeLock.error}</p>}
         <button className="button ghost settings-reset-button" onClick={onResetSettings} type="button"><RotateCcw size={16} /> Restore reading defaults</button>
       </section>
+
+      <section className="settings-card">
+        <div className="settings-card-heading"><Volume2 size={21} /><div><strong>Narration pronunciation</strong><span>Teach the voice how to say project-specific terms.</span></div></div>
+        <label className="pronunciation-editor"><span>One override per line, as <code>term = spoken form</code></span>
+          <textarea
+            defaultValue={(settings.pronunciations || []).map((entry) => `${entry.term} = ${entry.spoken}`).join("\n")}
+            onBlur={(event) => {
+              const pronunciations = event.target.value.split("\n")
+                .map((line) => line.split("="))
+                .filter((parts) => parts.length >= 2 && parts[0].trim() && parts.slice(1).join("=").trim())
+                .map((parts) => ({ term: parts[0].trim().slice(0, 60), spoken: parts.slice(1).join("=").trim().slice(0, 120) }))
+                .slice(0, 50);
+              onSettingsChange({ pronunciations });
+              if (pronunciations.length) onNotify?.(`${pronunciations.length} pronunciation override${pronunciations.length === 1 ? "" : "s"} saved.`);
+            }}
+            placeholder={"SQL = sequel\nReLU = ray loo\nscikit-learn = sy kit learn"}
+            rows={4}
+            aria-label="Pronunciation overrides, one per line as term equals spoken form"
+          />
+        </label>
+        <p className="microcopy">Overrides apply to narration only, match whole words case-insensitively, and are limited to 50 terms. They sync with your profile.</p>
+      </section>
       <section className="settings-card">
         <div className="settings-card-heading"><Share size={21} /><div><strong>Backup and transfer</strong><span>Move your private study data between devices.</span></div></div>
         <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={onImport} />
@@ -1148,6 +1171,7 @@ export default function App() {
   }, []);
 
   const speech = useSpeech({
+    pronunciations: profile.settings.pronunciations,
     voiceURI: profile.settings.voiceURI,
     language: profile.settings.speechLanguage,
     rate: profile.settings.speechRate,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SPEECH_TEXT_LIMIT,
+  applyPronunciations,
   chunkSpeechText,
   groupSpeechVoices,
   normalizeSpeechLanguage,
@@ -29,6 +30,7 @@ export function useSpeech({
   rate = 1,
   pitch = 1,
   volume = 1,
+  pronunciations = [],
   onSettingsChange,
 }) {
   const supported = hasSpeechAPI();
@@ -49,8 +51,11 @@ export function useSpeech({
   const refreshVoicesRef = useRef(() => {});
   const restartRequiredRef = useRef(false);
   const resumeTimerRef = useRef(null);
+  const sectionStartsRef = useRef([]);
+  const sleepDeadlineRef = useRef(0);
+  const [sleepMinutes, setSleepMinutes] = useState(0);
 
-  configRef.current = { voiceURI, language: normalizeSpeechLanguage(language), rate, pitch, volume };
+  configRef.current = { voiceURI, language: normalizeSpeechLanguage(language), rate, pitch, volume, pronunciations };
   voicesRef.current = voices;
   statusRef.current = status;
 
@@ -113,6 +118,7 @@ export function useSpeech({
     utteranceRef.current = null;
     queueRef.current = [];
     indexRef.current = 0;
+    sectionStartsRef.current = [];
     restartRequiredRef.current = false;
     setCurrentText("");
     setActiveLabel("");
@@ -125,6 +131,15 @@ export function useSpeech({
     const queue = queueRef.current;
     if (index >= queue.length) {
       finish();
+      return;
+    }
+
+    // Sleep timer (AUDIO-001): expire between sentences, never mid-utterance.
+    if (sleepDeadlineRef.current && Date.now() >= sleepDeadlineRef.current) {
+      sleepDeadlineRef.current = 0;
+      setSleepMinutes(0);
+      finish();
+      setError("The sleep timer ended narration at a sentence boundary.");
       return;
     }
 
@@ -190,6 +205,9 @@ export function useSpeech({
     utteranceRef.current = null;
     queueRef.current = [];
     indexRef.current = 0;
+    sectionStartsRef.current = [];
+    sleepDeadlineRef.current = 0;
+    setSleepMinutes(0);
     restartRequiredRef.current = false;
     setCurrentText("");
     setActiveLabel("");
@@ -210,11 +228,28 @@ export function useSpeech({
       setError(speechErrorMessage("text-too-long"));
       return false;
     }
-    const queue = chunkSpeechText(raw, undefined, configRef.current.language);
+    const config = configRef.current;
+    const spoken = (value) => applyPronunciations(value, config.pronunciations);
+    // Section-aware queueing: each section's chunks are tracked by their
+    // first index so heading skip can jump between sections.
+    let queue;
+    const sectionStarts = [];
+    if (Array.isArray(options.sections) && options.sections.length > 1) {
+      queue = [];
+      for (const section of options.sections) {
+        const chunks = chunkSpeechText(spoken(section.text), undefined, config.language);
+        if (!chunks.length) continue;
+        sectionStarts.push({ index: queue.length, label: String(section.label || "Section").slice(0, 80) });
+        queue.push(...chunks);
+      }
+    } else {
+      queue = chunkSpeechText(spoken(raw), undefined, config.language);
+    }
     clearResumeTimer();
     sessionRef.current += 1;
     window.speechSynthesis.cancel();
     queueRef.current = queue;
+    sectionStartsRef.current = sectionStarts;
     indexRef.current = 0;
     restartRequiredRef.current = false;
     if (!queue.length) {
@@ -223,7 +258,8 @@ export function useSpeech({
       return false;
     }
     setActiveLabel(String(options.label || "Narration").slice(0, 80));
-    playIndex(0, sessionRef.current);
+    const startIndex = Number.isInteger(options.startIndex) ? Math.max(0, Math.min(queue.length - 1, options.startIndex)) : 0;
+    playIndex(startIndex, sessionRef.current);
     return true;
   }, [clearResumeTimer, finish, playIndex, supported, updateStatus]);
 
@@ -325,6 +361,27 @@ export function useSpeech({
     if (supported) window.speechSynthesis.cancel();
   }, [clearResumeTimer, supported]);
 
+  const nextSection = useCallback(() => {
+    const start = sectionStartsRef.current.find((section) => section.index > indexRef.current);
+    return start ? seek(start.index) : false;
+  }, [seek]);
+
+  const previousSection = useCallback(() => {
+    const starts = sectionStartsRef.current;
+    // "Previous" returns to the current section's start first, then earlier.
+    const currentStart = [...starts].reverse().find((section) => section.index <= indexRef.current);
+    const target = currentStart && currentStart.index === indexRef.current
+      ? [...starts].reverse().find((section) => section.index < indexRef.current)
+      : currentStart;
+    return target ? seek(target.index) : seek(0);
+  }, [seek]);
+
+  const startSleepTimer = useCallback((minutes) => {
+    const value = [0, 10, 20, 30].includes(minutes) ? minutes : 0;
+    setSleepMinutes(value);
+    sleepDeadlineRef.current = value ? Date.now() + value * 60_000 : 0;
+  }, []);
+
   const languages = useMemo(() => speechLanguages(voices), [voices]);
   const voiceGroups = useMemo(() => groupSpeechVoices(voices, language), [language, voices]);
   const matchingVoiceCount = voiceGroups.reduce((count, group) => count + group.voices.length, 0);
@@ -356,6 +413,11 @@ export function useSpeech({
     next,
     previous,
     refreshVoices: () => refreshVoicesRef.current(),
+    nextSection,
+    previousSection,
+    hasSections: (queueRef.current.length > 0) && sectionStartsRef.current.length > 1,
+    sleepMinutes,
+    startSleepTimer,
     canNext: progress.total > 0 && progress.current < progress.total - 1,
     canPrevious: progress.total > 0 && progress.current > 0,
     canPause: supported && typeof window.speechSynthesis.pause === "function" && typeof window.speechSynthesis.resume === "function",

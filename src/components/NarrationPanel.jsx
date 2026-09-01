@@ -148,6 +148,22 @@ export default function NarrationPanel({
         <button onClick={() => onSettingsChange({ speechRate: 1, speechPitch: 1, speechVolume: 1 })} aria-label="Reset narration sound" title="Reset speed, pitch, and volume" type="button"><RotateCcw size={15} /></button>
       </div>
 
+      <div className="speech-sleep-row" role="radiogroup" aria-label="Sleep timer">
+        <span>Sleep timer</span>
+        {[0, 10, 20, 30].map((minutes) => (
+          <button
+            className={speech.sleepMinutes === minutes ? "active" : ""}
+            key={minutes}
+            onClick={() => speech.startSleepTimer(minutes)}
+            role="radio"
+            aria-checked={speech.sleepMinutes === minutes}
+            type="button"
+          >
+            {minutes === 0 ? "Off" : `${minutes} min`}
+          </button>
+        ))}
+      </div>
+
       <div className="speech-controls">
         {active ? (
           <>

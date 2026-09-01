@@ -9,6 +9,8 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   Edit3,
   Copy,
@@ -426,12 +428,31 @@ export default function Reader({
       onNotify?.(target.reason, "error");
       return;
     }
-    if (speech.speak(target.text, { label: target.label })) {
+    // Document narration resumes from the last persisted sentence (device
+    // local); any other scope always starts at its beginning.
+    let startIndex = 0;
+    if (target.scope === "document") {
+      const saved = Number(localStorage.getItem(`lumen-narration-${document.id}`));
+      if (Number.isInteger(saved) && saved > 2) startIndex = saved;
+    }
+    if (speech.speak(target.text, { label: target.label, sections: target.sections, startIndex })) {
+      if (startIndex > 0) onNotify?.("Narration resumed from your last position. Use Previous to go back.");
       // Move immediately to the compact player so the mobile settings sheet
       // does not cover the lecture or intercept its playback controls.
       setShowSpeech(false);
     }
   };
+
+  // Persist the document-narration position per device so a stopped or
+  // interrupted session can pick up where it left off (AUDIO-001).
+  useEffect(() => {
+    if (speech.activeLabel !== "Full lecture" || !speech.progress.total) return;
+    if (speech.progress.current >= speech.progress.total - 1) {
+      localStorage.removeItem(`lumen-narration-${document.id}`);
+      return;
+    }
+    localStorage.setItem(`lumen-narration-${document.id}`, String(speech.progress.current));
+  }, [document.id, speech.activeLabel, speech.progress]);
 
   const share = async () => {
     const payload = { title: document.title, text: `${document.title} — Lumen AI Notes`, url: window.location.href };
@@ -705,7 +726,7 @@ export default function Reader({
       </div>
 
       {drawer && <button className="drawer-scrim" onClick={() => setDrawer(null)} aria-label="Close panel" type="button" />}
-      {(speech.status === "speaking" || speech.status === "paused") && <div className="audio-bar" role="region" aria-label="Narration controls"><button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button><button className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button><button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button><div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong><span>{speech.currentText}</span></div><button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
+      {(speech.status === "speaking" || speech.status === "paused") && <div className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button><button className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button><button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong><span>{speech.currentText}</span></div><button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
       {teaching && <TeachingMode title={document.title} source={source} onClose={() => setTeaching(false)} speech={speech} />}
       <AnnotationDialog draft={annotationDraft} onClose={() => setAnnotationDraft(null)} onSave={saveAnnotation} />
     </section>

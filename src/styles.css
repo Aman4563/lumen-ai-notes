@@ -7114,3 +7114,13 @@ input[type="range"] {
 .concept-node.state-mastered circle { fill: #2e8b76; stroke: #1f6a59; }
 .concept-node.state-mastered text { fill: #ffffff; }
 .concept-node:hover circle { stroke-width: 1; }
+
+/* Wave 9: narration sleep timer */
+.speech-sleep-row { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+.speech-sleep-row > span { color: var(--ink-faint); font-size: 0.66rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
+.speech-sleep-row button { padding: 5px 11px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--paper); color: var(--ink-soft); font-size: 0.68rem; font-weight: 750; }
+.speech-sleep-row button.active { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+
+.pronunciation-editor { display: grid; gap: 7px; margin-top: 13px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 750; }
+.pronunciation-editor textarea { min-height: 96px; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--paper-2); font: inherit; font-family: ui-monospace, Menlo, monospace; font-size: 0.74rem; line-height: 1.6; resize: vertical; }
+.pronunciation-editor code { padding: 1px 5px; border-radius: 5px; background: var(--paper-3); }
