@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chunkSpeechText } from "../src/lib/speech.js";
 import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFILE_VERSION } from "../src/lib/db.js";
-import { searchDocuments, tokenizeQuery } from "../src/lib/search.js";
+import { searchDocuments, tokenizeExclusions, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads.js";
 import { createId } from "../src/lib/id.js";
 import {
@@ -39,6 +39,24 @@ const results = searchDocuments([
 ], '"policy gradient" PPO');
 assert.deepEqual(results.map((result) => result.id), ["title", "body"], "search should use AND matching and rank title matches first");
 assert.ok(results[1].description.includes("Policy gradient"), "search should return a contextual excerpt");
+assert.deepEqual(results[0].matchedTerms, ["policy gradient", "ppo"], "search must report the terms it matched for snippet highlighting");
+
+// SEARCH-001 advanced-lexical slice: exclusions, typo tolerance, and their bounds.
+const advancedCorpus = [
+  { id: "gd", title: "Gradient descent", partTitle: "Math", description: "Optimization basics", searchText: "gradient descent learning rate schedules", raw: "", partNumber: 2, chapterNumber: 3 },
+  { id: "boost", title: "Boosting", partTitle: "Supervised", description: "Ensembles", searchText: "gradient boosting trees ensembles", raw: "", partNumber: 5, chapterNumber: 3 },
+];
+assert.deepEqual(tokenizeExclusions("gradient -boosting"), ["boosting"]);
+assert.deepEqual(tokenizeExclusions('"policy -gradient" clean'), [], "quoted phrases never produce exclusions");
+assert.deepEqual(searchDocuments(advancedCorpus, "gradient -boosting").map((result) => result.id), ["gd"], "-term must exclude documents containing the term");
+assert.deepEqual(searchDocuments(advancedCorpus, "gradiant descent").map((result) => result.id), ["gd"], "a single typo in a long term must still match via one-edit tolerance");
+assert.equal(searchDocuments(advancedCorpus, "grzdixnt descent").length, 0, "two edits must not match");
+assert.equal(searchDocuments(advancedCorpus, "rate").length, 1, "short terms stay exact");
+assert.equal(searchDocuments(advancedCorpus, "ratz").length, 0, "short terms get no typo tolerance");
+const exactBeatsFuzzy = searchDocuments(advancedCorpus, "gradient");
+const fuzzyOnly = searchDocuments(advancedCorpus, "gradiant");
+assert.ok(exactBeatsFuzzy[0].searchScore > fuzzyOnly[0].searchScore, "an exact match must outrank the same document reached by typo tolerance");
+assert.ok(withinOneEdit("attention", "attentoin") === false && withinOneEdit("attention", "atention") === true, "one-edit boundary must be exact");
 
 const normalized = normalizeProfile({
   progress: { good: 0.4, high: 8, bad: "no" },

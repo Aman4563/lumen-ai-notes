@@ -30,7 +30,9 @@ import {
   NotebookPen,
   Palette,
   RotateCcw,
+  History,
   Search,
+  Star,
   Settings,
   Share,
   Sparkles,
@@ -51,6 +53,7 @@ import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
+import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
@@ -213,6 +216,17 @@ function ProgressRing({ value, size = 92 }) {
   );
 }
 
+/** Wraps matched search terms in <mark> for highlighted snippets (SEARCH-001). */
+function HighlightedText({ text, terms }) {
+  const value = String(text || "");
+  const cleaned = (terms || []).filter((term) => term && term.length > 1).slice(0, 12);
+  if (!cleaned.length) return value;
+  const pattern = new RegExp(`(${cleaned.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "giu");
+  return value.split(pattern).map((part, index) => pattern.test(part) && cleaned.some((term) => part.toLocaleLowerCase() === term.toLocaleLowerCase())
+    ? <mark key={`${index}-${part.slice(0, 8)}`}>{part}</mark>
+    : <span key={`${index}-${part.slice(0, 8)}`}>{part}</span>);
+}
+
 function DocumentCard({ doc, profile, onOpen, compact = false }) {
   const progress = documentProgress(profile, doc.id);
   return (
@@ -221,7 +235,7 @@ function DocumentCard({ doc, profile, onOpen, compact = false }) {
       <div className="document-card-copy">
         <span>{doc.partNumber > 0 ? `Part ${doc.partNumber}` : "Guide"} · {doc.minutes} min</span>
         <strong>{doc.title}</strong>
-        {!compact && <p>{doc.description}</p>}
+        {!compact && <p>{doc.matchedTerms?.length ? <HighlightedText text={doc.description} terms={doc.matchedTerms} /> : doc.description}</p>}
         <div className="mini-progress"><span style={{ width: `${progress * 100}%` }} /></div>
       </div>
       <ChevronRight size={19} />
@@ -309,15 +323,24 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
   );
 }
 
-function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, allDocuments, customDocuments, onOpen }) {
+function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, allDocuments, customDocuments, onOpen, onSettingsChange }) {
   const [sortBy, setSortBy] = useState("smart");
   const [layout, setLayout] = useState("grid");
   const [searchIndex, setSearchIndex] = useState(null);
   const [searchIndexError, setSearchIndexError] = useState("");
   const [workerResults, setWorkerResults] = useState(null);
+  const [recentSearches, setRecentSearches] = useState(() => {
+    try {
+      const stored = JSON.parse(globalThis.localStorage?.getItem("lumen.library.recent-searches") || "[]");
+      return Array.isArray(stored) ? stored.filter((entry) => typeof entry === "string").slice(0, 8) : [];
+    } catch {
+      return [];
+    }
+  });
   const searchClientRef = useRef(null);
   const corpusSentRef = useRef(false);
   const sentCustomRef = useRef(new Map());
+  const savedSearches = Array.isArray(profile.settings.savedSearches) ? profile.settings.savedSearches : [];
   const normalized = query.trim();
   useEffect(() => {
     if (!normalized || searchIndex) return undefined;
@@ -377,7 +400,17 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
     }
     let active = true;
     searchClientRef.current.search(normalized, candidates.map((doc) => doc.id))
-      .then(({ stale, results }) => { if (active && !stale) setWorkerResults(results); })
+      .then(({ stale, results }) => {
+        if (!active || stale) return;
+        setWorkerResults(results);
+        if (results.length) {
+          setRecentSearches((current) => {
+            const next = [normalized, ...current.filter((entry) => entry !== normalized)].slice(0, 8);
+            try { globalThis.localStorage?.setItem("lumen.library.recent-searches", JSON.stringify(next)); } catch { /* device-local convenience only */ }
+            return next;
+          });
+        }
+      })
       .catch(() => { if (active) setWorkerResults(null); });
     return () => { active = false; };
   }, [candidates, normalized, searchIndex]);
@@ -387,7 +420,7 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
       const byId = new Map(workerResults.map((entry) => [entry.id, entry]));
       results = candidates
         .filter((doc) => byId.has(doc.id))
-        .map((doc) => ({ ...doc, description: byId.get(doc.id).snippet || doc.description, searchScore: byId.get(doc.id).searchScore }))
+        .map((doc) => ({ ...doc, description: byId.get(doc.id).snippet || doc.description, searchScore: byId.get(doc.id).searchScore, matchedTerms: byId.get(doc.id).matchedTerms || [] }))
         .sort((a, b) => b.searchScore - a.searchScore || a.partNumber - b.partNumber || a.chapterNumber - b.chapterNumber);
     } else if (normalized) {
       // Metadata-only search covers the moments before the corpus/worker is
@@ -415,7 +448,8 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
         <div><span className="eyebrow">Complete curriculum</span><h1>Your library</h1><p>Search every lecture, formula, method, technology, exercise, and interview prompt.</p></div>
         <div className="library-count"><strong>{allDocuments.length}</strong><span>documents</span></div>
       </header>
-      <div className="library-search"><Search size={20} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search concepts, tools, formulas…" aria-label="Search library" />{normalized && !searchIndex && !searchIndexError && <span className="search-index-loading" role="status">Loading full text…</span>}{query && <button onClick={() => setQuery("")} aria-label="Clear search" type="button"><X size={17} /></button>}</div>
+      <div className="library-search"><Search size={20} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search concepts, tools, formulas… (−term excludes)" aria-label="Search library" />{normalized && !searchIndex && !searchIndexError && <span className="search-index-loading" role="status">Loading full text…</span>}{normalized && <button className={savedSearches.includes(normalized) ? "search-save is-active" : "search-save"} onClick={() => onSettingsChange?.({ savedSearches: savedSearches.includes(normalized) ? savedSearches.filter((entry) => entry !== normalized) : [normalized, ...savedSearches].slice(0, 20) })} aria-label={savedSearches.includes(normalized) ? "Remove this saved search" : "Save this search"} aria-pressed={savedSearches.includes(normalized)} type="button"><Star size={16} /></button>}{query && <button onClick={() => setQuery("")} aria-label="Clear search" type="button"><X size={17} /></button>}</div>
+      {!normalized && (savedSearches.length > 0 || recentSearches.length > 0) && <div className="library-search-shortcuts" aria-label="Saved and recent searches">{savedSearches.map((entry) => <span className="search-chip is-saved" key={`saved-${entry}`}><button onClick={() => setQuery(entry)} aria-label={`Run saved search ${entry}`} type="button"><Star size={12} /> {entry}</button><button onClick={() => onSettingsChange?.({ savedSearches: savedSearches.filter((item) => item !== entry) })} aria-label={`Remove saved search ${entry}`} type="button"><X size={12} /></button></span>)}{recentSearches.filter((entry) => !savedSearches.includes(entry)).map((entry) => <span className="search-chip" key={`recent-${entry}`}><button onClick={() => setQuery(entry)} aria-label={`Repeat recent search ${entry}`} type="button"><History size={12} /> {entry}</button></span>)}</div>}
       {searchIndexError && <p className="inline-warning">{searchIndexError}</p>}
       <div className="filter-row">
         <button className={!selectedPart ? "active" : ""} onClick={() => setSelectedPart(null)} type="button">All</button>
@@ -1581,14 +1615,68 @@ export default function App() {
       const now = new Date();
       const usage = recordReviewUsage(current.reviewSessions, target, now, metadata);
       const result = gradeReviewItem(target, rating, now, elapsedMs, { ...metadata, sessionKind: usage.kind, sessionKey: usage.sessionKey });
-      return {
+      const next = {
         ...current,
         reviewItems: current.reviewItems.map((item) => item.id === id ? result.item : item),
         reviewAttempts: [...current.reviewAttempts, result.attempt].slice(-50_000),
         reviewSessions: usage.sessions,
       };
+      if (rating === "again") {
+        // A failed recall becomes (or reopens) a mistake-notebook entry;
+        // repeats of the same card merge into one record (LEARN-005).
+        next.mistakes = recordMistake(current.mistakes, {
+          prompt: target.front,
+          expected: target.back,
+          category: categoryForReviewItem(target),
+          documentId: target.documentId,
+          reviewItemId: target.id,
+          tags: target.tags,
+        }, now).mistakes;
+      }
+      return next;
     });
   }, []);
+
+  const editMistake = useCallback((id, patch) => {
+    setProfile((current) => ({ ...current, mistakes: updateMistake(current.mistakes, id, patch) }));
+  }, []);
+
+  const deleteMistake = useCallback((id) => {
+    setProfile((current) => ({ ...current, mistakes: (current.mistakes || []).filter((mistake) => mistake.id !== id) }));
+    notify("Mistake removed.");
+  }, [notify]);
+
+  const scheduleCorrectiveReview = useCallback((mistake) => {
+    let scheduled = false;
+    setProfile((current) => {
+      const nowIso = new Date().toISOString();
+      const existing = current.reviewItems.find((item) => item.id === mistake.reviewItemId);
+      if (existing) {
+        scheduled = true;
+        return {
+          ...current,
+          reviewItems: current.reviewItems.map((item) => item.id === existing.id
+            ? { ...item, suspended: false, archived: false, buriedOnDay: "", dueAt: nowIso, updatedAt: nowIso }
+            : item),
+        };
+      }
+      if (current.reviewItems.length >= 10_000) return current;
+      scheduled = true;
+      const card = createReviewItem({
+        front: mistake.prompt,
+        back: `${mistake.expected}${mistake.correction ? `\n\nCorrection: ${mistake.correction}` : ""}`,
+        documentId: mistake.documentId,
+        tags: [...(mistake.tags || []), "mistake"],
+        type: "basic",
+      });
+      return {
+        ...current,
+        reviewItems: [card, ...current.reviewItems],
+        mistakes: (current.mistakes || []).map((entry) => entry.id === mistake.id ? { ...entry, reviewItemId: card.id, updatedAt: nowIso } : entry),
+      };
+    });
+    notify(scheduled ? "Corrective review is due now." : "The review deck is full; archive cards before scheduling more.", scheduled ? "success" : "error");
+  }, [notify]);
 
   const undoReviewGrade = useCallback(() => {
     setProfile((current) => {
@@ -1875,13 +1963,13 @@ export default function App() {
 
         <div className="view-container">
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} />}
-          {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} />}
+          {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
           {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><div><span className="eyebrow">Private, source-grounded assistance</span><h1>AI learning studio</h1><p>Choose a larger local model on your Mac or a lightweight model on this phone—without a paid AI API.</p></div></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} />}
+          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} />}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </div>
 

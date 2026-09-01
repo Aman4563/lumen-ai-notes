@@ -8,7 +8,7 @@
  * per-keystroke NFKD pass over the ~1 MB corpus that previously ran during
  * React render.
  */
-import { searchDocuments } from "../lib/search.js";
+import { buildSearchWords, searchDocuments } from "../lib/search.js";
 
 const normalize = (value) => String(value || "").toLocaleLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
 
@@ -16,18 +16,26 @@ const builtins = new Map();
 const customs = new Map();
 
 const upsertBuiltin = (document, body) => {
+  const normalizedBody = normalize(body ?? document.searchText);
+  const metadata = normalize([document.title, document.partTitle, document.description].filter(Boolean).join(" "));
   builtins.set(document.id, {
     ...document,
     raw: "",
     searchText: "",
-    normalizedSearchText: normalize(body ?? document.searchText),
+    normalizedSearchText: normalizedBody,
+    // Precomputed once so typo-tolerant matching never re-tokenizes ~1 MB
+    // of corpus text per keystroke.
+    searchWords: buildSearchWords(`${metadata} ${normalizedBody}`),
   });
 };
 
 const upsertCustom = (document) => {
+  const normalizedBody = normalize(document.searchText);
+  const metadata = normalize([document.title, document.partTitle, document.description].filter(Boolean).join(" "));
   customs.set(document.id, {
     ...document,
-    normalizedSearchText: normalize(document.searchText),
+    normalizedSearchText: normalizedBody,
+    searchWords: buildSearchWords(`${metadata} ${normalizedBody}`),
   });
 };
 
@@ -56,6 +64,7 @@ self.onmessage = (event) => {
         id: document.id,
         searchScore: document.searchScore,
         snippet: document.description,
+        matchedTerms: document.matchedTerms || [],
       }));
       self.postMessage({ type: "result", requestId: message.requestId, results });
     }

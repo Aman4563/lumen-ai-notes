@@ -66,6 +66,7 @@ const itemTime = (item) => Math.max(
 const RECORD_COLLECTION_LIMITS = Object.freeze({
   customDocuments: 500,
   clippings: 2_000,
+  mistakes: 2_000,
   annotations: 5_000,
   reviewItems: 10_000,
   reviewAttempts: 50_000,
@@ -639,6 +640,7 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
   const deletedCustomDocumentIdSet = new Set(deletedCustomDocumentIds);
   const clippings = mergeRecordCollection("clippings", base.clippings, local.clippings, remote.clippings, detectedAt);
   const annotations = mergeRecordCollection("annotations", base.annotations, local.annotations, remote.annotations, detectedAt);
+  const mistakes = mergeRecordCollection("mistakes", base.mistakes || [], local.mistakes || [], remote.mistakes || [], detectedAt);
   const reviewItems = mergeRecordCollection("reviewItems", base.reviewItems, local.reviewItems, remote.reviewItems, detectedAt);
   const attempts = mergeRecordCollection("reviewAttempts", base.reviewAttempts, local.reviewAttempts, remote.reviewAttempts, detectedAt);
   const aiTutorHistoryTombstones = [...new Set([
@@ -655,7 +657,7 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
     withoutClearedAiMessages(remote.aiTutorHistory),
     detectedAt,
   );
-  conflicts.push(...custom.conflicts, ...clippings.conflicts, ...annotations.conflicts, ...reviewItems.conflicts, ...attempts.conflicts, ...aiHistory.conflicts);
+  conflicts.push(...custom.conflicts, ...clippings.conflicts, ...annotations.conflicts, ...mistakes.conflicts, ...reviewItems.conflicts, ...attempts.conflicts, ...aiHistory.conflicts);
 
   const recoveryDocuments = [];
   const personalNotes = mergeMap("personalNotes", base.personalNotes, local.personalNotes, remote.personalNotes, detectedAt, recoverStringConflict("personalNotes", recoveryDocuments, conflicts));
@@ -703,6 +705,7 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
     customDocuments,
     deletedCustomDocumentIds,
     clippings: clippings.records,
+    mistakes: mistakes.records,
     annotations: annotations.records,
     reviewItems: reconciledReviews.items,
     reviewAttempts: reconciledReviews.attempts,

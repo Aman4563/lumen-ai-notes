@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MISTAKE_CATEGORIES } from "../lib/mistakes.js";
 import {
   Archive,
   ArchiveRestore,
@@ -131,6 +132,33 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
   );
 }
 
+/**
+ * The correction field keeps keystrokes local and commits on blur: writing
+ * through the profile on every keypress re-renders the whole center and can
+ * drop characters typed between commits.
+ */
+function MistakeCorrectionField({ mistake, onEditMistake }) {
+  const [value, setValue] = useState(mistake.correction);
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    if (!focusedRef.current) setValue(mistake.correction);
+  }, [mistake.correction]);
+  return (
+    <textarea
+      value={value}
+      maxLength={4_000}
+      placeholder="Write the correction in your own words — why was the expected answer right?"
+      aria-label={`Correction for mistake: ${mistake.prompt.slice(0, 60)}`}
+      onFocus={() => { focusedRef.current = true; }}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={(event) => {
+        focusedRef.current = false;
+        if (event.target.value !== mistake.correction) onEditMistake?.(mistake.id, { correction: event.target.value });
+      }}
+    />
+  );
+}
+
 export default function ReviewCenter({
   profile,
   documents,
@@ -144,8 +172,14 @@ export default function ReviewCenter({
   onToggleArchive,
   onDelete,
   onSettingsChange,
+  mistakes = [],
+  onEditMistake,
+  onDeleteMistake,
+  onScheduleCorrective,
 }) {
   const [session, setSession] = useState(false);
+  const [mistakeFilter, setMistakeFilter] = useState("all");
+  const [showCorrectedMistakes, setShowCorrectedMistakes] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [currentId, setCurrentId] = useState("");
   const [confidence, setConfidence] = useState(3);
@@ -325,6 +359,33 @@ export default function ReviewCenter({
         <article className="review-forecast"><div><strong>Next 7 days</strong><span>Scheduled forecast</span></div><div className="forecast-bars" aria-label={`Seven-day review forecast: ${analytics.forecast.join(", ")}`}>{analytics.forecast.map((value, index) => <span key={index} style={{ height: `${Math.max(8, (value / Math.max(...analytics.forecast, 1)) * 100)}%` }} title={`Day ${index}: ${value} reviews`} />)}</div></article>
       </section>
       <section className="review-settings-strip" aria-label="Daily review limits"><div><strong>Daily limits</strong><span>Counts persist by local date ({timeZone}) and cannot refill when a card leaves the queue.</span></div><label>New<select value={profile.reviewSettings.dailyNewLimit} onChange={(event) => onSettingsChange({ dailyNewLimit: Number(event.target.value) })}>{[5, 10, 15, 20, 30, 50].map((value) => <option value={value} key={value}>{value}</option>)}</select></label><label>Reviews<select value={profile.reviewSettings.dailyReviewLimit} onChange={(event) => onSettingsChange({ dailyReviewLimit: Number(event.target.value) })}>{[20, 50, 100, 200, 500].map((value) => <option value={value} key={value}>{value}</option>)}</select></label></section>
+      {mistakes.length > 0 && <section className="review-mistakes" aria-label="Mistake notebook">
+        <div className="section-heading"><div><span className="eyebrow">Learn from failures</span><h2>Mistake notebook</h2></div><div className="mistake-controls"><label>Category<select value={mistakeFilter} onChange={(event) => setMistakeFilter(event.target.value)}><option value="all">All</option>{MISTAKE_CATEGORIES.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label><label className="mistake-corrected-toggle"><input type="checkbox" checked={showCorrectedMistakes} onChange={(event) => setShowCorrectedMistakes(event.target.checked)} /> Show corrected</label></div></div>
+        <p className="microcopy">Grading a card “Again” logs or reopens its mistake automatically; repeats merge into one entry. Write the correction in your own words, then schedule a corrective review.</p>
+        <div className="mistake-list">
+          {mistakes
+            .filter((mistake) => (mistakeFilter === "all" || mistake.category === mistakeFilter) && (showCorrectedMistakes || !mistake.correctedAt))
+            .slice(0, 100)
+            .map((mistake) => {
+              const doc = documents.find((item) => item.id === mistake.documentId);
+              const categoryLabel = MISTAKE_CATEGORIES.find((category) => category.id === mistake.category)?.label || mistake.category;
+              return <article className={`mistake-card${mistake.correctedAt ? " is-corrected" : ""}`} key={mistake.id}>
+                <div className="mistake-meta"><span className="mistake-category">{categoryLabel}</span>{mistake.occurrences > 1 && <span className="mistake-count">×{mistake.occurrences}</span>}{mistake.correctedAt && <span className="mistake-corrected">Corrected</span>}<span className="mistake-when">{new Date(mistake.lastSeenAt).toLocaleDateString()}</span></div>
+                <p className="mistake-prompt">{mistake.prompt}</p>
+                {mistake.expected && <p className="mistake-expected"><strong>Expected:</strong> {mistake.expected}</p>}
+                <MistakeCorrectionField mistake={mistake} onEditMistake={onEditMistake} />
+                <div className="mistake-actions">
+                  {doc && <button className="text-button" onClick={() => onOpenSource(doc.id)} type="button">{doc.title}</button>}
+                  <span>
+                    <button className="button ghost" onClick={() => onScheduleCorrective?.(mistake)} type="button">Schedule corrective review</button>
+                    <button className="button ghost" onClick={() => onEditMistake?.(mistake.id, { correctedAt: mistake.correctedAt ? "" : new Date().toISOString() })} type="button">{mistake.correctedAt ? "Reopen" : "Mark corrected"}</button>
+                    <button className="icon-button small danger" onClick={() => onDeleteMistake?.(mistake.id)} aria-label="Delete this mistake entry" title="Delete" type="button"><Trash2 size={15} /></button>
+                  </span>
+                </div>
+              </article>;
+            })}
+        </div>
+      </section>}
       <section className="review-deck-section" ref={deckSectionRef}>
         <div className="section-heading review-deck-heading"><div><span className="eyebrow">Your knowledge deck</span><h2>{deckItems.length} {showArchived ? "archived" : "active"} card{deckItems.length === 1 ? "" : "s"}</h2></div><div className="review-deck-tools"><label><Search size={16} /><input value={deckQuery} onChange={(event) => setDeckQuery(event.target.value)} aria-label="Search review cards" placeholder="Search cards or tags" /></label><button className="button ghost" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived} type="button">{showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />} {showArchived ? "Show active" : `Archived (${stats.archived})`}</button></div></div>
         {deckItems.length ? <><p className="review-deck-range">Showing {deckPageStart + 1}–{deckPageStart + visibleDeckItems.length} of {deckItems.length}</p><div className="review-deck-list">{visibleDeckItems.map((item) => { const source = documentMap.get(item.documentId); return <article className={item.suspended ? "review-deck-card suspended" : "review-deck-card"} key={item.id}><div className="review-card-state"><Brain size={18} /><span>{item.suspended ? "Paused" : isNewReviewItem(item) ? "New" : `${formatInterval(item.intervalDays)} interval`}</span><small>{REVIEW_CARD_TYPES.find((type) => type.id === item.type)?.label}</small></div><div className="review-card-copy"><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.front) }} /><div className="review-deck-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.back) }} />{item.tags?.length > 0 && <div className="review-tags">{item.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}{source && <button className="text-button" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={14} /> {source.title}</button>}</div><div className="review-card-actions"><button className="icon-button" onClick={() => onEdit(item)} aria-label="Edit review card" title="Edit" type="button"><Edit3 size={17} /></button><button className="icon-button" onClick={() => onToggleSuspend(item.id)} aria-label={item.suspended ? "Resume review card" : "Pause review card"} title={item.suspended ? "Resume" : "Pause"} type="button">{item.suspended ? <Play size={17} /> : <Pause size={17} />}</button><button className="icon-button" onClick={() => onToggleArchive(item.id)} aria-label={item.archived ? "Restore review card" : "Archive review card"} title={item.archived ? "Restore" : "Archive"} type="button">{item.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</button><button className="icon-button danger" onClick={() => onDelete(item.id)} aria-label="Delete review card" title="Delete permanently" type="button"><Trash2 size={17} /></button></div></article>; })}</div>{deckPageCount > 1 && <nav className="review-deck-pagination" aria-label="Review card pages"><span aria-live="polite" aria-atomic="true">Page {visibleDeckPage} of {deckPageCount}</span><div><button className="button ghost" onClick={() => changeDeckPage(1)} disabled={visibleDeckPage === 1} aria-label="First review card page" type="button">First</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage - 1)} disabled={visibleDeckPage === 1} aria-label="Previous review card page" type="button">Previous</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage + 1)} disabled={visibleDeckPage === deckPageCount} aria-label="Next review card page" type="button">Next</button><button className="button ghost" onClick={() => changeDeckPage(deckPageCount)} disabled={visibleDeckPage === deckPageCount} aria-label="Last review card page" type="button">Last</button></div></nav>}</> : <div className="empty-state review-empty"><Brain size={34} /><h2>{normalizedDeckQuery ? "No matching review card" : showArchived ? "No archived cards" : "Build your first recall prompt"}</h2><p>{normalizedDeckQuery ? "Try a broader prompt, answer, type, or tag." : "Create one manually, or turn any clipping or highlight into a source-linked card."}</p>{!normalizedDeckQuery && !showArchived && <button className="button primary" onClick={() => onCreate(null)} type="button">Create first card</button>}</div>}

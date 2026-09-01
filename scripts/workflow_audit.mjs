@@ -440,6 +440,52 @@ try {
     { timeout: 10_000 },
   ).catch(() => assert.fail("uploaded document was not searchable"));
 
+  // SEARCH-001 advanced lexical slice: saved searches, typo tolerance,
+  // exclusions, and highlighted snippets.
+  await page.click('button[aria-label="Save this search"]');
+  await page.waitForFunction(() => document.querySelector('button[aria-label="Remove this saved search"]'), { timeout: 5_000 });
+  await page.click('button[aria-label="Clear search"]');
+  await page.waitForSelector(".library-search-shortcuts", { timeout: 5_000 });
+  assert.ok(
+    (await page.$eval(".library-search-shortcuts", (node) => node.textContent)).includes("Uploaded Persistence Proof"),
+    "the saved search chip did not appear",
+  );
+  await page.$$eval(".library-search-shortcuts .search-chip button", (nodes) => nodes.find((node) => node.getAttribute("aria-label")?.startsWith("Run saved search"))?.click());
+  await page.waitForFunction(
+    () => document.querySelector(".library-search input")?.value === "Uploaded Persistence Proof"
+      && document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"),
+    { timeout: 10_000 },
+  );
+  await page.click('button[aria-label="Grid layout"]');
+  await page.waitForFunction(() => Boolean(document.querySelector(".document-card mark")), { timeout: 5_000 })
+    .catch(() => assert.fail("matched search terms were not highlighted in the snippet"));
+
+  // A one-character typo in a long term must still find the document.
+  await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "Uploaded Persistance Proof");
+  await page.waitForFunction(
+    () => document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"),
+    { timeout: 10_000 },
+  ).catch(() => assert.fail("typo tolerance did not surface the uploaded document"));
+
+  // The -term operator excludes documents containing the term.
+  await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "uploaded -persistence");
+  await page.waitForFunction(
+    () => {
+      const grid = document.querySelector(".document-grid")?.innerText || "";
+      const meta = document.querySelector(".library-results-meta")?.textContent || "";
+      return meta.length > 0 && !grid.includes("Uploaded Persistence Proof");
+    },
+    { timeout: 10_000 },
+  ).catch(() => assert.fail("-term exclusion still returned the excluded document"));
+  await page.click('button[aria-label="Clear search"]');
+  await page.$$eval(".library-search-shortcuts .search-chip button", (nodes) => nodes.find((node) => node.getAttribute("aria-label")?.startsWith("Remove saved search"))?.click());
+  await page.waitForFunction(() => !document.querySelector('.library-search-shortcuts .search-chip button[aria-label^="Remove saved search"]'), { timeout: 5_000 });
+  await page.type(".library-search input", "Uploaded Persistence Proof");
+  await page.waitForFunction(() => document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"), { timeout: 10_000 });
+  await page.select('.library-view-controls select', "title");
+
   await page.click(".document-grid .document-card");
   await page.waitForSelector(".reader-view");
   await clickByText(page, ".document-tools button", "Edit copy");
@@ -526,7 +572,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, search, routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, advanced search (saved-search chips, typo tolerance, -term exclusion, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
