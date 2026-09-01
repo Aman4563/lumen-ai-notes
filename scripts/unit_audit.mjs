@@ -147,6 +147,9 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   const capabilities = contentCapabilities("Intro\n```python\nprint(1)\n```\nInline $E=mc^2$ formula");
   assert.deepEqual(capabilities, { hasCode: true, hasFormula: true });
   assert.deepEqual(contentCapabilities("plain prose only, $5 price"), { hasCode: false, hasFormula: false }, "currency-style dollars never count as formulas");
+  assert.equal(contentCapabilities("> f′(x) = lim<sub>h→0</sub> [f(x + h) − f(x)] / h").hasFormula, true, "the curriculum's blockquote/sub formula style counts");
+  assert.equal(contentCapabilities("```mermaid\nflowchart LR\n```").hasCode, false, "a mermaid diagram alone is not code");
+  assert.equal(contentCapabilities("> a plain quotation without math").hasFormula, false);
 }
 
 // LEARN-003: bury/suspend/archive exclusion, crunch weak-first ordering, and

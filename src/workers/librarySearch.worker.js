@@ -20,7 +20,8 @@ const upsertBuiltin = (document, body) => {
   const metadata = normalize([document.title, document.partTitle, document.description].filter(Boolean).join(" "));
   builtins.set(document.id, {
     ...document,
-    ...contentCapabilities(body ?? document.searchText),
+    // Build-time flags win; the index body is stripped of Markdown syntax.
+    ...(typeof document.hasCode === "boolean" ? {} : contentCapabilities(body ?? document.searchText)),
     raw: "",
     searchText: "",
     normalizedSearchText: normalizedBody,
@@ -35,7 +36,7 @@ const upsertCustom = (document) => {
   const metadata = normalize([document.title, document.partTitle, document.description].filter(Boolean).join(" "));
   customs.set(document.id, {
     ...document,
-    ...contentCapabilities(document.raw ?? document.searchText),
+    ...(typeof document.hasCode === "boolean" ? {} : contentCapabilities(document.raw ?? document.searchText)),
     normalizedSearchText: normalizedBody,
     searchWords: buildSearchWords(`${metadata} ${normalizedBody}`),
   });

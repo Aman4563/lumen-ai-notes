@@ -27,10 +27,16 @@ export const hasFieldFilters = (filters) => filters.title.length > 0 || filters.
  * fenced/indented code and TeX-style formula markers.
  */
 export const contentCapabilities = (text) => {
-  const value = String(text || "");
+  // Mermaid blocks are diagrams, not code — remove them whole so their
+  // closing fence cannot count as a code fence.
+  const value = String(text || "").replace(/```mermaid[\s\S]*?```/g, " ");
   return {
-    hasCode: /```|~~~|\n {4}\S/.test(value),
-    hasFormula: /\$\$|\\\(|\\\[|(?:^|[^$\\])\$[^\s$][^$\n]{0,200}\$/.test(value),
+    hasCode: /```|~~~/.test(value),
+    // Formulas in this corpus are TeX-style ($$, \( \[, inline $…$) or the
+    // curriculum's house style: <sub>/<sup> markup and blockquote lines
+    // carrying =/≈/≤/≥ math (e.g. "> f′(x) = lim …").
+    hasFormula: /\$\$|\\\(|\\\[|<su[bp]>|(?:^|[^$\\])\$[^\s$][^$\n]{0,200}\$/.test(value)
+      || /^>\s[^\n]*[=≈≤≥][^\n]*$/m.test(value),
   };
 };
 

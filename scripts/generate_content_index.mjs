@@ -2,6 +2,8 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { contentCapabilities } from "../src/lib/search.js";
+
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const notesDirectory = join(root, "notes");
 const outputDirectory = join(root, "src", "generated");
@@ -62,6 +64,9 @@ const records = await Promise.all(files.map(async (path) => {
       title: cleanTitle,
       description: paragraph?.slice(0, 220) || "Detailed AI/ML learning notes and practical exercises.",
       minutes: Math.max(1, Math.ceil(plain.split(/\s+/).length / 210)),
+      // Content-capability flags for has:code / has:formula search filters,
+      // computed here because raw Markdown never ships to the client.
+      ...contentCapabilities(raw),
       source: "builtin",
     },
     search: [id, plain.toLocaleLowerCase()],

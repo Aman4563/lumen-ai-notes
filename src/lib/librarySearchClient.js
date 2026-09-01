@@ -76,7 +76,7 @@ export const createLibrarySearchClient = ({ workerFactory = defaultWorkerFactory
       }
       for (const document of documents) {
         const body = new Map(bodies).get(document.id) || document.searchText || "";
-        fallbackBuiltins.set(document.id, { ...document, ...contentCapabilities(body), raw: "", searchText: body });
+        fallbackBuiltins.set(document.id, { ...document, ...(typeof document.hasCode === "boolean" ? {} : contentCapabilities(body)), raw: "", searchText: body });
       }
     },
     updateCustom(upsert = [], removeIds = []) {
@@ -86,7 +86,7 @@ export const createLibrarySearchClient = ({ workerFactory = defaultWorkerFactory
         return;
       }
       for (const id of removeIds) fallbackCustoms.delete(id);
-      for (const document of upsert) fallbackCustoms.set(document.id, { ...document, ...contentCapabilities(document.raw ?? document.searchText) });
+      for (const document of upsert) fallbackCustoms.set(document.id, { ...document, ...(typeof document.hasCode === "boolean" ? {} : contentCapabilities(document.raw ?? document.searchText)) });
     },
     search(query, candidateIds) {
       if (terminated) return Promise.reject(new LibrarySearchError("CLIENT_TERMINATED", "The library search client was terminated."));
