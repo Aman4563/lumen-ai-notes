@@ -12,6 +12,8 @@ import {
   ChevronRight,
   CircleUserRound,
   Clock3,
+  Contrast,
+  Keyboard,
   Copy,
   Download,
   FileEdit,
@@ -40,6 +42,7 @@ import {
   Sun,
   Trash2,
   Upload,
+  Volume2,
   Wifi,
   WifiOff,
   X,
@@ -182,6 +185,20 @@ function useModalKeyboard(active, dialogRef, onClose) {
       });
     };
   }, [active, dialogRef]);
+}
+
+/** Keyboard shortcuts sheet, opened with "?" anywhere or from Settings. */
+function ShortcutsDialog({ open, onClose }) {
+  const dialogRef = useRef(null);
+  useModalKeyboard(open, dialogRef, onClose);
+  if (!open) return null;
+  const groups = [
+    { title: "Review session", entries: [["Space", "Reveal the answer"], ["1 – 4", "Grade Again / Hard / Good / Easy"], ["B", "Bury the card until tomorrow"], ["⌘/Ctrl + Z", "Undo the last grade"]] },
+    { title: "Whiteboard", entries: [["Arrow keys", "Nudge the selected object (Shift: larger steps)"], ["Delete", "Delete the selected object"], ["⌘/Ctrl + Z", "Undo (Shift: redo)"], ["Esc", "Deselect / cancel text entry"]] },
+    { title: "Reader & dialogs", entries: [["Esc", "Close menus, popovers, and dialogs"], ["Tab / Shift + Tab", "Cycle a dialog's controls (focus is trapped)"]] },
+    { title: "Anywhere", entries: [["?", "Open this shortcut sheet"]] },
+  ];
+  return <div className="modal-layer"><button className="modal-scrim" onClick={onClose} aria-label="Close keyboard shortcuts" type="button" /><section ref={dialogRef} className="create-note-dialog shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title"><div className="dialog-icon"><Keyboard size={22} /></div><span className="eyebrow">Work faster</span><h2 id="shortcuts-title">Keyboard shortcuts</h2>{groups.map((group) => <div className="shortcut-group" key={group.title}><h3>{group.title}</h3><dl>{group.entries.map(([keys, action]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{action}</dd></div>)}</dl></div>)}<div className="modal-actions"><button className="button primary" onClick={onClose} type="button">Done</button></div></section></div>;
 }
 
 /**
@@ -671,13 +688,35 @@ function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, 
       <section className="settings-card">
         <div className="settings-card-heading"><Palette size={21} /><div><strong>Appearance</strong><span>Choose a reading atmosphere.</span></div></div>
         <div className="theme-choices">
-          {[{ id: "system", label: "System", icon: CircleUserRound }, { id: "paper", label: "Paper", icon: Sun }, { id: "dark", label: "Night", icon: Moon }].map(({ id, label, icon: Icon }) => <button className={settings.theme === id ? "active" : ""} onClick={() => onSettingsChange({ theme: id })} key={id} type="button"><Icon size={21} /><span>{label}</span>{settings.theme === id && <Check size={16} />}</button>)}
+          {[{ id: "system", label: "System", icon: CircleUserRound }, { id: "paper", label: "Paper", icon: Sun }, { id: "dark", label: "Night", icon: Moon }, { id: "contrast", label: "Contrast", icon: Contrast }].map(({ id, label, icon: Icon }) => <button className={settings.theme === id ? "active" : ""} onClick={() => onSettingsChange({ theme: id })} key={id} type="button"><Icon size={21} /><span>{label}</span>{settings.theme === id && <Check size={16} />}</button>)}
         </div>
         <label className="setting-range"><span><strong>Default text size</strong><small>{Math.round(settings.fontScale * 100)}%</small></span><input type="range" min="0.85" max="1.35" step="0.05" value={settings.fontScale} onChange={(event) => onSettingsChange({ fontScale: Number(event.target.value) })} aria-label="Default reading text size" /></label>
         <label className="setting-range"><span><strong>Default line spacing</strong><small>{settings.lineHeight}</small></span><input type="range" min="1.45" max="2" step="0.05" value={settings.lineHeight} onChange={(event) => onSettingsChange({ lineHeight: Number(event.target.value) })} aria-label="Default reading line spacing" /></label>
         <label className="setting-toggle"><span><strong>Keep screen awake while studying</strong><small>{wakeLock.supported ? (wakeLock.active ? "Active now" : "Activates in reader and whiteboard") : "Not supported by this browser"}</small></span><input type="checkbox" role="switch" checked={settings.keepScreenAwake} disabled={!wakeLock.supported} onChange={(event) => onSettingsChange({ keepScreenAwake: event.target.checked })} aria-label="Keep screen awake while studying" /></label>
         {wakeLock.error && <p className="inline-warning">{wakeLock.error}</p>}
         <button className="button ghost settings-reset-button" onClick={onResetSettings} type="button"><RotateCcw size={16} /> Restore reading defaults</button>
+      </section>
+
+      <section className="settings-card">
+        <div className="settings-card-heading"><Volume2 size={21} /><div><strong>Narration pronunciation</strong><span>Teach the voice how to say project-specific terms.</span></div></div>
+        <label className="pronunciation-editor"><span>One override per line, as <code>term = spoken form</code></span>
+          <textarea
+            defaultValue={(settings.pronunciations || []).map((entry) => `${entry.term} = ${entry.spoken}`).join("\n")}
+            onBlur={(event) => {
+              const pronunciations = event.target.value.split("\n")
+                .map((line) => line.split("="))
+                .filter((parts) => parts.length >= 2 && parts[0].trim() && parts.slice(1).join("=").trim())
+                .map((parts) => ({ term: parts[0].trim().slice(0, 60), spoken: parts.slice(1).join("=").trim().slice(0, 120) }))
+                .slice(0, 50);
+              onSettingsChange({ pronunciations });
+              if (pronunciations.length) onNotify?.(`${pronunciations.length} pronunciation override${pronunciations.length === 1 ? "" : "s"} saved.`);
+            }}
+            placeholder={"SQL = sequel\nReLU = ray loo\nscikit-learn = sy kit learn"}
+            rows={4}
+            aria-label="Pronunciation overrides, one per line as term equals spoken form"
+          />
+        </label>
+        <p className="microcopy">Overrides apply to narration only, match whole words case-insensitively, and are limited to 50 terms. They sync with your profile.</p>
       </section>
       <section className="settings-card">
         <div className="settings-card-heading"><Share size={21} /><div><strong>Backup and transfer</strong><span>Move your private study data between devices.</span></div></div>
@@ -748,6 +787,7 @@ export default function App() {
   const [installOpen, setInstallOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [manageDocumentId, setManageDocumentId] = useState("");
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [reviewDraft, setReviewDraft] = useState(null);
   const [backupCandidate, setBackupCandidate] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -1148,6 +1188,7 @@ export default function App() {
   }, []);
 
   const speech = useSpeech({
+    pronunciations: profile.settings.pronunciations,
     voiceURI: profile.settings.voiceURI,
     language: profile.settings.speechLanguage,
     rate: profile.settings.speechRate,
@@ -1629,6 +1670,19 @@ export default function App() {
     setProfile((current) => ({ ...current, customDocuments: [duplicate, ...current.customDocuments], activity: recordActivityEntry(current.activity, { kind: "duplicate", label: `Duplicated “${sourceDocument.title}”`, refId: duplicate.id }) }));
     notify("Document duplicated.");
   };
+
+  useEffect(() => {
+    const onKey = (event) => {
+      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || event.target?.isContentEditable;
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === "?") {
+        event.preventDefault();
+        setShortcutsOpen((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -2299,6 +2353,7 @@ export default function App() {
       <BackupImportDialog candidate={backupCandidate} busy={backupBusy} onClose={() => { if (!backupBusy) setBackupCandidate(null); }} onConfirm={confirmBackupImport} />
       <CreateNoteDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createNote} />
       <ManageDocumentDialog doc={profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
+      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} />
       {updateRegistration && <div className="update-banner" role="status"><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={() => setToast(null)} />

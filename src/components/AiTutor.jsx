@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { scrollBehavior } from "../lib/motion.js";
 import "katex/dist/katex.min.css";
 import {
   AlertTriangle,
@@ -1549,7 +1550,7 @@ export default function AiTutor({
       setRequestState({ status: "success", error: null });
       lastRequestRef.current = null;
       setPrompt((current) => current.trim() === requestSpec.displayPrompt ? "" : current);
-      requestAnimationFrame(() => responseEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" }));
+      requestAnimationFrame(() => responseEndRef.current?.scrollIntoView?.({ behavior: scrollBehavior(), block: "nearest" }));
     } catch (error) {
       const clientError = error instanceof AiClientError
         ? error
@@ -1705,7 +1706,7 @@ export default function AiTutor({
     setRequestState({ status: "idle", error: null });
     window.setTimeout(() => {
       promptRef.current?.focus();
-      promptRef.current?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      promptRef.current?.scrollIntoView?.({ behavior: scrollBehavior(), block: "center" });
     }, 0);
   }, [requestState.status]);
 

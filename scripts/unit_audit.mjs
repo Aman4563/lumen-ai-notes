@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chunkSpeechText } from "../src/lib/speech.js";
+import { applyPronunciations, chunkSpeechText, normalizePronunciations } from "../src/lib/speech.js";
 import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFILE_VERSION } from "../src/lib/db.js";
 import { contentCapabilities, foldPluralTerm, searchDocuments, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads.js";
@@ -118,6 +118,23 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   assert.deepEqual(selectInterviewRound(pool), round, "selection must be deterministic");
   assert.equal(selectInterviewRound(pool, { limit: 2 }).length, 2);
   assert.equal(selectInterviewRound([]).length, 0);
+}
+
+// AUDIO-001 pronunciation overrides: whole-word, case-insensitive, bounded.
+{
+  const glossary = [{ term: "SQL", spoken: "sequel" }, { term: "ReLU", spoken: "ray loo" }];
+  assert.equal(applyPronunciations("SQL and sql joins; NoSQL stays.", glossary), "sequel and sequel joins; NoSQL stays.", "whole-word matching must not touch embedded occurrences");
+  assert.equal(applyPronunciations("ReLU then GELU", glossary), "ray loo then GELU");
+  assert.equal(applyPronunciations("plain text", []), "plain text");
+  const normalized = normalizePronunciations([
+    { term: " SQL ", spoken: " sequel " },
+    { term: "sql", spoken: "duplicate loses" },
+    { term: "", spoken: "dropped" },
+    { term: "x".repeat(100), spoken: "bounded" },
+  ]);
+  assert.equal(normalized.length, 2);
+  assert.deepEqual(normalized[0], { term: "SQL", spoken: "sequel" }, "terms trim and case-insensitive duplicates collapse");
+  assert.equal(normalized[1].term.length, 60, "term length is bounded");
 }
 
 // SEARCH-001 field filters, has: capabilities, and plural folding.

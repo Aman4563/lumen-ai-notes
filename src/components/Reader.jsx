@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { scrollBehavior } from "../lib/motion.js";
 import {
   AlertCircle,
   ArrowUp,
@@ -9,6 +10,8 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   Edit3,
   Copy,
@@ -257,7 +260,7 @@ export default function Reader({
       const headings = [...article.querySelectorAll("h1, h2, h3, h4")];
       const destination = headings.find((heading) => heading.id === anchor)
         || (section ? headings.find((heading) => heading.id === slugifyHeading(section) || heading.textContent.trim().toLocaleLowerCase() === section.toLocaleLowerCase()) : null);
-      destination?.scrollIntoView({ behavior: "smooth", block: "start" });
+      destination?.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
       if (destination) {
         destination.setAttribute("tabindex", "-1");
         destination.focus({ preventScroll: true });
@@ -275,7 +278,7 @@ export default function Reader({
     const frame = requestAnimationFrame(() => {
       const field = personalNoteRef.current;
       if (!field) return;
-      field.scrollIntoView({ behavior: "smooth", block: "center" });
+      field.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
       field.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(frame);
@@ -318,7 +321,7 @@ export default function Reader({
       .filter((node) => !node.parentElement?.closest("p, li, td, th, pre, blockquote"));
     if (matches.length) {
       matches[0].classList.add("reader-find-hit");
-      matches[0].scrollIntoView({ behavior: "smooth", block: "center" });
+      matches[0].scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     }
     setFindState({ index: matches.length ? 0 : -1, total: matches.length });
     return clear;
@@ -394,7 +397,7 @@ export default function Reader({
 
   const scrollToHeading = (id) => {
     const heading = articleRef.current?.querySelector(`#${CSS.escape(id)}`);
-    heading?.scrollIntoView({ behavior: "smooth", block: "start" });
+    heading?.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
     if (window.innerWidth < 1000) setDrawer(null);
   };
 
@@ -407,7 +410,7 @@ export default function Reader({
     matches.forEach((node) => node.classList.remove("reader-find-hit"));
     const next = (findState.index + direction + matches.length) % matches.length;
     matches[next].classList.add("reader-find-hit");
-    matches[next].scrollIntoView({ behavior: "smooth", block: "center" });
+    matches[next].scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     setFindState({ index: next, total: matches.length });
   };
 
@@ -426,12 +429,58 @@ export default function Reader({
       onNotify?.(target.reason, "error");
       return;
     }
-    if (speech.speak(target.text, { label: target.label })) {
+    // Document narration resumes from the last persisted sentence (device
+    // local); any other scope always starts at its beginning.
+    let startIndex = 0;
+    if (target.scope === "document") {
+      const saved = Number(localStorage.getItem(`lumen-narration-${document.id}`));
+      if (Number.isInteger(saved) && saved > 2) startIndex = saved;
+    }
+    if (speech.speak(target.text, { label: target.label, sections: target.sections, startIndex })) {
+      if (startIndex > 0) onNotify?.("Narration resumed from your last position. Use Previous to go back.");
       // Move immediately to the compact player so the mobile settings sheet
       // does not cover the lecture or intercept its playback controls.
       setShowSpeech(false);
     }
   };
+
+  // Spoken-block follow (AUDIO-001): while a lecture-wide narration is
+  // speaking, tint the block containing the current sentence and keep it in
+  // view. Sentences rewritten by pronunciation overrides simply skip the
+  // highlight when no block matches; narration is never affected.
+  useEffect(() => {
+    const article = articleRef.current;
+    if (!article) return;
+    const clear = () => article.querySelectorAll(".narration-active").forEach((node) => node.classList.remove("narration-active"));
+    if (speech.status !== "speaking" || !speech.currentText || !["Full lecture", "Current section"].includes(speech.activeLabel)) {
+      clear();
+      return;
+    }
+    const needle = speech.currentText.slice(0, 60).replace(/\s+/g, " ").trim().toLocaleLowerCase();
+    if (needle.length < 8) return;
+    let target = null;
+    for (const block of article.querySelectorAll("h1, h2, h3, h4, p, li, blockquote")) {
+      if (block.textContent.replace(/\s+/g, " ").toLocaleLowerCase().includes(needle)) {
+        target = block;
+        break;
+      }
+    }
+    clear();
+    if (!target) return;
+    target.classList.add("narration-active");
+    target.scrollIntoView({ block: "center", behavior: scrollBehavior() });
+  }, [speech.activeLabel, speech.currentText, speech.status]);
+
+  // Persist the document-narration position per device so a stopped or
+  // interrupted session can pick up where it left off (AUDIO-001).
+  useEffect(() => {
+    if (speech.activeLabel !== "Full lecture" || !speech.progress.total) return;
+    if (speech.progress.current >= speech.progress.total - 1) {
+      localStorage.removeItem(`lumen-narration-${document.id}`);
+      return;
+    }
+    localStorage.setItem(`lumen-narration-${document.id}`, String(speech.progress.current));
+  }, [document.id, speech.activeLabel, speech.progress]);
 
   const share = async () => {
     const payload = { title: document.title, text: `${document.title} — Lumen AI Notes`, url: window.location.href };
@@ -491,7 +540,7 @@ export default function Reader({
   const openStoredAnnotation = (annotation) => {
     const result = resolveTextAnchor(articleRef.current, annotation);
     const element = result.range?.startContainer?.parentElement;
-    element?.scrollIntoView({ behavior: "smooth", block: "center" });
+    element?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     if (result.range) {
       const selection = window.getSelection();
       selection.removeAllRanges();
@@ -601,7 +650,7 @@ export default function Reader({
 
       {showFind && <div className="reader-find" role="search"><Search size={18} /><input value={findQuery} onChange={(event) => setFindQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); moveFind(event.shiftKey ? -1 : 1); } }} placeholder="Find in this lecture…" aria-label="Find in this lecture" /><span>{findState.total ? `${findState.index + 1}/${findState.total}` : findQuery ? "0" : ""}</span><button className="icon-button small" onClick={() => moveFind(-1)} disabled={!findState.total} aria-label="Previous match" type="button"><ChevronLeft size={17} /></button><button className="icon-button small" onClick={() => moveFind(1)} disabled={!findState.total} aria-label="Next match" type="button"><ChevronRight size={17} /></button><button className="icon-button small" onClick={() => { setShowFind(false); setFindQuery(""); }} aria-label="Close find" type="button"><X size={17} /></button></div>}
 
-      {showActions && <><button className="reader-action-scrim" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button" /><div ref={actionsDialogRef} className="reader-action-menu" role="dialog" aria-modal="true" aria-label="Lecture actions"><div className="popover-heading"><div><span className="eyebrow">Lecture actions</span><strong>Study and file tools</strong></div><button className="icon-button small" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button"><X size={17} /></button></div><div className="reader-action-grid"><button onClick={openFind} type="button"><Search size={18} /><span><strong>Find in lecture</strong><small>Jump between matches</small></span></button><button onClick={() => { share(); setShowActions(false); }} type="button"><Share2 size={18} /><span><strong>Share</strong><small>Use the iPhone share sheet</small></span></button><button onClick={() => { copyLink(); setShowActions(false); }} type="button"><Copy size={18} /><span><strong>Copy link</strong><small>Copy this exact lecture</small></span></button><button onClick={() => { exportMarkdown(); setShowActions(false); }} type="button"><Download size={18} /><span><strong>Export Markdown</strong><small>Download the current copy</small></span></button><button onClick={() => { exportHtml(); setShowActions(false); }} type="button"><FileDown size={18} /><span><strong>Export HTML</strong><small>Self-contained printable page</small></span></button><button onClick={() => { onSetProgress(complete ? 0 : 1); setShowActions(false); }} type="button">{complete ? <RotateCcw size={18} /> : <CheckCircle2 size={18} />}<span><strong>{complete ? "Reset progress" : "Mark complete"}</strong><small>{complete ? "Start this lecture again" : "Set progress to 100%"}</small></span></button><button onClick={() => { scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); setShowActions(false); }} type="button"><ArrowUp size={18} /><span><strong>Back to top</strong><small>Return to the title</small></span></button></div></div></>}
+      {showActions && <><button className="reader-action-scrim" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button" /><div ref={actionsDialogRef} className="reader-action-menu" role="dialog" aria-modal="true" aria-label="Lecture actions"><div className="popover-heading"><div><span className="eyebrow">Lecture actions</span><strong>Study and file tools</strong></div><button className="icon-button small" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button"><X size={17} /></button></div><div className="reader-action-grid"><button onClick={openFind} type="button"><Search size={18} /><span><strong>Find in lecture</strong><small>Jump between matches</small></span></button><button onClick={() => { share(); setShowActions(false); }} type="button"><Share2 size={18} /><span><strong>Share</strong><small>Use the iPhone share sheet</small></span></button><button onClick={() => { copyLink(); setShowActions(false); }} type="button"><Copy size={18} /><span><strong>Copy link</strong><small>Copy this exact lecture</small></span></button><button onClick={() => { exportMarkdown(); setShowActions(false); }} type="button"><Download size={18} /><span><strong>Export Markdown</strong><small>Download the current copy</small></span></button><button onClick={() => { exportHtml(); setShowActions(false); }} type="button"><FileDown size={18} /><span><strong>Export HTML</strong><small>Self-contained printable page</small></span></button><button onClick={() => { onSetProgress(complete ? 0 : 1); setShowActions(false); }} type="button">{complete ? <RotateCcw size={18} /> : <CheckCircle2 size={18} />}<span><strong>{complete ? "Reset progress" : "Mark complete"}</strong><small>{complete ? "Start this lecture again" : "Set progress to 100%"}</small></span></button><button onClick={() => { scrollRef.current?.scrollTo({ top: 0, behavior: scrollBehavior() }); setShowActions(false); }} type="button"><ArrowUp size={18} /><span><strong>Back to top</strong><small>Return to the title</small></span></button></div></div></>}
       {historyOpen && (() => {
         const selected = revisions.find((entry) => entry.id === selectedRevisionId) || revisions[0];
         const rows = selected ? diffLines(selected.text, draft ?? source) : [];
@@ -705,7 +754,7 @@ export default function Reader({
       </div>
 
       {drawer && <button className="drawer-scrim" onClick={() => setDrawer(null)} aria-label="Close panel" type="button" />}
-      {(speech.status === "speaking" || speech.status === "paused") && <div className="audio-bar" role="region" aria-label="Narration controls"><button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button><button className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button><button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button><div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong><span>{speech.currentText}</span></div><button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
+      {(speech.status === "speaking" || speech.status === "paused") && <div className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button><button className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button><button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong><span>{speech.currentText}</span></div><button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
       {teaching && <TeachingMode title={document.title} source={source} onClose={() => setTeaching(false)} speech={speech} />}
       <AnnotationDialog draft={annotationDraft} onClose={() => setAnnotationDraft(null)} onSave={saveAnnotation} />
     </section>

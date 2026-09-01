@@ -158,6 +158,8 @@ try {
   await page.waitForFunction(() => document.querySelector(".speech-target-status")?.textContent.toLowerCase().includes("full lecture"));
   await clickByText(page, ".speech-controls button", "Read full lecture");
   await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
+  await page.waitForFunction(() => document.querySelector(".markdown-body .narration-active"), { timeout: 5_000 })
+    .catch(() => assert.fail("full-lecture narration did not highlight the spoken block"));
   const documentProgress = await page.$eval(".audio-label strong", (node) => node.textContent);
   const documentTotal = Number(documentProgress.match(/(\d+)\/(\d+)/)?.[2] || 0);
   assert.ok(documentTotal > 1, `the document queue must contain multiple sentence segments, got "${documentProgress}"`);
@@ -166,7 +168,44 @@ try {
   await page.$eval('button[aria-label="Previous narration sentence"]', (node) => node.click());
   await page.waitForFunction(() => document.querySelector(".audio-label strong")?.textContent.includes(" 1/"), { timeout: 5_000 });
   assert.equal(await page.$eval('button[aria-label="Previous narration sentence"]', (node) => node.disabled), true, "previous must disable at the first segment");
+
+  // AUDIO-001 heading skip: a full-lecture queue exposes section transport
+  // that jumps forward by whole sections and back to the section start.
+  await page.waitForSelector('button[aria-label="Next section"]', { timeout: 5_000 });
+  await page.$eval('button[aria-label="Next section"]', (node) => node.click());
+  const afterSectionSkip = await page.waitForFunction(() => {
+    const match = document.querySelector(".audio-label strong")?.textContent.match(/(\d+)\/(\d+)/);
+    return match && Number(match[1]) > 1 ? Number(match[1]) : false;
+  }, { timeout: 5_000 }).then((handle) => handle.jsonValue());
+  assert.ok(afterSectionSkip > 1, `next-section must jump past the first sentence, landed at ${afterSectionSkip}`);
+  await page.$eval('button[aria-label="Previous section"]', (node) => node.click());
+  await page.waitForFunction(() => document.querySelector(".audio-label strong")?.textContent.includes(" 1/"), { timeout: 5_000 });
+
+  // AUDIO-001 resume position: advancing persists a device-local position and
+  // the next full-lecture start resumes from it.
+  for (let advance = 0; advance < 6; advance += 1) {
+    const displayed = await page.$eval(".audio-label strong", (node) => Number(node.textContent.match(/(\d+)\//)?.[1] || 0));
+    if (displayed > 3) break;
+    await page.$eval('button[aria-label="Next section"]', (node) => node.click());
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  await page.waitForFunction(() => Number(document.querySelector(".audio-label strong")?.textContent.match(/(\d+)\//)?.[1] || 0) > 3, { timeout: 5_000 });
+  const resumeIndex = await page.$eval(".audio-label strong", (node) => Number(node.textContent.match(/(\d+)\//)?.[1] || 0));
   await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+  await page.$eval('button[aria-label="Listen"]', (node) => node.click());
+  await page.waitForSelector('.speech-popover[role="dialog"]');
+
+  // AUDIO-001 sleep timer: chips arm a 10-minute end-of-sentence stop.
+  await page.waitForSelector('.speech-sleep-row[role="radiogroup"]');
+  await clickByText(page, ".speech-sleep-row button", "10 min");
+  assert.equal(await page.$eval('.speech-sleep-row button[aria-checked="true"]', (node) => node.textContent.trim()), "10 min", "the sleep timer chip must arm");
+
+  await clickByText(page, ".speech-controls button", "Read full lecture");
+  await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
+  const resumedAt = await page.$eval(".audio-label strong", (node) => Number(node.textContent.match(/(\d+)\//)?.[1] || 0));
+  assert.equal(resumedAt, resumeIndex, `full-lecture narration must resume from the persisted position (expected ${resumeIndex}, got ${resumedAt})`);
+  await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+  await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("lumen-narration-")).forEach((key) => localStorage.removeItem(key)));
   await page.$eval('button[aria-label="Listen"]', (node) => node.click());
   await page.waitForSelector('.speech-popover[role="dialog"]');
   await clickByText(page, ".speech-scope-grid button", "Section");
@@ -243,7 +282,7 @@ try {
   assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.viewportHeight, `audio panel overflowed vertically: ${JSON.stringify(geometry)}`);
   assert.equal(geometry.scrollable, true, "the dense iPhone audio sheet must remain internally scrollable");
   assert.deepEqual(runtimeErrors, [], `audio runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("Audio audit passed: multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, and iPhone layout.");
+  console.log("Audio audit passed: section skip, persisted resume position, sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, and iPhone layout.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

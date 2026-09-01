@@ -895,6 +895,8 @@ export const initialProfile = {
     aiHistoryRetention: 50,
     // Saved library searches (SEARCH-001); recents stay device-local.
     savedSearches: [],
+    // Narration pronunciation overrides (AUDIO-001): [{ term, spoken }].
+    pronunciations: [],
   },
 };
 
@@ -1338,7 +1340,7 @@ export const normalizeProfile = (value) => {
     personalNotes: stringRecord(input.personalNotes, 100_000),
     edits: stringRecord(input.edits, 5 * 1024 * 1024),
     settings: {
-      theme: ["system", "paper", "dark"].includes(rawSettings.theme) ? rawSettings.theme : initialProfile.settings.theme,
+      theme: ["system", "paper", "dark", "contrast"].includes(rawSettings.theme) ? rawSettings.theme : initialProfile.settings.theme,
       fontScale: numberWithin(rawSettings.fontScale, 0.85, 1.35, initialProfile.settings.fontScale),
       lineHeight: numberWithin(rawSettings.lineHeight, 1.45, 2, initialProfile.settings.lineHeight),
       contentWidth: ["focused", "comfortable", "wide"].includes(rawSettings.contentWidth) ? rawSettings.contentWidth : initialProfile.settings.contentWidth,
@@ -1360,6 +1362,10 @@ export const normalizeProfile = (value) => {
       savedSearches: [...new Set((Array.isArray(rawSettings.savedSearches) ? rawSettings.savedSearches : [])
         .filter((entry) => typeof entry === "string" && entry.trim())
         .map((entry) => entry.trim().slice(0, 120)))].slice(0, 20),
+      pronunciations: (Array.isArray(rawSettings.pronunciations) ? rawSettings.pronunciations : [])
+        .filter((entry) => isRecord(entry) && typeof entry.term === "string" && typeof entry.spoken === "string" && entry.term.trim() && entry.spoken.trim())
+        .map((entry) => ({ term: entry.term.trim().slice(0, 60), spoken: entry.spoken.trim().slice(0, 120) }))
+        .slice(0, 50),
     },
     bookmarks: uniqueStrings(input.bookmarks),
     customDocuments,

@@ -37,6 +37,28 @@ const sectionText = (article, currentBlock) => {
   return cleanText(section.join(" "));
 };
 
+/**
+ * Splits the rendered article into narration sections at H1–H3 boundaries
+ * (AUDIO-001 heading skip). Falls back to one section for heading-free text.
+ */
+export const buildSpeechSections = (article) => {
+  const blocks = readableBlocks(article);
+  if (!blocks.length) return [];
+  const sections = [];
+  let current = null;
+  for (const block of blocks) {
+    const text = cleanText(block.textContent);
+    if (/^H[1-3]$/u.test(block.tagName) || !current) {
+      current = { label: /^H[1-3]$/u.test(block.tagName) ? text.slice(0, 80) : "Introduction", parts: [] };
+      sections.push(current);
+    }
+    current.parts.push(text);
+  }
+  return sections
+    .map((section) => ({ label: section.label, text: cleanText(section.parts.join(" ")) }))
+    .filter((section) => section.text);
+};
+
 export const buildSpeechTarget = ({
   scope = "document",
   selectedText = "",
@@ -65,8 +87,9 @@ export const buildSpeechTarget = ({
       ? { available: true, scope: normalizedScope, label: "Current section", text }
       : { available: false, scope: normalizedScope, label: "Current section", text: "", reason: "No readable section is visible." };
   }
-  const text = cleanText(article?.innerText || sourceText);
+  const sections = buildSpeechSections(article);
+  const text = sections.length ? sections.map((section) => section.text).join(" ") : cleanText(article?.innerText || sourceText);
   return text
-    ? { available: true, scope: "document", label: "Full lecture", text }
+    ? { available: true, scope: "document", label: "Full lecture", text, sections }
     : { available: false, scope: "document", label: "Full lecture", text: "", reason: "This lecture has no readable text." };
 };
