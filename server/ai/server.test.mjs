@@ -1,0 +1,515 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import { afterEach, test } from "node:test";
+
+import { createApplicationServer, silentLogger } from "../server.mjs";
+
+const runningServers = new Set();
+
+afterEach(async () => {
+  await Promise.all([...runningServers].map((server) => new Promise((resolve) => server.close(resolve))));
+  runningServers.clear();
+});
+
+const start = async ({ enabled = true, env = {}, fetchImpl = async () => {
+  throw new Error("Unexpected local-service request");
+} } = {}) => {
+  const serverEnv = {
+    HOST: "127.0.0.1",
+    PORT: "0",
+    AI_ENABLED: String(enabled),
+    OLLAMA_MODEL: "test-model",
+    ...env,
+  };
+  const { server } = createApplicationServer({ env: serverEnv, fetchImpl, logger: silentLogger });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  runningServers.add(server);
+  return `http://127.0.0.1:${server.address().port}`;
+};
+
+const post = (baseUrl, payload, headers = {}) => fetch(`${baseUrl}/api/ai/respond`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", ...headers },
+  body: JSON.stringify(payload),
+});
+
+const plainRequest = {
+  task: "explain",
+  prompt: "Explain why validation data must not tune the final test score.",
+  context: "The test split estimates performance only after all choices are fixed.",
+  documentTitle: "Data splits",
+  difficulty: "intermediate",
+  maxOutputTokens: 500,
+};
+
+test("TLS configuration fails closed when only one credential path is set", () => {
+  assert.throws(
+    () => createApplicationServer({
+      env: {
+        HOST: "127.0.0.1",
+        PORT: "0",
+        AI_ENABLED: "false",
+        TLS_CERT_FILE: "/tmp/lumen-cert.pem",
+      },
+      logger: silentLogger,
+    }),
+    /TLS_CERT_FILE and TLS_KEY_FILE must be configured together/,
+  );
+});
+
+test("private AI cannot bind beyond loopback without TLS and an exact HTTPS origin", () => {
+  assert.throws(() => createApplicationServer({
+    env: { HOST: "0.0.0.0", PORT: "0", AI_ENABLED: "true" },
+    logger: silentLogger,
+  }), /TLS is required/);
+  assert.throws(() => createApplicationServer({
+    env: {
+      HOST: "0.0.0.0",
+      PORT: "0",
+      AI_ENABLED: "true",
+      AI_ALLOWED_ORIGINS: "http://192.168.1.13:4194",
+    },
+    logger: silentLogger,
+  }), /TLS is required/);
+});
+
+const ollamaReply = (content, extra = {}) => new Response(JSON.stringify({
+  model: "test-model",
+  done: true,
+  done_reason: "stop",
+  message: { role: "assistant", content },
+  prompt_eval_count: 80,
+  eval_count: 12,
+  ...extra,
+}), { status: 200, headers: { "Content-Type": "application/json" } });
+
+test("disabled local AI remains healthy and never calls a service", async () => {
+  let serviceCalls = 0;
+  const baseUrl = await start({
+    enabled: false,
+    fetchImpl: async () => {
+      serviceCalls += 1;
+      throw new Error("must not run");
+    },
+  });
+  const health = await fetch(`${baseUrl}/api/health`).then((response) => response.json());
+  const appShellResponse = await fetch(`${baseUrl}/`, { headers: { Accept: "text/html" } });
+  const appShell = await appShellResponse.text();
+  const config = await fetch(`${baseUrl}/api/ai/config`).then((response) => response.json());
+  const response = await post(baseUrl, plainRequest);
+  const body = await response.json();
+
+  assert.equal(health.status, "ok");
+  assert.equal(health.ai, "disabled");
+  assert.equal(health.webSearch, "disabled");
+  assert.equal(appShellResponse.status, 200);
+  assert.equal(appShellResponse.headers.get("x-frame-options"), "DENY");
+  assert.equal(appShellResponse.headers.get("content-security-policy"), "frame-ancestors 'none'");
+  assert.match(appShell, /id="root"/);
+  assert.equal(config.enabled, false);
+  assert.equal(config.provider, "ollama-local");
+  assert.equal(config.model, null);
+  assert.equal(config.privacy.paidRemoteApisUsed, false);
+  assert.equal(config.privacy.apiKeyRequired, false);
+  assert.equal(JSON.stringify(config).includes("127.0.0.1:11434"), false);
+  assert.equal(JSON.stringify(config).includes("127.0.0.1:8080"), false);
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "AI_UNAVAILABLE");
+  assert.equal(serviceCalls, 0);
+});
+
+test("disabled LAN profile exposes only read-only diagnostics without an origin allowlist", async () => {
+  const baseUrl = await start({ enabled: false, env: { HOST: "0.0.0.0" } });
+  const port = new URL(baseUrl).port;
+  const diagnostic = await fetch(`${baseUrl}/api/ai/config`, { headers: { Host: `192.168.1.13:${port}` } });
+  assert.equal(diagnostic.status, 200);
+  assert.equal((await diagnostic.json()).enabled, false);
+  const mutation = await post(baseUrl, plainRequest, { Host: `192.168.1.13:${port}`, Origin: `http://192.168.1.13:${port}` });
+  assert.equal(mutation.status, 403);
+  assert.equal((await mutation.json()).error.code, "ORIGIN_NOT_ALLOWED");
+});
+
+test("public config probes local capability without exposing private endpoints", async () => {
+  const calls = [];
+  const baseUrl = await start({
+    env: { WEB_SEARCH_ENABLED: "true" },
+    fetchImpl: async (url) => {
+      calls.push(new URL(url).pathname);
+      if (new URL(url).pathname === "/api/tags") {
+        return new Response(JSON.stringify({ models: [{ name: "test-model:latest", model: "test-model:latest" }] }), { status: 200 });
+      }
+      if (new URL(url).pathname === "/api/show") {
+        return new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), { status: 200 });
+      }
+      if (new URL(url).pathname === "/config") return new Response(JSON.stringify({ engines: [] }), { status: 200 });
+      throw new Error("unexpected probe");
+    },
+  });
+  const config = await fetch(`${baseUrl}/api/ai/config`).then((response) => response.json());
+  assert.equal(config.service.reachable, true);
+  assert.equal(config.service.modelInstalled, true);
+  assert.equal(config.service.completionCapable, true);
+  assert.equal(config.service.toolCallingCapable, true);
+  assert.equal(config.webSearch.available, true);
+  assert.equal(config.webSearch.macToolAvailable, true);
+  assert.equal(config.webSearch.requiresPerRequestOptIn, true);
+  assert.deepEqual(calls.sort(), ["/api/show", "/api/tags", "/config"]);
+  assert.equal(JSON.stringify(config).includes("127.0.0.1"), false);
+});
+
+test("an operator-pinned Ollama digest blocks direct inference on mismatch", async () => {
+  const paths = [];
+  const baseUrl = await start({
+    env: { OLLAMA_MODEL_DIGEST: "a".repeat(64) },
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path === "/api/tags") return new Response(JSON.stringify({ models: [{ name: "test-model:latest", digest: "b".repeat(64) }] }), { status: 200 });
+      if (path === "/api/show") return new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), { status: 200 });
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  const response = await post(baseUrl, plainRequest);
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "AI_MODEL_IDENTITY_UNVERIFIED");
+  assert.equal(paths.includes("/api/chat"), false);
+});
+
+test("a cached readiness result cannot authorize inference after the installed tag changes", async () => {
+  let installedDigest = "a".repeat(64);
+  let chatCalls = 0;
+  let tagCalls = 0;
+  const baseUrl = await start({
+    env: { OLLAMA_MODEL_DIGEST: "a".repeat(64) },
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/tags") {
+        tagCalls += 1;
+        return new Response(JSON.stringify({ models: [{ name: "test-model:latest", digest: installedDigest }] }), { status: 200 });
+      }
+      if (path === "/api/show") {
+        return new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), { status: 200 });
+      }
+      if (path === "/api/chat") {
+        chatCalls += 1;
+        return ollamaReply("This request must never reach generation.");
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  const readiness = await fetch(`${baseUrl}/api/ai/config`).then((response) => response.json());
+  assert.equal(readiness.service.modelIdentityVerified, true);
+  installedDigest = "b".repeat(64);
+
+  const response = await post(baseUrl, plainRequest);
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "AI_MODEL_IDENTITY_UNVERIFIED");
+  assert.equal(chatCalls, 0);
+  assert.ok(tagCalls >= 2, "inference reused the diagnostic identity cache");
+});
+
+test("model identity probes run only after method, media, rate, validation, and capacity admission", async () => {
+  let tagCalls = 0;
+  let chatCalls = 0;
+  const baseUrl = await start({
+    env: { OLLAMA_MODEL_DIGEST: "a".repeat(64), AI_RATE_LIMIT_MAX: "1" },
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/tags") {
+        tagCalls += 1;
+        return new Response(JSON.stringify({ models: [{ name: "test-model:latest", digest: "a".repeat(64) }] }), { status: 200 });
+      }
+      if (path === "/api/chat") {
+        chatCalls += 1;
+        return ollamaReply("Admitted local answer.");
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  const wrongMethod = await fetch(`${baseUrl}/api/ai/respond`);
+  assert.equal(wrongMethod.status, 405);
+  const wrongMedia = await fetch(`${baseUrl}/api/ai/respond`, { method: "POST", body: "{}" });
+  assert.equal(wrongMedia.status, 415);
+  assert.equal(tagCalls, 0);
+
+  const admitted = await post(baseUrl, plainRequest);
+  assert.equal(admitted.status, 200);
+  assert.equal(tagCalls, 1);
+  assert.equal(chatCalls, 1);
+
+  const rateLimited = await post(baseUrl, plainRequest);
+  assert.equal(rateLimited.status, 429);
+  assert.equal(tagCalls, 1, "rate-limited request reached the identity probe");
+  assert.equal(chatCalls, 1);
+});
+
+test("phone-only mode probes self-hosted search when Mac inference is disabled", async () => {
+  const calls = [];
+  const baseUrl = await start({
+    enabled: false,
+    env: { WEB_SEARCH_ENABLED: "true" },
+    fetchImpl: async (url) => {
+      calls.push(new URL(url).pathname);
+      if (new URL(url).pathname === "/config") return new Response(JSON.stringify({ engines: [] }), { status: 200 });
+      throw new Error("Ollama must not be probed in phone-only mode");
+    },
+  });
+  const config = await fetch(`${baseUrl}/api/ai/config`).then((response) => response.json());
+  assert.equal(config.enabled, false);
+  assert.equal(config.service.reachable, false);
+  assert.equal(config.webSearch.configured, true);
+  assert.equal(config.webSearch.available, true);
+  assert.deepEqual(calls, ["/config"]);
+});
+
+test("valid requests become bounded local Ollama chat calls", async () => {
+  let captured;
+  const baseUrl = await start({
+    fetchImpl: async (url, init) => {
+      captured = { url: String(url), init, body: JSON.parse(init.body) };
+      return ollamaReply("A held-out test set is not a tuning signal.");
+    },
+  });
+  const response = await post(baseUrl, plainRequest);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.outputText, "A held-out test set is not a tuning signal.");
+  assert.deepEqual(body.usage, { inputTokens: 80, outputTokens: 12, totalTokens: 92 });
+  assert.equal(new URL(captured.url).pathname, "/api/chat");
+  assert.equal(captured.init.headers.Authorization, undefined);
+  assert.equal(captured.body.model, "test-model");
+  assert.equal(captured.body.stream, false);
+  assert.equal(captured.body.think, false);
+  assert.equal(captured.body.options.num_predict, 500);
+  assert.equal("tools" in captured.body, false);
+  assert.equal("format" in captured.body, false);
+  assert.match(captured.body.messages[0].content, /untrusted source material/);
+  assert.match(captured.body.messages.at(-1).content, /<curriculum_context/);
+  assert.equal(body.webSearch.used, false);
+});
+
+test("structured tasks use server-owned JSON Schema and validate the result", async () => {
+  let upstreamBody;
+  const structured = { cards: [{ front: "What is leakage?", back: "Information unavailable at prediction time entering training.", hint: null, tags: ["data"] }] };
+  const baseUrl = await start({
+    fetchImpl: async (_url, init) => {
+      upstreamBody = JSON.parse(init.body);
+      return ollamaReply(JSON.stringify(structured));
+    },
+  });
+  const response = await post(baseUrl, {
+    task: "flashcards",
+    prompt: "Create one card.",
+    context: "Leakage makes evaluation optimistic.",
+    responseFormat: "structured",
+    maxOutputTokens: 500,
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.data, structured);
+  assert.match(body.approach.summary, /available learning material/);
+  assert.ok(body.approach.steps.some((step) => /atomic source-supported facts/i.test(step)));
+  assert.doesNotMatch(JSON.stringify(body.approach), /thinking|chain-of-thought|private reasoning/i);
+  assert.equal(upstreamBody.format.type, "object");
+  assert.equal(upstreamBody.format.additionalProperties, false);
+  assert.equal(upstreamBody.options.temperature, 0);
+  assert.match(upstreamBody.messages[0].content, /Return only JSON conforming/);
+});
+
+test("web search tool loops only with per-request consent and sanitizes evidence", async () => {
+  const calls = [];
+  let secondChatBody;
+  const baseUrl = await start({
+    env: { WEB_SEARCH_ENABLED: "true", WEB_SEARCH_MAX_RESULTS: "2" },
+    fetchImpl: async (url, init) => {
+      const parsedUrl = new URL(url);
+      calls.push(parsedUrl.pathname);
+      if (parsedUrl.pathname === "/search") {
+        assert.equal(parsedUrl.searchParams.get("q"), "latest stable PyTorch release");
+        assert.equal(parsedUrl.searchParams.get("format"), "json");
+        return new Response(JSON.stringify({ results: [
+          { title: "<b>PyTorch releases</b>", url: "https://pytorch.org/blog/releases/#latest", content: "Latest &amp; supported." },
+          { title: "Private panel", url: "http://127.0.0.1/admin", content: "must be filtered" },
+          { title: "Docs", url: "https://docs.pytorch.org/docs/stable/index.html", content: "Stable docs" },
+          { title: "Overflow", url: "https://example.com/third", content: "must be bounded" },
+        ] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsedUrl.pathname === "/api/chat" && calls.filter((path) => path === "/api/chat").length === 1) {
+        const firstBody = JSON.parse(init.body);
+        assert.equal(firstBody.tools[0].function.name, "search_web");
+        return ollamaReply("", { message: { role: "assistant", content: "", tool_calls: [{ type: "function", function: { name: "search_web", arguments: { query: "latest stable PyTorch release" } } }] } });
+      }
+      if (parsedUrl.pathname === "/api/chat") {
+        secondChatBody = JSON.parse(init.body);
+        return ollamaReply("The current release is documented by PyTorch [W1].");
+      }
+      throw new Error(`unexpected ${parsedUrl.pathname}`);
+    },
+  });
+
+  const response = await post(baseUrl, { ...plainRequest, prompt: "What is the latest stable PyTorch release?", webSearch: true });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.webSearch.requested, true);
+  assert.equal(body.webSearch.used, true);
+  assert.equal(body.webSearch.rounds, 1);
+  assert.equal(body.sources.length, 2);
+  assert.deepEqual(body.sources.map((source) => source.title), ["PyTorch releases", "Docs"]);
+  assert.equal(JSON.stringify(body.sources).includes("127.0.0.1"), false);
+  assert.equal(JSON.stringify(secondChatBody.messages).includes("Untrusted search evidence"), true);
+  assert.deepEqual(calls, ["/api/chat", "/search", "/api/chat"]);
+});
+
+test("web search opt-in is rejected when unavailable before any local call", async () => {
+  let serviceCalls = 0;
+  const baseUrl = await start({ fetchImpl: async () => {
+    serviceCalls += 1;
+    throw new Error("must not run");
+  } });
+  const response = await post(baseUrl, { ...plainRequest, webSearch: true });
+  const body = await response.json();
+  assert.equal(response.status, 400);
+  assert.equal(body.error.code, "VALIDATION_ERROR");
+  assert.match(body.error.details.join(" "), /webSearch is not enabled/);
+  assert.equal(serviceCalls, 0);
+});
+
+test("same-origin local-search endpoint accepts only one bounded query and returns sanitized results", async () => {
+  let searxCalls = 0;
+  const baseUrl = await start({
+    env: { WEB_SEARCH_ENABLED: "true", WEB_SEARCH_MAX_RESULTS: "2" },
+    fetchImpl: async (url) => {
+      searxCalls += 1;
+      const parsedUrl = new URL(url);
+      assert.equal(parsedUrl.pathname, "/search");
+      assert.equal(parsedUrl.searchParams.get("q"), "latest ML release");
+      return new Response(JSON.stringify({ results: [
+        { title: "Official ML release", url: "https://example.org/release#details", content: "Current ML release." },
+        { title: "Internal", url: "http://192.168.1.2/admin", content: "filtered" },
+      ] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const resultResponse = await fetch(`${baseUrl}/api/local-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "latest ML release" }),
+  });
+  const result = await resultResponse.json();
+  assert.equal(resultResponse.status, 200);
+  assert.equal(result.query, "latest ML release");
+  assert.deepEqual(result.results, [{ title: "Official ML release", url: "https://example.org/release", snippet: "Current ML release." }]);
+  assert.equal(JSON.stringify(result).includes("127.0.0.1:8080"), false);
+
+  const injected = await fetch(`${baseUrl}/api/local-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "valid", url: "http://169.254.169.254" }),
+  });
+  assert.equal(injected.status, 400);
+  assert.equal((await injected.json()).error.code, "VALIDATION_ERROR");
+  assert.equal(searxCalls, 1);
+});
+
+test("local-search endpoint is fail-closed when the operator has not enabled it", async () => {
+  let serviceCalls = 0;
+  const baseUrl = await start({ fetchImpl: async () => {
+    serviceCalls += 1;
+    throw new Error("must not run");
+  } });
+  const response = await fetch(`${baseUrl}/api/local-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "latest release" }),
+  });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, "WEB_SEARCH_UNAVAILABLE");
+  assert.equal(serviceCalls, 0);
+});
+
+test("no tool is exposed without consent and an unsolicited tool call is denied", async () => {
+  let searxCalls = 0;
+  const baseUrl = await start({
+    env: { WEB_SEARCH_ENABLED: "true" },
+    fetchImpl: async (url, init) => {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.pathname === "/search") searxCalls += 1;
+      const body = JSON.parse(init.body);
+      assert.equal("tools" in body, false);
+      return ollamaReply("", { message: { role: "assistant", content: "", tool_calls: [{ type: "function", function: { name: "search_web", arguments: { query: "secret" } } }] } });
+    },
+  });
+  const response = await post(baseUrl, plainRequest);
+  const body = await response.json();
+  assert.equal(response.status, 403);
+  assert.equal(body.error.code, "WEB_SEARCH_NOT_ALLOWED");
+  assert.equal(searxCalls, 0);
+});
+
+test("unsupported fields and oversized inputs are rejected before Ollama", async () => {
+  let serviceCalls = 0;
+  const baseUrl = await start({ fetchImpl: async () => {
+    serviceCalls += 1;
+    throw new Error("must not run");
+  } });
+  const injected = await post(baseUrl, { ...plainRequest, model: "attacker-model", provider: "remote", baseUrl: "https://attacker.example" });
+  const oversized = await post(baseUrl, { ...plainRequest, context: "x".repeat(25_000) });
+  assert.equal(injected.status, 400);
+  assert.equal((await injected.json()).error.code, "VALIDATION_ERROR");
+  assert.equal(oversized.status, 400);
+  assert.equal((await oversized.json()).error.code, "VALIDATION_ERROR");
+  assert.equal(serviceCalls, 0);
+});
+
+test("body limits, origins, and per-client rate limits are enforced", async () => {
+  const baseUrl = await start({
+    env: { AI_MAX_BODY_BYTES: "8192", AI_RATE_LIMIT_MAX: "2" },
+    fetchImpl: async () => ollamaReply("ok"),
+  });
+  const forbidden = await post(baseUrl, plainRequest, { Origin: "https://attacker.example" });
+  const huge = await post(baseUrl, { task: "explain", prompt: "x".repeat(9_000) });
+  const first = await post(baseUrl, plainRequest);
+  const limited = await post(baseUrl, plainRequest);
+  assert.equal(forbidden.status, 403);
+  assert.equal(huge.status, 413);
+  assert.equal(first.status, 200);
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).error.code, "RATE_LIMITED");
+});
+
+test("loopback API rejects DNS-rebinding Host and Origin pairs", async () => {
+  let serviceCalls = 0;
+  const baseUrl = await start({ fetchImpl: async () => {
+    serviceCalls += 1;
+    return ollamaReply("must not run");
+  } });
+  const port = new URL(baseUrl).port;
+  const response = await post(baseUrl, plainRequest, {
+    Host: `evil.example:${port}`,
+    Origin: `http://evil.example:${port}`,
+  });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, "ORIGIN_NOT_ALLOWED");
+  assert.equal(serviceCalls, 0);
+});
+
+test("local service errors are typed and upstream diagnostics are sanitized", async () => {
+  const baseUrl = await start({
+    fetchImpl: async () => new Response(JSON.stringify({ error: "private local filesystem diagnostic" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    }),
+  });
+  const response = await post(baseUrl, plainRequest);
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "AI_MODEL_NOT_FOUND");
+  assert.equal(JSON.stringify(body).includes("private local filesystem diagnostic"), false);
+});

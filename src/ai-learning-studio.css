@@ -1,0 +1,32 @@
+.ai-learning-studio { display: grid; gap: 20px; }
+
+.ai-engine-picker {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
+}
+
+.ai-engine-picker__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ai-engine-picker__heading h2 { margin: 3px 0 0; font-size: clamp(1.05rem, 3vw, 1.3rem); }
+.ai-engine-picker__privacy { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--teal) 28%, var(--line)); border-radius: 999px; color: color-mix(in srgb, var(--teal) 45%, var(--ink)); background: var(--teal-soft); font-size: .78rem; font-weight: 750; white-space: nowrap; }
+.ai-engine-picker__options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ai-engine-picker__options > button { display: flex; align-items: flex-start; gap: 11px; min-height: 76px; padding: 13px; border: 1px solid var(--line-strong); border-radius: 14px; color: var(--ink); background: var(--paper-2); text-align: left; cursor: pointer; }
+.ai-engine-picker__options > button svg { flex: 0 0 auto; margin-top: 2px; color: var(--ink-soft); }
+.ai-engine-picker__options > button span { display: grid; gap: 4px; }
+.ai-engine-picker__options > button strong { font-size: .9rem; }
+.ai-engine-picker__options > button small { color: var(--ink-soft); font-size: .76rem; line-height: 1.4; }
+.ai-engine-picker__options > button.is-selected { border-color: color-mix(in srgb, var(--teal) 70%, var(--line)); background: var(--teal-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--teal) 35%, transparent); }
+.ai-engine-picker__options > button.is-selected svg { color: var(--teal); }
+.ai-engine-picker__note { margin: 0; color: var(--ink-soft); font-size: .78rem; line-height: 1.45; }
+
+@media (max-width: 680px) {
+  .ai-engine-picker { padding: 14px; }
+  .ai-engine-picker__heading { display: grid; }
+  .ai-engine-picker__privacy { width: max-content; }
+  .ai-engine-picker__options { grid-template-columns: 1fr; }
+  .ai-engine-picker__options > button { min-height: 72px; }
+}

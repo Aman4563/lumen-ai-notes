@@ -1,0 +1,10 @@
+Llama 3.2 is licensed under the Llama 3.2 Community License,
+Copyright © Meta Platforms, Inc. All Rights Reserved.
+
+This product's optional On-device Lite feature is Built with Llama.
+The complete license is provided beside this notice as
+LLAMA_3_2_COMMUNITY_LICENSE.txt.
+
+The optional browser runtime uses @mlc-ai/web-llm 0.2.82 under the
+Apache License 2.0. The complete license is provided beside this notice as
+APACHE-2.0.txt.

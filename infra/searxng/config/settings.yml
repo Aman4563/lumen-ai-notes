@@ -1,0 +1,40 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "Lumen Local Search"
+  enable_metrics: false
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  # Overridden by the required SEARXNG_SECRET environment variable.
+  secret_key: "environment-required"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0
+  pool_connections: 20
+  pool_maxsize: 10
+
+# The default AOL adapter currently returns 404s, while Startpage commonly
+# challenges private self-hosted instances. Keep the working privacy-oriented
+# defaults and add two independently verified no-key engines so one temporary
+# CAPTCHA or 429 does not leave a learner with no evidence.
+engines:
+  - name: aol
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false

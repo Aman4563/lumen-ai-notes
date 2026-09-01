@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lumen AI Notes">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17283e"/>
+      <stop offset="1" stop-color="#0c1421"/>
+    </linearGradient>
+    <linearGradient id="light" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd98a"/>
+      <stop offset="1" stop-color="#f09b67"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="url(#bg)"/>
+  <path d="M142 118h46v225c0 27 17 43 46 43h134v45H225c-53 0-83-31-83-82z" fill="#fff9ef"/>
+  <path d="M248 139c55 0 100 45 100 100 0 30-13 57-34 75l-27-35c10-10 16-24 16-40 0-31-24-56-55-56z" fill="url(#light)"/>
+  <circle cx="248" cy="239" r="23" fill="#fff9ef"/>
+  <path d="M248 78v38M374 125l-28 28M408 239h-39M122 239H84M150 153l-28-28" stroke="#ffd98a" stroke-width="17" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,885 @@
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import "katex/dist/katex.min.css";
+import {
+  AlertTriangle,
+  BookOpen,
+  Check,
+  ChevronDown,
+  CircleStop,
+  Copy,
+  Cpu,
+  ExternalLink,
+  LoaderCircle,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Send,
+  ShieldCheck,
+  Trash2,
+  WifiOff,
+} from "lucide-react";
+import PhoneLocalAiSettings from "./PhoneLocalAiSettings";
+import {
+  getPhoneLocalAiEngine,
+  inspectPhoneLocalAiRequestFit,
+  PHONE_LOCAL_AI_DISCLOSURE,
+  PHONE_LOCAL_MODEL,
+  selectCitablePhoneSources,
+  selectCompletedPhoneHistory,
+} from "../lib/phoneLocalAi.js";
+import {
+  phoneTutorMarkdownPlainText,
+  renderPhoneTutorMarkdown,
+} from "../lib/phoneTutorMarkdown.js";
+import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
+import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
+import "../phone-local-ai-tutor.css";
+
+export const PHONE_TUTOR_MODES = Object.freeze([
+  { id: "explain", label: "Explain", task: "explain", prompt: "Explain the selected material with intuition, one concrete example, common mistakes, and interview trade-offs.", description: "Concepts, mechanics, pitfalls, and senior-level judgment." },
+  { id: "socratic", label: "Socratic", task: "socratic", prompt: "Teach this with one focused Socratic question at a time. Begin by checking what I already understand.", description: "Guided questioning without revealing the answer too early." },
+  { id: "quiz", label: "Quiz", task: "quiz", prompt: "Create a concise 3-question quiz grounded in the selected material. Test recall, application, and one misconception.", description: "A locally validated interactive quiz.", structured: true },
+  { id: "flashcards", label: "Flashcards", task: "flashcards", prompt: "Create up to 6 atomic active-recall flashcards from the selected material. Prefer reasoning over copied definitions.", description: "Review-ready card drafts you choose before saving.", structured: true },
+  { id: "interview", label: "Interview", task: "interview", prompt: "Interview me at senior engineer depth. Ask one question, then probe assumptions, trade-offs, failure handling, and measurement.", description: "Practice concise SDE-II/SDE-III technical reasoning." },
+  { id: "summarize", label: "Summarize", task: "summarize", prompt: "Summarize the selected material faithfully: core ideas, formulas, assumptions, pitfalls, and a short recall checklist.", description: "A compact revision guide generated on this device." },
+  { id: "study-plan", label: "Study plan", task: "study_plan", prompt: "Create a concise plan with up to 4 sequenced milestones, realistic activities, time estimates, and evidence of mastery.", description: "A locally validated, dependency-aware plan.", structured: true },
+]);
+
+const DEPTHS = Object.freeze([
+  { id: "beginner", label: "Beginner" },
+  { id: "intermediate", label: "Intermediate" },
+  { id: "advanced", label: "Advanced" },
+  { id: "interview", label: "Interview" },
+]);
+
+export const PHONE_SOURCE_MODES = Object.freeze([
+  { id: "library-first", label: "Library first", short: "Search every local note, then attach only the best passages." },
+  { id: "current", label: "Current lesson", short: "Use the lesson that was open when the studio launched." },
+  { id: "choose", label: "Choose", short: "Attach up to two loaded lessons yourself." },
+  { id: "none", label: "No library", short: "Use the small model's general knowledge only." },
+]);
+
+const RESPONSE_LENGTHS = Object.freeze([
+  { id: "compact", label: "Compact", tokens: 384 },
+  { id: "standard", label: "Standard", tokens: 640 },
+  { id: "detailed", label: "Detailed", tokens: 768 },
+]);
+
+const MAX_SOURCES = 2;
+const MAX_CONTEXT_CHARS = 4_800;
+const MAX_PROMPT_CHARS = 1_800;
+const MAX_SESSION_MESSAGES = 30;
+const MAX_HISTORY_MESSAGES = 2;
+
+const cleanText = (value, maximum = 20_000) => String(value ?? "")
+  .replace(/\r\n?/g, "\n")
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+  .trim()
+  .slice(0, maximum);
+
+const sourceText = (source) => cleanText(source?.text ?? source?.content ?? source?.excerpt ?? source?.markdown ?? "", 100_000);
+const sourceId = (source, index) => cleanText(source?.id ?? source?.documentId ?? source?.slug, 240) || `phone-source-${index}`;
+const createId = () => globalThis.crypto?.randomUUID?.() || `phone-ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const writeClipboard = async (value) => {
+  const text = String(value || "");
+  if (!text) return false;
+  try {
+    if (globalThis.navigator?.clipboard?.writeText) {
+      await globalThis.navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* use the local fallback below */ }
+  if (!globalThis.document?.body) return false;
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.append(field);
+  field.select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch { copied = false; }
+  field.remove();
+  return copied;
+};
+
+export const normalizePhoneSources = (sources) => {
+  const seen = new Set();
+  return (Array.isArray(sources) ? sources : []).flatMap((source, index) => {
+    if (!source || typeof source !== "object") return [];
+    const text = sourceText(source);
+    const id = sourceId(source, index);
+    if (!text || seen.has(id)) return [];
+    seen.add(id);
+    return [{
+      id,
+      documentId: cleanText(source.documentId ?? source.id, 240),
+      title: cleanText(source.title, 200) || "Untitled learning source",
+      section: cleanText(source.section ?? source.heading, 160),
+      text,
+      selected: source.selected === true,
+      original: source,
+    }];
+  });
+};
+
+export const normalizeRetrievedPhoneSources = (result, availableSources = []) => {
+  const knownByDocument = new Map((Array.isArray(availableSources) ? availableSources : []).map((source) => [source.documentId || source.id, source]));
+  const seen = new Set();
+  return (Array.isArray(result?.passages) ? result.passages : []).slice(0, MAX_SOURCES * 2).flatMap((passage, index) => {
+    if (!passage || typeof passage !== "object") return [];
+    const text = sourceText(passage);
+    const id = sourceId(passage, index);
+    if (!text || seen.has(id)) return [];
+    seen.add(id);
+    const documentId = cleanText(passage.documentId ?? passage.id, 240);
+    const known = knownByDocument.get(documentId);
+    const anchor = cleanText(passage.anchor, 240);
+    return [{
+      id,
+      documentId,
+      title: cleanText(passage.title, 200) || "Retrieved library passage",
+      section: cleanText(passage.section ?? passage.heading, 160),
+      anchor,
+      text,
+      selected: true,
+      original: known?.original || {
+        id: documentId,
+        documentId,
+        title: cleanText(passage.title, 200),
+        section: cleanText(passage.section, 160),
+        anchor,
+      },
+    }];
+  }).slice(0, MAX_SOURCES);
+};
+
+const normalizeRetrievalTrace = (trace) => {
+  if (!trace || typeof trace !== "object") return null;
+  const counts = retrievalTraceCounts(trace);
+  const confidenceScore = Number.isFinite(trace.confidence?.score) ? Math.max(0, Math.min(1, trace.confidence.score)) : null;
+  const value = {
+    strategy: cleanText(trace.strategy || "library-first", 80),
+    candidates: counts.candidates,
+    matchedDocuments: counts.matchedDocuments,
+    passages: counts.passages,
+    confidenceLevel: cleanText(trace.confidence?.level, 30),
+    confidenceScore,
+    budgetTruncated: trace.budget?.truncated === true,
+    webFallbackRecommended: trace.webFallback?.recommended === true,
+    webFallbackCode: cleanText(trace.webFallback?.code, 80),
+    webFallbackReason: cleanText(trace.webFallback?.reason, 300),
+  };
+  return value.strategy || value.passages !== null || value.webFallbackCode ? value : null;
+};
+
+const clip = (text, maximum) => {
+  if (text.length <= maximum) return text;
+  const marker = "\n[… excerpt clipped for the phone model …]\n";
+  const available = maximum - marker.length;
+  const start = Math.ceil(available * 0.76);
+  return `${text.slice(0, start)}${marker}${text.slice(text.length - (available - start))}`;
+};
+
+export const buildPhoneContextBundle = (sources) => {
+  if (!sources.length) return { text: "", ranges: [] };
+  const framing = sources.reduce((sum, source, index) => sum + source.title.length + source.section.length + String(index + 1).length + 20, 0);
+  const textBudget = Math.max(400, MAX_CONTEXT_CHARS - framing);
+  const perSource = Math.floor(textBudget / sources.length);
+  const blocks = sources.map((source, index) => {
+    const inferenceTitle = cleanText(source.title, 80) || "Learning source";
+    const inferenceSection = cleanText(source.section, 40);
+    return [
+    `[S${index + 1}] ${inferenceTitle}${inferenceSection ? ` — ${inferenceSection}` : ""}`,
+    clip(source.text, perSource),
+    ].join("\n");
+  });
+  let offset = 0;
+  const ranges = [];
+  const text = blocks.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
+  blocks.forEach((block, index) => {
+    const start = offset;
+    const end = Math.min(text.length, start + block.length);
+    const headerEnd = block.indexOf("\n");
+    const evidenceStart = headerEnd < 0 ? end : Math.min(end, start + headerEnd + 1);
+    if (start < text.length && end > evidenceStart) ranges.push({ id: sources[index].id, start, evidenceStart, end });
+    offset += block.length + 2;
+  });
+  return { text, ranges };
+};
+
+export const buildPhoneContext = (sources) => buildPhoneContextBundle(sources).text;
+
+const phoneDocumentTitle = (sources) => sources.length === 1
+  ? cleanText(sources[0].title, 80) || "Learning source"
+  : sources.length ? `${sources.length} selected learning sources` : "General AI/ML question";
+
+const safeWebCitation = (candidate, fallbackIndex) => {
+  if (!candidate || typeof candidate !== "object") return null;
+  try {
+    const url = new URL(String(candidate.url || ""));
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    url.hash = "";
+    const title = cleanText(candidate.title, 240);
+    if (!title) return null;
+    return {
+      index: Number.isSafeInteger(candidate.index) && candidate.index > 0 ? candidate.index : fallbackIndex,
+      title,
+      url: url.href.slice(0, 2_000),
+      source: cleanText(candidate.source, 100),
+      publishedAt: cleanText(candidate.publishedAt, 80),
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const sanitizePhoneCitations = (citations) => (Array.isArray(citations) ? citations : [])
+  .slice(0, 5)
+  .map((citation, index) => safeWebCitation(citation, index + 1))
+  .filter(Boolean);
+
+const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, onCopy, streaming = false }) => {
+  const responseRef = useRef(null);
+  const html = useMemo(
+    () => renderPhoneTutorMarkdown(text, sources, citations),
+    [citations, sources, text],
+  );
+  useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
+  const handleClick = async (event) => {
+    const codeButton = event.target.closest?.(".code-copy");
+    if (codeButton) {
+      const code = codeButton.closest?.(".code-shell")?.querySelector?.("pre code")?.textContent || "";
+      const copied = await writeClipboard(code);
+      codeButton.textContent = copied ? "Copied" : "Copy failed";
+      globalThis.setTimeout?.(() => { if (codeButton.isConnected) codeButton.textContent = "Copy"; }, 1_500);
+      onCopy?.(copied);
+      return;
+    }
+    const citationButton = event.target.closest?.("[data-ai-citation]");
+    const match = citationButton?.dataset?.aiCitation?.match(/^S(\d+)$/);
+    const requestedCitation = match ? Number(match[1]) : null;
+    const source = Number.isSafeInteger(requestedCitation)
+      ? sources.find((candidate, index) => (
+        (Number.isSafeInteger(candidate?.citationNumber) ? candidate.citationNumber : index + 1) === requestedCitation
+      ))
+      : null;
+    if (source) onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor });
+  };
+  return (
+    <div
+      ref={responseRef}
+      className="phone-tutor__safe-response"
+      // renderPhoneTutorMarkdown sanitizes model-authored HTML with DOMPurify.
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={handleClick}
+    />
+  );
+};
+
+const ContextFitNote = ({ fit }) => {
+  if (!fit) return null;
+  const details = [
+    `${fit.inputBytesUsed.toLocaleString()} of ${fit.inputByteBudget.toLocaleString()} safe input bytes`,
+    `${fit.contextCharactersUsed.toLocaleString()} of ${fit.contextCharactersProvided.toLocaleString()} prepared lesson characters`,
+    `${fit.historyMessagesUsed} of ${fit.historyMessagesProvided} prior messages`,
+  ];
+  if (fit.evidenceResultsProvided > 0) {
+    details.push(`${fit.evidenceResultsUsed} of ${fit.evidenceResultsProvided} web results (${fit.evidenceCharactersUsed.toLocaleString()} of ${fit.evidenceCharactersProvided.toLocaleString()} evidence characters)`);
+  }
+  if (fit.citedSourceIndexes?.length > 0) {
+    details.push(`verified library labels ${fit.citedSourceIndexes.map((index) => `[S${index}]`).join(", ")}`);
+  }
+  const omissions = [];
+  if (fit.contextCharactersUsed < fit.contextCharactersProvided) omissions.push("lesson text");
+  if (fit.historyMessagesUsed < fit.historyMessagesProvided) omissions.push("earlier conversation turns");
+  if (fit.evidenceResultsUsed < fit.evidenceResultsProvided || fit.evidenceCharactersUsed < fit.evidenceCharactersProvided) omissions.push("web evidence text");
+  return <div className="phone-tutor__context-fit"><p>Context fit included {details.join(", ")}.{omissions.length ? ` The 4K window visibly truncated ${omissions.join(", ")}.` : " Nothing required additional engine trimming."}</p>{fit.sourceUsage?.length > 0 && <ul>{fit.sourceUsage.map((source) => <li key={source.id}>{source.title}: {source.charactersUsed.toLocaleString()} of {source.charactersProvided.toLocaleString()} characters used{source.labelSupplied ? "" : "; source label was not retained, so it was not citable"}</li>)}</ul>}</div>;
+};
+
+const EvidenceDetails = ({ message, onNavigateSource }) => {
+  const trace = message.retrievalTrace;
+  const evidenceCount = message.sources.length + message.citations.length;
+  return (
+    <details className="phone-tutor__evidence">
+      <summary>
+        <span><BookOpen size={15} aria-hidden="true" /> Approach & evidence</span>
+        <small>{evidenceCount ? `${evidenceCount} source${evidenceCount === 1 ? "" : "s"}` : "General knowledge"}</small>
+      </summary>
+      <div className="phone-tutor__approach">
+        <strong>What Lumen did</strong>
+        <ol>
+          {trace?.webFallbackCode === "library_retrieval_unavailable"
+            ? <li>The local retrieval step was unavailable, so Lumen supplied no library text. Separately enabled web fallback remained eligible and still required exact-query approval.</li>
+            : trace
+              ? <li>Searched {trace.candidates ?? "the available"} local documents and selected {trace.passages ?? message.sources.length} bounded passage{(trace.passages ?? message.sources.length) === 1 ? "" : "s"}{trace.matchedDocuments === null ? "" : ` from ${trace.matchedDocuments} matching documents`}.</li>
+              : <li>Used the source scope you selected. This panel reports observable processing steps and evidence, never hidden chain-of-thought.</li>}
+          {trace?.confidenceLevel && <li>Library match: {trace.confidenceLevel}{trace.confidenceScore === null ? "" : ` (${Math.round(trace.confidenceScore * 100)}%)`}{trace.budgetTruncated ? "; the retrieval byte budget was reached" : ""}.</li>}
+          {trace?.webFallbackCode && <li>Web fallback was {trace.webFallbackRecommended ? "eligible after your separate permission" : "not needed"}: {trace.webFallbackReason || trace.webFallbackCode}</li>}
+          <li>Fitted the chosen excerpts, recent conversation pair, and any approved search evidence into the model's 4,096-token window before on-device generation.</li>
+        </ol>
+      </div>
+      <ContextFitNote fit={message.contextFit} />
+      {message.sources.length > 0 && <div className="phone-tutor__used-sources"><strong>Library excerpts actually included</strong>{message.sources.map((source, index) => <button type="button" disabled={!onNavigateSource} onClick={() => onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor })} key={source.id}>[S{Number.isSafeInteger(source.citationNumber) ? source.citationNumber : index + 1}] {source.title}{source.section ? ` · ${source.section}` : ""}</button>)}</div>}
+      {message.citations.length > 0 && <div className="phone-tutor__web-sources"><strong>Cited public web evidence</strong><ol>{message.citations.map((citation) => <li key={citation.url}><a href={citation.url} target="_blank" rel="noopener noreferrer">[W{citation.index}] {citation.title}<ExternalLink size={13} aria-hidden="true" /></a>{(citation.source || citation.publishedAt) && <small>{[citation.source, citation.publishedAt].filter(Boolean).join(" · ")}</small>}</li>)}</ol></div>}
+    </details>
+  );
+};
+
+const QuizResult = ({ quiz, messageId }) => {
+  const [answers, setAnswers] = useState({});
+  const [revealed, setRevealed] = useState({});
+  return (
+    <div className="phone-tutor__quiz">
+      <h4>{quiz.title}</h4><p>{quiz.instructions}</p>
+      {quiz.questions.map((question, questionIndex) => (
+        <fieldset key={question.id}>
+          <legend>{questionIndex + 1}. {question.prompt}</legend>
+          {question.options.map((option, optionIndex) => {
+            const checked = answers[question.id] === optionIndex;
+            const open = revealed[question.id];
+            const correct = optionIndex === question.correctIndex;
+            return <label className={open && correct ? "is-correct" : open && checked ? "is-incorrect" : ""} key={`${question.id}-${optionIndex}`}><input type="radio" name={`${messageId}-${question.id}`} checked={checked} disabled={open} onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} /><span>{option}</span></label>;
+          })}
+          {!revealed[question.id] ? <button type="button" disabled={!Number.isSafeInteger(answers[question.id])} onClick={() => setRevealed((current) => ({ ...current, [question.id]: true }))}>Check answer</button> : <div className="phone-tutor__quiz-feedback" role="status"><strong>{answers[question.id] === question.correctIndex ? "Correct" : `Answer ${question.correctIndex + 1} is correct.`}</strong><p>{question.explanation}</p></div>}
+        </fieldset>
+      ))}
+    </div>
+  );
+};
+
+const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts }) => {
+  const [selected, setSelected] = useState(() => cards.map((_, index) => index));
+  const [revealed, setRevealed] = useState({});
+  const [saveState, setSaveState] = useState({ status: "idle", message: "" });
+  const save = async () => {
+    if (!onCreateFlashcardDrafts || !selected.length || saveState.status === "saving") return;
+    const chosen = selected.map((index) => cards[index]);
+    setSaveState({ status: "saving", message: "Adding selected cards…" });
+    try {
+      await onCreateFlashcardDrafts(chosen, {
+        mode: "on-device-flashcards",
+        sourceIds: message.sources.map((source) => source.documentId || source.id).filter(Boolean),
+        webCitationStyle: "explicit-w",
+        webSources: message.citations.map(({ index, title, url }) => ({ index, title, url })),
+      });
+      setSaveState({ status: "saved", message: `${chosen.length} card${chosen.length === 1 ? "" : "s"} added to review.` });
+    } catch {
+      setSaveState({ status: "error", message: "Cards were not saved. Your selection is still available to retry." });
+    }
+  };
+  return (
+    <div className="phone-tutor__flashcards">
+      <div className="phone-tutor__flashcard-head"><strong>{selected.length}/{cards.length} selected</strong><button type="button" onClick={() => setSelected(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear" : "Select all"}</button></div>
+      {cards.map((card, index) => <article key={`${message.id}-card-${index}`}>
+        <label><input type="checkbox" checked={selected.includes(index)} onChange={() => setSelected((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])} /><span>Select card {index + 1}</span></label>
+        <small>Prompt</small><p>{card.front}</p>
+        <button type="button" aria-expanded={Boolean(revealed[index])} onClick={() => setRevealed((current) => ({ ...current, [index]: !current[index] }))}>{revealed[index] ? "Hide answer" : "Reveal answer"}<ChevronDown size={15} aria-hidden="true" /></button>
+        {revealed[index] && <div className="phone-tutor__card-answer"><small>Answer</small><p>{card.back}</p>{card.hint && <p><strong>Hint:</strong> {card.hint}</p>}</div>}
+        {card.tags.length > 0 && <div className="phone-tutor__tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
+      </article>)}
+      {onCreateFlashcardDrafts && <button className="phone-tutor__primary" type="button" disabled={!selected.length || saveState.status === "saving"} onClick={save}><Check size={16} aria-hidden="true" /> Add selected to review</button>}
+      {saveState.message && <p className={`phone-tutor__save-status is-${saveState.status}`} role="status">{saveState.message}</p>}
+    </div>
+  );
+};
+
+const StudyPlanResult = ({ plan }) => <div className="phone-tutor__plan"><h4>{plan.title}</h4><p>{plan.goal}</p><ol>{plan.milestones.map((milestone, index) => <li key={`${index}-${milestone.title}`}><h5>{milestone.title}</h5><small>{milestone.estimatedMinutes} minutes</small><p>{milestone.outcome}</p><ul>{milestone.activities.map((activity, activityIndex) => <li key={`${activityIndex}-${activity}`}>{activity}</li>)}</ul><p><strong>Evidence:</strong> {milestone.evidenceOfMastery}</p></li>)}</ol>{plan.cautions.length > 0 && <div className="phone-tutor__cautions"><strong>Watch for</strong><ul>{plan.cautions.map((caution, index) => <li key={`${index}-${caution}`}>{caution}</li>)}</ul></div>}</div>;
+
+const AssistantResult = ({ message, onCreateFlashcardDrafts, onNavigateSource, onCopy }) => {
+  if (message.task === "quiz" && message.data?.questions) return <QuizResult quiz={message.data} messageId={message.id} />;
+  if (message.task === "flashcards" && message.data?.cards) return <FlashcardResult cards={message.data.cards} message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} />;
+  if (message.task === "study_plan" && message.data?.milestones) return <StudyPlanResult plan={message.data} />;
+  return <SafeResponse text={message.content} citations={message.citations} sources={message.sources} onNavigateSource={onNavigateSource} onCopy={onCopy} />;
+};
+
+const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HISTORY_MESSAGES)
+  .map((message) => ({ ...message, content: cleanText(message.content, 600) }));
+
+export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onNotify, onInteractionChange }) {
+  const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
+  const promptId = useId();
+  const controllerRef = useRef(null);
+  const pendingSearchRef = useRef(null);
+  const lastRequestRef = useRef(null);
+  const activeUserMessageIdRef = useRef(null);
+  const normalizedSources = useMemo(() => normalizePhoneSources(sources), [sources]);
+  const initiallySelected = useMemo(() => {
+    const requested = normalizedSources.filter((source) => source.selected).slice(0, MAX_SOURCES);
+    return (requested.length ? requested : normalizedSources.slice(0, 1)).map((source) => source.id);
+  }, [normalizedSources]);
+  const [selectedIds, setSelectedIds] = useState(initiallySelected);
+  const [modeId, setModeId] = useState("explain");
+  const [depth, setDepth] = useState("intermediate");
+  const [sourceMode, setSourceMode] = useState("library-first");
+  const [responseLength, setResponseLength] = useState("standard");
+  const currentMode = PHONE_TUTOR_MODES.find((mode) => mode.id === modeId) || PHONE_TUTOR_MODES[0];
+  const [prompt, setPrompt] = useState(currentMode.prompt);
+  const [allowSearch, setAllowSearch] = useState(false);
+  const [history, setHistory] = useState(() => Array.isArray(initialHistory) ? initialHistory.slice(-MAX_SESSION_MESSAGES) : []);
+  const [engineStatus, setEngineStatus] = useState({ state: "checking", loaded: false, supported: false });
+  const [requestState, setRequestState] = useState({ status: "idle", message: "" });
+  const [streamingText, setStreamingText] = useState("");
+  const [pendingSearch, setPendingSearch] = useState(null);
+  const [sourceWarning, setSourceWarning] = useState("");
+  const [copiedMessageId, setCopiedMessageId] = useState("");
+  const [streamingSources, setStreamingSources] = useState([]);
+  const historyRef = useRef(history);
+  const streamBufferRef = useRef("");
+  const streamFrameRef = useRef(0);
+  historyRef.current = history;
+
+  const currentSources = useMemo(() => {
+    const requested = normalizedSources.filter((source) => source.selected);
+    return (requested.length ? requested : normalizedSources.slice(0, 1)).slice(0, 1);
+  }, [normalizedSources]);
+  const manuallySelectedSources = useMemo(() => normalizedSources.filter((source) => selectedIds.includes(source.id)).slice(0, MAX_SOURCES), [normalizedSources, selectedIds]);
+  const selectedSources = useMemo(() => (
+    sourceMode === "none" || sourceMode === "library-first"
+      ? []
+      : sourceMode === "current" ? currentSources : manuallySelectedSources
+  ), [currentSources, manuallySelectedSources, sourceMode]);
+  const preparedContext = useMemo(() => buildPhoneContextBundle(selectedSources), [selectedSources]);
+  const selectedLength = RESPONSE_LENGTHS.find((item) => item.id === responseLength) || RESPONSE_LENGTHS[1];
+  const previewPayload = useMemo(() => ({
+    task: currentMode.task,
+    prompt: prompt.trim(),
+    context: preparedContext.text,
+    contextRanges: preparedContext.ranges,
+    documentTitle: phoneDocumentTitle(selectedSources),
+    difficulty: depth,
+    responseFormat: currentMode.structured ? "structured" : "markdown",
+    history: outboundHistory(history),
+    maxOutputTokens: currentMode.structured ? 768 : selectedLength.tokens,
+  }), [currentMode, depth, history, preparedContext, prompt, selectedLength.tokens, selectedSources]);
+  const requestFit = useMemo(() => inspectPhoneLocalAiRequestFit(previewPayload, {
+    allowSearchPlanning: allowSearch && sourceMode === "library-first" && typeof retrieveLibrary === "function",
+    reserveLibraryEvidence: sourceMode === "library-first" && typeof retrieveLibrary === "function",
+  }), [allowSearch, previewPayload, retrieveLibrary, sourceMode]);
+  const busy = requestState.status === "running";
+  const interactionLocked = busy || Boolean(pendingSearch);
+  const lifecycleLocked = interactionLocked || engineStatus.state === "loading" || engineStatus.state === "releasing" || engineStatus.state === "deleting";
+  const ready = engineStatus.loaded && !busy && requestState.status !== "awaiting-search" && Boolean(prompt.trim()) && prompt.trim().length <= MAX_PROMPT_CHARS && requestFit.fits;
+
+  const clearStreaming = useCallback(() => {
+    if (streamFrameRef.current) cancelAnimationFrame(streamFrameRef.current);
+    streamFrameRef.current = 0;
+    streamBufferRef.current = "";
+    setStreamingText("");
+    setStreamingSources([]);
+  }, []);
+
+  const queueStreamingText = useCallback((completeText) => {
+    streamBufferRef.current = cleanText(completeText, 40_000);
+    if (streamFrameRef.current) return;
+    streamFrameRef.current = requestAnimationFrame(() => {
+      streamFrameRef.current = 0;
+      setStreamingText(streamBufferRef.current);
+    });
+  }, []);
+
+  useEffect(() => {
+    const validIds = new Set(normalizedSources.map((source) => source.id));
+    setSelectedIds((current) => {
+      const retained = current.filter((id) => validIds.has(id)).slice(0, MAX_SOURCES);
+      return retained.length ? retained : initiallySelected;
+    });
+  }, [initiallySelected, normalizedSources]);
+
+  useEffect(() => {
+    onInteractionChange?.(lifecycleLocked);
+  }, [lifecycleLocked, onInteractionChange]);
+
+  useEffect(() => engine.subscribeLifecycle?.((lifecycle) => {
+    setEngineStatus((current) => ({ ...current, ...lifecycle }));
+  }), [engine]);
+
+  useEffect(() => {
+    onHistoryChange?.(history.slice(-MAX_SESSION_MESSAGES));
+  }, [history, onHistoryChange]);
+
+  useEffect(() => {
+    if (!pendingSearch?.id) return undefined;
+    const expiresInSeconds = Math.max(1, Math.min(300, Number(pendingSearch.expiresInSeconds) || 300));
+    const timer = setTimeout(() => {
+      if (pendingSearchRef.current?.id !== pendingSearch.id) return;
+      pendingSearchRef.current = null;
+      setPendingSearch(null);
+      void engine.continueAfterSearch(pendingSearch.id, { consent: false }).catch(() => {});
+      const activeUserMessageId = activeUserMessageIdRef.current;
+      activeUserMessageIdRef.current = null;
+      if (activeUserMessageId) setHistory((current) => current.filter((message) => message.id !== activeUserMessageId));
+      setRequestState({ status: "declined", message: "The proposed query expired without being sent. Ask again to create a new exact-query approval." });
+    }, expiresInSeconds * 1_000);
+    return () => clearTimeout(timer);
+  }, [engine, pendingSearch]);
+
+  useEffect(() => () => {
+    if (streamFrameRef.current) cancelAnimationFrame(streamFrameRef.current);
+    controllerRef.current?.abort();
+    engine.cancel?.();
+    const pending = pendingSearchRef.current;
+    pendingSearchRef.current = null;
+    if (pending?.id) void engine.continueAfterSearch(pending.id, { consent: false }).catch(() => {});
+    const activeUserMessageId = activeUserMessageIdRef.current;
+    if (activeUserMessageId) {
+      onHistoryChange?.(historyRef.current.filter((message) => message.id !== activeUserMessageId));
+      activeUserMessageIdRef.current = null;
+    }
+    void engine.unload?.().catch(() => {});
+    onInteractionChange?.(false);
+  }, [engine, onInteractionChange]);
+
+  const finalize = useCallback((result, spec) => {
+    const citations = sanitizePhoneCitations(result.citations);
+    const content = cleanText(result.outputText, 40_000) || (result.data ? JSON.stringify(result.data, null, 2) : "The on-device model returned no readable content.");
+    const sourceUsage = Array.isArray(result.contextFit?.sourceUsage) ? result.contextFit.sourceUsage : null;
+    const fittedSources = selectCitablePhoneSources(spec.sources, sourceUsage);
+    const sourceTitleMap = new Map(spec.sources.map((source) => [source.id, source.title]));
+    const contextFit = result.contextFit && typeof result.contextFit === "object" ? {
+      inputBytesUsed: Math.max(0, Number(result.contextFit.inputBytesUsed) || 0),
+      inputByteBudget: Math.max(0, Number(result.contextFit.inputByteBudget) || 0),
+      contextCharactersProvided: Math.max(0, Number(result.contextFit.contextCharactersProvided) || 0),
+      contextCharactersUsed: Math.max(0, Number(result.contextFit.contextCharactersUsed) || 0),
+      historyMessagesProvided: Math.max(0, Number(result.contextFit.historyMessagesProvided) || 0),
+      historyMessagesUsed: Math.max(0, Number(result.contextFit.historyMessagesUsed) || 0),
+      evidenceResultsProvided: Math.max(0, Number(result.contextFit.evidenceResultsProvided) || 0),
+      evidenceResultsUsed: Math.max(0, Number(result.contextFit.evidenceResultsUsed) || 0),
+      evidenceCharactersProvided: Math.max(0, Number(result.contextFit.evidenceCharactersProvided) || 0),
+      evidenceCharactersUsed: Math.max(0, Number(result.contextFit.evidenceCharactersUsed) || 0),
+      sourceUsage: (Array.isArray(result.contextFit.sourceUsage) ? result.contextFit.sourceUsage : []).slice(0, 8).map((item) => ({
+        id: cleanText(item?.id, 240),
+        title: sourceTitleMap.get(item?.id) || cleanText(item?.id, 120) || "Selected source",
+        citationNumber: Number.isSafeInteger(item?.citationNumber) && item.citationNumber > 0 ? item.citationNumber : null,
+        labelSupplied: item?.labelSupplied === true,
+        charactersProvided: Math.max(0, Number(item?.charactersProvided) || 0),
+        charactersUsed: Math.max(0, Number(item?.charactersUsed) || 0),
+      })).filter((item) => item.id),
+      citedSourceIndexes: Array.isArray(result.contextFit.citedSourceIndexes) ? result.contextFit.citedSourceIndexes.filter(Number.isSafeInteger).slice(0, 8) : [],
+      citedEvidenceIndexes: Array.isArray(result.contextFit.citedEvidenceIndexes) ? result.contextFit.citedEvidenceIndexes.filter(Number.isSafeInteger).slice(0, 5) : [],
+      truncated: result.contextFit.truncated === true,
+    } : null;
+    const message = {
+      id: createId(), role: "assistant", task: spec.payload.task, mode: spec.mode.id,
+      content, data: result.data || null, citations, sources: fittedSources, contextFit,
+      sourceMode: spec.sourceMode,
+      retrievalTrace: spec.retrievalTrace || null,
+      requestUserMessageId: spec.userMessageId,
+    };
+    activeUserMessageIdRef.current = null;
+    setHistory((current) => [...current.filter((item) => item.id !== spec.replaceAssistantId), message].slice(-MAX_SESSION_MESSAGES));
+    clearStreaming();
+    pendingSearchRef.current = null;
+    setPendingSearch(null);
+    setRequestState({ status: "success", message: citations.length ? `Answered locally with ${citations.length} cited web source${citations.length === 1 ? "" : "s"}. Check the links before relying on a current claim.` : contextFit?.truncated ? "Answered locally after fitting the selected material to the phone's 4K context window; see the context note below." : "Answered locally on this device." });
+  }, [clearStreaming]);
+
+  const run = useCallback(async (spec, { appendUser = true } = {}) => {
+    if (controllerRef.current) return;
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let effectiveSpec = spec;
+    const previousActiveUserMessageId = activeUserMessageIdRef.current;
+    // Ordinary submissions/retries own an unanswered user turn and may remove
+    // it on decline or unmount. Regeneration reuses an already completed turn;
+    // never mark that durable question as an orphan if regeneration fails.
+    activeUserMessageIdRef.current = spec.preserveUserOnFailure === true ? null : spec.userMessageId;
+    if (appendUser) setHistory((current) => [
+      ...current.filter((message) => message.id !== previousActiveUserMessageId && message.id !== spec.userMessageId),
+      { id: spec.userMessageId, role: "user", task: spec.payload.task, mode: spec.mode.id, content: spec.displayPrompt, data: null, citations: [], sources: spec.sources },
+    ].slice(-MAX_SESSION_MESSAGES));
+    pendingSearchRef.current = null;
+    setPendingSearch(null);
+    clearStreaming();
+    setRequestState({ status: "running", message: spec.sourceMode === "library-first" ? "Searching your local library…" : "Preparing grounded context…" });
+    try {
+      if (spec.sourceMode === "library-first" && typeof retrieveLibrary === "function") {
+        try {
+          const retrieval = await retrieveLibrary(spec.displayPrompt, {
+            signal: controller.signal,
+            maxCandidateDocuments: 8,
+            maxDocuments: MAX_SOURCES,
+            maxPassages: MAX_SOURCES,
+            maxPassagesPerDocument: 1,
+            maxBytes: 4_400,
+            maxPassageBytes: 2_400,
+          });
+          const retrievedSources = normalizeRetrievedPhoneSources(retrieval, normalizedSources);
+          const contextBundle = buildPhoneContextBundle(retrievedSources);
+          const sourceSnapshot = retrievedSources.map(({ id, documentId, title, section, anchor, original }) => ({ id, documentId, title, section, anchor, original }));
+          const retrievalTrace = normalizeRetrievalTrace(retrieval?.trace);
+          const useWebFallback = shouldUseWebFallback({ learnerAllowedWeb: spec.allowSearch, trace: retrieval?.trace });
+          effectiveSpec = {
+            ...spec,
+            sources: sourceSnapshot,
+            retrievalTrace,
+            allowSearch: useWebFallback,
+            payload: {
+              ...spec.payload,
+              context: contextBundle.text,
+              contextRanges: contextBundle.ranges,
+              documentTitle: sourceSnapshot.length === 1 ? cleanText(sourceSnapshot[0].title, 80) || "Retrieved library passage" : sourceSnapshot.length ? `${sourceSnapshot.length} retrieved library passages` : "General AI/ML question",
+            },
+          };
+          setStreamingSources(sourceSnapshot);
+          setRequestState({
+            status: "running",
+            message: useWebFallback
+              ? "Local evidence is weak or time-sensitive; preparing an exact web query for your approval…"
+              : sourceSnapshot.length
+                ? "Library evidence ready. Generating locally without web egress…"
+                : "No library match. Generating from local model knowledge without web egress…",
+          });
+        } catch (retrievalError) {
+          if (controller.signal.aborted) throw retrievalError;
+          effectiveSpec = {
+            ...spec,
+            sources: [],
+            allowSearch: spec.allowSearch,
+            retrievalTrace: {
+              strategy: "library-first",
+              candidates: null,
+              matchedDocuments: null,
+              passages: 0,
+              confidenceLevel: "unavailable",
+              confidenceScore: null,
+              budgetTruncated: false,
+              webFallbackRecommended: true,
+              webFallbackCode: "library_retrieval_unavailable",
+              webFallbackReason: "The local library index was unavailable for this request.",
+            },
+            payload: { ...spec.payload, context: "", contextRanges: [], documentTitle: "General AI/ML question" },
+          };
+          setStreamingSources([]);
+          setRequestState({ status: "running", message: spec.allowSearch ? "Library search was unavailable; preparing an exact web query for your approval…" : "Library search was unavailable. Generating locally with no web egress…" });
+        }
+      } else {
+        setStreamingSources(spec.sources);
+        // Current/choose/no-library are explicit scope overrides. Web fallback
+        // remains off because no full-library sufficiency decision was made.
+        effectiveSpec = { ...spec, allowSearch: false, retrievalTrace: null };
+      }
+      const result = await engine.prepareResponse(effectiveSpec.payload, {
+        signal: controller.signal,
+        allowSearchPlanning: effectiveSpec.allowSearch,
+        webFallbackReason: effectiveSpec.retrievalTrace?.webFallbackReason || "",
+        onToken: (_token, completeText) => queueStreamingText(completeText),
+      });
+      if (result.status === "search_consent_required") {
+        const proposed = { ...result.search, spec: effectiveSpec };
+        pendingSearchRef.current = proposed;
+        setPendingSearch(proposed);
+        clearStreaming();
+        setRequestState({ status: "awaiting-search", message: "A web search was proposed. Nothing has been sent to search yet." });
+      } else {
+        finalize(result, effectiveSpec);
+      }
+    } catch (error) {
+      const cancelled = controller.signal.aborted || error?.code === "LOCAL_AI_CANCELLED";
+      clearStreaming();
+      setRequestState({ status: cancelled ? "cancelled" : "error", message: cancelled ? "Generation was cancelled. No partial answer was saved." : cleanText(error?.message, 500) || "The on-device request failed." });
+    } finally {
+      if (controllerRef.current === controller) controllerRef.current = null;
+    }
+  }, [clearStreaming, engine, finalize, normalizedSources, queueStreamingText, retrieveLibrary]);
+
+  const createSpec = (userMessageId = createId()) => {
+    const sourceSnapshot = selectedSources.map(({ id, documentId, title, section, anchor, original }) => ({ id, documentId, title, section, anchor, original }));
+    const trimmedPrompt = prompt.trim();
+    return {
+      userMessageId,
+      displayPrompt: trimmedPrompt,
+      mode: currentMode,
+      sources: sourceSnapshot,
+      sourceMode,
+      retrievalTrace: null,
+      allowSearch,
+      payload: {
+        task: currentMode.task,
+        prompt: trimmedPrompt,
+        context: preparedContext.text,
+        contextRanges: preparedContext.ranges,
+        documentTitle: phoneDocumentTitle(selectedSources),
+        difficulty: depth,
+        responseFormat: currentMode.structured ? "structured" : "markdown",
+        history: outboundHistory(history),
+        maxOutputTokens: currentMode.structured ? 768 : selectedLength.tokens,
+      },
+    };
+  };
+
+  const submit = (event) => {
+    event?.preventDefault?.();
+    if (!ready) return;
+    const spec = createSpec();
+    lastRequestRef.current = spec;
+    run(spec);
+  };
+
+  const approveSearch = async () => {
+    if (!pendingSearch || controllerRef.current) return;
+    const approved = pendingSearch;
+    // Consent has now been consumed and the exact query may leave the device.
+    // Remove the card immediately so a second tap cannot falsely "decline" a
+    // request that is already in flight.
+    pendingSearchRef.current = null;
+    setPendingSearch(null);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    clearStreaming();
+    setStreamingSources(approved.spec.sources);
+    setRequestState({ status: "running", message: `Searching only for: “${approved.query}”` });
+    try {
+      const result = await engine.continueAfterSearch(approved.id, {
+        consent: true,
+        signal: controller.signal,
+        onToken: (_token, completeText) => queueStreamingText(completeText),
+      });
+      finalize(result, approved.spec);
+    } catch (error) {
+      const cancelled = controller.signal.aborted || error?.code === "LOCAL_AI_CANCELLED";
+      clearStreaming();
+      setRequestState({ status: cancelled ? "cancelled" : "error", message: cancelled ? "Search and generation were cancelled." : cleanText(error?.message, 500) || "The approved search failed." });
+    } finally {
+      if (controllerRef.current === controller) controllerRef.current = null;
+    }
+  };
+
+  const declineSearch = async () => {
+    if (!pendingSearch || controllerRef.current) return;
+    const declined = pendingSearch;
+    pendingSearchRef.current = null;
+    setPendingSearch(null);
+    try { await engine.continueAfterSearch(declined.id, { consent: false }); } catch { /* the one-use plan is already safely discarded */ }
+    const activeUserMessageId = activeUserMessageIdRef.current;
+    activeUserMessageIdRef.current = null;
+    if (activeUserMessageId) setHistory((current) => current.filter((message) => message.id !== activeUserMessageId));
+    setRequestState({ status: "declined", message: `Search declined. “${declined.query}” was not sent to the search service.` });
+  };
+
+  const cancel = () => {
+    controllerRef.current?.abort();
+    engine.cancel?.();
+  };
+
+  const retry = () => {
+    if (!lastRequestRef.current || controllerRef.current || !engineStatus.loaded) return;
+    const rebuilt = createSpec(lastRequestRef.current.userMessageId);
+    lastRequestRef.current = rebuilt;
+    run(rebuilt);
+  };
+
+  const regenerate = (message) => {
+    const spec = lastRequestRef.current;
+    if (!spec || controllerRef.current || !engineStatus.loaded || message.requestUserMessageId !== spec.userMessageId) return;
+    const regeneratedSpec = { ...spec, replaceAssistantId: message.id, preserveUserOnFailure: true };
+    lastRequestRef.current = regeneratedSpec;
+    run(regeneratedSpec, { appendUser: false });
+  };
+
+  const copyMessage = async (message) => {
+    const content = message.data ? JSON.stringify(message.data, null, 2) : phoneTutorMarkdownPlainText(message.content);
+    const copied = await writeClipboard(content);
+    setCopiedMessageId(copied ? message.id : "");
+    onNotify?.(copied ? "Answer copied." : "This browser did not allow clipboard access.", copied ? "success" : "error");
+    if (copied) globalThis.setTimeout?.(() => setCopiedMessageId((current) => current === message.id ? "" : current), 1_800);
+  };
+
+  const selectMode = (nextId) => {
+    const next = PHONE_TUTOR_MODES.find((mode) => mode.id === nextId) || PHONE_TUTOR_MODES[0];
+    const previousDefault = currentMode.prompt;
+    setModeId(next.id);
+    setPrompt((value) => !value.trim() || value === previousDefault ? next.prompt : value);
+    setRequestState({ status: "idle", message: "" });
+  };
+
+  const selectSourceMode = (nextMode) => {
+    if (!PHONE_SOURCE_MODES.some((mode) => mode.id === nextMode) || interactionLocked) return;
+    setSourceMode(nextMode);
+    if (nextMode !== "library-first") setAllowSearch(false);
+    setSourceWarning("");
+    setRequestState({ status: "idle", message: "" });
+  };
+
+  const toggleSource = (id) => {
+    setSelectedIds((current) => {
+      if (current.includes(id)) { setSourceWarning(""); return current.filter((item) => item !== id); }
+      if (current.length >= MAX_SOURCES) { setSourceWarning(`On-device Lite can ground one request in at most ${MAX_SOURCES} sources.`); return current; }
+      setSourceWarning("");
+      return [...current, id];
+    });
+  };
+
+  return (
+    <section className="phone-tutor" aria-labelledby="phone-tutor-title">
+      <header className="phone-tutor__header">
+        <div className="phone-tutor__identity"><span><Cpu size={23} aria-hidden="true" /></span><div><small>Built with Llama · Safari WebGPU · experimental</small><h2 id="phone-tutor-title">Lumen On-device Lite</h2></div></div>
+        {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => { activeUserMessageIdRef.current = null; setHistory([]); lastRequestRef.current = null; setRequestState({ status: "idle", message: "" }); }}><Trash2 size={18} /></button>}
+      </header>
+
+      <div className="phone-tutor__disclosure"><ShieldCheck size={18} aria-hidden="true" /><p><strong>Session-only conversation; no per-answer consent.</strong> Prompts and model answers are not added to the saved Mac-local tutor history or backups. Reloading this page clears them. {PHONE_LOCAL_AI_DISCLOSURE.inference} Only an exact web query requires a separate one-use approval. <a href="./licenses/LLAMA_3_2_COMMUNITY_LICENSE.txt" target="_blank" rel="noopener noreferrer">Llama 3.2 license</a>.</p></div>
+
+      <PhoneLocalAiSettings engine={engine} onNotify={onNotify} onStatusChange={setEngineStatus} interactionBusy={interactionLocked} />
+
+      <div className="phone-tutor__mode-tabs" aria-label="On-device tutor mode">
+        {PHONE_TUTOR_MODES.map((mode) => <button type="button" aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-selected" : ""} disabled={interactionLocked} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
+      </div>
+      <p className="phone-tutor__mode-description">{currentMode.description}</p>
+
+      <div className="phone-tutor__layout">
+        <aside className="phone-tutor__sources">
+          <details>
+            <summary><span><BookOpen size={17} aria-hidden="true" /><strong>Grounding</strong></span><small>{PHONE_SOURCE_MODES.find((mode) => mode.id === sourceMode)?.label}</small></summary>
+            <div className="phone-tutor__source-modes" role="radiogroup" aria-label="Grounding scope">
+              {PHONE_SOURCE_MODES.map((mode) => <button type="button" role="radio" aria-checked={sourceMode === mode.id} className={sourceMode === mode.id ? "is-selected" : ""} disabled={interactionLocked || (mode.id === "library-first" && typeof retrieveLibrary !== "function")} onClick={() => selectSourceMode(mode.id)} key={mode.id}><strong>{mode.label}</strong><small>{mode.short}</small></button>)}
+            </div>
+            {sourceMode === "library-first" && <p className="phone-tutor__library-first"><Search size={16} aria-hidden="true" /><span><strong>All local notes are eligible.</strong> The app retrieves at most two passages and about 4.4 KB before the model's stricter 4K fit. No library text leaves the device.</span></p>}
+            {sourceMode === "current" && currentSources.length > 0 && <div className="phone-tutor__source-list">{currentSources.map((source) => <article className="is-selected" key={source.id}><span><strong>{source.title}</strong>{source.section && <small>{source.section}</small>}<small>{source.text.length.toLocaleString()} characters available</small></span>{onNavigateSource && <button type="button" aria-label={`Open ${source.title}`} onClick={() => onNavigateSource(source.original, { sourceId: source.id })}><ExternalLink size={16} /></button>}</article>)}</div>}
+            {sourceMode === "choose" && (normalizedSources.length ? <div className="phone-tutor__source-list">{normalizedSources.map((source) => <article className={selectedIds.includes(source.id) ? "is-selected" : ""} key={source.id}><label><input type="checkbox" checked={selectedIds.includes(source.id)} disabled={interactionLocked} onChange={() => toggleSource(source.id)} /><span><strong>{source.title}</strong>{source.section && <small>{source.section}</small>}<small>{source.text.length.toLocaleString()} characters available</small></span></label>{onNavigateSource && <button type="button" aria-label={`Open ${source.title}`} onClick={() => onNavigateSource(source.original, { sourceId: source.id })}><ExternalLink size={16} /></button>}</article>)}</div> : <p className="phone-tutor__empty"><WifiOff size={18} /> No loaded lesson source is available. Choose Library first to search the complete local index.</p>)}
+            {sourceMode === "none" && <p className="phone-tutor__empty"><WifiOff size={18} /> No lesson text will be supplied. The 1B model may be incomplete or wrong; use this only for general questions.</p>}
+            {sourceWarning && <p className="phone-tutor__error" role="alert">{sourceWarning}</p>}
+            <p className="phone-tutor__source-budget">The app first clips prepared text to {MAX_CONTEXT_CHARS.toLocaleString()} characters, then applies a stricter UTF-8 byte fit after reserving output and evidence. Long or non-Latin excerpts may be trimmed further. Original notes are never modified.</p>
+          </details>
+        </aside>
+
+        <main className="phone-tutor__conversation">
+          {history.length === 0 && !streamingText ? <div className="phone-tutor__welcome"><Cpu size={27} aria-hidden="true" /><h3>Small, private, and useful for focused study</h3><p>Load the model, choose a source and mode, then ask one bounded question. Use Mac local for long context or high-stakes accuracy.</p></div> : (
+            <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
+              {history.map((message) => (
+                <article className={`phone-tutor__message is-${message.role}`} key={message.id}>
+                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Again</button>}</div>}</div>
+                  {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
+                  {message.role === "assistant" && <EvidenceDetails message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onNavigateSource={onNavigateSource} />}
+                </article>
+              ))}
+            </div>
+          )}
+
+          {streamingText && <article className="phone-tutor__message is-assistant is-streaming" aria-label="Streaming on-device answer"><div className="phone-tutor__message-meta"><span><strong>On-device Lite</strong><small>Generating token by token…</small></span></div><SafeResponse text={streamingText} sources={streamingSources} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} streaming /></article>}
+          {busy && <div className="phone-tutor__working" role="status"><span><LoaderCircle className="spin" size={18} aria-hidden="true" />{requestState.message}</span><button type="button" onClick={cancel}><CircleStop size={16} aria-hidden="true" /> Cancel</button></div>}
+
+          {pendingSearch && <section className="phone-tutor__search-consent" aria-labelledby="phone-search-title">
+            <div><Search size={20} aria-hidden="true" /><div><h3 id="phone-search-title">Approve this exact web search?</h3><p>{pendingSearch.reason}</p></div></div>
+            <dl><dt>Query that will leave this device</dt><dd><code dir="auto">{pendingSearch.query}</code></dd></dl>
+            <p>{pendingSearch.disclosure} This one-use approval expires in at most {Math.max(1, Math.min(300, Number(pendingSearch.expiresInSeconds) || 300))} seconds.</p>
+            <div><button className="phone-tutor__primary" type="button" onClick={approveSearch}><Search size={16} aria-hidden="true" /> Send this query & search</button><button type="button" onClick={declineSearch}>Decline — send nothing</button></div>
+          </section>}
+
+          {["error", "cancelled", "declined", "success"].includes(requestState.status) && requestState.message && <div className={`phone-tutor__request-state is-${requestState.status}`} role={requestState.status === "error" ? "alert" : "status"}>{requestState.status === "error" && <AlertTriangle size={18} aria-hidden="true" />}<span>{requestState.message}</span>{["error", "cancelled"].includes(requestState.status) && lastRequestRef.current && <button type="button" disabled={!engineStatus.loaded || !requestFit.fits} title={!engineStatus.loaded ? "Load the on-device model again before retrying" : !requestFit.fits ? requestFit.message : undefined} onClick={retry}><RefreshCw size={15} aria-hidden="true" /> Retry</button>}</div>}
+        </main>
+      </div>
+
+      <form className="phone-tutor__composer" onSubmit={submit}>
+        <div className="phone-tutor__composer-head"><div><label><span>Depth</span><select value={depth} disabled={interactionLocked} onChange={(event) => setDepth(event.target.value)}>{DEPTHS.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label><span>Answer length</span><select value={responseLength} disabled={interactionLocked || currentMode.structured} onChange={(event) => setResponseLength(event.target.value)}>{RESPONSE_LENGTHS.map((item) => <option value={item.id} key={item.id}>{item.label} · {item.tokens} tokens</option>)}</select></label></div><span>{PHONE_LOCAL_MODEL.label}</span></div>
+        <label className={`phone-tutor__search-toggle ${allowSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={allowSearch} disabled={interactionLocked || sourceMode !== "library-first" || typeof retrieveLibrary !== "function"} onChange={(event) => setAllowSearch(event.target.checked)} /><span><strong>Allow current-web fallback after a weak library match</strong><small>{sourceMode === "library-first" && typeof retrieveLibrary === "function" ? allowSearch ? "Proposal enabled. Lumen still checks all local notes first. If evidence is weak or time-sensitive, it shows one exact query for your separate approval; nothing is sent automatically." : "Off. Turn this on to let Lumen propose one exact query when local evidence is weak or time-sensitive. You will still approve that query separately." : "Choose Library first to make a local evidence check before any exact-query web proposal."}</small></span></label>
+        <label className="phone-tutor__prompt-label" htmlFor={promptId}>What should the on-device tutor help you learn?</label>
+        <textarea id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} />
+        <div className="phone-tutor__composer-foot"><span>{prompt.trim().length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}</span><span>{sourceMode === "library-first" ? "Up to 2 passages retrieved at send time" : `${buildPhoneContext(selectedSources).length.toLocaleString()} pre-fit source characters`}</span></div>
+        <div className="phone-tutor__send-row"><div><strong>Runs locally after the model is loaded.</strong><small>{currentMode.structured ? "Structured output is validated before it is shown; it does not stream partial JSON." : "The answer streams from the phone model as tokens arrive."}</small></div><button className="phone-tutor__primary" type="submit" disabled={!ready}><Send size={17} aria-hidden="true" /> Generate {currentMode.label}</button></div>
+        {!engineStatus.loaded && <p className="phone-tutor__disabled-reason">Use the download consent and “Download & load” controls above before generating. Selecting On-device Lite alone never downloads the model.</p>}
+        {engineStatus.loaded && Boolean(prompt.trim()) && !requestFit.fits && <p className="phone-tutor__disabled-reason" role="alert">{requestFit.message}</p>}
+      </form>
+    </section>
+  );
+}

@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+npm-debug.log*
+.local/
+public/lumen-local-ca.cer
+*.srl

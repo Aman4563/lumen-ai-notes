@@ -1,0 +1,62 @@
+name: lumen-local-search
+
+services:
+  searxng:
+    # Multi-architecture OCI index for the reviewed 2026.3.25 build. Keep the
+    # human-readable tag, but make the registry digest the authority so a moved
+    # tag cannot change production bytes.
+    image: docker.io/searxng/searxng:2026.3.25-541c6c3cb@sha256:0ae88cc7056eddde1f02df272f39f6fb2884640ed7af428c5b0a6b9c3d5bb918
+    restart: unless-stopped
+    # Search-engine adapters can include the exact query in warning/error
+    # messages. Do not persist stdout/stderr in Docker's host log store.
+    logging:
+      driver: "none"
+    # The upstream wrapper performs root-only ownership and CA-store updates.
+    # Lumen mounts a complete read-only config, so launch the image's existing
+    # application server directly under its packaged searxng account.
+    user: "977:977"
+    entrypoint:
+      - /usr/local/searxng/.venv/bin/granian
+    command:
+      - searx.webapp:app
+    read_only: true
+    cap_drop:
+      - ALL
+    ports:
+      # Deliberately reachable only from the Lumen host, never the LAN/public web.
+      - "127.0.0.1:8080:8080"
+    environment:
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Set a random SEARXNG_SECRET in the shell or a private .env file}
+      SEARXNG_BASE_URL: http://127.0.0.1:8080/
+      SEARXNG_BIND_ADDRESS: 0.0.0.0
+      SEARXNG_PORT: "8080"
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+      GRANIAN_HOST: 0.0.0.0
+      GRANIAN_PORT: "8080"
+      # Make the upstream image's implicit server contract explicit. SearXNG
+      # exposes a Flask WSGI app; Granian otherwise defaults to RSGI.
+      GRANIAN_INTERFACE: wsgi
+      GRANIAN_WORKERS: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      # Mount the directory, rather than a file inside the image's declared
+      # /etc/searxng volume, to avoid an implicit writable anonymous volume.
+      - ./config:/etc/searxng:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777,nosuid,nodev,noexec
+      - /var/cache/searxng:size=32m,mode=0750,uid=977,gid=977,nosuid,nodev,noexec
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # /config proves the local app is ready without leaking a synthetic query
+      # to any public search engine.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--timeout=3", "http://127.0.0.1:8080/config"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
