@@ -54,6 +54,8 @@ import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
+import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
+import { buildDailySession, SESSION_LENGTHS } from "./lib/plan.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
@@ -244,6 +246,10 @@ function DocumentCard({ doc, profile, onOpen, compact = false }) {
 }
 
 function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onReview }) {
+  const [sessionMinutes, setSessionMinutes] = useState(30);
+  const dailySession = useMemo(() => buildDailySession(sessionMinutes, { profile, documents: allDocuments }), [allDocuments, profile, sessionMinutes]);
+  const mastery = useMemo(() => masteryByPart(allDocuments, profile), [allDocuments, profile]);
+  const masteryLabel = (state) => PART_MASTERY_STATES.find((entry) => entry.id === state)?.label || state;
   const recent = profile.recent.map((id) => allDocuments.find((doc) => doc.id === id)).filter(Boolean);
   const continueDoc = recent[0] || documentMap.get(initialDocumentId) || allDocuments[0];
   const learningDocs = allDocuments.filter((doc) => doc.partNumber > 0 && !doc.isIndex);
@@ -287,6 +293,34 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
           <div className="stat-row"><span>Personal notes</span><strong>{annotated}</strong></div>
           <div className="stat-row"><span>Bookmarks</span><strong>{profile.bookmarks.length}</strong></div>
         </article>
+      </section>
+
+      <section className="page-section daily-plan" aria-label="Today’s study plan">
+        <div className="section-heading"><div><span className="eyebrow">Deterministic session</span><h2>Today’s plan</h2></div><div className="daily-plan-lengths" role="radiogroup" aria-label="Session length">{SESSION_LENGTHS.map((length) => <button key={length} role="radio" aria-checked={sessionMinutes === length} className={sessionMinutes === length ? "active" : ""} onClick={() => setSessionMinutes(length)} type="button">{length} min</button>)}</div></div>
+        {dailySession.empty
+          ? <p className="microcopy">Nothing is due and nothing is open — read ahead in the library or add review cards from your highlights.</p>
+          : <div className="daily-plan-blocks">
+            {dailySession.blocks.map((block, index) => <button className="daily-plan-block" key={`${block.kind}-${index}`} onClick={() => {
+              if (block.kind === "review" || block.kind === "mistakes") onReview();
+              else if (block.documentId) onOpen(block.documentId);
+            }} type="button">
+              <span className="daily-plan-minutes">{block.minutes} min</span>
+              <span className="daily-plan-label">{block.label}{block.partial ? " (as far as you get)" : ""}</span>
+              <ArrowRight size={15} />
+            </button>)}
+            <p className="microcopy">{dailySession.plannedMinutes} of {dailySession.budgetMinutes} minutes planned · reviews first, then your most-repeated open mistakes, then reading.</p>
+          </div>}
+      </section>
+
+      <section className="page-section mastery-section" aria-label="Mastery by Part">
+        <div className="section-heading"><div><span className="eyebrow">Evidence-based</span><h2>Mastery by Part</h2></div><button className="text-button" onClick={onReview} type="button">Review center <ArrowRight size={16} /></button></div>
+        <div className="mastery-grid">
+          {mastery.map((part) => <article className={`mastery-row state-${part.state}`} key={part.partNumber} title={`${part.reason} Next: ${part.nextAction}`}>
+            <span className="mastery-part">{String(part.partNumber).padStart(2, "0")}</span>
+            <div className="mastery-copy"><strong>{part.partTitle}</strong><span>{part.completedChapters}/{part.chapters} chapters · {part.masteredCards}/{part.activeCards || 0} cards mastered{part.overdueCards ? ` · ${part.overdueCards} overdue` : ""}</span><small className="mastery-next">{part.nextAction}</small></div>
+            <span className={`mastery-state state-${part.state}`}>{masteryLabel(part.state)}</span>
+          </article>)}
+        </div>
       </section>
 
       <section className="page-section">
