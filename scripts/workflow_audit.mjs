@@ -123,7 +123,27 @@ try {
   await page.waitForFunction(() => !document.querySelector(".app-sidebar")?.classList.contains("open"));
   await page.setViewport({ width: 402, height: 874, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
 
-  await page.click('button[aria-label="Open menu"]');
+  // CONTENT-002: the standalone HTML export downloads a self-contained page.
+  await page.$eval('button[aria-label="Open lecture actions"]', (button) => button.click());
+  await page.waitForSelector(".reader-action-menu");
+  await clickByText(page, ".reader-action-grid button", "Export HTML");
+  {
+    let htmlPath = "";
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && !htmlPath) {
+      const files = await readdir(downloadDirectory);
+      const htmlName = files.find((name) => name.endsWith(".html"));
+      if (htmlName) htmlPath = join(downloadDirectory, htmlName);
+      else await delay(100);
+    }
+    assert.ok(htmlPath, "HTML export was not downloaded");
+    const exported = await readFile(htmlPath, "utf8");
+    assert.match(exported, /^<!doctype html>/);
+    assert.ok(exported.includes("Exported from Lumen AI Notes"), "HTML export is missing its provenance footer");
+    assert.doesNotMatch(exported, /src="https?:/, "HTML export must not reference external assets");
+  }
+
+  await page.$eval('button[aria-label="Open menu"]', (button) => button.click());
   await page.waitForFunction(() => document.querySelector(".app-sidebar")?.classList.contains("open"));
   await clickByText(page, ".sidebar-primary button", "Library");
   await page.waitForSelector(".library-page");
@@ -409,6 +429,28 @@ try {
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await clickByText(page, ".editor-toolbar button", "Save");
+
+  // CONTENT-001 revisions: the pre-save text became a revision; the history
+  // dialog (in the editing surface) diffs it against the current draft and
+  // can load it back. Saving closes the editor, so reopen it first.
+  await page.waitForFunction(() => !document.querySelector(".editor-toolbar"), { timeout: 5_000 });
+  await clickByText(page, ".document-tools button", "Edit copy");
+  await page.waitForSelector(".editor-toolbar");
+  await page.waitForFunction(() => [...document.querySelectorAll(".editor-toolbar button")].some((button) => button.textContent.includes("History (1)")), { timeout: 5_000 })
+    .catch(() => assert.fail("saving over existing content did not create a revision"));
+  await clickByText(page, ".editor-toolbar button", "History (1)");
+  await page.waitForSelector(".revision-dialog");
+  await page.waitForFunction(() => [...document.querySelectorAll(".revision-dialog .diff-line.diff-removed")].some((line) => line.textContent.includes("Start writing here")), { timeout: 5_000 })
+    .catch(() => assert.fail("the revision diff did not show the replaced line"));
+  await clickByText(page, ".revision-dialog button", "Load into editor");
+  await page.waitForFunction(() => document.querySelector(".markdown-editor")?.value.includes("Start writing here"), { timeout: 5_000 })
+    .catch(() => assert.fail("loading a revision did not fill the editor"));
+  await page.$eval(".markdown-editor", (textarea) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(textarea, "# Acceptance Study Note Updated\n\nA production persistence proof for search and editing.\n");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await clickByText(page, ".editor-toolbar button", "Save");
   await clickByText(page, ".bottom-nav button", "Notebook");
   await page.waitForFunction(() => document.querySelector(".notebook-page")?.innerText.includes("Acceptance Study Note Updated"));
 
@@ -470,6 +512,12 @@ try {
   await clickByText(page, ".manage-doc-dialog button", "Save");
   await page.waitForFunction(() => document.querySelector(".notebook-page")?.innerText.includes("Acceptance Study Note Organized"), { timeout: 5_000 });
   await page.waitForSelector(".collection-chips");
+  await page.waitForFunction(() => [...document.querySelectorAll(".collection-chips button")].some((chip) => chip.textContent.includes("Interview prep (1)")), { timeout: 5_000 })
+    .catch(async () => {
+      const chips = await page.$$eval(".collection-chips button", (nodes) => nodes.map((node) => node.textContent));
+      const stored = await readStored(page, "profile");
+      assert.fail(`collection chip missing; chips=${JSON.stringify(chips)} collections=${JSON.stringify(stored?.collections)} docs=${JSON.stringify((stored?.customDocuments || []).map((doc) => ({ title: doc.title, collectionId: doc.collectionId })))}`);
+    });
   await clickByText(page, ".collection-chips button", "Interview prep (1)");
   await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length === 1);
   assert.ok(await page.$(".pinned-marker"), "the pinned marker did not render");

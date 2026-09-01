@@ -21,6 +21,8 @@ import {
   Pause,
   Pencil,
   Play,
+  FileDown,
+  History,
   RotateCcw,
   Save,
   Search,
@@ -36,6 +38,8 @@ import {
 } from "lucide-react";
 import { plainTextFromMarkdown, resolveDocumentLink } from "../lib/content";
 import { renderMarkdown, slugifyHeading } from "../lib/markdown";
+import { diffLines, diffSummary } from "../lib/diff.js";
+import { documentToStandaloneHtml } from "../lib/exportHtml.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import { applyAnnotationHighlights, captureTextAnchor, resolveTextAnchor } from "../lib/annotations";
 import { copyText } from "../lib/clipboard.js";
@@ -72,6 +76,7 @@ export default function Reader({
   onCreateReviewFromAnnotation,
   onPersonalNote,
   onSaveEdit,
+  revisions = [],
   onAnnotationsReconciled,
   onResetEdit,
   onSettingsChange,
@@ -507,6 +512,27 @@ export default function Reader({
     setSelectedAnchor(null);
   };
 
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedRevisionId, setSelectedRevisionId] = useState("");
+  const exportHtml = () => {
+    const fileHtml = documentToStandaloneHtml({
+      title: document.title,
+      renderedHtml: renderMarkdown(source),
+      sourceLabel: document.source === "custom" ? "personal upload" : document.partTitle || "",
+    });
+    const blob = new Blob([fileHtml], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement("a");
+    link.href = url;
+    link.download = `${document.title.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "lumen-note"}.html`;
+    window.document.body.appendChild(link);
+    link.click();
+    onNotify?.("Printable HTML export prepared.");
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 2_000);
+  };
   const exportMarkdown = () => {
     const blob = new Blob([source], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -575,7 +601,25 @@ export default function Reader({
 
       {showFind && <div className="reader-find" role="search"><Search size={18} /><input value={findQuery} onChange={(event) => setFindQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); moveFind(event.shiftKey ? -1 : 1); } }} placeholder="Find in this lecture…" aria-label="Find in this lecture" /><span>{findState.total ? `${findState.index + 1}/${findState.total}` : findQuery ? "0" : ""}</span><button className="icon-button small" onClick={() => moveFind(-1)} disabled={!findState.total} aria-label="Previous match" type="button"><ChevronLeft size={17} /></button><button className="icon-button small" onClick={() => moveFind(1)} disabled={!findState.total} aria-label="Next match" type="button"><ChevronRight size={17} /></button><button className="icon-button small" onClick={() => { setShowFind(false); setFindQuery(""); }} aria-label="Close find" type="button"><X size={17} /></button></div>}
 
-      {showActions && <><button className="reader-action-scrim" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button" /><div ref={actionsDialogRef} className="reader-action-menu" role="dialog" aria-modal="true" aria-label="Lecture actions"><div className="popover-heading"><div><span className="eyebrow">Lecture actions</span><strong>Study and file tools</strong></div><button className="icon-button small" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button"><X size={17} /></button></div><div className="reader-action-grid"><button onClick={openFind} type="button"><Search size={18} /><span><strong>Find in lecture</strong><small>Jump between matches</small></span></button><button onClick={() => { share(); setShowActions(false); }} type="button"><Share2 size={18} /><span><strong>Share</strong><small>Use the iPhone share sheet</small></span></button><button onClick={() => { copyLink(); setShowActions(false); }} type="button"><Copy size={18} /><span><strong>Copy link</strong><small>Copy this exact lecture</small></span></button><button onClick={() => { exportMarkdown(); setShowActions(false); }} type="button"><Download size={18} /><span><strong>Export Markdown</strong><small>Download the current copy</small></span></button><button onClick={() => { onSetProgress(complete ? 0 : 1); setShowActions(false); }} type="button">{complete ? <RotateCcw size={18} /> : <CheckCircle2 size={18} />}<span><strong>{complete ? "Reset progress" : "Mark complete"}</strong><small>{complete ? "Start this lecture again" : "Set progress to 100%"}</small></span></button><button onClick={() => { scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); setShowActions(false); }} type="button"><ArrowUp size={18} /><span><strong>Back to top</strong><small>Return to the title</small></span></button></div></div></>}
+      {showActions && <><button className="reader-action-scrim" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button" /><div ref={actionsDialogRef} className="reader-action-menu" role="dialog" aria-modal="true" aria-label="Lecture actions"><div className="popover-heading"><div><span className="eyebrow">Lecture actions</span><strong>Study and file tools</strong></div><button className="icon-button small" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button"><X size={17} /></button></div><div className="reader-action-grid"><button onClick={openFind} type="button"><Search size={18} /><span><strong>Find in lecture</strong><small>Jump between matches</small></span></button><button onClick={() => { share(); setShowActions(false); }} type="button"><Share2 size={18} /><span><strong>Share</strong><small>Use the iPhone share sheet</small></span></button><button onClick={() => { copyLink(); setShowActions(false); }} type="button"><Copy size={18} /><span><strong>Copy link</strong><small>Copy this exact lecture</small></span></button><button onClick={() => { exportMarkdown(); setShowActions(false); }} type="button"><Download size={18} /><span><strong>Export Markdown</strong><small>Download the current copy</small></span></button><button onClick={() => { exportHtml(); setShowActions(false); }} type="button"><FileDown size={18} /><span><strong>Export HTML</strong><small>Self-contained printable page</small></span></button><button onClick={() => { onSetProgress(complete ? 0 : 1); setShowActions(false); }} type="button">{complete ? <RotateCcw size={18} /> : <CheckCircle2 size={18} />}<span><strong>{complete ? "Reset progress" : "Mark complete"}</strong><small>{complete ? "Start this lecture again" : "Set progress to 100%"}</small></span></button><button onClick={() => { scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); setShowActions(false); }} type="button"><ArrowUp size={18} /><span><strong>Back to top</strong><small>Return to the title</small></span></button></div></div></>}
+      {historyOpen && (() => {
+        const selected = revisions.find((entry) => entry.id === selectedRevisionId) || revisions[0];
+        const rows = selected ? diffLines(selected.text, draft ?? source) : [];
+        const summary = diffSummary(rows);
+        return <><button className="reader-action-scrim" onClick={() => setHistoryOpen(false)} aria-label="Close revision history" type="button" /><div className="reader-action-menu revision-dialog" role="dialog" aria-modal="true" aria-label="Revision history">
+          <div className="popover-heading"><div><span className="eyebrow">Last {revisions.length} saved {revisions.length === 1 ? "state" : "states"}</span><strong>Revision history</strong></div><button className="icon-button small" onClick={() => setHistoryOpen(false)} aria-label="Close revision history" type="button"><X size={17} /></button></div>
+          <div className="revision-list" role="radiogroup" aria-label="Choose a revision">
+            {revisions.map((entry) => <button key={entry.id} role="radio" aria-checked={selected?.id === entry.id} className={selected?.id === entry.id ? "active" : ""} onClick={() => setSelectedRevisionId(entry.id)} type="button"><strong>{new Date(entry.savedAt).toLocaleString()}</strong><span>{entry.label || "saved state"} · {entry.text.length.toLocaleString()} chars</span></button>)}
+          </div>
+          {selected && <>
+            <p className="revision-summary">Against the current text: <strong>{summary.added}</strong> line{summary.added === 1 ? "" : "s"} would be removed again, <strong>{summary.removed}</strong> restored.</p>
+            <div className="revision-diff" aria-label="Line differences, revision versus current">
+              {rows.filter((row, index) => row.kind !== "same" || (rows[index - 1] && rows[index - 1].kind !== "same") || (rows[index + 1] && rows[index + 1].kind !== "same")).slice(0, 400).map((row, index) => <div className={`diff-line diff-${row.kind}`} key={index}><span>{row.kind === "added" ? "+" : row.kind === "removed" ? "−" : " "}</span><code>{row.text || " "}</code></div>)}
+            </div>
+            <div className="modal-actions"><button className="button ghost" onClick={() => setHistoryOpen(false)} type="button">Close</button><button className="button primary" onClick={() => { setDraft(selected.text); setEditing(true); setPreviewEdit(false); setHistoryOpen(false); onNotify?.("Revision loaded into the editor — review it, then Save to make it current."); }} type="button"><RotateCcw size={16} /> Load into editor</button></div>
+          </>}
+        </div></>;
+      })()}
 
       <div className="reader-scroll" ref={scrollRef} onScroll={handleScroll}>
         <div className={`reader-layout width-${settings.contentWidth}`}>
@@ -602,6 +646,7 @@ export default function Reader({
                 <div className="editor-toolbar">
                   <div><span className="eyebrow">Editable local copy</span><strong>Markdown editor</strong><small>{draft.trim().split(/\s+/).filter(Boolean).length.toLocaleString()} words · {editorDirty ? "unsaved changes" : "saved source"}</small></div>
                   <div>
+                    {revisions.length > 0 && <button className="button ghost" onClick={() => { setSelectedRevisionId(revisions[0]?.id || ""); setHistoryOpen(true); }} type="button"><History size={16} /> History ({revisions.length})</button>}
                     {hasEdit && <button className="button ghost" onClick={() => { onResetEdit(); setDraft(originalSource); setEditing(false); }} type="button"><RotateCcw size={16} /> Reset</button>}
                     <button className="button secondary" onClick={() => setPreviewEdit(true)} type="button">Preview</button>
                     <button className="button primary" onClick={saveEdit} type="button"><Save size={17} /> Save</button>

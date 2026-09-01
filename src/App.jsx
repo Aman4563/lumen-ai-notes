@@ -52,7 +52,7 @@ import { useWakeLock } from "./hooks/useWakeLock";
 import { searchDocuments } from "./lib/search";
 import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
-import { addTrashEntry, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
+import { addTrashEntry, appendRevision, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
@@ -204,8 +204,15 @@ function ManageDocumentDialog({ doc, collections, onClose, onSave }) {
     setNewCollection("");
     setPinned(Boolean(doc.pinned));
     setArchived(Boolean(doc.archived));
-    requestAnimationFrame(() => dialogRef.current?.querySelector("input")?.focus());
-  }, [doc]);
+    // Synchronous focus: a deferred (rAF) focus can fire hundreds of
+    // milliseconds late under frame throttling and steal focus from a field
+    // the learner is already typing in.
+    dialogRef.current?.querySelector("input")?.focus();
+    // Keyed to the id, not the object: the debounced profile commit mints
+    // fresh record identities, and an identity-keyed reset mid-edit wipes
+    // typed state and steals focus back to the first input.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc?.id]);
 
   if (!doc) return null;
   const submit = (event) => {
@@ -235,7 +242,7 @@ function CreateNoteDialog({ open, onClose, onCreate }) {
     if (!open) return;
     setTitle("");
     setTags("");
-    requestAnimationFrame(() => titleRef.current?.focus());
+    titleRef.current?.focus();
   }, [open]);
 
   if (!open) return null;
@@ -1333,20 +1340,49 @@ export default function App() {
         return false;
       }
       const heading = raw.match(/^#\s+(.+)$/m)?.[1]?.trim();
-      setProfile((current) => ({ ...current, customDocuments: current.customDocuments.map((doc) => doc.id === currentDocument.id ? { ...doc, raw, title: heading?.slice(0, 180) || doc.title, updatedAt: new Date().toISOString() } : doc) }));
+      setProfile((current) => {
+        const previous = current.customDocuments.find((doc) => doc.id === currentDocument.id)?.raw;
+        return {
+          ...current,
+          customDocuments: current.customDocuments.map((doc) => doc.id === currentDocument.id ? { ...doc, raw, title: heading?.slice(0, 180) || doc.title, updatedAt: new Date().toISOString() } : doc),
+          revisions: typeof previous === "string" && previous !== raw && previous.length <= 400_000
+            ? appendRevision(current.revisions, revisionForDocument(currentDocument.id, previous, "before this save"))
+            : current.revisions,
+        };
+      });
     } else {
       if (utf8Bytes(raw) > MAX_LECTURE_EDIT_BYTES) {
         notify("This edited lecture exceeds the 5 MB per-lecture limit. Shorten it before saving; your editor remains open and nothing was truncated.", "error", 7000);
         return false;
       }
-      setProfile((current) => ({ ...current, edits: { ...current.edits, [currentDocument.id]: raw } }));
+      setProfile((current) => {
+        const previous = current.edits[currentDocument.id];
+        return {
+          ...current,
+          edits: { ...current.edits, [currentDocument.id]: raw },
+          revisions: typeof previous === "string" && previous !== raw && previous.length <= 400_000
+            ? appendRevision(current.revisions, revisionForDocument(currentDocument.id, previous, "before this save"))
+            : current.revisions,
+        };
+      });
     }
     notify("Your edited copy was saved.");
     return true;
   };
   const resetEdit = () => {
-    setProfile((current) => { const edits = { ...current.edits }; delete edits[currentDocument.id]; return { ...current, edits }; });
-    notify("The built-in lecture was restored.");
+    setProfile((current) => {
+      const edits = { ...current.edits };
+      const previous = edits[currentDocument.id];
+      delete edits[currentDocument.id];
+      return {
+        ...current,
+        edits,
+        revisions: typeof previous === "string" && previous.length <= 400_000
+          ? appendRevision(current.revisions, revisionForDocument(currentDocument.id, previous, "before restoring the original"))
+          : current.revisions,
+      };
+    });
+    notify("The built-in lecture was restored. Your edited copy is kept as a revision.");
   };
   const toggleBookmark = () => {
     const adding = !profile.bookmarks.includes(currentDocument.id);
@@ -2191,7 +2227,7 @@ export default function App() {
         <div className="view-container">
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
-          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
+          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
