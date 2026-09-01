@@ -72,6 +72,7 @@ export default function Reader({
   onCreateReviewFromAnnotation,
   onPersonalNote,
   onSaveEdit,
+  onAnnotationsReconciled,
   onResetEdit,
   onSettingsChange,
   previousDocument,
@@ -83,6 +84,7 @@ export default function Reader({
   const articleRef = useRef(null);
   const personalNoteRef = useRef(null);
   const pendingNoteFocusRef = useRef(false);
+  const pendingAnchorReconcileRef = useRef(null);
   const actionsDialogRef = useRef(null);
   const progressTimer = useRef(null);
   const selectionClearTimer = useRef(null);
@@ -282,6 +284,13 @@ export default function Reader({
       applied = applyAnnotationHighlights(articleRef.current, annotations);
       setHighlightSupported(applied.supported);
       setAnnotationResolution(Object.fromEntries([...applied.resolved].map(([id, result]) => [id, result.status])));
+      if (pendingAnchorReconcileRef.current && pendingAnchorReconcileRef.current === source) {
+        pendingAnchorReconcileRef.current = null;
+        const updates = [...applied.resolved]
+          .filter(([, result]) => result.status === "relocated")
+          .map(([id, result]) => ({ id, start: result.start, end: result.end, prefix: result.prefix, suffix: result.suffix }));
+        if (updates.length) onAnnotationsReconciled?.(updates);
+      }
     });
     return () => {
       cancelAnimationFrame(frame);
@@ -434,6 +443,11 @@ export default function Reader({
 
   const saveEdit = () => {
     if (onSaveEdit(draft) === false) return;
+    // A saved edit is the explicit reconcile point where confidently
+    // relocated anchors persist their new offsets (LEARN-001). Keyed to the
+    // saved text so the reconcile waits for that source to propagate down
+    // instead of firing against the pre-save render.
+    pendingAnchorReconcileRef.current = draft;
     setEditing(false);
     setPreviewEdit(false);
   };

@@ -37,7 +37,7 @@
     "audit:ai-ui": "node scripts/ai_ui_audit.mjs",
     "audit:controls": "node scripts/control_audit.mjs",
     "check": "npm run audit:notes && npm run audit:unit && npm run audit:scale && npm run audit:storage && npm run audit:backup-memory && npm run audit:ai && npm run audit:ai-eval && npm run audit:app",
-    "check:browser": "npm run audit:workflow && npm run audit:audio && npm run audit:review && npm run audit:annotations && npm run audit:visual && npm run audit:controls && npm run audit:ai-ui && npm run audit:phone-ai-ui && npm run audit:mermaid && npm run audit:chunks",
+    "check:browser": "npm run audit:workflow && npm run audit:audio && npm run audit:review && npm run audit:annotations && npm run audit:sync && npm run audit:visual && npm run audit:controls && npm run audit:ai-ui && npm run audit:phone-ai-ui && npm run audit:mermaid && npm run audit:chunks",
     "check:release": "npm run check && npm run check:browser"
   },
   "dependencies": {

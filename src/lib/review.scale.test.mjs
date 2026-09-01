@@ -38,7 +38,7 @@ test("10,000-card queue and statistics stay correct within the interaction budge
   assert.equal(queue.length, 7_500);
   assert.ok(queue.slice(0, 5_000).every((item) => !isNewReviewItem(item)), "due reviews must remain ahead of new cards");
   assert.ok(queue.slice(5_000).every(isNewReviewItem));
-  assert.deepEqual(stats, { due: 7_500, newCount: 5_000, learning: 5_000, mastered: 0, suspended: 0, archived: 0 });
+  assert.deepEqual(stats, { due: 7_500, overdue: 0, newCount: 5_000, learning: 5_000, mastered: 0, suspended: 0, archived: 0 });
   assert.ok(elapsed < 2_000, `10,000-card queue and stats took ${Math.round(elapsed)}ms (limit: 2000ms)`);
 
 });

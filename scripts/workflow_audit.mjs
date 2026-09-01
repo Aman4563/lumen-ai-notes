@@ -486,7 +486,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"), { timeout: 10_000 });
   await page.select('.library-view-controls select', "title");
 
-  await page.click(".document-grid .document-card");
+  await page.$eval(".document-grid .document-card", (node) => node.click());
   await page.waitForSelector(".reader-view");
   await clickByText(page, ".document-tools button", "Edit copy");
   await page.waitForSelector(".markdown-editor");

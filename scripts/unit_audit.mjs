@@ -4,8 +4,13 @@ import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFIL
 import { searchDocuments, tokenizeExclusions, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads.js";
 import { createId } from "../src/lib/id.js";
+import { selectInterviewRound } from "../src/lib/interview.js";
 import {
   buildReviewQueue,
+  classifyReviewItem,
+  hasClozeMarkup,
+  renderClozePrompt,
+  reviewAnalytics,
   createReviewItem,
   gradeReviewItem,
   isNewReviewItem,
@@ -86,6 +91,105 @@ assert.equal(normalized.settings.keepScreenAwake, true);
 assert.deepEqual(normalized.reviewItems, [], "v2 profiles should migrate with an empty review deck");
 assert.deepEqual(normalized.reviewAttempts, [], "v2 profiles should migrate without fabricated attempts");
 
+// LEARN-002 cloze mechanics: {{spans}} conceal until reveal and never touch
+// text outside the braces.
+assert.equal(hasClozeMarkup("The {{validation}} split"), true);
+assert.equal(hasClozeMarkup("No cloze here"), false);
+assert.equal(renderClozePrompt("The {{validation}} split tunes {{hyperparameters}}."), "The **[ … ]** split tunes **[ … ]**.");
+assert.equal(renderClozePrompt("The {{validation}} split tunes {{hyperparameters}}.", true), "The **validation** split tunes **hyperparameters**.");
+assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single} braces stay");
+
+// INTERVIEW-002 slice: the interview round selects only interview-flavored,
+// non-suspended cards, weak-first (lapses desc, least-recent tiebreak), bounded.
+{
+  const cardAt = (id, extra) => ({ id, type: "definition", tags: [], front: id, back: "a", lapses: 0, createdAt: "2026-08-01T00:00:00.000Z", ...extra });
+  const pool = [
+    cardAt("plain"),
+    cardAt("tagged", { tags: ["Interview"], lapses: 1 }),
+    cardAt("scenario", { type: "production-scenario", lapses: 3, lastReviewedAt: "2026-08-20T00:00:00.000Z" }),
+    cardAt("compare-old", { type: "compare", lapses: 3, lastReviewedAt: "2026-08-10T00:00:00.000Z" }),
+    cardAt("suspended", { type: "compare", suspended: true }),
+    cardAt("archived", { tags: ["interview"], archived: true }),
+    cardAt("debugging", { type: "debugging" }),
+  ];
+  const round = selectInterviewRound(pool);
+  assert.deepEqual(round.map((card) => card.id), ["compare-old", "scenario", "tagged", "debugging"],
+    "weak-first: highest lapses first, least-recently-reviewed breaking ties; plain/suspended/archived excluded");
+  assert.deepEqual(selectInterviewRound(pool), round, "selection must be deterministic");
+  assert.equal(selectInterviewRound(pool, { limit: 2 }).length, 2);
+  assert.equal(selectInterviewRound([]).length, 0);
+}
+
+// LEARN-003: bury/suspend/archive exclusion, crunch weak-first ordering, and
+// Hard/Easy scheduling have direct assertions.
+{
+  const queueNow = new Date("2026-08-21T12:00:00.000Z");
+  const todayKey = localDayKey(queueNow, "UTC");
+  const mk = (id, extra = {}) => ({ ...createReviewItem({ front: id, back: "a" }, new Date("2026-08-20T12:00:00.000Z")), id, dueAt: "2026-08-21T10:00:00.000Z", ...extra });
+  const eligible = mk("eligible");
+  const buried = mk("buried", { buriedOnDay: todayKey });
+  const suspendedCard = mk("suspended", { suspended: true });
+  const archivedCard = mk("archived", { archived: true });
+  const settings = { dailyNewLimit: 10, dailyReviewLimit: 10 };
+  const dailyQueue = buildReviewQueue([eligible, buried, suspendedCard, archivedCard], settings, queueNow, [], { timeZone: "UTC" });
+  assert.deepEqual(dailyQueue.map((item) => item.id), ["eligible"], "buried, suspended, and archived cards must never enter the daily queue");
+
+  const weak = mk("weak", { reviewCount: 5, lastReviewedAt: "2026-08-01T00:00:00.000Z", lapses: 4, ease: 1.6, dueAt: "2026-09-30T00:00:00.000Z" });
+  const strong = mk("strong", { reviewCount: 5, lastReviewedAt: "2026-08-01T00:00:00.000Z", lapses: 0, ease: 2.8, dueAt: "2026-09-30T00:00:00.000Z" });
+  const crunchQueue = buildReviewQueue([strong, weak, suspendedCard, archivedCard, buried], settings, queueNow, [], { timeZone: "UTC", crunch: true, crunchLimit: 5 });
+  assert.deepEqual(crunchQueue.map((item) => item.id), ["weak", "strong"], "crunch mode must order weak cards first and still exclude suspended/archived/buried");
+
+  const matured = mk("matured", { reviewCount: 3, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 3, intervalDays: 10, ease: 2.5 });
+  const hard = gradeReviewItem(matured, "hard", queueNow, 900);
+  assert.equal(hard.item.intervalDays, 12, "Hard must multiply the prior interval by 1.2");
+  assert.equal(hard.item.ease, 2.35, "Hard must reduce ease by 0.15");
+  assert.equal(hard.item.repetitions, 4);
+  const easy = gradeReviewItem(matured, "easy", queueNow, 900);
+  assert.equal(easy.item.intervalDays, Math.max(4, 10 * 2.5 * 1.3), "Easy must expand the interval by ease times 1.3");
+  assert.equal(easy.item.ease, 2.65, "Easy must raise ease by 0.15");
+  const firstEasy = gradeReviewItem(createReviewItem({ front: "new", back: "a" }, queueNow), "easy", queueNow, 500);
+  assert.equal(firstEasy.item.intervalDays, 4, "a first Easy review schedules four days out");
+}
+
+// 12-week retention trend buckets attempts oldest-first with null-safe weeks.
+{
+  const trendNow = new Date("2026-08-21T12:00:00.000Z");
+  const attempt = (daysAgo, rating) => ({ reviewedAt: new Date(trendNow.getTime() - daysAgo * 86_400_000).toISOString(), rating, elapsedMs: 1_000 });
+  const trend = reviewAnalytics([
+    attempt(1, "good"), attempt(2, "again"),            // current week: 50%
+    attempt(10, "good"), attempt(11, "good"),           // week -1: 100%
+    attempt(80, "again"),                                // week -11: 0%
+    attempt(200, "good"),                                // outside the window
+  ], [], trendNow, "UTC").retentionTrend;
+  assert.equal(trend.length, 12);
+  assert.equal(trend[11].percent, 50);
+  assert.equal(trend[11].count, 2);
+  assert.equal(trend[10].percent, 100);
+  assert.equal(trend[0].percent, 0, "the oldest bucket holds the ~80-day-old lapse");
+  assert.equal(trend[5].percent, null, "weeks without attempts stay null, not zero");
+}
+
+// LEARN-003: queue classes are explicit and mutually exclusive with defined
+// precedence (overdue beats learning beats mature on-time due).
+const classifyNow = new Date("2026-08-21T12:00:00.000Z");
+const classifyFixtures = [
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow) }, expected: "new" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 4, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 1, intervalDays: 1, dueAt: "2026-08-21T10:00:00.000Z" }, expected: "learning" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 4, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 1, intervalDays: 1, dueAt: "2026-08-19T12:00:00.000Z" }, expected: "overdue" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 9, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 5, intervalDays: 30, dueAt: "2026-08-21T11:00:00.000Z" }, expected: "due" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 9, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 5, intervalDays: 30, dueAt: "2026-08-15T12:00:00.000Z" }, expected: "overdue" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 9, repetitions: 5, intervalDays: 30, lastReviewedAt: "2026-08-01T00:00:00.000Z", dueAt: "2026-09-10T12:00:00.000Z" }, expected: "scheduled" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), suspended: true, dueAt: "2026-08-15T12:00:00.000Z" }, expected: "suspended" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), archived: true, suspended: true }, expected: "archived" },
+];
+const classes = ["new", "overdue", "learning", "due", "scheduled", "suspended", "archived"];
+for (const { fixture, expected } of classifyFixtures) {
+  const actual = classifyReviewItem(fixture, classifyNow, "UTC");
+  assert.equal(actual, expected, `queue class for dueAt=${fixture.dueAt} repetitions=${fixture.repetitions} should be ${expected}, got ${actual}`);
+  assert.equal(classes.filter((candidate) => candidate === actual).length, 1, "every item maps to exactly one class");
+}
+assert.equal(reviewStats(classifyFixtures.map((entry) => entry.fixture), classifyNow, "UTC").overdue, 2, "stats must count overdue items");
+
 const reviewNow = new Date("2026-08-21T12:00:00.000Z");
 const firstCard = createReviewItem({ front: "Question", back: "Answer" }, reviewNow);
 const secondCard = createReviewItem({ front: "Second", back: "Answer" }, new Date(reviewNow.getTime() + 1_000));
@@ -102,7 +206,7 @@ const lapse = gradeReviewItem(secondGood.item, "again", new Date("2026-08-25T12:
 assert.equal(lapse.item.repetitions, 0);
 assert.equal(lapse.item.lapses, 1);
 assert.equal(lapse.item.intervalDays, 0.01);
-assert.deepEqual(reviewStats([secondGood.item], new Date("2026-09-30T12:00:00.000Z")), { due: 1, newCount: 0, learning: 1, mastered: 0, suspended: 0, archived: 0 });
+assert.deepEqual(reviewStats([secondGood.item], new Date("2026-09-30T12:00:00.000Z")), { due: 1, overdue: 1, newCount: 0, learning: 1, mastered: 0, suspended: 0, archived: 0 });
 
 const thirdCard = createReviewItem({ front: "Third", back: "Answer" }, new Date(reviewNow.getTime() + 2_000));
 const firstUsage = recordReviewUsage([], firstCard, reviewNow, { timeZone: "Asia/Kolkata" });

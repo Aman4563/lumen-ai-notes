@@ -173,6 +173,24 @@ export const isDue = (item, now = new Date(), timeZone = currentTimeZone()) => (
   isDueAt(item, now.getTime(), localDayKey(now, timeZone))
 );
 
+const isLearningItem = (item) => (Number(item.repetitions) || 0) < 3 || (Number(item.intervalDays) || 0) < 14;
+
+/**
+ * Explicit, mutually exclusive queue classes (LEARN-003): every item is
+ * exactly one of new / overdue / learning / due / scheduled / suspended /
+ * archived. Precedence for a due item: overdue (a full day or more past its
+ * due time) beats learning beats mature-on-time "due".
+ */
+export const classifyReviewItem = (item, now = new Date(), timeZone = currentTimeZone()) => {
+  if (item.archived) return "archived";
+  if (item.suspended) return "suspended";
+  if (isNewReviewItem(item)) return "new";
+  if (!isDueAt(item, now.getTime(), localDayKey(now, timeZone))) return "scheduled";
+  const dueAt = Date.parse(item.dueAt);
+  if (Number.isFinite(dueAt) && now.getTime() - dueAt >= 86_400_000) return "overdue";
+  return isLearningItem(item) ? "learning" : "due";
+};
+
 const weakFirst = (left, right) => (
   (Number(right.lapses) || 0) - (Number(left.lapses) || 0)
   || (Number(left.ease) || 2.5) - (Number(right.ease) || 2.5)
@@ -207,11 +225,12 @@ export const buildReviewQueue = (items, settings, now = new Date(), sessions = [
 };
 
 export const reviewStats = (items, now = new Date(), timeZone = currentTimeZone()) => {
-  const stats = { due: 0, newCount: 0, learning: 0, mastered: 0, suspended: 0, archived: 0 };
+  const stats = { due: 0, overdue: 0, newCount: 0, learning: 0, mastered: 0, suspended: 0, archived: 0 };
   const todayKey = localDayKey(now, timeZone);
   const nowMilliseconds = now.getTime();
   for (const item of items) {
     if (isDueAt(item, nowMilliseconds, todayKey)) stats.due += 1;
+    if (classifyReviewItem(item, now, timeZone) === "overdue") stats.overdue += 1;
     if (item.archived) {
       stats.archived += 1;
       continue;
@@ -305,6 +324,10 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
   let retained30 = 0;
   const latencies = [];
   const activeDays = new Set();
+  // Twelve weekly retention buckets covering ~90 days, oldest first.
+  const trendWeeks = 12;
+  const trendCounts = Array(trendWeeks).fill(0);
+  const trendRetained = Array(trendWeeks).fill(0);
   for (const attempt of attempts) {
     const reviewedAt = Date.parse(attempt.reviewedAt);
     if (!Number.isFinite(reviewedAt)) continue;
@@ -318,6 +341,12 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
       count30 += 1;
       if (retained) retained30 += 1;
       latencies.push(Number(attempt.elapsedMs) || 0);
+    }
+    const week = Math.floor(age / (7 * DAY_MS));
+    if (week >= 0 && week < trendWeeks) {
+      const bucket = trendWeeks - 1 - week;
+      trendCounts[bucket] += 1;
+      if (retained) trendRetained[bucket] += 1;
     }
     activeDays.add(localDayKey(new Date(reviewedAt), timeZone).split("@")[0]);
   }
@@ -346,6 +375,10 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
     medianLatencyMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
     streak,
     forecast,
+    retentionTrend: trendCounts.map((count, index) => ({
+      count,
+      percent: count ? Math.round((trendRetained[index] / count) * 100) : null,
+    })),
   };
 };
 
@@ -362,3 +395,15 @@ export const formatLatency = (milliseconds) => {
   const seconds = Math.max(0, milliseconds) / 1_000;
   return seconds < 60 ? `${seconds.toFixed(seconds < 10 ? 1 : 0)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 };
+
+/**
+ * Cloze mechanics (LEARN-002): `{{hidden text}}` spans in a cloze card's
+ * prompt are concealed until reveal. The transform runs on the raw Markdown
+ * before rendering, so the sanitized pipeline is unchanged.
+ */
+export const hasClozeMarkup = (text) => /\{\{[^{}]+\}\}/.test(String(text || ""));
+
+export const renderClozePrompt = (text, revealed = false) => String(text || "").replace(
+  /\{\{([^{}]+)\}\}/g,
+  (_match, hidden) => (revealed ? `**${hidden.trim()}**` : "**[ … ]**"),
+);

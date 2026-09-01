@@ -190,7 +190,17 @@ const resolveTextAnchorFromIndex = (index, anchor) => {
   if (!positions.length) return { status: "orphaned", range: null, reason: "quote-not-found" };
   positions.sort((left, right) => contextScore(index.text, right, anchor) - contextScore(index.text, left, anchor));
   const relocated = positions[0];
-  return { status: "relocated", range: rangeAtOffsets(index, relocated, relocated + anchor.quote.length), start: relocated, end: relocated + anchor.quote.length };
+  const relocatedEnd = relocated + anchor.quote.length;
+  return {
+    status: "relocated",
+    range: rangeAtOffsets(index, relocated, relocatedEnd),
+    start: relocated,
+    end: relocatedEnd,
+    // Refreshed context lets a reconcile write-back keep future relocation
+    // scoring anchored to the new surroundings, not the pre-edit ones.
+    prefix: index.text.slice(Math.max(0, relocated - 120), relocated),
+    suffix: index.text.slice(relocatedEnd, relocatedEnd + 120),
+  };
 };
 
 export const resolveTextAnchor = (root, anchor) => {

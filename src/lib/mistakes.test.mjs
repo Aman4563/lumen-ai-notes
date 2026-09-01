@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { categoryForReviewItem, createMistake, MAX_MISTAKES, mistakeFingerprint, normalizeMistakes, recordMistake, updateMistake } from "./mistakes.js";
+import { categoryForReviewItem, createMistake, MAX_MISTAKES, mistakeAnalytics, mistakeFingerprint, normalizeMistakes, recordMistake, updateMistake } from "./mistakes.js";
 
 test("repeated failures merge into one reopening mistake instead of duplicating", () => {
   const now = new Date("2026-09-01T10:00:00.000Z");
@@ -65,4 +65,21 @@ test("normalization bounds untrusted stored mistakes and empty prompts never rec
   const capped = normalizeMistakes(Array.from({ length: MAX_MISTAKES + 50 }, (_, index) => ({ prompt: `p${index}` })));
   assert.equal(capped.length, MAX_MISTAKES);
   assert.equal(createMistake({ prompt: "p", expected: "e" }).correctedAt, "");
+});
+
+test("mistake analytics count open/corrected per category and rank repeats", () => {
+  const base = new Date("2026-09-01T10:00:00.000Z");
+  let mistakes = recordMistake([], { prompt: "a", expected: "x", category: "code" }, base).mistakes;
+  mistakes = recordMistake(mistakes, { prompt: "a", expected: "x", category: "code" }, base).mistakes;
+  mistakes = recordMistake(mistakes, { prompt: "b", expected: "x", category: "formula" }, base).mistakes;
+  mistakes = recordMistake(mistakes, { prompt: "c", expected: "x", category: "code" }, base).mistakes;
+  mistakes = updateMistake(mistakes, mistakes.find((entry) => entry.prompt === "c").id, { correctedAt: base.toISOString() });
+  const summary = mistakeAnalytics(mistakes);
+  assert.equal(summary.open, 2);
+  assert.equal(summary.corrected, 1);
+  assert.equal(summary.byCategory.code, 1, "corrected mistakes leave the open per-category counts");
+  assert.equal(summary.byCategory.formula, 1);
+  assert.equal(summary.mostRepeated.length, 1);
+  assert.equal(summary.mostRepeated[0].prompt, "a");
+  assert.equal(summary.mostRepeated[0].occurrences, 2);
 });

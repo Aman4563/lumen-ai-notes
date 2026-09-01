@@ -21,6 +21,23 @@ const records = () => ({
     ...initialProfile,
     bookmarks: ["notes/part-01"],
     personalNotes: { "notes/part-01": "A durable note" },
+    mistakes: [{
+      id: "mistake-1",
+      prompt: "Which split tunes hyperparameters?",
+      expected: "The validation split.",
+      response: "",
+      category: "misconception",
+      correction: "Only validation data may steer choices.",
+      hints: [],
+      documentId: "notes/part-01",
+      reviewItemId: "card-1",
+      tags: [],
+      occurrences: 2,
+      firstSeenAt: fixedTime,
+      lastSeenAt: fixedTime,
+      correctedAt: "",
+      updatedAt: fixedTime,
+    }],
     reviewItems: [{
       id: "card-1",
       type: "basic",
@@ -69,6 +86,11 @@ test("v4 backup round-trips with canonical SHA-256 integrity and inventory", asy
   assert.equal(checked.integrity.verified, true);
   assert.equal(checked.migrationRequired, false);
   assert.deepEqual(checked.data.profile.bookmarks, ["notes/part-01"]);
+  const restoredMistake = checked.data.profile.mistakes[0];
+  assert.equal(restoredMistake.prompt, "Which split tunes hyperparameters?");
+  assert.equal(restoredMistake.correction, "Only validation data may steer choices.");
+  assert.equal(restoredMistake.occurrences, 2);
+  assert.equal(restoredMistake.reviewItemId, "card-1", "the mistake keeps its review-card link through a backup round trip");
   assert.equal(checked.data["board:notes/part-01"].pages[0].objects[0].tool, "line");
 });
 

@@ -54,6 +54,8 @@ import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
+import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
+import { buildDailySession, SESSION_LENGTHS } from "./lib/plan.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
@@ -244,6 +246,10 @@ function DocumentCard({ doc, profile, onOpen, compact = false }) {
 }
 
 function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onReview }) {
+  const [sessionMinutes, setSessionMinutes] = useState(30);
+  const dailySession = useMemo(() => buildDailySession(sessionMinutes, { profile, documents: allDocuments }), [allDocuments, profile, sessionMinutes]);
+  const mastery = useMemo(() => masteryByPart(allDocuments, profile), [allDocuments, profile]);
+  const masteryLabel = (state) => PART_MASTERY_STATES.find((entry) => entry.id === state)?.label || state;
   const recent = profile.recent.map((id) => allDocuments.find((doc) => doc.id === id)).filter(Boolean);
   const continueDoc = recent[0] || documentMap.get(initialDocumentId) || allDocuments[0];
   const learningDocs = allDocuments.filter((doc) => doc.partNumber > 0 && !doc.isIndex);
@@ -287,6 +293,34 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
           <div className="stat-row"><span>Personal notes</span><strong>{annotated}</strong></div>
           <div className="stat-row"><span>Bookmarks</span><strong>{profile.bookmarks.length}</strong></div>
         </article>
+      </section>
+
+      <section className="page-section daily-plan" aria-label="Today’s study plan">
+        <div className="section-heading"><div><span className="eyebrow">Deterministic session</span><h2>Today’s plan</h2></div><div className="daily-plan-lengths" role="radiogroup" aria-label="Session length">{SESSION_LENGTHS.map((length) => <button key={length} role="radio" aria-checked={sessionMinutes === length} className={sessionMinutes === length ? "active" : ""} onClick={() => setSessionMinutes(length)} type="button">{length} min</button>)}</div></div>
+        {dailySession.empty
+          ? <p className="microcopy">Nothing is due and nothing is open — read ahead in the library or add review cards from your highlights.</p>
+          : <div className="daily-plan-blocks">
+            {dailySession.blocks.map((block, index) => <button className="daily-plan-block" key={`${block.kind}-${index}`} onClick={() => {
+              if (block.kind === "review" || block.kind === "mistakes") onReview();
+              else if (block.documentId) onOpen(block.documentId);
+            }} type="button">
+              <span className="daily-plan-minutes">{block.minutes} min</span>
+              <span className="daily-plan-label">{block.label}{block.partial ? " (as far as you get)" : ""}</span>
+              <ArrowRight size={15} />
+            </button>)}
+            <p className="microcopy">{dailySession.plannedMinutes} of {dailySession.budgetMinutes} minutes planned · reviews first, then your most-repeated open mistakes, then reading.</p>
+          </div>}
+      </section>
+
+      <section className="page-section mastery-section" aria-label="Mastery by Part">
+        <div className="section-heading"><div><span className="eyebrow">Evidence-based</span><h2>Mastery by Part</h2></div><button className="text-button" onClick={onReview} type="button">Review center <ArrowRight size={16} /></button></div>
+        <div className="mastery-grid">
+          {mastery.map((part) => <article className={`mastery-row state-${part.state}`} key={part.partNumber} title={`${part.reason} Next: ${part.nextAction}`}>
+            <span className="mastery-part">{String(part.partNumber).padStart(2, "0")}</span>
+            <div className="mastery-copy"><strong>{part.partTitle}</strong><span>{part.completedChapters}/{part.chapters} chapters · {part.masteredCards}/{part.activeCards || 0} cards mastered{part.overdueCards ? ` · ${part.overdueCards} overdue` : ""}</span><small className="mastery-next">{part.nextAction}</small></div>
+            <span className={`mastery-state state-${part.state}`}>{masteryLabel(part.state)}</span>
+          </article>)}
+        </div>
       </section>
 
       <section className="page-section">
@@ -1286,6 +1320,27 @@ export default function App() {
     notify("Highlight saved and anchored to the source.");
   }, [currentDocument.id, notify, profile.annotations]);
 
+  const reconcileAnnotationOffsets = useCallback((updates) => {
+    if (!Array.isArray(updates) || !updates.length) return;
+    const byId = new Map(updates.map((update) => [update.id, update]));
+    const nowIso = new Date().toISOString();
+    setProfile((current) => ({
+      ...current,
+      annotations: current.annotations.map((annotation) => {
+        const update = byId.get(annotation.id);
+        if (!update || !Number.isSafeInteger(update.start) || !Number.isSafeInteger(update.end)) return annotation;
+        return {
+          ...annotation,
+          start: update.start,
+          end: update.end,
+          prefix: typeof update.prefix === "string" ? update.prefix.slice(-160) : annotation.prefix,
+          suffix: typeof update.suffix === "string" ? update.suffix.slice(0, 160) : annotation.suffix,
+          updatedAt: nowIso,
+        };
+      }),
+    }));
+  }, []);
+
   const deleteAnnotation = useCallback((id) => {
     if (!window.confirm("Delete this highlight? Linked review cards will remain, but their highlight link will be removed.")) return;
     setProfile((current) => ({
@@ -1646,6 +1701,17 @@ export default function App() {
     notify("Mistake removed.");
   }, [notify]);
 
+  const logManualMistake = useCallback((draft) => {
+    let merged = false;
+    setProfile((current) => {
+      const result = recordMistake(current.mistakes, draft);
+      if (!result.mistake) return current;
+      merged = result.merged;
+      return { ...current, mistakes: result.mistakes };
+    });
+    notify(merged ? "That mistake already exists — its occurrence count went up instead." : "Mistake logged. Write the correction when you understand why.");
+  }, [notify]);
+
   const scheduleCorrectiveReview = useCallback((mistake) => {
     let scheduled = false;
     setProfile((current) => {
@@ -1964,12 +2030,12 @@ export default function App() {
         <div className="view-container">
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
-          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
+          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onNotify={notify} /></Suspense>)}
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><div><span className="eyebrow">Private, source-grounded assistance</span><h1>AI learning studio</h1><p>Choose a larger local model on your Mac or a lightweight model on this phone—without a paid AI API.</p></div></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} />}
+          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} />}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </div>
 
