@@ -230,7 +230,7 @@ export const publicAiConfig = (config, serviceStatus = {}) => ({
   },
   supportedTasks: [
     "tutor", "explain", "socratic", "quiz", "flashcards", "interview",
-    "summarize", "study_plan", "answer_feedback",
+    "summarize", "study_plan", "answer_feedback", "code_review",
   ],
   structuredTasks: ["quiz", "flashcards", "study_plan", "answer_feedback"],
   responseProfiles: {

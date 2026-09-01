@@ -1902,6 +1902,14 @@
   border-color: color-mix(in srgb, var(--ai-accent) 52%, transparent);
 }
 
+.ai-tutor__response-profiles label.is-unavailable {
+  cursor: not-allowed;
+}
+
+.ai-tutor__response-profiles label.is-unavailable > span {
+  opacity: 0.55;
+}
+
 .ai-tutor__response-profiles input:focus-visible + span {
   outline: 3px solid color-mix(in srgb, var(--ai-accent) 28%, transparent);
   outline-offset: 2px;

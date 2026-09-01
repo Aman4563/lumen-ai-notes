@@ -212,6 +212,12 @@ try {
   assert.equal(await page.$('.phone-tutor__message.is-assistant .diagram-diagnostic'), null, "phone theme change corrupted a valid diagram");
   await page.evaluate(() => { document.documentElement.removeAttribute("data-theme"); });
   assert.ok(await page.$('.phone-tutor__message.is-assistant [data-ai-citation="S1"]'), "library citation was not rendered as a safe navigation control");
+  await page.$eval('.phone-tutor__message.is-assistant [data-ai-citation="S1"]', (node) => node.click());
+  assert.deepEqual(
+    await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.at(-1)),
+    { documentId: "notes/audit-gradient-descent.md", anchor: "optimization" },
+    "prose [S1] citation did not navigate to its exact source anchor",
+  );
   assert.equal(await page.$eval(".phone-tutor__message.is-assistant .phone-tutor__safe-response p strong", (node) => node.textContent), "Gradient descent", "Markdown emphasis rendered incorrectly");
   assert.equal(await page.evaluate(() => window.__PHONE_MARKDOWN_XSS__ === true), false, "model-authored script executed through the Markdown renderer");
   assert.equal(await page.$(".phone-tutor__safe-response script"), null, "sanitized AI Markdown retained a script element");
@@ -225,6 +231,24 @@ try {
   assert.match(firstCall.payload.context, /Gradient descent updates parameters/);
   assert.deepEqual(await page.evaluate(() => window.__PHONE_AI_AUDIT__.retrievalCalls[0].options), { maxDocuments: 2, maxPassages: 2, maxBytes: 4400 });
   assert.match(await page.$eval(".phone-tutor__evidence", (node) => node.textContent), /searched 143 local documents/i);
+
+  // Structured-field citations (AI-001): [S#] labels inside flashcard fields
+  // are the same navigable controls as prose citations, not inert text.
+  await clickByText(page, ".phone-tutor__mode-tabs button", "Flashcards");
+  await page.click(sendButtonSelector);
+  await page.waitForSelector(".phone-tutor__flashcards", { timeout: 10_000 });
+  const structuredCitationText = await page.$eval(".phone-tutor__flashcards button.ai-tutor__citation", (node) => node.textContent.trim());
+  assert.equal(structuredCitationText, "[S1]", "flashcard front did not render [S1] as a navigable citation control");
+  const navigationsBeforeStructured = await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length);
+  await page.$eval(".phone-tutor__flashcards button.ai-tutor__citation", (node) => node.click());
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length), navigationsBeforeStructured + 1, "structured citation click did not navigate");
+  assert.deepEqual(
+    await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.at(-1)),
+    { documentId: "notes/audit-gradient-descent.md", anchor: "optimization" },
+    "structured [S1] citation did not resolve to its exact source anchor",
+  );
+  await clickByText(page, ".phone-tutor__mode-tabs button", "Explain");
+  assert.match(await page.$eval(".phone-tutor__mode-tabs button[aria-pressed='true']", (node) => node.textContent), /Explain/, "mode did not return to Explain after the structured citation check");
 
   await page.click(".phone-tutor__sources summary");
   await clickByText(page, ".phone-tutor__source-modes button", "No library");

@@ -81,6 +81,8 @@ export default function Reader({
 }) {
   const scrollRef = useRef(null);
   const articleRef = useRef(null);
+  const personalNoteRef = useRef(null);
+  const pendingNoteFocusRef = useRef(false);
   const actionsDialogRef = useRef(null);
   const progressTimer = useRef(null);
   const selectionClearTimer = useRef(null);
@@ -236,6 +238,15 @@ export default function Reader({
       if (!article) return;
       const anchor = String(navigationTarget.anchor || "").replace(/^#/, "");
       const section = String(navigationTarget.section || "").trim();
+      // AI retrieval cites per-lecture personal notes with this dedicated
+      // anchor. It must open and focus the exact note editor, not fall
+      // through to a same-slug heading search.
+      if (anchor === "personal-note" || (!anchor && section.toLocaleLowerCase() === "personal note")) {
+        pendingNoteFocusRef.current = true;
+        setDrawer("notes");
+        onNavigationHandled?.();
+        return;
+      }
       const headings = [...article.querySelectorAll("h1, h2, h3, h4")];
       const destination = headings.find((heading) => heading.id === anchor)
         || (section ? headings.find((heading) => heading.id === slugifyHeading(section) || heading.textContent.trim().toLocaleLowerCase() === section.toLocaleLowerCase()) : null);
@@ -248,6 +259,20 @@ export default function Reader({
     });
     return () => cancelAnimationFrame(frame);
   }, [document.id, editing, html, navigationTarget, onNavigationHandled, previewEdit]);
+
+  useEffect(() => {
+    // The note editor mounts only while the Notes drawer is open, so a
+    // citation-driven focus request must wait for that render to commit.
+    if (drawer !== "notes" || !pendingNoteFocusRef.current) return undefined;
+    pendingNoteFocusRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      const field = personalNoteRef.current;
+      if (!field) return;
+      field.scrollIntoView({ behavior: "smooth", block: "center" });
+      field.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [drawer]);
 
   useEffect(() => {
     if (editing && !previewEdit) return undefined;
@@ -602,7 +627,7 @@ export default function Reader({
             </div>
             {drawer === "notes" ? (
               <div className="personal-note-panel">
-                <textarea value={personalNote} onChange={(event) => onPersonalNote(event.target.value)} placeholder="Capture questions, explanations, interview insights, or links…" aria-label="Personal notes for this lecture" />
+                <textarea ref={personalNoteRef} id="reader-personal-note" value={personalNote} onChange={(event) => onPersonalNote(event.target.value)} placeholder="Capture questions, explanations, interview insights, or links…" aria-label="Personal notes for this lecture" />
                 <span>{saveStatus === "saving" ? "Saving on this device…" : saveStatus === "error" ? "Could not save—export a backup and check storage." : "Saved on this device."}</span>
               </div>
             ) : drawer === "annotations" ? (

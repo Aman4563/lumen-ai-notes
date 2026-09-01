@@ -5750,6 +5750,55 @@ input[type="range"] {
   color: var(--gold);
 }
 
+.clipping-card--ai {
+  border-color: color-mix(in srgb, var(--accent, #4759c7) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent, #4759c7) 7%, var(--paper, #fff));
+}
+
+.clipping-card--ai > svg {
+  color: var(--accent, #4759c7);
+}
+
+.clipping-origin {
+  margin-top: 8px;
+  color: var(--accent, #4759c7);
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.clipping-no-source {
+  color: var(--ink-soft, #566078);
+  font-size: 0.78rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.settings-retention select {
+  min-height: 40px;
+  padding: 7px 11px;
+  color: var(--ink, #172035);
+  background: var(--paper-2, #f9f7f1);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.14));
+  border-radius: 10px;
+  font-size: 0.82rem;
+}
+
+.ai-disabled-state {
+  margin-top: 26px;
+}
+
 .clipping-card blockquote {
   display: -webkit-box;
   margin: 13px 0;

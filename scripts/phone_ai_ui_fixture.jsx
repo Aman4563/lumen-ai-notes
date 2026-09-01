@@ -129,6 +129,18 @@ class AuditPhoneEngine {
         },
       };
     }
+    if (payload.task === "flashcards") {
+      this.generationActive = false;
+      const cards = [{ front: "Which update rule follows the negative loss gradient? [S1]", back: "θ ← θ − η∇L(θ): parameters move against the gradient [S1].", hint: null, tags: ["optimization"] }];
+      return {
+        status: "completed",
+        provider: "on-device-lite",
+        outputText: JSON.stringify({ cards }),
+        data: { cards },
+        citations: [],
+        contextFit: { inputBytesUsed: 640, inputByteBudget: 2_816, contextCharactersProvided: payload.context.length, contextCharactersUsed: payload.context.length, historyMessagesProvided: payload.history.length, historyMessagesUsed: payload.history.length, evidenceResultsProvided: 0, evidenceResultsUsed: 0, evidenceCharactersProvided: 0, evidenceCharactersUsed: 0, sourceUsage: payload.contextRanges.map((range, index) => ({ id: range.id, citationNumber: index + 1, labelSupplied: true, charactersProvided: range.end - range.start, charactersUsed: range.end - range.start })), citedSourceIndexes: payload.contextRanges.length ? [1] : [], citedEvidenceIndexes: [], truncated: false },
+      };
+    }
     const answer = "## Gradient descent\n\n**Gradient descent** follows the negative loss gradient [S1].\n\n$$\\theta_{t+1} = \\theta_t - \\eta \\nabla L(\\theta_t)$$\n\n| Symbol | Meaning |\n| --- | --- |\n| $\\eta$ | learning rate |\n\n```python\ntheta -= learning_rate * gradient\n```\n\n```mermaid\nflowchart LR\n  LOSS[Loss] --> GRAD[Gradient]\n  GRAD --> UPDATE[Parameter update]\n```\n\n<script>window.__PHONE_MARKDOWN_XSS__ = true</script>";
     onToken?.("## Gradient", "## Gradient");
     await wait(120);
@@ -163,6 +175,7 @@ class AuditPhoneEngine {
 }
 
 const engine = new AuditPhoneEngine();
+engine.navigations = [];
 window.__PHONE_AI_AUDIT__ = engine;
 
 const sources = [{
@@ -204,6 +217,6 @@ const retrieveLibrary = async (query, options = {}) => {
 
 const root = createRoot(document.getElementById("root"));
 root.render(
-  <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} onInteractionChange={(locked) => engine.interactionStates.push(locked)} />,
+  <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} onNavigateSource={(target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor })} onInteractionChange={(locked) => engine.interactionStates.push(locked)} />,
 );
 window.__UNMOUNT_PHONE_AI_AUDIT__ = () => root.unmount();

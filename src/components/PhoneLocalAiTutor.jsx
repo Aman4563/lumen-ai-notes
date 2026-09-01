@@ -327,29 +327,68 @@ const EvidenceDetails = ({ message, onNavigateSource }) => {
   );
 };
 
-const QuizResult = ({ quiz, messageId }) => {
+/**
+ * Renders [S#]/[W#] labels inside structured string fields as the same
+ * navigable citations the prose surface produces. Text is emitted as React
+ * nodes, never HTML, so it stays safe inside legends, labels, and list items.
+ */
+const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSource }) => {
+  const sourceMap = useMemo(() => new Map(sources.map((source, index) => [
+    `[S${Number.isSafeInteger(source?.citationNumber) ? source.citationNumber : index + 1}]`,
+    source,
+  ])), [sources]);
+  const webMap = useMemo(() => new Map(citations.map((citation, index) => [
+    `[W${Number.isSafeInteger(citation?.index) ? citation.index : index + 1}]`,
+    citation,
+  ])), [citations]);
+  return String(text ?? "").split(/(\[(?:S|W)\d+\])/g).map((part, index) => {
+    const match = part.match(/^\[([SW])\d+\]$/);
+    if (!match) return <span key={`${index}-${part.slice(0, 12)}`}>{part}</span>;
+    if (match[1] === "W") {
+      const web = webMap.get(part);
+      if (!web) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited web evidence that was not supplied" key={`${part}-${index}`}>{part}</span>;
+      return <a className="ai-tutor__citation" href={web.url} target="_blank" rel="noopener noreferrer" aria-label={`Open web citation ${part}: ${web.title}`} key={`${part}-${index}`}>{part}</a>;
+    }
+    const source = sourceMap.get(part);
+    if (!source) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited a source that was not supplied" key={`${part}-${index}`}>{part}</span>;
+    return (
+      <button
+        className="ai-tutor__citation"
+        type="button"
+        aria-label={`Open citation ${part}: ${source.title}`}
+        onClick={() => onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor })}
+        key={`${part}-${index}`}
+      >
+        {part}
+      </button>
+    );
+  });
+};
+
+const QuizResult = ({ quiz, messageId, sources = [], citations = [], onNavigateSource }) => {
   const [answers, setAnswers] = useState({});
   const [revealed, setRevealed] = useState({});
+  const cite = (text) => <InlineFieldCitations text={text} sources={sources} citations={citations} onNavigateSource={onNavigateSource} />;
   return (
     <div className="phone-tutor__quiz">
-      <h4>{quiz.title}</h4><p>{quiz.instructions}</p>
+      <h4>{quiz.title}</h4><p>{cite(quiz.instructions)}</p>
       {quiz.questions.map((question, questionIndex) => (
         <fieldset key={question.id}>
-          <legend>{questionIndex + 1}. {question.prompt}</legend>
+          <legend>{questionIndex + 1}. {cite(question.prompt)}</legend>
           {question.options.map((option, optionIndex) => {
             const checked = answers[question.id] === optionIndex;
             const open = revealed[question.id];
             const correct = optionIndex === question.correctIndex;
-            return <label className={open && correct ? "is-correct" : open && checked ? "is-incorrect" : ""} key={`${question.id}-${optionIndex}`}><input type="radio" name={`${messageId}-${question.id}`} checked={checked} disabled={open} onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} /><span>{option}</span></label>;
+            return <label className={open && correct ? "is-correct" : open && checked ? "is-incorrect" : ""} key={`${question.id}-${optionIndex}`}><input type="radio" name={`${messageId}-${question.id}`} checked={checked} disabled={open} onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} /><span>{cite(option)}</span></label>;
           })}
-          {!revealed[question.id] ? <button type="button" disabled={!Number.isSafeInteger(answers[question.id])} onClick={() => setRevealed((current) => ({ ...current, [question.id]: true }))}>Check answer</button> : <div className="phone-tutor__quiz-feedback" role="status"><strong>{answers[question.id] === question.correctIndex ? "Correct" : `Answer ${question.correctIndex + 1} is correct.`}</strong><p>{question.explanation}</p></div>}
+          {!revealed[question.id] ? <button type="button" disabled={!Number.isSafeInteger(answers[question.id])} onClick={() => setRevealed((current) => ({ ...current, [question.id]: true }))}>Check answer</button> : <div className="phone-tutor__quiz-feedback" role="status"><strong>{answers[question.id] === question.correctIndex ? "Correct" : `Answer ${question.correctIndex + 1} is correct.`}</strong><p>{cite(question.explanation)}</p></div>}
         </fieldset>
       ))}
     </div>
   );
 };
 
-const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts }) => {
+const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSource }) => {
   const [selected, setSelected] = useState(() => cards.map((_, index) => index));
   const [revealed, setRevealed] = useState({});
   const [saveState, setSaveState] = useState({ status: "idle", message: "" });
@@ -374,9 +413,9 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts }) => {
       <div className="phone-tutor__flashcard-head"><strong>{selected.length}/{cards.length} selected</strong><button type="button" onClick={() => setSelected(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear" : "Select all"}</button></div>
       {cards.map((card, index) => <article key={`${message.id}-card-${index}`}>
         <label><input type="checkbox" checked={selected.includes(index)} onChange={() => setSelected((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])} /><span>Select card {index + 1}</span></label>
-        <small>Prompt</small><p>{card.front}</p>
+        <small>Prompt</small><p><InlineFieldCitations text={card.front} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>
         <button type="button" aria-expanded={Boolean(revealed[index])} onClick={() => setRevealed((current) => ({ ...current, [index]: !current[index] }))}>{revealed[index] ? "Hide answer" : "Reveal answer"}<ChevronDown size={15} aria-hidden="true" /></button>
-        {revealed[index] && <div className="phone-tutor__card-answer"><small>Answer</small><p>{card.back}</p>{card.hint && <p><strong>Hint:</strong> {card.hint}</p>}</div>}
+        {revealed[index] && <div className="phone-tutor__card-answer"><small>Answer</small><p><InlineFieldCitations text={card.back} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>{card.hint && <p><strong>Hint:</strong> <InlineFieldCitations text={card.hint} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>}</div>}
         {card.tags.length > 0 && <div className="phone-tutor__tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
       </article>)}
       {onCreateFlashcardDrafts && <button className="phone-tutor__primary" type="button" disabled={!selected.length || saveState.status === "saving"} onClick={save}><Check size={16} aria-hidden="true" /> Add selected to review</button>}
@@ -385,12 +424,15 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts }) => {
   );
 };
 
-const StudyPlanResult = ({ plan }) => <div className="phone-tutor__plan"><h4>{plan.title}</h4><p>{plan.goal}</p><ol>{plan.milestones.map((milestone, index) => <li key={`${index}-${milestone.title}`}><h5>{milestone.title}</h5><small>{milestone.estimatedMinutes} minutes</small><p>{milestone.outcome}</p><ul>{milestone.activities.map((activity, activityIndex) => <li key={`${activityIndex}-${activity}`}>{activity}</li>)}</ul><p><strong>Evidence:</strong> {milestone.evidenceOfMastery}</p></li>)}</ol>{plan.cautions.length > 0 && <div className="phone-tutor__cautions"><strong>Watch for</strong><ul>{plan.cautions.map((caution, index) => <li key={`${index}-${caution}`}>{caution}</li>)}</ul></div>}</div>;
+const StudyPlanResult = ({ plan, sources = [], citations = [], onNavigateSource }) => {
+  const cite = (text) => <InlineFieldCitations text={text} sources={sources} citations={citations} onNavigateSource={onNavigateSource} />;
+  return <div className="phone-tutor__plan"><h4>{plan.title}</h4><p>{cite(plan.goal)}</p><ol>{plan.milestones.map((milestone, index) => <li key={`${index}-${milestone.title}`}><h5>{cite(milestone.title)}</h5><small>{milestone.estimatedMinutes} minutes</small><p>{cite(milestone.outcome)}</p><ul>{milestone.activities.map((activity, activityIndex) => <li key={`${activityIndex}-${activity}`}>{cite(activity)}</li>)}</ul><p><strong>Evidence:</strong> {cite(milestone.evidenceOfMastery)}</p></li>)}</ol>{plan.cautions.length > 0 && <div className="phone-tutor__cautions"><strong>Watch for</strong><ul>{plan.cautions.map((caution, index) => <li key={`${index}-${caution}`}>{cite(caution)}</li>)}</ul></div>}</div>;
+};
 
 const AssistantResult = ({ message, onCreateFlashcardDrafts, onNavigateSource, onCopy }) => {
-  if (message.task === "quiz" && message.data?.questions) return <QuizResult quiz={message.data} messageId={message.id} />;
-  if (message.task === "flashcards" && message.data?.cards) return <FlashcardResult cards={message.data.cards} message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} />;
-  if (message.task === "study_plan" && message.data?.milestones) return <StudyPlanResult plan={message.data} />;
+  if (message.task === "quiz" && message.data?.questions) return <QuizResult quiz={message.data} messageId={message.id} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} />;
+  if (message.task === "flashcards" && message.data?.cards) return <FlashcardResult cards={message.data.cards} message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />;
+  if (message.task === "study_plan" && message.data?.milestones) return <StudyPlanResult plan={message.data} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} />;
   return <SafeResponse text={message.content} citations={message.citations} sources={message.sources} onNavigateSource={onNavigateSource} onCopy={onCopy} />;
 };
 

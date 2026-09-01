@@ -489,6 +489,56 @@ test("body limits, origins, and per-client rate limits are enforced", async () =
   assert.equal((await limited.json()).error.code, "RATE_LIMITED");
 });
 
+test("code_review is a supported Markdown task with a senior-review instruction", async () => {
+  let upstreamBody;
+  const baseUrl = await start({
+    fetchImpl: async (_url, init) => {
+      upstreamBody = JSON.parse(init.body);
+      return ollamaReply("1. Correctness: the loop condition skips the final element.");
+    },
+  });
+  const config = await fetch(`${baseUrl}/api/ai/config`).then((response) => response.json());
+  assert.ok(config.supportedTasks.includes("code_review"), "config must advertise code_review");
+  assert.equal(config.structuredTasks.includes("code_review"), false, "code_review is a prose task");
+
+  const response = await post(baseUrl, {
+    ...plainRequest,
+    task: "code_review",
+    prompt: "Review this:\n```python\nfor i in range(len(items) - 1):\n    process(items[i])\n```",
+  });
+  assert.equal(response.status, 200);
+  assert.match(upstreamBody.messages[0].content, /correctness defects first/i);
+  assert.match(upstreamBody.messages[0].content, /say so and ask for it instead of inventing code/i);
+
+  const structuredRejected = await post(baseUrl, { ...plainRequest, task: "code_review", responseFormat: "structured" });
+  assert.equal(structuredRejected.status, 400, "structured output must not be accepted for code_review");
+});
+
+test("the Deep profile is capability-gated on attested model thinking support", async () => {
+  const makeFetch = (capabilities) => async (url) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/tags") return new Response(JSON.stringify({ models: [{ name: "test-model:latest" }] }), { status: 200 });
+    if (path === "/api/show") return new Response(JSON.stringify({ capabilities }), { status: 200 });
+    return ollamaReply("A short deep answer.");
+  };
+
+  const nonThinking = await start({ fetchImpl: makeFetch(["completion", "tools"]) });
+  const rejected = await post(nonThinking, { ...plainRequest, responseProfile: "deep", maxOutputTokens: undefined });
+  const rejectedBody = await rejected.json();
+  assert.equal(rejected.status, 400);
+  assert.equal(rejectedBody.error.code, "AI_PROFILE_UNSUPPORTED");
+  assert.match(rejectedBody.error.message, /thinking support/i);
+  assert.match(rejectedBody.error.message, /fast or balanced/i);
+  const nonThinkingConfig = await fetch(`${nonThinking}/api/ai/config`).then((response) => response.json());
+  assert.equal(nonThinkingConfig.service.thinkingCapable, false, "config must advertise the missing capability the UI gates on");
+  const balancedStillWorks = await post(nonThinking, plainRequest);
+  assert.equal(balancedStillWorks.status, 200, "capability gating must not affect non-deep profiles");
+
+  const thinking = await start({ fetchImpl: makeFetch(["completion", "tools", "thinking"]) });
+  const accepted = await post(thinking, { ...plainRequest, responseProfile: "deep", maxOutputTokens: undefined });
+  assert.equal(accepted.status, 200);
+});
+
 test("version-skewed request contracts fail with one typed, actionable error", async () => {
   const baseUrl = await start({ fetchImpl: async () => ollamaReply("ok") });
   const { contract, ...stalePayload } = plainRequest;

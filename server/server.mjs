@@ -255,7 +255,7 @@ const readJsonBody = (request, config) => new Promise((resolveBody, reject) => {
   request.on("aborted", () => settle(reject, Object.assign(new Error("Request was aborted"), { code: "REQUEST_ABORTED" })));
 });
 
-const respondToAiRequest = async ({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger }) => {
+const respondToAiRequest = async ({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger, readServiceStatus }) => {
   if (request.method !== "POST") {
     sendJson(response, 405, errorPayload(requestId, "METHOD_NOT_ALLOWED", "Use POST for AI requests."), { Allow: "POST, OPTIONS" });
     return;
@@ -316,6 +316,21 @@ const respondToAiRequest = async ({ request, response, config, fetchImpl, reques
     }
     sendJson(response, 400, errorPayload(requestId, "VALIDATION_ERROR", "The AI request is invalid.", validation.errors), rateHeaders);
     return;
+  }
+
+  if (validation.value.responseProfile === "deep") {
+    // Deep asks the provider to think privately. A configured model without
+    // attested thinking support must fail with actionable guidance instead of
+    // an opaque upstream provider error (AI-002 capability gating).
+    const serviceStatus = await readServiceStatus();
+    if (serviceStatus?.thinkingCapable !== true) {
+      sendJson(response, 400, errorPayload(
+        requestId,
+        "AI_PROFILE_UNSUPPORTED",
+        "The configured local model does not attest thinking support, so the Deep profile is unavailable. Choose Fast or Balanced, or install the documented thinking-capable Qwen model.",
+      ), rateHeaders);
+      return;
+    }
   }
 
   const release = acquire(clientKey);
@@ -391,7 +406,7 @@ const respondToAiRequest = async ({ request, response, config, fetchImpl, reques
   }
 };
 
-const respondToAiStreamRequest = async ({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger }) => {
+const respondToAiStreamRequest = async ({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger, readServiceStatus }) => {
   if (request.method !== "POST") {
     sendJson(response, 405, errorPayload(requestId, "METHOD_NOT_ALLOWED", "Use POST for streaming AI requests."), { Allow: "POST, OPTIONS" });
     return;
@@ -452,6 +467,21 @@ const respondToAiStreamRequest = async ({ request, response, config, fetchImpl, 
     }
     sendJson(response, 400, errorPayload(requestId, "VALIDATION_ERROR", "The AI request is invalid.", validation.errors), rateHeaders);
     return;
+  }
+
+  if (validation.value.responseProfile === "deep") {
+    // Deep asks the provider to think privately. A configured model without
+    // attested thinking support must fail with actionable guidance instead of
+    // an opaque upstream provider error (AI-002 capability gating).
+    const serviceStatus = await readServiceStatus();
+    if (serviceStatus?.thinkingCapable !== true) {
+      sendJson(response, 400, errorPayload(
+        requestId,
+        "AI_PROFILE_UNSUPPORTED",
+        "The configured local model does not attest thinking support, so the Deep profile is unavailable. Choose Fast or Balanced, or install the documented thinking-capable Qwen model.",
+      ), rateHeaders);
+      return;
+    }
   }
 
   const release = acquire(clientKey);
@@ -839,11 +869,11 @@ export const createApplicationServer = ({
       return;
     }
     if (url.pathname === "/api/ai/respond/stream") {
-      await respondToAiStreamRequest({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger });
+      await respondToAiStreamRequest({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger, readServiceStatus });
       return;
     }
     if (url.pathname === "/api/ai/respond") {
-      await respondToAiRequest({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger });
+      await respondToAiRequest({ request, response, config, fetchImpl, requestId, rateLimit, acquire, logger, readServiceStatus });
       return;
     }
     if (url.pathname === "/api/local-search") {

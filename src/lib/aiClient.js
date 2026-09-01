@@ -18,6 +18,7 @@ export const AI_TASKS = Object.freeze([
   "summarize",
   "study_plan",
   "answer_feedback",
+  "code_review",
 ]);
 
 export const AI_DATA_DISCLOSURE = Object.freeze({

@@ -208,10 +208,10 @@ The Reader currently provides:
 - narration and Teaching Mode entry;
 - citation target navigation for normal heading anchors.
 
-Known limitation: personal-note retrieval uses a generic `personal-note` anchor. A citation
-opens the related document but does not yet open/focus the exact personal-note textarea.
-Implement a dedicated navigation target and browser regression before claiming exact
-personal-note deep links.
+Personal-note citations are now exact deep links: the `personal-note` anchor opens the
+Reader's Notes drawer and focuses the note editor, with a browser regression in
+`audit:ai-ui` that retrieves a real personal note, clicks its citation, and asserts
+the focused editor contains the note.
 
 ### 3.3 Search and custom content
 
@@ -348,13 +348,13 @@ Current study modes are:
 - Socratic
 - Quiz
 - Flashcards
+- Code review
 - Interview
 - Summarize
 - Study plan
 
 Difficulty/depth is separate. The older requirement taxonomy also mentions explicit
-derivation, analogy, challenge, and code-review strategies. Those are not all distinct
-shipped modes. Code-review is still missing.
+derivation, analogy, and challenge strategies; those are not distinct shipped modes.
 
 Source scopes are:
 
@@ -513,11 +513,10 @@ quality gap is a versioned, reviewed claim-level evaluation set with expected ev
 recency judgments.
 
 Mac prose citations are inline/clickable. Phone prose citations are inline/clickable.
-Phone Quiz/Flashcard/Study-plan fields currently render dedicated plain structured strings;
-their citation labels can be inert inline even though the separate Evidence panel links the
-source. Personal-note citations also navigate only to the related document, not the exact
-note field. Keep AI-001 Partial until these are resolved if “every citation clickable” is
-the acceptance standard.
+Structured Quiz/Flashcard/Study-plan string fields now render navigable [S#]/[W#]
+citation controls on both surfaces (including quiz options, card hints, and milestone
+titles), and personal-note citations focus the exact note editor. AI-001 remains
+Partial for claim-level support and evaluation reasons, not citation navigability.
 
 ### 5.9 Reasoning and Approach
 
@@ -532,10 +531,10 @@ The request to “show reasoning” was intentionally implemented as a safer sub
 
 This is a deliberate product/safety decision, not a claim that private reasoning is shown.
 
-Current compatibility gap: the reviewed Qwen model attests thinking and works with Deep,
-but the UI exposes Deep whenever the service is otherwise Ready and the server sends
-`think: true`. A custom completion-capable model without thinking may fail. Gate Deep on
-`thinkingCapable` or formally narrow supported models before recommending alternatives.
+Deep is capability-gated on both sides: the server rejects a Deep request with a typed
+`AI_PROFILE_UNSUPPORTED` error unless the installed model attests Ollama thinking
+support, and the UI disables the Deep option with the capability reason and falls back
+to Balanced when a configured model lacks the attestation.
 
 ## 6. Current-web fallback
 
@@ -802,7 +801,7 @@ including `contextCitations: []` then completed against real Qwen with `READY`. 
 already accepted the contract.
 
 The durable prevention is now implemented: `src/lib/aiContract.js` defines
-`lumen.ai.request.v1`, `/api/health` and `/api/ai/config` publish it as
+`lumen.ai.request.v2`, `/api/health` and `/api/ai/config` publish it as
 `requestContract`, every AI request must declare it as `contract`, and either
 side fails closed with a typed `AI_CONTRACT_MISMATCH` error plus reload/restart
 guidance instead of a misleading Ready state. Deploying immutable server +
@@ -1126,13 +1125,14 @@ changing the bundle.
 
 ### P1 — correctness, UX, and evidence
 
-1. Gate Deep on `thinkingCapable` or restrict supported models.
-2. Make phone structured citations inline navigable and personal-note citations focus the
-   exact note target.
+1. ~~Gate Deep on `thinkingCapable`~~ — done 2026-09-01 (server typed rejection + UI gate).
+2. ~~Make phone structured citations inline navigable and personal-note citations focus
+   the exact note target~~ — done 2026-09-01 with browser-audit coverage.
 3. Define PERF-002 p50/p95 cold/warm SLOs and archive machine/model/prompt metadata.
-4. Add answer-to-note and code-review; decide whether derivation/analogy/challenge need
-   distinct UX or prompt controls.
-5. Add an explicit saved no-AI preference and configurable Mac history retention.
+4. ~~Add answer-to-note and code-review~~ — done 2026-09-01; deciding whether
+   derivation/analogy/challenge need distinct UX or prompt controls remains open.
+5. ~~Add an explicit saved no-AI preference and configurable Mac history retention~~ —
+   done 2026-09-01.
 6. Move library full-text parsing/ranking to a worker; benchmark worst-case custom corpus.
 7. Complete BUG-002/003: pointer matrix, transforms/export/restore, every critical action,
    disabled reason, dialog focus loop, Mobile Safari, and VoiceOver.
@@ -1245,7 +1245,7 @@ must show enabled, `ollama-local`, expected model, reachable/installed/identity 
 completion capable, and—before web is offered—tool capable and search available.
 
 Config readiness now includes contract identity: a healthy config must show
-`requestContract: "lumen.ai.request.v1"` matching the deployed UI's compiled
+`requestContract: "lumen.ai.request.v2"` matching the deployed UI's compiled
 value, and a skewed pair fails with `AI_CONTRACT_MISMATCH`. A canonical
 no-source request containing `contextCitations: []` after a restart/deploy
 remains a useful end-to-end smoke but is no longer the only skew defense.
@@ -1516,7 +1516,7 @@ Before accepting this handoff as a durable engineering baseline:
 - [ ] Move the CA signing key to encrypted offline storage.
 - [x] Create a baseline commit and record its SHA. (`fecbc6a`, 2026-09-01.)
 - [x] Add a public client/server request-contract identifier and mismatch UI/test.
-      (Done 2026-09-01: `lumen.ai.request.v1` handshake, typed
+      (Done 2026-09-01: `lumen.ai.request.v2` handshake, typed
       `AI_CONTRACT_MISMATCH`, `audit:ai` + `audit:ai-ui` coverage.)
 - [ ] Rebuild server + `dist` from that commit and deploy atomically.
 - [ ] Run `npm run check:release` sequentially and archive complete output.

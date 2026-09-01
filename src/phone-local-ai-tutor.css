@@ -92,8 +92,14 @@
 .phone-tutor__safe-response pre { max-width: 100%; margin: 0; padding: 11px; overflow-x: auto; color: #edf4ff; font-size: .76rem; }
 .phone-tutor__safe-response pre code { white-space: pre; }
 .phone-tutor__safe-response .katex-display { max-width: 100%; margin: 12px 0; overflow-x: auto; overflow-y: hidden; padding: 3px 0; }
-.phone-tutor__safe-response .ai-tutor__citation { display: inline-grid; place-items: center; min-width: 44px; min-height: 44px; margin: -12px 2px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--teal) 28%, var(--line)); border-radius: 8px; color: color-mix(in srgb, var(--teal) 45%, var(--ink)); background: var(--teal-soft); font: inherit; font-size: .76rem; font-weight: 800; text-decoration: none; vertical-align: middle; cursor: pointer; }
-.phone-tutor__safe-response .ai-tutor__citation--missing { border-color: color-mix(in srgb, var(--gold) 28%, var(--line)); color: color-mix(in srgb, var(--gold) 45%, var(--ink)); background: var(--gold-soft); cursor: help; }
+.phone-tutor__safe-response .ai-tutor__citation,
+.phone-tutor__quiz .ai-tutor__citation,
+.phone-tutor__flashcards .ai-tutor__citation,
+.phone-tutor__plan .ai-tutor__citation { display: inline-grid; place-items: center; min-width: 44px; min-height: 44px; margin: -12px 2px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--teal) 28%, var(--line)); border-radius: 8px; color: color-mix(in srgb, var(--teal) 45%, var(--ink)); background: var(--teal-soft); font: inherit; font-size: .76rem; font-weight: 800; text-decoration: none; vertical-align: middle; cursor: pointer; }
+.phone-tutor__safe-response .ai-tutor__citation--missing,
+.phone-tutor__quiz .ai-tutor__citation--missing,
+.phone-tutor__flashcards .ai-tutor__citation--missing,
+.phone-tutor__plan .ai-tutor__citation--missing { border-color: color-mix(in srgb, var(--gold) 28%, var(--line)); color: color-mix(in srgb, var(--gold) 45%, var(--ink)); background: var(--gold-soft); cursor: help; }
 
 .phone-tutor__evidence { margin-top: 12px; border-top: 1px solid var(--line); }
 .phone-tutor__evidence > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; padding: 6px 2px 0; color: var(--ink-soft); font-size: .72rem; font-weight: 750; cursor: pointer; }
