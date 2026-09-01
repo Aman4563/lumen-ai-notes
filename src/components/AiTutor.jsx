@@ -27,6 +27,7 @@ import {
   aiRequestUtf8Bytes,
   aiClient,
 } from "../lib/aiClient";
+import { AI_REQUEST_CONTRACT_ID } from "../lib/aiContract";
 import { buildConversationWindow } from "../lib/conversationMemory";
 import { fitAiRequestContext } from "../lib/aiRequestBudget";
 import { renderTutorMarkdown, tutorMarkdownPlainText } from "../lib/tutorMarkdown";
@@ -767,6 +768,7 @@ const requestErrorTitle = (status, code) => {
 // retry button that simply resends the now-invalid snapshot.
 const CONFIG_INVALIDATING_REQUEST_ERRORS = new Set([
   "VALIDATION_ERROR",
+  "AI_CONTRACT_MISMATCH",
   "AI_CONTEXT_LIMIT",
   "AI_INPUT_TOO_LARGE",
   "AI_NETWORK_ERROR",
@@ -1207,6 +1209,7 @@ export default function AiTutor({
       return built.context;
     };
     const makePayload = (context) => ({
+      contract: AI_REQUEST_CONTRACT_ID,
       task: currentMode.task,
       prompt: preparedPrompt,
       context,
@@ -1557,9 +1560,11 @@ export default function AiTutor({
         lastRequestRef.current = null;
         aiClient.clearConfigCache();
         setComposerNotice(
-          ["AI_CONTEXT_LIMIT", "AI_INPUT_TOO_LARGE", "VALIDATION_ERROR"].includes(clientError.code)
-            ? "The server limits or request contract changed. Lumen refreshed them; review the fitted sources and send again."
-            : "The local model's availability changed. Lumen is checking the integrated server again before another request.",
+          clientError.code === "AI_CONTRACT_MISMATCH"
+            ? "This app and the AI server are running different builds. Reload the app; if that does not help, rebuild and restart the integrated Lumen server from the same source."
+            : ["AI_CONTEXT_LIMIT", "AI_INPUT_TOO_LARGE", "VALIDATION_ERROR"].includes(clientError.code)
+              ? "The server limits or request contract changed. Lumen refreshed them; review the fitted sources and send again."
+              : "The local model's availability changed. Lumen is checking the integrated server again before another request.",
         );
         setConfigAttempt((attempt) => attempt + 1);
       }

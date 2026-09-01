@@ -6,6 +6,8 @@
  * Vite bundle, IndexedDB backup, browser log, or network request to another host.
  */
 
+import { AI_REQUEST_CONTRACT_ID } from "./aiContract.js";
+
 export const AI_TASKS = Object.freeze([
   "tutor",
   "explain",
@@ -243,6 +245,17 @@ export const getAiConfig = async ({ baseUrl = "", signal, force = false, timeout
     const generation = configCacheGeneration;
     shared = fetchJson(endpoint(normalizedBaseUrl, "/api/ai/config"), { method: "GET" }, { timeoutMs })
       .then((value) => {
+        // A server that advertises a different (or no) request contract is a
+        // version-skewed deployment. Fail closed before any Ready state or
+        // request fitting can be based on its advertised budgets, and never
+        // cache the mismatched configuration.
+        if (value?.requestContract !== AI_REQUEST_CONTRACT_ID) {
+          throw new AiClientError(
+            "AI_CONTRACT_MISMATCH",
+            "This app build and the Lumen AI server are running different versions, so AI stays off to protect your requests. Rebuild and restart the integrated Lumen server from the same source as this app, then check again.",
+            { status: 409, details: [`expected request contract ${AI_REQUEST_CONTRACT_ID}`] },
+          );
+        }
         if (generation === configCacheGeneration) configCache = { baseUrl: normalizedBaseUrl, cachedAt: Date.now(), value };
         return value;
       })
@@ -310,10 +323,25 @@ const assertValidAiResponse = (response, { requireApproach = false } = {}) => {
   return response;
 };
 
+/**
+ * The contract field must be part of the canonical body the composer measured;
+ * appending it here after measurement would silently skew the exact UTF-8
+ * budget. This assertion therefore rejects rather than repairs the payload.
+ */
+const assertPayloadContract = (payload) => {
+  if (payload.contract !== AI_REQUEST_CONTRACT_ID) {
+    throw new AiClientError(
+      "INVALID_CLIENT_PAYLOAD",
+      `AI request payload must declare contract ${AI_REQUEST_CONTRACT_ID} before byte fitting.`,
+    );
+  }
+};
+
 export const requestAi = async (payload, { baseUrl = "", signal, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new AiClientError("INVALID_CLIENT_PAYLOAD", "AI request payload must be an object.");
   }
+  assertPayloadContract(payload);
   const response = await fetchJson(endpoint(baseUrl, "/api/ai/respond"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -375,6 +403,7 @@ export const requestAiStream = async (payload, {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new AiClientError("INVALID_CLIENT_PAYLOAD", "AI request payload must be an object.");
   }
+  assertPayloadContract(payload);
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 315_000
     || !Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 100 || idleTimeoutMs > 120_000) {
     throw new AiClientError("INVALID_CLIENT_OPTIONS", "AI streaming deadlines are outside the supported range.");

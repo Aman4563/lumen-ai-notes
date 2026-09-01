@@ -14,6 +14,14 @@ service URL, or API key.
 Both POST endpoints accept the same strictly validated request. Streaming is a
 transport choice, not a different grounding or safety policy.
 
+Every request body must declare `"contract": "lumen.ai.request.v1"` (the
+identity in `src/lib/aiContract.js`, also advertised as `requestContract` in
+`GET /api/ai/config` and `/api/health`). A missing or different value fails
+with HTTP 409 `AI_CONTRACT_MISMATCH` before any validation detail, so a stale
+app shell or stale server process produces one actionable error instead of
+opaque field rejections. The browser additionally refuses a Ready state when
+the advertised `requestContract` differs from its compiled value.
+
 ## Protocol v1
 
 The response header and first event identify `lumen.ai.ndjson.v1`. Every line is

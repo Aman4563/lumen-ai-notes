@@ -259,7 +259,16 @@ privacy behavior. It never returns Ollama/SearXNG private URLs. It also advertis
 the response profiles, their output/request budgets, and the versioned streaming
 endpoint. `POST /api/ai/respond` returns the existing bounded JSON envelope;
 `POST /api/ai/respond/stream` provides incremental prose delivery. Both routes
-validate, rate-limit, and bound every request. The
+validate, rate-limit, and bound every request.
+
+Both `GET /api/health` and `GET /api/ai/config` also publish `requestContract`
+(currently `lumen.ai.request.v1`, defined once in `src/lib/aiContract.js`).
+Every AI request body must declare the same value in its `contract` field. A
+UI built from a different source than the running server therefore fails
+closed with one typed `AI_CONTRACT_MISMATCH` error (HTTP 409) and actionable
+reload/restart guidance, instead of reporting Ready and then rejecting
+individual fields. Deploy the server and `dist/` together from the same
+build; a skewed pair is a deployment error that this handshake makes visible. The
 same-origin `POST /api/local-search` route accepts exactly `{ "query": "..." }`
 for the phone's explicit search action; it has the same origin, rate, size,
 timeout, result, and public-URL controls and never accepts a target URL.

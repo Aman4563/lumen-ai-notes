@@ -801,10 +801,13 @@ Immediate operational incident found during this handoff: the current `dist` sen
 including `contextCitations: []` then completed against real Qwen with `READY`. HTTPS 4194
 already accepted the contract.
 
-The durable prevention is still missing: expose a request-contract/build identifier in
-`/api/ai/config`, compile the expected ID into the UI, fail closed with explicit restart
-guidance on mismatch, and/or deploy immutable server + `dist` together. Treat this as a
-top operational requirement, not an optional polish item.
+The durable prevention is now implemented: `src/lib/aiContract.js` defines
+`lumen.ai.request.v1`, `/api/health` and `/api/ai/config` publish it as
+`requestContract`, every AI request must declare it as `contract`, and either
+side fails closed with a typed `AI_CONTRACT_MISMATCH` error plus reload/restart
+guidance instead of a misleading Ready state. Deploying immutable server +
+`dist` together from one build remains the operational rule; the handshake makes
+violations visible rather than making them safe.
 
 ## 11. Server, network, and security boundary
 
@@ -1241,9 +1244,11 @@ For HTTPS, use the trusted CA and exact certificate hostname/IP. A healthy publi
 must show enabled, `ollama-local`, expected model, reachable/installed/identity verified,
 completion capable, and—before web is offered—tool capable and search available.
 
-Config readiness alone does not currently prove client/server build contract identity.
-Until the handshake is added, run a canonical no-source request containing
-`contextCitations: []` after every server restart/deploy.
+Config readiness now includes contract identity: a healthy config must show
+`requestContract: "lumen.ai.request.v1"` matching the deployed UI's compiled
+value, and a skewed pair fails with `AI_CONTRACT_MISMATCH`. A canonical
+no-source request containing `contextCitations: []` after a restart/deploy
+remains a useful end-to-end smoke but is no longer the only skew defense.
 
 ### 16.7 Release commands
 
@@ -1505,10 +1510,14 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 
 Before accepting this handoff as a durable engineering baseline:
 
-- [ ] Recover/initialize Git and verify ignore rules without adding env/private keys.
+- [x] Recover/initialize Git and verify ignore rules without adding env/private keys.
+      (Done 2026-09-01: baseline commit `fecbc6a` on `main`, private repository
+      `Aman4563/lumen-ai-notes`.)
 - [ ] Move the CA signing key to encrypted offline storage.
-- [ ] Create a baseline commit and record its SHA.
-- [ ] Add a public client/server request-contract identifier and mismatch UI/test.
+- [x] Create a baseline commit and record its SHA. (`fecbc6a`, 2026-09-01.)
+- [x] Add a public client/server request-contract identifier and mismatch UI/test.
+      (Done 2026-09-01: `lumen.ai.request.v1` handshake, typed
+      `AI_CONTRACT_MISMATCH`, `audit:ai` + `audit:ai-ui` coverage.)
 - [ ] Rebuild server + `dist` from that commit and deploy atomically.
 - [ ] Run `npm run check:release` sequentially and archive complete output.
 - [ ] Run a canonical real-Qwen request containing `contextCitations: []` on every intended

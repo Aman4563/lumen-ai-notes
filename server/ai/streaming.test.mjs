@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { afterEach, test } from "node:test";
 
+import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
 import { createApplicationServer, silentLogger } from "../server.mjs";
 import { readAiServerConfig } from "./config.mjs";
 import { createOllamaStreamingResponse } from "./ollama.mjs";
@@ -15,6 +16,7 @@ afterEach(async () => {
 });
 
 const baseRequest = Object.freeze({
+  contract: AI_REQUEST_CONTRACT_ID,
   task: "explain",
   prompt: "Explain calibration.",
   context: "[S1] Calibration compares confidence with observed frequency.",

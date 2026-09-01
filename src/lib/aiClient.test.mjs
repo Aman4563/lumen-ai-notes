@@ -12,6 +12,7 @@ import {
   searchLocalWeb,
   requestStructuredAi,
 } from "./aiClient.js";
+import { AI_REQUEST_CONTRACT_ID } from "./aiContract.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -93,7 +94,7 @@ test("configuration is briefly cached without exposing client credentials", asyn
     calls += 1;
     assert.equal(url, "/api/ai/config");
     assert.equal(init.credentials, "same-origin");
-    return jsonResponse({ ok: true, enabled: true, model: "configured-server-model" });
+    return jsonResponse({ ok: true, enabled: true, model: "configured-server-model", requestContract: AI_REQUEST_CONTRACT_ID });
   };
   const first = await getAiConfig();
   const second = await getAiConfig();
@@ -119,7 +120,7 @@ test("concurrent configuration callers share one fetch while preserving caller-l
   globalThis.fetch = async (_url, init) => {
     calls += 1;
     assert.equal(init.signal.aborted, false);
-    return new Promise((resolve) => { finishFetch = () => resolve(jsonResponse({ ok: true, enabled: true, model: "shared-local-model" })); });
+    return new Promise((resolve) => { finishFetch = () => resolve(jsonResponse({ ok: true, enabled: true, model: "shared-local-model", requestContract: AI_REQUEST_CONTRACT_ID })); });
   };
   const firstController = new AbortController();
   const first = getAiConfig({ signal: firstController.signal });
@@ -140,7 +141,7 @@ test("clearing configuration prevents an older in-flight response from repopulat
   let calls = 0;
   globalThis.fetch = async () => {
     const call = ++calls;
-    return new Promise((resolve) => finishes.push(() => resolve(jsonResponse({ ok: true, model: `model-${call}` }))));
+    return new Promise((resolve) => finishes.push(() => resolve(jsonResponse({ ok: true, model: `model-${call}`, requestContract: AI_REQUEST_CONTRACT_ID }))));
   };
   const oldRequest = getAiConfig();
   clearAiConfigCache();
@@ -152,6 +153,47 @@ test("clearing configuration prevents an older in-flight response from repopulat
   assert.equal((await freshRequest).model, "model-2");
   assert.equal((await getAiConfig()).model, "model-2");
   assert.equal(calls, 2);
+});
+
+test("a server without the expected request contract fails closed and is never cached", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return jsonResponse({ ok: true, enabled: true, model: "older-server-model" });
+  };
+  await assert.rejects(getAiConfig(), (error) => {
+    assert.ok(error instanceof AiClientError);
+    assert.equal(error.code, "AI_CONTRACT_MISMATCH");
+    assert.match(error.message, /different versions/i);
+    assert.match(error.message, /restart the integrated Lumen server/i);
+    return true;
+  });
+  await assert.rejects(getAiConfig(), (error) => error.code === "AI_CONTRACT_MISMATCH");
+  assert.equal(calls, 2, "a mismatched configuration must not be cached as usable");
+
+  globalThis.fetch = async () => jsonResponse({ ok: true, enabled: true, model: "skewed", requestContract: "lumen.ai.request.v999" });
+  await assert.rejects(getAiConfig(), (error) => error.code === "AI_CONTRACT_MISMATCH");
+});
+
+test("request payloads must declare the compiled contract before any network call", async () => {
+  let networkCalls = 0;
+  globalThis.fetch = async () => {
+    networkCalls += 1;
+    return jsonResponse({ ok: true });
+  };
+  await assert.rejects(
+    requestAi({ task: "explain", prompt: "Explain." }),
+    (error) => error instanceof AiClientError && error.code === "INVALID_CLIENT_PAYLOAD" && /contract/.test(error.message),
+  );
+  await assert.rejects(
+    requestAiStream({ task: "explain", prompt: "Explain." }),
+    (error) => error instanceof AiClientError && error.code === "INVALID_CLIENT_PAYLOAD",
+  );
+  await assert.rejects(
+    requestAi({ contract: "lumen.ai.request.v0", task: "explain", prompt: "Explain." }),
+    (error) => error.code === "INVALID_CLIENT_PAYLOAD",
+  );
+  assert.equal(networkCalls, 0, "a contract-less payload must be rejected before transport");
 });
 
 test("requestAi sends only the learning payload to the same-origin proxy", async () => {
@@ -170,11 +212,11 @@ test("requestAi sends only the learning payload to the same-origin proxy", async
       sources: [],
     });
   };
-  const result = await requestAi({ task: "explain", prompt: "Explain calibration." });
+  const result = await requestAi({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain calibration." });
   assert.equal(result.outputText, "Explanation");
   assert.equal(captured.url, "/api/ai/respond");
   assert.equal(captured.init.method, "POST");
-  assert.deepEqual(captured.body, { task: "explain", prompt: "Explain calibration." });
+  assert.deepEqual(captured.body, { contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain calibration." });
   assert.equal("Authorization" in captured.init.headers, false);
 });
 
@@ -206,7 +248,7 @@ test("requestAiStream parses split NDJSON, delivers each delta once, and aggrega
     return ndjsonResponse(streamEvents(), { splitAt: 37 });
   };
   const result = await requestAiStream(
-    { task: "explain", prompt: "Explain calibration.", responseProfile: "balanced" },
+    { contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain calibration.", responseProfile: "balanced" },
     {
       onEvent: (event) => metadataEvents.push(event),
       onDelta: (text) => deltas.push(text),
@@ -218,7 +260,7 @@ test("requestAiStream parses split NDJSON, delivers each delta once, and aggrega
   assert.equal(captured.url, "/api/ai/respond/stream");
   assert.equal(captured.init.credentials, "same-origin");
   assert.equal(captured.init.headers.Accept, "application/x-ndjson");
-  assert.deepEqual(captured.body, { task: "explain", prompt: "Explain calibration.", responseProfile: "balanced" });
+  assert.deepEqual(captured.body, { contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain calibration.", responseProfile: "balanced" });
   assert.deepEqual(deltas, ["Hello ", "world"], "onEvent and onDelta caused duplicate text delivery");
   assert.deepEqual(statuses, ["Generating locally."]);
   assert.deepEqual(sourceSnapshots, [[streamSource]]);
@@ -241,7 +283,7 @@ test("requestAiStream rejects out-of-order, mismatched, and post-terminal events
   for (const events of cases) {
     globalThis.fetch = async () => ndjsonResponse(events);
     await assert.rejects(
-      requestAiStream({ task: "explain", prompt: "Explain." }),
+      requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }),
       (error) => error instanceof AiClientError && error.code === "AI_STREAM_PROTOCOL_ERROR",
     );
   }
@@ -250,7 +292,7 @@ test("requestAiStream rejects out-of-order, mismatched, and post-terminal events
 test("requestAiStream enforces declared, cumulative, line, and idle bounds", async () => {
   globalThis.fetch = async () => ndjsonResponse([], { headers: { "Content-Length": String(4 * 1024 * 1024 + 1) } });
   await assert.rejects(
-    requestAiStream({ task: "explain", prompt: "Explain." }),
+    requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }),
     (error) => error instanceof AiClientError && error.code === "AI_INVALID_RESPONSE",
   );
 
@@ -262,14 +304,14 @@ test("requestAiStream enforces declared, cumulative, line, and idle bounds", asy
     headers: { "Content-Type": "application/x-ndjson", "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1", "X-Request-Id": "stream-request-1" },
   });
   await assert.rejects(
-    requestAiStream({ task: "explain", prompt: "Explain." }),
+    requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }),
     (error) => error instanceof AiClientError && error.code === "AI_INVALID_RESPONSE",
   );
 
   const largeLine = JSON.stringify({ type: "phase", requestId: "stream-request-1", phase: "generating", message: "x".repeat(2 * 1024 * 1024) });
   globalThis.fetch = async () => ndjsonResponse([streamEvents({ sources: [] })[0], largeLine]);
   await assert.rejects(
-    requestAiStream({ task: "explain", prompt: "Explain." }),
+    requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }),
     (error) => error instanceof AiClientError && error.code === "AI_INVALID_RESPONSE",
   );
 
@@ -278,7 +320,7 @@ test("requestAiStream enforces declared, cumulative, line, and idle bounds", asy
     headers: { "Content-Type": "application/x-ndjson", "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" },
   });
   await assert.rejects(
-    requestAiStream({ task: "explain", prompt: "Explain." }, { idleTimeoutMs: 100, timeoutMs: 2_000 }),
+    requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }, { idleTimeoutMs: 100, timeoutMs: 2_000 }),
     (error) => error instanceof AiClientError && error.code === "AI_STREAM_IDLE_TIMEOUT",
   );
 });
@@ -289,7 +331,7 @@ test("requestAiStream keeps caller cancellation active while the body is stalled
     headers: { "Content-Type": "application/x-ndjson" },
   });
   const controller = new AbortController();
-  const pending = requestAiStream({ task: "explain", prompt: "Explain." }, {
+  const pending = requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }, {
     signal: controller.signal,
     timeoutMs: 10_000,
   });
@@ -305,7 +347,7 @@ test("requestAiStream surfaces a typed terminal stream error", async () => {
     { type: "error", requestId, status: 504, error: { code: "AI_TIMEOUT", message: "Local generation timed out." }, retryAfter: "2" },
   ]);
   await assert.rejects(
-    requestAiStream({ task: "explain", prompt: "Explain." }),
+    requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }),
     (error) => error instanceof AiClientError
       && error.code === "AI_TIMEOUT"
       && error.status === 504
@@ -317,19 +359,19 @@ test("requestAiStream surfaces a typed terminal stream error", async () => {
 test("requestAi never presents an explicitly incomplete generation as finished", async () => {
   globalThis.fetch = async () => jsonResponse({ ok: true, requestId: "partial-1", status: "incomplete", outputText: "Partial" });
   await assert.rejects(
-    requestAi({ task: "explain", prompt: "Explain fully." }),
+    requestAi({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain fully." }),
     (error) => error instanceof AiClientError && error.code === "AI_INCOMPLETE_RESPONSE" && error.requestId === "partial-1",
   );
 });
 
 test("requestAi rejects a malformed HTTP-200 success envelope", async () => {
   globalThis.fetch = async () => jsonResponse({});
-  await assert.rejects(requestAi({ task: "explain", prompt: "Explain." }), (error) => error instanceof AiClientError && error.code === "AI_INVALID_RESPONSE");
+  await assert.rejects(requestAi({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }), (error) => error instanceof AiClientError && error.code === "AI_INVALID_RESPONSE");
 
   for (const malformed of [null, [], "completed", 7]) {
     globalThis.fetch = async () => jsonResponse(malformed);
     await assert.rejects(
-      requestAi({ task: "explain", prompt: "Explain." }),
+      requestAi({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }),
       (error) => error instanceof AiClientError && error.code === "AI_INVALID_RESPONSE",
     );
   }
@@ -341,7 +383,7 @@ test("caller cancellation remains active while the AI response body is stalled",
     headers: { "Content-Type": "application/json" },
   });
   const controller = new AbortController();
-  const pending = requestAi({ task: "explain", prompt: "Explain." }, { signal: controller.signal, timeoutMs: 10_000 });
+  const pending = requestAi({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }, { signal: controller.signal, timeoutMs: 10_000 });
   controller.abort(new Error("learner cancelled"));
   await assert.rejects(
     pending,
@@ -355,7 +397,7 @@ test("response byte limits apply before and during body reads", async () => {
     headers: { "Content-Type": "application/json", "Content-Length": "1200001" },
   });
   await assert.rejects(
-    requestAi({ task: "explain", prompt: "Explain." }),
+    requestAi({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }),
     (error) => error instanceof AiClientError && error.code === "AI_INVALID_RESPONSE",
   );
 });
@@ -385,7 +427,7 @@ test("typed server errors preserve retry guidance without losing safety", async 
   }, { status: 429, headers: { "Retry-After": "12", "X-Request-Id": "request-2" } });
 
   await assert.rejects(
-    requestAi({ task: "tutor", prompt: "Help." }),
+    requestAi({ contract: AI_REQUEST_CONTRACT_ID, task: "tutor", prompt: "Help." }),
     (error) => {
       assert.ok(error instanceof AiClientError);
       assert.equal(error.code, "RATE_LIMITED");
@@ -401,12 +443,12 @@ test("typed server errors preserve retry guidance without losing safety", async 
 test("structured helper enforces the client contract", async () => {
   const envelope = (requestId, outputText, data) => ({ ok: true, requestId, status: "completed", model: "local-test-model", outputText, data, usage: null, webSearch: { requested: false, used: false, rounds: 0 }, sources: [] });
   globalThis.fetch = async () => jsonResponse(envelope("request-3", "{}", { cards: [] }));
-  const result = await requestStructuredAi({ task: "flashcards", prompt: "Make cards." });
+  const result = await requestStructuredAi({ contract: AI_REQUEST_CONTRACT_ID, task: "flashcards", prompt: "Make cards." });
   assert.deepEqual(result.data, { cards: [] });
 
   globalThis.fetch = async () => jsonResponse(envelope("request-4", "not structured", null));
   await assert.rejects(
-    requestStructuredAi({ task: "flashcards", prompt: "Make cards." }),
+    requestStructuredAi({ contract: AI_REQUEST_CONTRACT_ID, task: "flashcards", prompt: "Make cards." }),
     (error) => error instanceof AiClientError && error.code === "AI_CONTRACT_ERROR",
   );
 });
