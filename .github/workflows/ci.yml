@@ -25,7 +25,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Match the audited workspace (Node 26): the AI timeout/deadline
+          # suites depend on current test-runner timer semantics.
+          node-version: 26
           cache: npm
       - name: Install exactly from the lockfile
         run: npm ci
