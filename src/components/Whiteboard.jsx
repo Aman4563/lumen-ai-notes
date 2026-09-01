@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { getData, normalizeBoardDocument, updateDataGuarded } from "../lib/db";
 import { createId } from "../lib/id.js";
+import { boardPageToSvg } from "../lib/boardSvg.js";
 import {
   BOARD_SYNC_CHANNEL,
   BOARD_SYNC_SIGNAL_KEY,
@@ -876,8 +877,30 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     notify?.(`${activePage.name} exported as a high-resolution PNG.`);
   };
 
+  const exportSvg = () => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const aspect = rect && rect.width ? rect.height / rect.width : 0.625;
+    const svg = boardPageToSvg(activePage, {
+      width: 1600,
+      height: Math.round(1600 * aspect),
+      background: board.background === "dark" ? "#10192a" : "#ffffff",
+    });
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = `${documentTitle.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${activePage.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.svg`;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 2_000);
+    notify?.(`${activePage.name} exported as a scalable SVG.`);
+  };
+
   return <section className="board-view advanced-board" aria-label={`Whiteboard for ${documentTitle}`}>
-    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><button className="button secondary" onClick={exportBoard} aria-label="Export current whiteboard page as PNG" type="button"><Download size={18} /> Export PNG</button></header>
+    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><div className="board-header-actions"><button className="button ghost" onClick={exportSvg} aria-label="Export current whiteboard page as SVG" type="button"><Download size={16} /> SVG</button><button className="button secondary" onClick={exportBoard} aria-label="Export current whiteboard page as PNG" type="button"><Download size={18} /> Export PNG</button></div></header>
 
     <div className="board-pagebar">
       <div className="board-page-controls"><Files size={17} /><select value={activePage.id} onChange={(event) => switchPage(event.target.value)} aria-label="Current whiteboard page">{board.pages.map((page, index) => <option value={page.id} key={page.id}>{index + 1}. {page.name}</option>)}</select><span>{activePageIndex + 1}/{board.pages.length}</span><button onClick={() => setRenamingPage(true)} aria-label="Rename whiteboard page" title="Rename page" type="button"><Pencil size={17} /></button><button onClick={addPage} aria-label="Add whiteboard page" title="New page" type="button"><Plus size={18} /></button><button onClick={duplicatePage} aria-label="Duplicate whiteboard page" title="Duplicate page" type="button"><Copy size={17} /></button><button onClick={deletePage} aria-label="Delete whiteboard page" title="Delete page" type="button"><Trash2 size={17} /></button></div>

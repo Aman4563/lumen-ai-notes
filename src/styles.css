@@ -7178,3 +7178,5 @@ input[type="range"] {
 .shortcut-group dt { flex-shrink: 0; min-width: 108px; }
 .shortcut-group kbd { padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper-2); color: var(--ink); font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; font-weight: 700; }
 .shortcut-group dd { margin: 0; color: var(--ink-soft); font-size: 0.75rem; }
+
+.board-header-actions { display: flex; align-items: center; gap: 8px; }
