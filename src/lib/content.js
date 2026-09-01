@@ -99,7 +99,7 @@ export const resolveDocumentLink = (currentPath, href) => {
   }
 };
 
-export const makeCustomDocument = ({ id, title, raw, createdAt = new Date().toISOString(), updatedAt = createdAt, tags = [] }) => {
+export const makeCustomDocument = ({ id, title, raw, createdAt = new Date().toISOString(), updatedAt = createdAt, tags = [], collectionId = "", archived = false, pinned = false }) => {
   const documentId = id || `custom/${createId()}.md`;
   return {
     id: documentId,
@@ -117,6 +117,9 @@ export const makeCustomDocument = ({ id, title, raw, createdAt = new Date().toIS
     createdAt,
     updatedAt,
     tags,
+    collectionId,
+    archived,
+    pinned,
   };
 };
 

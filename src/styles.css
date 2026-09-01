@@ -7061,3 +7061,13 @@ input[type="range"] {
   .trash-row { flex-wrap: wrap; }
   .trash-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* Wave 7: collections, pins, organize dialog */
+.collection-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 13px; }
+.collection-chips button { padding: 6px 13px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--paper); color: var(--ink-soft); font-size: 0.7rem; font-weight: 750; }
+.collection-chips button.active { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.collection-chips .archived-chip { border-style: dashed; }
+.notebook-document-row { position: relative; }
+.pinned-marker { position: absolute; z-index: 1; top: -5px; left: -5px; color: var(--coral); }
+.manage-doc-dialog select { min-height: 41px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 11px; color: var(--ink); background: var(--paper-2); }
+.manage-doc-dialog .setting-toggle { margin-top: 13px; }

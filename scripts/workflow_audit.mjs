@@ -425,6 +425,87 @@ try {
   await page.$eval('.notebook-document-row button[aria-label^="Delete"]', (button) => button.click());
   await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length === 2);
 
+  // DATA-003 recoverable trash: the deleted duplicate sits in the 30-day
+  // trash, restores under a fresh id, and delete-forever really removes it.
+  await page.waitForSelector(".notebook-trash .trash-row", { timeout: 5_000 });
+  const trashCopy = await page.$eval(".notebook-trash .trash-row", (node) => node.textContent);
+  assert.ok(trashCopy.includes("copy") && trashCopy.includes("30 days left"), `trash row did not show title and retention: ${trashCopy}`);
+  await clickByText(page, ".notebook-trash .trash-row button", "Restore");
+  await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length === 3, { timeout: 5_000 })
+    .catch(() => assert.fail("restoring from trash did not return the document to the notebook"));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".notebook-document-row")].find((node) => node.textContent.includes("copy"));
+    row?.querySelector('button[aria-label^="Delete"]')?.click();
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length === 2);
+  await page.$eval('.notebook-trash button[aria-label$="forever"]', (button) => button.click());
+  await page.waitForFunction(() => !document.querySelector(".notebook-trash"), { timeout: 5_000 })
+    .catch(() => assert.fail("delete-forever did not empty the trash"));
+
+  // CONTENT-001 duplicate detection: identical content is skipped, not doubled.
+  await page.$eval('.notebook-actions input[type="file"]', (input) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["# Uploaded Persistence Proof\n\nUploaded Markdown remains searchable."], "uploaded-proof-again.md", { type: "text/markdown" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("duplicate"), { timeout: 5_000 })
+    .catch(() => assert.fail("a duplicate upload did not warn"));
+  assert.equal(await page.$$eval(".notebook-document-row", (rows) => rows.length), 2, "a duplicate upload must not grow the notebook");
+
+  // CONTENT-001 organize: rename, pin, and a new collection with filter chips.
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".notebook-document-row")].find((node) => node.textContent.includes("Acceptance Study Note Updated"));
+    row?.querySelector('button[aria-label^="Organize"]')?.click();
+  });
+  await page.waitForSelector(".manage-doc-dialog");
+  await page.$eval(".manage-doc-dialog input.text-input", (input) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "Acceptance Study Note Organized");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.select(".manage-doc-dialog select", "__new__");
+  await page.type('.manage-doc-dialog input[placeholder*="Interview prep"]', "Interview prep");
+  await page.$eval('.manage-doc-dialog .setting-toggle input[type="checkbox"]', (input) => input.click());
+  await clickByText(page, ".manage-doc-dialog button", "Save");
+  await page.waitForFunction(() => document.querySelector(".notebook-page")?.innerText.includes("Acceptance Study Note Organized"), { timeout: 5_000 });
+  await page.waitForSelector(".collection-chips");
+  await clickByText(page, ".collection-chips button", "Interview prep (1)");
+  await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length === 1);
+  assert.ok(await page.$(".pinned-marker"), "the pinned marker did not render");
+  await clickByText(page, ".collection-chips button", "All (2)");
+  await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length === 2);
+  assert.ok((await page.$eval(".notebook-document-row", (node) => node.textContent)).includes("Organized"), "the pinned document must sort first");
+
+  // Archive hides from the default list but stays reachable via the chip.
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".notebook-document-row")].find((node) => node.textContent.includes("Uploaded Persistence Proof"));
+    row?.querySelector('button[aria-label^="Organize"]')?.click();
+  });
+  await page.waitForSelector(".manage-doc-dialog");
+  await page.$eval(".manage-doc-dialog .setting-toggle:last-of-type input", (input) => input.click());
+  await clickByText(page, ".manage-doc-dialog button", "Save");
+  await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length === 1, { timeout: 5_000 })
+    .catch(() => assert.fail("archiving did not hide the document from the default list"));
+  await clickByText(page, ".collection-chips button", "Archived (1)");
+  await page.waitForFunction(() => document.querySelector(".notebook-page")?.innerText.includes("Uploaded Persistence Proof"));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".notebook-document-row")].find((node) => node.textContent.includes("Uploaded Persistence Proof"));
+    row?.querySelector('button[aria-label^="Organize"]')?.click();
+  });
+  await page.waitForSelector(".manage-doc-dialog");
+  await page.$eval(".manage-doc-dialog .setting-toggle:last-of-type input", (input) => input.click());
+  await clickByText(page, ".manage-doc-dialog button", "Save");
+  await page.waitForFunction(() => document.querySelectorAll(".collection-chips button").length === 2, { timeout: 5_000 });
+
+  // DATA-003 activity ledger: the Home panel narrates the content operations.
+  await clickByText(page, ".bottom-nav button", "Home");
+  await page.waitForSelector(".activity-list", { timeout: 5_000 });
+  const activityText = await page.$eval(".activity-list", (node) => node.innerText);
+  assert.ok(activityText.includes("Renamed") && activityText.includes("Restored"), `activity ledger is missing entries: ${activityText.slice(0, 200)}`);
+  await clickByText(page, ".bottom-nav button", "Notebook");
+  await page.waitForSelector(".notebook-page");
+
   await clickByText(page, ".bottom-nav button", "Library");
   await page.waitForSelector(".library-search input");
   await page.click('button[aria-label="List layout"]');
@@ -506,7 +587,7 @@ try {
   await page.reload({ waitUntil: "networkidle2" });
   await page.waitForSelector(".notebook-page");
   const reloadedText = await page.$eval(".notebook-page", (node) => node.innerText);
-  assert.ok(reloadedText.includes("Acceptance Study Note Updated"), "created note did not survive reload");
+  assert.ok(reloadedText.includes("Acceptance Study Note Organized"), "created note (renamed via Organize) did not survive reload");
   assert.ok(reloadedText.toLocaleLowerCase().includes("uploaded persistence proof"), "uploaded note did not survive reload");
   assert.ok(reloadedText.includes("SDE-III systems interview"), "personal note did not survive reload");
 
@@ -572,7 +653,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, advanced search (saved-search chips, typo tolerance, -term exclusion, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, advanced search (saved-search chips, typo tolerance, -term exclusion, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
