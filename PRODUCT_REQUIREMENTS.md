@@ -358,13 +358,16 @@ relocation semantics — exact offsets, context-scored relocation that beats a
 closer decoy occurrence, typed `quote-not-found`/`missing-anchor` orphaning, and
 resolution without CSS Highlight painting — are pinned by a deterministic unit
 suite (`annotations.relocation.test.mjs`), and `audit:annotations` now drives the full
-browser matrix: relocation after a real source edit (including the documented
-display-only behavior in which relocated offsets are not written back), orphan
-detection with a selection-gated Relink, manual relink that preserves the
-annotation id and its review-card link, backup export and two-phase preflight
-restore of annotations plus linked cards, the non-CSS-Highlight fallback reader,
-and Notebook copy/Markdown export. Persisting relocated offsets automatically
-remains an open design question (a write-back interacts with cross-tab merge).
+browser matrix: relocation after a real source edit, orphan detection with a
+selection-gated Relink, manual relink that preserves the annotation id and its
+review-card link, backup export and two-phase preflight restore of annotations
+plus linked cards, the non-CSS-Highlight fallback reader, and Notebook
+copy/Markdown export. The write-back design question is resolved (2026-09-01):
+a saved edit is the explicit reconcile point — confidently relocated anchors
+persist their fresh offsets and refreshed prefix/suffix context with a newer
+`updatedAt` (merge-safe across tabs), so anchors self-heal instead of
+re-running the fuzzy search on every future open; ordinary renders never write
+back, and Relink remains the manual repair for orphans.
 
 Acceptance criteria:
 

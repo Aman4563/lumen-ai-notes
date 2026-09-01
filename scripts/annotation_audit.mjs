@@ -155,16 +155,30 @@ try {
   await page.waitForFunction((marker) => document.querySelector(".markdown-body")?.innerText.includes(marker), {}, relocationMarker);
   await openHighlightsPanel(page);
   await page.waitForSelector(".reader-annotation-card.teal");
-  await page.waitForFunction(() => document.querySelector(".reader-annotation-card small")?.textContent === "Relocated");
+  // With edit-save reconciliation the "Relocated" state is transient: the
+  // fresh offsets persist and the very next resolution settles back to exact,
+  // so the durable contract is a shifted stored start with surviving paint
+  // and no lingering badge (the unit suite still pins the relocated status).
   await page.waitForFunction(() => CSS.highlights?.get("lumen-teal")?.size === 1);
-  const relocatedProfile = await waitForStored(page, "profile", (value) => value.edits?.[documentId]?.includes(relocationMarker), "the relocating source edit was not persisted");
-  // Documented current behavior: relocation is display-only. The resolver
-  // (src/lib/annotations.js resolveTextAnchorFromIndex) returns fresh offsets
-  // with status "relocated", but nothing writes them back to the stored
-  // annotation — only the Relink action rewrites quote/start/sourceHash.
-  assert.equal(relocatedProfile.annotations[0].start, initialAnnotation.start, "expected the stored start offset to remain stale after relocation (no writeback)");
-  assert.equal(relocatedProfile.annotations[0].quote, initialAnnotation.quote, "relocation must not rewrite the stored quote");
-  assert.equal(relocatedProfile.annotations[0].id, initialAnnotation.id, "relocation must not change the annotation id");
+  // A saved edit is the explicit reconcile point: confidently relocated
+  // anchors persist their fresh offsets and refreshed prefix/suffix context
+  // (LEARN-001 write-back, 2026-09-01). Everyday renders never write back.
+  const relocatedProfile = await waitForStored(
+    page,
+    "profile",
+    (value) => value.edits?.[documentId]?.includes(relocationMarker)
+      && Number.isSafeInteger(value.annotations?.[0]?.start)
+      && value.annotations[0].start !== initialAnnotation.start,
+    "the relocated offsets were not reconciled after the source edit was saved",
+  );
+  assert.ok(relocatedProfile.annotations[0].start > initialAnnotation.start, "a prepended paragraph must shift the stored start forward");
+  assert.equal(relocatedProfile.annotations[0].quote, initialAnnotation.quote, "reconciliation must not rewrite the stored quote");
+  assert.equal(relocatedProfile.annotations[0].id, initialAnnotation.id, "reconciliation must not change the annotation id");
+  assert.ok(relocatedProfile.annotations[0].updatedAt > initialAnnotation.updatedAt, "the reconciled record must carry a newer updatedAt for cross-tab merging");
+  await page.waitForFunction(() => {
+    const badge = document.querySelector(".reader-annotation-card small");
+    return !badge || badge.textContent !== "Relocated";
+  }, { timeout: 8_000 });
 
   // 2. ORPHAN: delete the quoted passage entirely; the annotation must degrade
   // to "Needs relink" with navigation disabled and Relink gated on a selection.
@@ -320,7 +334,7 @@ try {
   assert.ok(exportedMarkdown.includes(relinkTarget), "the highlights export omitted the highlighted quote");
 
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Annotation audit passed: anchored creation, inline rendering, metadata edit, review conversion, schema, reload persistence, relocation after source edits (including the documented stale start-offset no-writeback), orphan detection with gated relink, manual relink repair preserving ids and review links, backup export/two-phase preflight restore of annotations and linked review cards, the non-CSS-Highlight fallback reader, and Notebook highlight copy plus Markdown export verified.");
+  console.log("Annotation audit passed: anchored creation, inline rendering, metadata edit, review conversion, schema, reload persistence, relocation after source edits (with offsets reconciled at edit-save and refreshed anchor context), orphan detection with gated relink, manual relink repair preserving ids and review links, backup export/two-phase preflight restore of annotations and linked review cards, the non-CSS-Highlight fallback reader, and Notebook highlight copy plus Markdown export verified.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
