@@ -676,19 +676,20 @@ try {
     .catch(() => assert.fail("clicking a facet chip did not focus its Part"));
   await page.$$eval(".filter-row button", (nodes) => nodes.find((node) => node.textContent === "All")?.click());
   await page.click('button[aria-label="Clear search"]');
+  // The worker caps ranked results at 100, while the pre-search candidate list
+  // shows every document — wait for a settled (capped) count before reading.
+  const settledResultCount = async () => {
+    await page.waitForFunction(() => {
+      const match = document.querySelector(".library-results-meta")?.textContent.match(/(\d+) results/);
+      return match && Number(match[1]) <= 100;
+    }, { timeout: 10_000 });
+    return page.$eval(".library-results-meta", (node) => Number(node.textContent.match(/(\d+) results/)?.[1] || 0));
+  };
   await page.type(".library-search input", "has:formula attention");
-  await page.waitForFunction(
-    () => document.querySelector(".library-results-meta")?.textContent.match(/\b\d+ results/),
-    { timeout: 10_000 },
-  );
-  const formulaCount = Number((await page.$eval(".library-results-meta", (node) => node.textContent)).match(/(\d+) results/)?.[1] || 0);
+  const formulaCount = await settledResultCount();
   await page.click('button[aria-label="Clear search"]');
   await page.type(".library-search input", "attention");
-  await page.waitForFunction(
-    () => document.querySelector(".library-results-meta")?.textContent.match(/\b\d+ results/),
-    { timeout: 10_000 },
-  );
-  const plainCount = Number((await page.$eval(".library-results-meta", (node) => node.textContent)).match(/(\d+) results/)?.[1] || 0);
+  const plainCount = await settledResultCount();
   assert.ok(formulaCount > 0 && formulaCount <= plainCount, `has:formula must narrow results (${formulaCount} of ${plainCount})`);
 
   await page.click('button[aria-label="Clear search"]');

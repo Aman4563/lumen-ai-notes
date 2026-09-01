@@ -330,6 +330,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   // exactly one object; group operations read selectedIds directly.
   const setSelectedId = useCallback((id) => setSelectedIds(id ? [id] : []), []);
   const marqueeRef = useRef(null);
+  const resizingRef = useRef(null);
   const clipboardRef = useRef([]);
   const [pendingText, setPendingText] = useState(null);
   const [renamingPage, setRenamingPage] = useState(false);
@@ -648,6 +649,25 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const point = pointFromEvent(event);
     try { canvasRef.current.setPointerCapture?.(event.pointerId); } catch { /* Some iOS pointer streams do not expose capture. */ }
     if (tool === "select") {
+      // Resize (BOARD-001): with exactly one object selected, grabbing its
+      // bottom-right handle scales the object around its top-left corner.
+      if (selectedObjects.length === 1 && selectedObjects[0].tool !== "text") {
+        const bounds = objectBounds(selectedObjects[0]);
+        const rect = canvasRef.current.getBoundingClientRect();
+        const handleX = bounds.maxX + 7 / rect.width;
+        const handleY = bounds.maxY + 7 / rect.height;
+        if (Math.abs(point.x - handleX) < 14 / rect.width && Math.abs(point.y - handleY) < 14 / rect.height) {
+          const target = selectedObjects[0];
+          resizingRef.current = {
+            id: target.id,
+            bounds,
+            originalPoints: target.points.map((item) => ({ ...item })),
+            before: boardRef.current,
+            resized: false,
+          };
+          return;
+        }
+      }
       const hit = hitTest(point);
       if (hit && event.shiftKey) {
         setSelectedIds((current) => current.includes(hit.id) ? current.filter((id) => id !== hit.id) : [...current, hit.id]);
@@ -679,6 +699,24 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   const continueDrawing = (event) => {
+    if (resizingRef.current) {
+      event.preventDefault();
+      const point = pointFromEvent(event);
+      const resize = resizingRef.current;
+      const { minX, minY, maxX, maxY } = resize.bounds;
+      const scaleX = Math.max(0.05, (point.x - minX) / Math.max(0.01, maxX - minX));
+      const scaleY = Math.max(0.05, (point.y - minY) / Math.max(0.01, maxY - minY));
+      resize.resized = true;
+      updateActiveObjects((current) => current.map((object) => object.id === resize.id
+        ? {
+          ...object,
+          points: resize.originalPoints.length === 1 && object.tool === "sticky"
+            ? [resize.originalPoints[0], { x: Math.min(1, minX + 0.36 * scaleX), y: Math.min(1, minY + 0.22 * scaleY) }]
+            : resize.originalPoints.map((item) => ({ ...item, x: Math.max(0, Math.min(1, minX + (item.x - minX) * scaleX)), y: Math.max(0, Math.min(1, minY + (item.y - minY) * scaleY)) })),
+        }
+        : object), false);
+      return;
+    }
     if (movingRef.current) {
       event.preventDefault();
       const point = pointFromEvent(event);
@@ -727,6 +765,17 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   const finishDrawing = (event) => {
+    if (resizingRef.current) {
+      const resize = resizingRef.current;
+      resizingRef.current = null;
+      if (resize.resized) {
+        historyRef.current.past = [...historyRef.current.past, resize.before].slice(-60);
+        historyRef.current.future = [];
+        syncHistoryCounts();
+      }
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
     if (marqueeRef.current) {
       const { start, end } = marqueeRef.current;
       marqueeRef.current = null;
