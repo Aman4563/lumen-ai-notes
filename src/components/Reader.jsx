@@ -443,6 +443,34 @@ export default function Reader({
     }
   };
 
+  // Spoken-block follow (AUDIO-001): while a lecture-wide narration is
+  // speaking, tint the block containing the current sentence and keep it in
+  // view. Sentences rewritten by pronunciation overrides simply skip the
+  // highlight when no block matches; narration is never affected.
+  useEffect(() => {
+    const article = articleRef.current;
+    if (!article) return;
+    const clear = () => article.querySelectorAll(".narration-active").forEach((node) => node.classList.remove("narration-active"));
+    if (speech.status !== "speaking" || !speech.currentText || !["Full lecture", "Current section"].includes(speech.activeLabel)) {
+      clear();
+      return;
+    }
+    const needle = speech.currentText.slice(0, 60).replace(/\s+/g, " ").trim().toLocaleLowerCase();
+    if (needle.length < 8) return;
+    let target = null;
+    for (const block of article.querySelectorAll("h1, h2, h3, h4, p, li, blockquote")) {
+      if (block.textContent.replace(/\s+/g, " ").toLocaleLowerCase().includes(needle)) {
+        target = block;
+        break;
+      }
+    }
+    clear();
+    if (!target) return;
+    target.classList.add("narration-active");
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    target.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+  }, [speech.activeLabel, speech.currentText, speech.status]);
+
   // Persist the document-narration position per device so a stopped or
   // interrupted session can pick up where it left off (AUDIO-001).
   useEffect(() => {

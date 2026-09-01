@@ -158,6 +158,8 @@ try {
   await page.waitForFunction(() => document.querySelector(".speech-target-status")?.textContent.toLowerCase().includes("full lecture"));
   await clickByText(page, ".speech-controls button", "Read full lecture");
   await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
+  await page.waitForFunction(() => document.querySelector(".markdown-body .narration-active"), { timeout: 5_000 })
+    .catch(() => assert.fail("full-lecture narration did not highlight the spoken block"));
   const documentProgress = await page.$eval(".audio-label strong", (node) => node.textContent);
   const documentTotal = Number(documentProgress.match(/(\d+)\/(\d+)/)?.[2] || 0);
   assert.ok(documentTotal > 1, `the document queue must contain multiple sentence segments, got "${documentProgress}"`);

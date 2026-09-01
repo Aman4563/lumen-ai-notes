@@ -7124,3 +7124,6 @@ input[type="range"] {
 .pronunciation-editor { display: grid; gap: 7px; margin-top: 13px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 750; }
 .pronunciation-editor textarea { min-height: 96px; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--paper-2); font: inherit; font-family: ui-monospace, Menlo, monospace; font-size: 0.74rem; line-height: 1.6; resize: vertical; }
 .pronunciation-editor code { padding: 1px 5px; border-radius: 5px; background: var(--paper-3); }
+
+/* Wave 9: spoken-block follow */
+.markdown-body .narration-active { border-radius: 8px; background: rgba(246, 223, 174, 0.4); box-shadow: 0 0 0 6px rgba(246, 223, 174, 0.4); transition: background 300ms ease, box-shadow 300ms ease; }
