@@ -4,6 +4,7 @@ import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFIL
 import { searchDocuments, tokenizeExclusions, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads.js";
 import { createId } from "../src/lib/id.js";
+import { selectInterviewRound } from "../src/lib/interview.js";
 import {
   buildReviewQueue,
   classifyReviewItem,
@@ -97,6 +98,27 @@ assert.equal(hasClozeMarkup("No cloze here"), false);
 assert.equal(renderClozePrompt("The {{validation}} split tunes {{hyperparameters}}."), "The **[ … ]** split tunes **[ … ]**.");
 assert.equal(renderClozePrompt("The {{validation}} split tunes {{hyperparameters}}.", true), "The **validation** split tunes **hyperparameters**.");
 assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single} braces stay");
+
+// INTERVIEW-002 slice: the interview round selects only interview-flavored,
+// non-suspended cards, weak-first (lapses desc, least-recent tiebreak), bounded.
+{
+  const cardAt = (id, extra) => ({ id, type: "definition", tags: [], front: id, back: "a", lapses: 0, createdAt: "2026-08-01T00:00:00.000Z", ...extra });
+  const pool = [
+    cardAt("plain"),
+    cardAt("tagged", { tags: ["Interview"], lapses: 1 }),
+    cardAt("scenario", { type: "production-scenario", lapses: 3, lastReviewedAt: "2026-08-20T00:00:00.000Z" }),
+    cardAt("compare-old", { type: "compare", lapses: 3, lastReviewedAt: "2026-08-10T00:00:00.000Z" }),
+    cardAt("suspended", { type: "compare", suspended: true }),
+    cardAt("archived", { tags: ["interview"], archived: true }),
+    cardAt("debugging", { type: "debugging" }),
+  ];
+  const round = selectInterviewRound(pool);
+  assert.deepEqual(round.map((card) => card.id), ["compare-old", "scenario", "tagged", "debugging"],
+    "weak-first: highest lapses first, least-recently-reviewed breaking ties; plain/suspended/archived excluded");
+  assert.deepEqual(selectInterviewRound(pool), round, "selection must be deterministic");
+  assert.equal(selectInterviewRound(pool, { limit: 2 }).length, 2);
+  assert.equal(selectInterviewRound([]).length, 0);
+}
 
 // LEARN-003: bury/suspend/archive exclusion, crunch weak-first ordering, and
 // Hard/Easy scheduling have direct assertions.

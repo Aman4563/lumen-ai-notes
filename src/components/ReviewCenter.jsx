@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound } from "../lib/interview.js";
 import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
 import {
   Archive,
@@ -8,6 +9,7 @@ import {
   Brain,
   CalendarClock,
   CheckCircle2,
+  Clock3,
   Edit3,
   Eye,
   FilePlus2,
@@ -244,6 +246,97 @@ function MistakeCorrectionField({ mistake, onEditMistake }) {
   );
 }
 
+/**
+ * Timed interview round (INTERVIEW-002 slice): prep/answer countdowns over a
+ * bounded weak-first selection. Practice-only — the scheduler is untouched —
+ * and a miss logs an interview-category mistake.
+ */
+function InterviewRound({ cards, onClose, onLogMistake }) {
+  const [index, setIndex] = useState(0);
+  const [phase, setPhase] = useState("prep");
+  const [secondsLeft, setSecondsLeft] = useState(INTERVIEW_PREP_SECONDS);
+  const [results, setResults] = useState([]);
+  const card = cards[index];
+
+  useEffect(() => {
+    if (phase === "prep") setSecondsLeft(INTERVIEW_PREP_SECONDS);
+    else if (phase === "answer") setSecondsLeft(INTERVIEW_ANSWER_SECONDS);
+  }, [phase, index]);
+
+  useEffect(() => {
+    if (phase !== "prep" && phase !== "answer") return undefined;
+    const timer = window.setInterval(() => {
+      setSecondsLeft((current) => {
+        if (current > 1) return current - 1;
+        setPhase((currentPhase) => (currentPhase === "prep" ? "answer" : "revealed"));
+        return 0;
+      });
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [phase, index]);
+
+  if (!card && phase !== "summary") return null;
+
+  const grade = (hit) => {
+    if (!hit) {
+      onLogMistake?.({
+        prompt: card.front,
+        expected: card.back,
+        category: "interview",
+        reviewItemId: card.id,
+        tags: [...new Set([...(card.tags || []), "interview"])],
+      });
+    }
+    setResults((previous) => [...previous, { id: card.id, hit }]);
+    if (index + 1 < cards.length) {
+      setIndex(index + 1);
+      setPhase("prep");
+    } else {
+      setPhase("summary");
+    }
+  };
+
+  if (phase === "summary") {
+    const hits = results.filter((result) => result.hit).length;
+    const misses = results.length - hits;
+    return (
+      <div className="page review-session-page interview-round" aria-label="Interview round summary">
+        <header className="review-session-header"><button className="button ghost" onClick={onClose} type="button"><ArrowLeft size={17} /> Done</button><div><strong>{hits}/{results.length}</strong><span>answered well</span></div><span /></header>
+        <main className="review-stage">
+          <article className="review-flashcard revealed interview-summary">
+            <span className="eyebrow">Round complete</span>
+            <h3>{misses === 0 ? "Clean round — raise the difficulty next time." : `${misses} miss${misses === 1 ? "" : "es"} logged to your mistake notebook.`}</h3>
+            <p className="microcopy">Interview rounds are timed practice and never change your review schedule; corrective work lives in the mistake notebook.</p>
+            <button className="button primary" onClick={onClose} type="button">Back to review center</button>
+          </article>
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page review-session-page interview-round" aria-label="Timed interview round">
+      <header className="review-session-header">
+        <button className="button ghost" onClick={onClose} type="button"><ArrowLeft size={17} /> End round</button>
+        <div><strong>{index + 1}/{cards.length}</strong><span>question</span></div>
+        <div className={`interview-timer${phase === "answer" && secondsLeft <= 15 ? " is-low" : ""}`} role="timer" aria-label={`${phase === "prep" ? "Preparation" : "Answer"} time remaining`}><Clock3 size={16} /> {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}</div>
+      </header>
+      <main className="review-stage" aria-live="polite">
+        <article className={phase === "revealed" ? "review-flashcard revealed" : "review-flashcard"}>
+          <span className="eyebrow">{phase === "prep" ? "Structure your answer out loud" : phase === "answer" ? "Answer as if the interviewer is listening" : "Compare against the expected answer"}</span>
+          <div className="review-markdown review-question" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.front) }} />
+          {phase === "revealed" && <div className="review-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.back) }} />}
+        </article>
+        <div className="review-session-actions">
+          {phase === "prep" && <button className="button primary large" onClick={() => setPhase("answer")} type="button">Start answering</button>}
+          {phase === "answer" && <button className="button primary large" onClick={() => setPhase("revealed")} type="button"><Eye size={18} /> Show expected answer</button>}
+          {phase === "revealed" && <div className="interview-grades"><button className="button secondary" onClick={() => grade(false)} type="button"><Flame size={16} /> Missed it — log the mistake</button><button className="button primary" onClick={() => grade(true)} type="button"><CheckCircle2 size={16} /> Answered well</button></div>}
+        </div>
+      </main>
+    </div>
+  );
+}
+
 export default function ReviewCenter({
   profile,
   documents,
@@ -266,6 +359,7 @@ export default function ReviewCenter({
   const [session, setSession] = useState(false);
   const [mistakeFilter, setMistakeFilter] = useState("all");
   const [mistakeDialogOpen, setMistakeDialogOpen] = useState(false);
+  const [interviewCards, setInterviewCards] = useState(null);
   const [showCorrectedMistakes, setShowCorrectedMistakes] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [currentId, setCurrentId] = useState("");
@@ -307,6 +401,7 @@ export default function ReviewCenter({
     profile.reviewSessions,
     { timeZone, crunch, crunchLimit: 20 },
   ), [crunch, profile.reviewItems, profile.reviewSessions, profile.reviewSettings, queueNow.getTime(), timeZone]);
+  const interviewPool = useMemo(() => selectInterviewRound(profile.reviewItems), [profile.reviewItems]);
   const queue = session && crunch ? baseQueue.filter((item) => !sessionSeen.includes(item.id)) : baseQueue;
   const queueSignature = queue.map((item) => `${String(item.id).length}:${item.id}`).join("");
   const stats = useMemo(() => reviewStats(profile.reviewItems, queueNow, timeZone), [profile.reviewItems, queueNow.getTime(), timeZone]);
@@ -399,6 +494,10 @@ export default function ReviewCenter({
     setCurrentId("");
   };
 
+  if (interviewCards) {
+    return <InterviewRound cards={interviewCards} onClose={() => setInterviewCards(null)} onLogMistake={onLogMistake} />;
+  }
+
   if (session && current) {
     const source = documentMap.get(current.documentId);
     const intervals = previewReviewIntervals(current);
@@ -444,7 +543,7 @@ export default function ReviewCenter({
     <div className="page review-center-page">
       <header className="page-title review-title"><div><span className="eyebrow">Remember what you learn</span><h1>Review center</h1><p>Source-linked active recall with durable daily limits, scheduling history, and explicit confidence.</p></div><button className="button primary" onClick={() => onCreate(null)} type="button"><FilePlus2 size={17} /> New card</button></header>
       <section className="review-overview">
-        <article className="review-hero"><div><span className="eyebrow">Today’s queue</span><strong>{baseQueue.length}</strong><p>{baseQueue.length ? `${stats.due} total due; workload is capped by today’s remaining limits.` : "You are caught up or today’s limits are complete."}</p><small>{usage.newIntroduced}/{profile.reviewSettings.dailyNewLimit} new · {usage.reviewCompleted}/{profile.reviewSettings.dailyReviewLimit} reviews · {usage.crunchCompleted} extra{stats.overdue > 0 ? ` · ${stats.overdue} overdue` : ""}{stats.suspended > 0 ? ` · ${stats.suspended} suspended` : ""}</small></div><div className="review-hero-actions"><button className="button primary large" onClick={() => startSession(false)} disabled={!baseQueue.length} title={!baseQueue.length ? "No cards remain within today’s limits" : "Start today’s scheduled queue"} type="button"><Play size={19} /> Start review</button><button className="button ghost" onClick={() => startSession(true)} disabled={!profile.reviewItems.some((item) => !item.suspended && !item.archived)} title="Practice up to 20 weak cards beyond the daily queue" type="button"><Flame size={17} /> Crunch weak cards</button><button className="button ghost" onClick={undo} disabled={!lastAttempt?.previousState} title={!lastAttempt?.previousState ? "No reversible grade is available" : "Restore the card and today’s allowance"} type="button"><Undo2 size={16} /> Undo last grade</button></div></article>
+        <article className="review-hero"><div><span className="eyebrow">Today’s queue</span><strong>{baseQueue.length}</strong><p>{baseQueue.length ? `${stats.due} total due; workload is capped by today’s remaining limits.` : "You are caught up or today’s limits are complete."}</p><small>{usage.newIntroduced}/{profile.reviewSettings.dailyNewLimit} new · {usage.reviewCompleted}/{profile.reviewSettings.dailyReviewLimit} reviews · {usage.crunchCompleted} extra{stats.overdue > 0 ? ` · ${stats.overdue} overdue` : ""}{stats.suspended > 0 ? ` · ${stats.suspended} suspended` : ""}</small></div><div className="review-hero-actions"><button className="button primary large" onClick={() => startSession(false)} disabled={!baseQueue.length} title={!baseQueue.length ? "No cards remain within today’s limits" : "Start today’s scheduled queue"} type="button"><Play size={19} /> Start review</button><button className="button ghost" onClick={() => startSession(true)} disabled={!profile.reviewItems.some((item) => !item.suspended && !item.archived)} title="Practice up to 20 weak cards beyond the daily queue" type="button"><Flame size={17} /> Crunch weak cards</button><button className="button ghost" onClick={undo} disabled={!lastAttempt?.previousState} title={!lastAttempt?.previousState ? "No reversible grade is available" : "Restore the card and today’s allowance"} type="button"><Undo2 size={16} /> Undo last grade</button><button className="button ghost" onClick={() => setInterviewCards(selectInterviewRound(profile.reviewItems))} disabled={!interviewPool.length} title={interviewPool.length ? "Timed prep/answer practice; misses feed the mistake notebook" : "Tag cards with “interview” or use scenario/compare/debugging types to unlock timed rounds"} type="button"><Clock3 size={16} /> Interview round</button></div></article>
         <div className="review-stat-grid"><article><CalendarClock size={20} /><strong>{stats.due}</strong><span>Due now</span></article><article><RotateCcw size={20} /><strong>{stats.learning}</strong><span>Learning</span></article><article><CheckCircle2 size={20} /><strong>{stats.mastered}</strong><span>Mastered</span></article><article><Brain size={20} /><strong>{analytics.retention30 === null ? "—" : `${analytics.retention30}%`}</strong><span>30-day recall</span></article></div>
       </section>
       <section className="review-analytics" aria-label="Review analytics">

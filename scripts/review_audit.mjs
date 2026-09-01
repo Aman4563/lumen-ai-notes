@@ -222,6 +222,34 @@ try {
   });
   await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient")), { timeout: 5_000 });
 
+  // INTERVIEW-002 slice: a timed interview round runs prep → answer → reveal,
+  // and a missed question lands in the mistake notebook under Interview.
+  await clickByText(page, ".review-hero-actions button", "Interview round");
+  await page.waitForSelector(".interview-round .interview-timer", { timeout: 5_000 });
+  const roundTotal = Number((await page.$eval(".interview-round .review-session-header strong", (node) => node.textContent)).split("/")[1]);
+  assert.ok(roundTotal >= 1, "the interview round must include the interview-tagged card");
+  assert.match(await page.$eval(".interview-round .interview-timer", (node) => node.textContent), /0:(30|29|28)/, "the prep countdown must start near 30 seconds");
+  assert.ok((await page.$eval(".interview-round .eyebrow", (node) => node.textContent)).includes("Structure your answer"), "the prep phase must coach structuring first");
+  for (let question = 0; question < roundTotal; question += 1) {
+    await clickByText(page, ".interview-round button", "Start answering");
+    await page.waitForFunction(() => document.querySelector(".interview-round .eyebrow")?.textContent.includes("interviewer is listening"), { timeout: 5_000 });
+    await clickByText(page, ".interview-round button", "Show expected answer");
+    await page.waitForSelector(".interview-round .review-answer", { timeout: 5_000 });
+    await clickByText(page, ".interview-round button", question === 0 ? "Missed it" : "Answered well");
+  }
+  await page.waitForFunction(() => document.querySelector(".interview-summary"), { timeout: 5_000 });
+  assert.equal(await page.$eval(".interview-round .review-session-header strong", (node) => node.textContent), `${roundTotal - 1}/${roundTotal}`, "the summary must count the miss");
+  assert.ok((await page.$eval(".interview-summary h3", (node) => node.textContent)).includes("1 miss"), "the summary must state the miss was logged");
+  await clickByText(page, ".interview-round button", "Back to review center");
+  await page.waitForSelector(".review-center-page", { timeout: 5_000 });
+  await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("data leakage") && card.textContent.includes("Interview")), { timeout: 5_000 })
+    .catch(() => assert.fail("an interview miss did not create an Interview-category mistake"));
+  await page.evaluate(() => {
+    const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("data leakage") && node.textContent.includes("Interview"));
+    card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
+  });
+  await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("data leakage") && card.textContent.includes("Interview")), { timeout: 5_000 });
+
   // Clean up the second card so the original deck assertions stay untouched.
   await page.waitForSelector(".review-deck-card");
   const deleteButtons = await page.$$('button[aria-label="Delete review card"]');
@@ -278,7 +306,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

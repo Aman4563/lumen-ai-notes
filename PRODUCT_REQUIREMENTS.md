@@ -108,7 +108,7 @@ not evidence that the product implements it.
 | M6 | LAB-002 | `Backlog` | None | Local SQL engine, bounded dataset import, tables/plans/errors/result comparison, curated exercises, and persisted attempts |
 | M6 | LAB-003 | `Backlog` | None | Safe parameterized ML/system simulations, intermediate-state visualizations, and explicit external-notebook handoff |
 | M6 | INTERVIEW-001 | `Backlog` | Interview-oriented curriculum prose exists, but no product data model | Structured role/seniority/duration/concept/rubric mappings and coverage audit for every required track |
-| M6 | INTERVIEW-002 | `Backlog` | None | Round templates, preparation/response timers, typed/recorded answers, rubric scoring, and weakness-to-review conversion |
+| M6 | INTERVIEW-002 | `Partially Implemented` | Timed interview rounds (30s prep / 2min answer countdowns) over a weak-first selection of interview-tagged and scenario/compare/debugging cards; misses log Interview-category mistakes linked to the card | Round templates per track, typed/recorded answers, rubric scoring, and per-dimension feedback |
 | M2 | SEARCH-001 | `Partial` | Exact phrases, AND matching, ranking, Part/source filters, worker-side execution, one-edit typo tolerance for long terms, `-term` exclusions, saved searches (profile-synced) and device-local recents with one-tap chips, and highlighted snippets | Stemming/synonyms, field/content-type filters, and annotation/clipping/personal-note search within the unified library search (custom-document bodies are already searched via the worker) |
 | M5 | SEARCH-002 | `Backlog` | None | Versioned embedding index, local/selected-provider controls, privacy/source disclosure, lexical evidence pairing, and relevance/privacy tests |
 | M2 | GRAPH-001 | `Backlog` | None | Versioned concept/edge model, backlinks/path explanations, mastery overlay, weak-cluster UI, and integrity tests |
@@ -552,7 +552,14 @@ Acceptance criteria:
 
 ### INTERVIEW-002 — Timed mock sessions
 
-Status: `Backlog`
+Status: `Partially Implemented` — the review center runs timed interview
+rounds: a deterministic weak-first selection (up to six cards tagged
+`interview` or typed production-scenario/compare/debugging), a 30-second
+preparation countdown, a 2-minute answer countdown, reveal-and-self-grade,
+and a summary. Rounds never touch the scheduler; each miss logs an
+Interview-category mistake back-linked to its card, so corrective work flows
+through the mistake notebook. Round templates, typed/recorded answers, and
+rubric scoring remain open.
 
 Acceptance criteria:
 
