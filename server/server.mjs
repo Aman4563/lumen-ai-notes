@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
@@ -87,6 +87,55 @@ const errorPayload = (requestId, code, message, details) => ({
   },
   requestId,
 });
+
+/**
+ * Stateless learner sessions for AI_AUTH=pairing. A session token is
+ * `base64url(payload).hmacSha256(payload)` carried in an HttpOnly
+ * SameSite=Strict cookie; the server stores nothing, so revocation is a
+ * pairing-code/secret rotation or a restart without AI_SESSION_SECRET.
+ */
+const SESSION_COOKIE_NAME = "lumen.ai.session";
+
+const mintSessionToken = (secret, ttlMs) => {
+  const payload = Buffer.from(JSON.stringify({ v: 1, exp: Date.now() + ttlMs })).toString("base64url");
+  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+};
+
+const verifySessionToken = (secret, token) => {
+  if (typeof token !== "string" || token.length > 512) return false;
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return false;
+  const expected = createHmac("sha256", secret).update(payload).digest("base64url");
+  const expectedBuffer = Buffer.from(expected);
+  const signatureBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== signatureBuffer.length || !timingSafeEqual(expectedBuffer, signatureBuffer)) return false;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return parsed?.v === 1 && Number.isSafeInteger(parsed.exp) && parsed.exp > Date.now();
+  } catch {
+    return false;
+  }
+};
+
+const readSessionCookie = (request) => {
+  const header = String(request.headers.cookie || "");
+  if (!header || header.length > 4_096) return "";
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    if (part.slice(0, separator).trim() === SESSION_COOKIE_NAME) return part.slice(separator + 1).trim();
+  }
+  return "";
+};
+
+const pairingCodesMatch = (expected, received) => {
+  // Digesting both sides first makes the comparison constant-time and
+  // length-independent.
+  const expectedDigest = createHash("sha256").update(String(expected)).digest();
+  const receivedDigest = createHash("sha256").update(String(received)).digest();
+  return timingSafeEqual(expectedDigest, receivedDigest);
+};
 
 const getClientKey = (request, config) => {
   const forwarded = config.trustProxy ? request.headers["x-forwarded-for"] : "";
@@ -795,6 +844,11 @@ export const createApplicationServer = ({
   const tlsOptions = readTlsOptions(env);
   const exposesPrivateApis = config.enabled || config.webSearchEnabled;
   if (exposesPrivateApis && !isLoopbackAddress(config.host)) {
+    if (config.authMode !== "pairing" && !config.allowUnauthenticatedLan) {
+      throw new Error(
+        "Serving AI or web search beyond loopback now requires learner pairing. Set AI_AUTH=pairing with an AI_PAIRING_CODE (recommended), or acknowledge the single-learner trusted-LAN profile explicitly with AI_ALLOW_UNAUTHENTICATED_LAN=true. See AI_SERVER.md.",
+      );
+    }
     if (!tlsOptions) throw new Error("TLS is required when local AI or web search binds beyond loopback");
     if (!config.allowedOrigins.size) throw new Error("AI_ALLOWED_ORIGINS is required when local AI or web search binds beyond loopback");
     if ([...config.allowedOrigins].some((origin) => new URL(origin).protocol !== "https:")) {
@@ -804,6 +858,25 @@ export const createApplicationServer = ({
   if (typeof fetchImpl !== "function") throw new Error("A Fetch API implementation is required (Node.js 18 or later)");
   const rateLimit = createRateLimiter(config);
   const acquire = createConcurrencyGate(config);
+  // Ephemeral per-boot secret unless the operator pins one: restarting the
+  // server without AI_SESSION_SECRET revokes every issued session.
+  const sessionSecret = config.sessionSecret || randomBytes(32).toString("hex");
+  const sessionTtlMs = config.sessionTtlHours * 3_600_000;
+  const pairingAttempts = new Map();
+  const allowPairingAttempt = (clientKey) => {
+    const now = Date.now();
+    const window = pairingAttempts.get(clientKey)?.filter((at) => now - at < 300_000) || [];
+    if (window.length >= 5) return false;
+    window.push(now);
+    pairingAttempts.set(clientKey, window);
+    if (pairingAttempts.size > 1_000) {
+      for (const [key, attempts] of pairingAttempts) {
+        if (!attempts.some((at) => now - at < 300_000)) pairingAttempts.delete(key);
+      }
+    }
+    return true;
+  };
+  const hasActiveSession = (request) => verifySessionToken(sessionSecret, readSessionCookie(request));
   let serviceStatusCache = null;
   let serviceStatusProbe = null;
   const readServiceStatus = async () => {
@@ -838,7 +911,7 @@ export const createApplicationServer = ({
       sendJson(response, 403, errorPayload(requestId, "ORIGIN_NOT_ALLOWED", "This origin is not allowed to use the AI service."));
       return;
     }
-    if (request.method === "OPTIONS" && (url.pathname.startsWith("/api/ai/") || url.pathname === "/api/local-search")) {
+    if (request.method === "OPTIONS" && (url.pathname.startsWith("/api/ai/") || url.pathname === "/api/local-search" || url.pathname === "/api/auth/pair")) {
       response.writeHead(204, { "Cache-Control": "no-store" });
       response.end();
       return;
@@ -865,7 +938,64 @@ export const createApplicationServer = ({
         return;
       }
       const serviceStatus = await readServiceStatus();
-      sendJson(response, 200, { ok: true, requestId, ...publicAiConfig(config, serviceStatus) }, {}, request.method === "HEAD");
+      const publicConfig = publicAiConfig(config, serviceStatus);
+      publicConfig.auth = {
+        ...publicConfig.auth,
+        required: config.authMode === "pairing",
+        sessionActive: config.authMode === "pairing" ? hasActiveSession(request) : null,
+      };
+      sendJson(response, 200, { ok: true, requestId, ...publicConfig }, {}, request.method === "HEAD");
+      return;
+    }
+    if (url.pathname === "/api/auth/pair") {
+      if (request.method !== "POST") {
+        sendJson(response, 405, errorPayload(requestId, "METHOD_NOT_ALLOWED", "Use POST to pair this browser."), { Allow: "POST, OPTIONS" });
+        return;
+      }
+      if (config.authMode !== "pairing") {
+        sendJson(response, 409, errorPayload(requestId, "AI_AUTH_NOT_ENABLED", "This server does not use learner pairing."));
+        return;
+      }
+      const clientKey = getClientKey(request, config);
+      if (!allowPairingAttempt(clientKey)) {
+        sendJson(response, 429, errorPayload(requestId, "PAIRING_RATE_LIMITED", "Too many pairing attempts. Wait five minutes and try again."), { "Retry-After": "300" });
+        return;
+      }
+      let payload;
+      try {
+        payload = await readJsonBody(request, config);
+      } catch (error) {
+        if (error.code === "REQUEST_ABORTED") return;
+        sendJson(response, 400, errorPayload(requestId, "INVALID_JSON", error.message));
+        return;
+      }
+      const code = typeof payload?.code === "string" ? payload.code.trim() : "";
+      if (!code || code.length > 200 || !pairingCodesMatch(config.pairingCode.trim(), code)) {
+        logger.warn?.(JSON.stringify({ event: "pairing_rejected", requestId, client: clientKey }));
+        sendJson(response, 401, errorPayload(requestId, "PAIRING_CODE_INVALID", "That pairing code does not match this server. Check it with the server operator."));
+        return;
+      }
+      const token = mintSessionToken(sessionSecret, sessionTtlMs);
+      const cookie = [
+        `${SESSION_COOKIE_NAME}=${token}`,
+        "Path=/",
+        `Max-Age=${Math.floor(sessionTtlMs / 1_000)}`,
+        "HttpOnly",
+        "SameSite=Strict",
+        ...(tlsOptions ? ["Secure"] : []),
+      ].join("; ");
+      logger.info?.(JSON.stringify({ event: "pairing_accepted", requestId, client: clientKey }));
+      sendJson(response, 200, { ok: true, requestId, expiresAt: new Date(Date.now() + sessionTtlMs).toISOString() }, { "Set-Cookie": cookie });
+      return;
+    }
+    if (config.authMode === "pairing"
+      && ["/api/ai/respond/stream", "/api/ai/respond", "/api/local-search"].includes(url.pathname)
+      && !hasActiveSession(request)) {
+      sendJson(response, 401, errorPayload(
+        requestId,
+        "AI_AUTH_REQUIRED",
+        "This browser is not paired with the Lumen server yet, or its session expired. Enter the operator's pairing code in the AI studio to continue.",
+      ));
       return;
     }
     if (url.pathname === "/api/ai/respond/stream") {

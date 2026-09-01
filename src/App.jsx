@@ -1439,7 +1439,14 @@ export default function App() {
       notify("This response has no text to save.", "error");
       return false;
     }
-    const citationSources = Array.isArray(payload.citationSources) ? payload.citationSources : [];
+    // Mac tutor sources carry {citationNumber, original:{documentId}}; phone
+    // sources carry {documentId, anchor} with an index+1 numbering fallback.
+    const citationSources = (Array.isArray(payload.citationSources) ? payload.citationSources : []).map((source, index) => ({
+      citationNumber: Number.isSafeInteger(source?.citationNumber) ? source.citationNumber : index + 1,
+      title: typeof source?.title === "string" && source.title.trim() ? source.title : `Source ${index + 1}`,
+      section: typeof source?.section === "string" ? source.section : "",
+      documentId: source?.original?.documentId || source?.documentId || source?.original?.id || "",
+    }));
     const webSources = Array.isArray(payload.webSources) ? payload.webSources : [];
     // Transient [W#] tokens become durable links; library citations keep their
     // labels and gain a plain-text footer so the note stays self-describing
@@ -1452,7 +1459,7 @@ export default function App() {
     const full = `${materialized}${sourceFooter}`;
     const bounded = full.length > 4_000 ? `${full.slice(0, 4_000 - marker.length)}${marker}` : full;
     const documentId = citationSources
-      .map((source) => source.original?.documentId || source.original?.id || "")
+      .map((source) => source.documentId)
       .find((id) => allDocumentMap.has(id)) || "";
     const createdAt = new Date().toISOString();
     const clipping = {

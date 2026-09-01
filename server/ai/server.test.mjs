@@ -61,15 +61,16 @@ test("TLS configuration fails closed when only one credential path is set", () =
 });
 
 test("private AI cannot bind beyond loopback without TLS and an exact HTTPS origin", () => {
+  // Pairing (or its explicit waiver) is checked first; these cases opt into
+  // pairing so the TLS/origin invariants stay independently proven.
+  const pairedLan = { HOST: "0.0.0.0", PORT: "0", AI_ENABLED: "true", AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" };
   assert.throws(() => createApplicationServer({
-    env: { HOST: "0.0.0.0", PORT: "0", AI_ENABLED: "true" },
+    env: pairedLan,
     logger: silentLogger,
   }), /TLS is required/);
   assert.throws(() => createApplicationServer({
     env: {
-      HOST: "0.0.0.0",
-      PORT: "0",
-      AI_ENABLED: "true",
+      ...pairedLan,
       AI_ALLOWED_ORIGINS: "http://192.168.1.13:4194",
     },
     logger: silentLogger,
@@ -537,6 +538,111 @@ test("the Deep profile is capability-gated on attested model thinking support", 
   const thinking = await start({ fetchImpl: makeFetch(["completion", "tools", "thinking"]) });
   const accepted = await post(thinking, { ...plainRequest, responseProfile: "deep", maxOutputTokens: undefined });
   assert.equal(accepted.status, 200);
+});
+
+test("learner pairing guards AI and search endpoints behind an HttpOnly session", async () => {
+  const baseUrl = await start({
+    env: { AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" },
+    fetchImpl: async () => ollamaReply("ok"),
+  });
+
+  const denied = await post(baseUrl, plainRequest);
+  assert.equal(denied.status, 401);
+  assert.equal((await denied.json()).error.code, "AI_AUTH_REQUIRED");
+  const searchDenied = await fetch(`${baseUrl}/api/local-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "anything" }),
+  });
+  assert.equal(searchDenied.status, 401, "the search gateway was reachable without a session");
+
+  const unpairedConfig = await fetch(`${baseUrl}/api/ai/config`).then((response) => response.json());
+  assert.equal(unpairedConfig.auth.required, true);
+  assert.equal(unpairedConfig.auth.sessionActive, false);
+  assert.equal(unpairedConfig.auth.pairEndpoint, "/api/auth/pair");
+
+  const wrongCode = await fetch(`${baseUrl}/api/auth/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "wrong-code-guess" }),
+  });
+  assert.equal(wrongCode.status, 401);
+  assert.equal((await wrongCode.json()).error.code, "PAIRING_CODE_INVALID");
+
+  const paired = await fetch(`${baseUrl}/api/auth/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "correct-horse-battery" }),
+  });
+  assert.equal(paired.status, 200);
+  const setCookies = paired.headers.getSetCookie();
+  assert.equal(setCookies.length, 1);
+  assert.match(setCookies[0], /^lumen\.ai\.session=/);
+  assert.match(setCookies[0], /HttpOnly/);
+  assert.match(setCookies[0], /SameSite=Strict/);
+  const cookie = setCookies[0].split(";")[0];
+
+  const allowed = await post(baseUrl, plainRequest, { Cookie: cookie });
+  assert.equal(allowed.status, 200, "a freshly paired session could not use AI");
+  const pairedConfig = await fetch(`${baseUrl}/api/ai/config`, { headers: { Cookie: cookie } }).then((response) => response.json());
+  assert.equal(pairedConfig.auth.sessionActive, true);
+
+  const tamperedValue = cookie.endsWith("aa") ? `${cookie.slice(0, -2)}bb` : `${cookie.slice(0, -2)}aa`;
+  const tampered = await post(baseUrl, plainRequest, { Cookie: tamperedValue });
+  assert.equal(tampered.status, 401, "a tampered session token was accepted");
+
+  const openServer = await start({ fetchImpl: async () => ollamaReply("ok") });
+  const notEnabled = await fetch(`${openServer}/api/auth/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "anything-at-all" }),
+  });
+  assert.equal(notEnabled.status, 409);
+  assert.equal((await notEnabled.json()).error.code, "AI_AUTH_NOT_ENABLED");
+});
+
+test("pairing attempts are strictly rate limited per client", async () => {
+  const baseUrl = await start({
+    env: { AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" },
+    fetchImpl: async () => ollamaReply("ok"),
+  });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const rejected = await fetch(`${baseUrl}/api/auth/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: `wrong-${attempt}` }),
+    });
+    assert.equal(rejected.status, 401);
+  }
+  const limited = await fetch(`${baseUrl}/api/auth/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "correct-horse-battery" }),
+  });
+  assert.equal(limited.status, 429, "the sixth attempt in the window was not rate limited");
+  assert.equal((await limited.json()).error.code, "PAIRING_RATE_LIMITED");
+});
+
+test("non-loopback AI serving fails closed without pairing or an explicit acknowledgment", () => {
+  const lanEnv = { HOST: "192.168.1.10", PORT: "0", AI_ENABLED: "true", OLLAMA_MODEL: "test-model" };
+  assert.throws(
+    () => createApplicationServer({ env: lanEnv, logger: silentLogger }),
+    /requires learner pairing/,
+  );
+  // The acknowledgment (or pairing) advances startup to the next invariant,
+  // which is the TLS requirement.
+  assert.throws(
+    () => createApplicationServer({ env: { ...lanEnv, AI_ALLOW_UNAUTHENTICATED_LAN: "true" }, logger: silentLogger }),
+    /TLS is required/,
+  );
+  assert.throws(
+    () => createApplicationServer({ env: { ...lanEnv, AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" }, logger: silentLogger }),
+    /TLS is required/,
+  );
+  assert.throws(
+    () => createApplicationServer({ env: { ...lanEnv, AI_AUTH: "pairing" }, logger: silentLogger }),
+    /AI_PAIRING_CODE with at least 8 characters/,
+  );
 });
 
 test("version-skewed request contracts fail with one typed, actionable error", async () => {

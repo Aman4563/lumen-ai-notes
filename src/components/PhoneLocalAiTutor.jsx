@@ -10,6 +10,7 @@ import {
   Cpu,
   ExternalLink,
   LoaderCircle,
+  NotebookPen,
   RefreshCw,
   RotateCcw,
   Search,
@@ -439,7 +440,7 @@ const AssistantResult = ({ message, onCreateFlashcardDrafts, onNavigateSource, o
 const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HISTORY_MESSAGES)
   .map((message) => ({ ...message, content: cleanText(message.content, 600) }));
 
-export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onNotify, onInteractionChange }) {
+export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange }) {
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
   const promptId = useId();
   const controllerRef = useRef(null);
@@ -466,6 +467,7 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
   const [pendingSearch, setPendingSearch] = useState(null);
   const [sourceWarning, setSourceWarning] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState("");
+  const [savedNoteMessageIds, setSavedNoteMessageIds] = useState(() => new Set());
   const [streamingSources, setStreamingSources] = useState([]);
   const historyRef = useRef(history);
   const streamBufferRef = useRef("");
@@ -828,6 +830,17 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
     if (copied) globalThis.setTimeout?.(() => setCopiedMessageId((current) => current === message.id ? "" : current), 1_800);
   };
 
+  const saveMessageNote = (message) => {
+    if (typeof onSaveAnswerNote !== "function" || message.data) return;
+    const saved = onSaveAnswerNote({
+      content: message.content,
+      title: `AI ${(PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "tutor").toLocaleLowerCase()} answer (on-device)`,
+      citationSources: message.sources || [],
+      webSources: (message.citations || []).map(({ index, title, url }) => ({ index, title, url })),
+    });
+    if (saved) setSavedNoteMessageIds((current) => new Set([...current, message.id]));
+  };
+
   const selectMode = (nextId) => {
     const next = PHONE_TUTOR_MODES.find((mode) => mode.id === nextId) || PHONE_TUTOR_MODES[0];
     const previousDefault = currentMode.prompt;
@@ -890,7 +903,7 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
               {history.map((message) => (
                 <article className={`phone-tutor__message is-${message.role}`} key={message.id}>
-                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Again</button>}</div>}</div>
+                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{!message.data && typeof onSaveAnswerNote === "function" && <button type="button" aria-label="Save this answer to your notebook as a labeled AI note" disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Again</button>}</div>}</div>
                   {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
                   {message.role === "assistant" && <EvidenceDetails message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onNavigateSource={onNavigateSource} />}
                 </article>

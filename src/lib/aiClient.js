@@ -705,6 +705,29 @@ export const requestStructuredAi = async (payload, options) => {
 };
 
 /**
+ * Pairs this browser with a pairing-protected Lumen server. The server
+ * responds with an HttpOnly session cookie; no token is ever exposed to
+ * JavaScript. Success clears the configuration cache so the next check
+ * reflects the active session.
+ */
+export const pairAiSession = async (code, { baseUrl = "", signal, timeoutMs = 15_000 } = {}) => {
+  const normalized = typeof code === "string" ? code.trim() : "";
+  if (!normalized || normalized.length > 200) {
+    throw new AiClientError("INVALID_PAIRING_CODE", "Enter the pairing code shown by the Lumen server operator.");
+  }
+  const response = await fetchJson(endpoint(baseUrl, "/api/auth/pair"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: normalized }),
+  }, { signal, timeoutMs });
+  if (response.ok !== true) {
+    throw new AiClientError("AI_INVALID_RESPONSE", "The pairing response was invalid.", { status: 502 });
+  }
+  clearAiConfigCache();
+  return { expiresAt: typeof response.expiresAt === "string" ? response.expiresAt : null };
+};
+
+/**
  * Runs one explicit same-origin search through the server-owned SearXNG
  * gateway. Calling this function is the per-search consent action; it accepts
  * no URL, engine, provider, or model option.
@@ -770,6 +793,7 @@ export const clipAiContext = (value, maximumCharacters = 16_000) => {
 
 export const aiClient = Object.freeze({
   getConfig: getAiConfig,
+  pair: pairAiSession,
   request: requestAi,
   requestStream: requestAiStream,
   stream: requestAiStream,

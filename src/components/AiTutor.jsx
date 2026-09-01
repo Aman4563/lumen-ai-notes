@@ -779,6 +779,7 @@ const CONFIG_INVALIDATING_REQUEST_ERRORS = new Set([
   "VALIDATION_ERROR",
   "AI_CONTRACT_MISMATCH",
   "AI_PROFILE_UNSUPPORTED",
+  "AI_AUTH_REQUIRED",
   "AI_CONTEXT_LIMIT",
   "AI_INPUT_TOO_LARGE",
   "AI_NETWORK_ERROR",
@@ -940,6 +941,9 @@ export default function AiTutor({
   const [modeId, setModeId] = useState(initialModeOption.id);
   const [difficulty, setDifficulty] = useState(DIFFICULTIES.some((item) => item.id === initialDifficulty) ? initialDifficulty : "intermediate");
   const [responseProfile, setResponseProfile] = useState("balanced");
+  const [pairingCode, setPairingCode] = useState("");
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingError, setPairingError] = useState("");
   const [prompt, setPrompt] = useState(() => asTrimmedString(initialPrompt, MAX_PROMPT_CHARS) || initialModeOption.prompt);
   const initialTombstones = new Set((Array.isArray(historyTombstones) ? historyTombstones : []).filter((id) => typeof id === "string"));
   const [history, setHistory] = useState(() => normalizeHistory(initialHistory).filter((message) => !initialTombstones.has(message.id)));
@@ -1028,6 +1032,8 @@ export default function AiTutor({
           setConfigState({ status: "error", config, message: `The installed ${config.model} digest does not match this server's approved model build. Verify the Ollama tag/digest before using it.` });
         } else if (config.service?.completionCapable !== true) {
           setConfigState({ status: "error", config, message: `The installed model ${config.model} did not attest Ollama completion support. Use the documented Qwen model or update Ollama.` });
+        } else if (config.auth?.required === true && config.auth?.sessionActive !== true) {
+          setConfigState({ status: "pairing", config, message: "This server requires one-time pairing. Enter the operator's pairing code below to use AI in this browser." });
         } else {
           setConfigState({ status: "ready", config, message: "Local Ollama model ready — no paid model API" });
         }
@@ -1760,7 +1766,8 @@ export default function AiTutor({
 
   const configIcon = configState.status === "ready" ? <ShieldCheck size={16} aria-hidden="true" />
     : configState.status === "checking" ? <LoaderCircle className="ai-tutor__spin" size={16} aria-hidden="true" />
-      : <AlertTriangle size={16} aria-hidden="true" />;
+      : configState.status === "pairing" ? <LockKeyhole size={16} aria-hidden="true" />
+        : <AlertTriangle size={16} aria-hidden="true" />;
 
   return (
     <section className={`ai-tutor ${className}`.trim()} aria-labelledby={headingId}>
@@ -1779,6 +1786,45 @@ export default function AiTutor({
         {configIcon}<span>{configState.message}</span>
         {(configState.status === "error" || configState.status === "disabled") && <button className="ai-tutor__text-button" type="button" onClick={() => setConfigAttempt((attempt) => attempt + 1)}><RefreshCw size={14} aria-hidden="true" /> Check again</button>}
       </div>
+
+      {configState.status === "pairing" && (
+        <form
+          className="ai-tutor__pairing"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (pairingBusy || !pairingCode.trim()) return;
+            setPairingBusy(true);
+            setPairingError("");
+            try {
+              await aiClient.pair(pairingCode);
+              setPairingCode("");
+              setConfigAttempt((attempt) => attempt + 1);
+            } catch (error) {
+              setPairingError(error instanceof AiClientError ? error.message : "Pairing failed. Try again.");
+            } finally {
+              setPairingBusy(false);
+            }
+          }}
+        >
+          <label htmlFor={`${headingId}-pairing-code`}>Pairing code</label>
+          <div className="ai-tutor__pairing-row">
+            <input
+              id={`${headingId}-pairing-code`}
+              type="password"
+              autoComplete="one-time-code"
+              value={pairingCode}
+              maxLength={200}
+              placeholder="Code from the server operator"
+              onChange={(event) => setPairingCode(event.target.value)}
+            />
+            <button className="ai-tutor__button ai-tutor__button--primary" type="submit" disabled={pairingBusy || !pairingCode.trim()}>
+              {pairingBusy ? <LoaderCircle className="ai-tutor__spin" size={16} aria-hidden="true" /> : <LockKeyhole size={16} aria-hidden="true" />} Pair this browser
+            </button>
+          </div>
+          {pairingError && <p className="ai-tutor__pairing-error" role="alert">{pairingError}</p>}
+          <p className="ai-tutor__pairing-note">Pairing stores a session cookie only in this browser. The operator can revoke every session by rotating the pairing code or restarting the server.</p>
+        </form>
+      )}
 
       <div className="ai-tutor__mode-tabs" aria-label="Tutor mode">
         {MODE_OPTIONS.map((mode) => <button aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-active" : ""} type="button" disabled={requestState.status === "loading"} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}

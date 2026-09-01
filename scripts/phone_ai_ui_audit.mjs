@@ -232,6 +232,16 @@ try {
   assert.deepEqual(await page.evaluate(() => window.__PHONE_AI_AUDIT__.retrievalCalls[0].options), { maxDocuments: 2, maxPassages: 2, maxBytes: 4400 });
   assert.match(await page.$eval(".phone-tutor__evidence", (node) => node.textContent), /searched 143 local documents/i);
 
+  // Answer-to-note (AI-001): a completed on-device prose answer can be saved
+  // as a labeled AI note with its library and web provenance attached.
+  await page.$$eval(".phone-tutor__message.is-assistant .phone-tutor__message-actions button", (nodes) => nodes.find((node) => /save/i.test(node.textContent))?.click());
+  const savedPhoneNote = await page.evaluate(() => window.__PHONE_AI_AUDIT__.savedNotes.at(-1));
+  assert.ok(savedPhoneNote, "the phone save-to-notes action did not reach the host callback");
+  assert.match(savedPhoneNote.content, /gradient descent/i, "the saved phone note lost the answer text");
+  assert.match(savedPhoneNote.title, /on-device/i, "the saved phone note is not labeled as on-device");
+  assert.equal(savedPhoneNote.citationSources.length, 1, "the saved phone note lost its library provenance");
+  await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant .phone-tutor__message-actions button")].some((node) => /saved/i.test(node.textContent) && node.disabled), { timeout: 4_000 });
+
   // Structured-field citations (AI-001): [S#] labels inside flashcard fields
   // are the same navigable controls as prose citations, not inert text.
   await clickByText(page, ".phone-tutor__mode-tabs button", "Flashcards");
