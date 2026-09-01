@@ -325,7 +325,12 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   const [tool, setTool] = useState("pen");
   const [color, setColor] = useState(colors[0]);
   const [lineWidth, setLineWidth] = useState(3);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
+  // Single-selection compatibility: most tools (recolor, resize slider) act on
+  // exactly one object; group operations read selectedIds directly.
+  const setSelectedId = useCallback((id) => setSelectedIds(id ? [id] : []), []);
+  const marqueeRef = useRef(null);
+  const clipboardRef = useRef([]);
   const [pendingText, setPendingText] = useState(null);
   const [renamingPage, setRenamingPage] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -334,7 +339,9 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   boardRef.current = board;
   const activePage = useMemo(() => board.pages.find((page) => page.id === board.activePageId) || board.pages[0], [board]);
   const objects = activePage?.objects || [];
+  const selectedId = selectedIds.length === 1 ? selectedIds[0] : "";
   const selectedObject = objects.find((object) => object.id === selectedId);
+  const selectedObjects = objects.filter((object) => selectedIds.includes(object.id));
   const activePageIndex = board.pages.findIndex((page) => page.id === activePage?.id);
 
   const syncHistoryCounts = () => setHistoryCounts({ past: historyRef.current.past.length, future: historyRef.current.future.length });
@@ -614,8 +621,8 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     context.clearRect(0, 0, rect.width, rect.height);
     drawBackground(context, rect.width, rect.height, board.background);
     objects.forEach((object) => drawObject(context, object, rect.width, rect.height));
-    drawSelection(context, selectedObject, rect.width, rect.height);
-  }, [board.background, objects, selectedObject]);
+    objects.filter((object) => selectedIds.includes(object.id)).forEach((object) => drawSelection(context, object, rect.width, rect.height));
+  }, [board.background, objects, selectedIds]);
 
   useEffect(() => {
     redraw();
@@ -642,8 +649,25 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     try { canvasRef.current.setPointerCapture?.(event.pointerId); } catch { /* Some iOS pointer streams do not expose capture. */ }
     if (tool === "select") {
       const hit = hitTest(point);
-      setSelectedId(hit?.id || "");
-      if (hit) movingRef.current = { id: hit.id, start: point, originalPoints: hit.points, before: boardRef.current, moved: false };
+      if (hit && event.shiftKey) {
+        setSelectedIds((current) => current.includes(hit.id) ? current.filter((id) => id !== hit.id) : [...current, hit.id]);
+        return;
+      }
+      if (hit) {
+        const group = selectedIds.includes(hit.id) ? selectedIds : [hit.id];
+        setSelectedIds(group);
+        movingRef.current = {
+          ids: group,
+          start: point,
+          originals: new Map(objects.filter((object) => group.includes(object.id)).map((object) => [object.id, object.points])),
+          before: boardRef.current,
+          moved: false,
+        };
+        return;
+      }
+      // Empty space starts a marquee: release selects every contained object.
+      setSelectedIds([]);
+      marqueeRef.current = { start: point, end: point };
       return;
     }
     if (tool === "text" || tool === "sticky") {
@@ -662,7 +686,27 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       const deltaX = point.x - move.start.x;
       const deltaY = point.y - move.start.y;
       move.moved = move.moved || Math.abs(deltaX) + Math.abs(deltaY) > 0.002;
-      updateActiveObjects((current) => current.map((object) => object.id === move.id ? { ...object, points: move.originalPoints.map((item) => ({ x: Math.max(0, Math.min(1, item.x + deltaX)), y: Math.max(0, Math.min(1, item.y + deltaY)) })) } : object), false);
+      updateActiveObjects((current) => current.map((object) => move.originals.has(object.id)
+        ? { ...object, points: move.originals.get(object.id).map((item) => ({ x: Math.max(0, Math.min(1, item.x + deltaX)), y: Math.max(0, Math.min(1, item.y + deltaY)) })) }
+        : object), false);
+      return;
+    }
+    if (marqueeRef.current) {
+      event.preventDefault();
+      marqueeRef.current.end = pointFromEvent(event);
+      const canvas = canvasRef.current;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const context = canvas.getContext("2d");
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      redraw();
+      const { start, end } = marqueeRef.current;
+      context.save();
+      context.strokeStyle = "#e36f4a";
+      context.setLineDash([5, 4]);
+      context.lineWidth = 1.2;
+      context.strokeRect(Math.min(start.x, end.x) * rect.width, Math.min(start.y, end.y) * rect.height, Math.abs(end.x - start.x) * rect.width, Math.abs(end.y - start.y) * rect.height);
+      context.restore();
       return;
     }
     if (!drawingRef.current) return;
@@ -683,6 +727,23 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   const finishDrawing = (event) => {
+    if (marqueeRef.current) {
+      const { start, end } = marqueeRef.current;
+      marqueeRef.current = null;
+      const box = { minX: Math.min(start.x, end.x), maxX: Math.max(start.x, end.x), minY: Math.min(start.y, end.y), maxY: Math.max(start.y, end.y) };
+      if ((box.maxX - box.minX) + (box.maxY - box.minY) > 0.01) {
+        const contained = objects.filter((object) => {
+          if (object.tool === "eraser") return false;
+          const bounds = objectBounds(object);
+          return bounds.minX >= box.minX && bounds.maxX <= box.maxX && bounds.minY >= box.minY && bounds.maxY <= box.maxY;
+        }).map((object) => object.id);
+        setSelectedIds(contained);
+        if (contained.length) notify?.(`${contained.length} object${contained.length === 1 ? "" : "s"} selected. Drag to move them together.`);
+      }
+      redraw();
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
     if (movingRef.current) {
       const move = movingRef.current;
       movingRef.current = null;
@@ -749,36 +810,57 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   }, []);
 
   const deleteSelected = useCallback(() => {
-    if (!selectedId) return;
-    updateActiveObjects((current) => current.filter((object) => object.id !== selectedId));
-    setSelectedId("");
-    notify?.("Selected object deleted. Undo is available.");
-  }, [notify, selectedId, updateActiveObjects]);
+    if (!selectedIds.length) return;
+    const removing = new Set(selectedIds);
+    updateActiveObjects((current) => current.filter((object) => !removing.has(object.id)));
+    setSelectedIds([]);
+    notify?.(`${removing.size === 1 ? "Selected object" : `${removing.size} objects`} deleted. Undo is available.`);
+  }, [notify, selectedIds, updateActiveObjects]);
+  const cloneWithOffset = (object, offset) => ({
+    ...object,
+    id: createId(),
+    points: object.points.map((point) => ({ ...point, x: Math.min(1, point.x + offset), y: Math.min(1, point.y + offset) })),
+  });
   const duplicateSelected = () => {
-    if (!selectedObject) return;
-    const duplicate = { ...selectedObject, id: createId(), points: selectedObject.points.map((point) => ({ x: Math.min(1, point.x + 0.025), y: Math.min(1, point.y + 0.025) })) };
-    updateActiveObjects((current) => [...current, duplicate]);
-    setSelectedId(duplicate.id);
+    if (!selectedObjects.length) return;
+    const duplicates = selectedObjects.map((object) => cloneWithOffset(object, 0.025));
+    updateActiveObjects((current) => [...current, ...duplicates]);
+    setSelectedIds(duplicates.map((object) => object.id));
   };
+  const copySelected = useCallback(() => {
+    if (!selectedObjects.length) return;
+    clipboardRef.current = selectedObjects.map((object) => ({ ...object, points: object.points.map((point) => ({ ...point })) }));
+    notify?.(`${selectedObjects.length} object${selectedObjects.length === 1 ? "" : "s"} copied. Paste with ⌘/Ctrl + V.`);
+  }, [notify, selectedObjects]);
+  const pasteClipboard = useCallback(() => {
+    if (!clipboardRef.current.length) return;
+    const pasted = clipboardRef.current.map((object) => cloneWithOffset(object, 0.03));
+    updateActiveObjects((current) => [...current, ...pasted]);
+    setSelectedIds(pasted.map((object) => object.id));
+    notify?.(`${pasted.length} object${pasted.length === 1 ? "" : "s"} pasted.`);
+  }, [notify, updateActiveObjects]);
 
   // Keyboard nudging (A11Y-001): arrow keys move the selected object by 1% of
   // the canvas (Shift: 5%) — a non-drag alternative to pointer moves that goes
   // through the same history path as any other edit.
   const nudgeSelected = useCallback((deltaX, deltaY) => {
-    if (!selectedId) return;
-    updateActiveObjects((current) => current.map((object) => object.id === selectedId
+    if (!selectedIds.length) return;
+    const moving = new Set(selectedIds);
+    updateActiveObjects((current) => current.map((object) => moving.has(object.id)
       ? { ...object, points: object.points.map((point) => ({ ...point, x: Math.max(0, Math.min(1, point.x + deltaX)), y: Math.max(0, Math.min(1, point.y + deltaY)) })) }
       : object));
-  }, [selectedId, updateActiveObjects]);
+  }, [selectedIds, updateActiveObjects]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
       const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target?.isContentEditable;
       if (typing) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
-      else if ((event.key === "Delete" || event.key === "Backspace") && selectedId) { event.preventDefault(); deleteSelected(); }
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "c" && selectedIds.length) { event.preventDefault(); copySelected(); }
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "v" && clipboardRef.current.length) { event.preventDefault(); pasteClipboard(); }
+      else if ((event.key === "Delete" || event.key === "Backspace") && selectedIds.length) { event.preventDefault(); deleteSelected(); }
       else if (event.key === "Escape") { setSelectedId(""); setPendingText(null); }
-      else if (event.key.startsWith("Arrow") && selectedId) {
+      else if (event.key.startsWith("Arrow") && selectedIds.length) {
         event.preventDefault();
         const step = event.shiftKey ? 0.05 : 0.01;
         nudgeSelected(
@@ -789,7 +871,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelected, nudgeSelected, redo, selectedId, undo]);
+  }, [copySelected, deleteSelected, nudgeSelected, pasteClipboard, redo, selectedIds, setSelectedId, undo]);
 
   const clear = () => {
     if (!objects.length || !window.confirm("Clear every object on this page? You can undo this action.")) return;
@@ -912,12 +994,12 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       <div className="tool-segment shape-tools"><button className={tool === "line" ? "active" : ""} onClick={() => setTool("line")} aria-label="Straight line" type="button"><Minus size={19} /></button><button className={tool === "rectangle" ? "active" : ""} onClick={() => setTool("rectangle")} aria-label="Rectangle" type="button"><Square size={18} /></button><button className={tool === "ellipse" ? "active" : ""} onClick={() => setTool("ellipse")} aria-label="Ellipse" type="button"><Circle size={18} /></button><button className={tool === "arrow" ? "active" : ""} onClick={() => setTool("arrow")} aria-label="Arrow" type="button"><MoveUpRight size={19} /></button><button className={tool === "text" ? "active" : ""} onClick={() => setTool("text")} aria-label="Text" type="button"><Type size={19} /></button><button className={tool === "sticky" ? "active" : ""} onClick={() => setTool("sticky")} aria-label="Sticky note" type="button"><StickyNote size={19} /></button></div>
       <div className="color-row" aria-label="Ink color">{colors.map((ink) => <button key={ink} className={(selectedObject?.color || color) === ink ? "color-dot active" : "color-dot"} style={{ "--ink": ink }} onClick={() => changeColor(ink)} aria-label={`Use color ${ink}`} type="button" />)}</div>
       <label className="stroke-size"><span>Size</span><input type="range" min="1" max="12" value={selectedObject && !["text", "sticky"].includes(selectedObject.tool) ? Math.min(12, selectedObject.width) : lineWidth} onChange={(event) => changeWidth(Number(event.target.value))} aria-label="Stroke size" /></label>
-      {selectedObject && <div className="tool-segment board-selection-actions"><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
+      {selectedObjects.length > 0 && <div className="tool-segment board-selection-actions"><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
       <div className="tool-segment board-history"><button onClick={undo} disabled={!historyCounts.past} aria-label="Undo" type="button"><Undo2 size={19} /></button><button onClick={redo} disabled={!historyCounts.future} aria-label="Redo" type="button"><Redo2 size={19} /></button><button onClick={clear} disabled={!objects.length} aria-label="Clear current page" type="button"><Trash2 size={19} /></button></div>
     </div></div>
 
     <div className={`board-canvas-wrap background-${board.background}`} ref={containerRef}>{!loaded && <div className="board-loading"><RotateCcw className="spin" size={22} /> Restoring every page…</div>}<canvas ref={canvasRef} className="board-canvas" tabIndex="0" aria-label={`${activePage.name} drawing surface. Active tool: ${tool}`} onPointerDown={startDrawing} onPointerMove={continueDrawing} onPointerUp={finishDrawing} onPointerCancel={finishDrawing} /></div>
-    <p className="board-hint"><strong>{tool === "select" ? selectedObject ? "Drag the selected object; use the toolbar to recolor, duplicate, or delete it." : "Tap an object to select and move it." : tool === "text" || tool === "sticky" ? "Tap the board to place it." : "Draw directly with touch, mouse, or Apple Pencil."}</strong><span>{objects.length} object{objects.length === 1 ? "" : "s"} · {board.pages.length} page{board.pages.length === 1 ? "" : "s"} · {saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save failed" : "Saved"}</span></p>
+    <p className="board-hint"><strong>{tool === "select" ? selectedObjects.length > 1 ? `${selectedObjects.length} objects selected — drag, nudge, duplicate, copy, or delete them together.` : selectedObject ? "Drag the selected object; Shift-tap adds more; use the toolbar to recolor, duplicate, or delete." : "Tap an object to select it, Shift-tap to add, or drag empty space to box-select." : tool === "text" || tool === "sticky" ? "Tap the board to place it." : "Draw directly with touch, mouse, or Apple Pencil."}</strong><span>{objects.length} object{objects.length === 1 ? "" : "s"} · {board.pages.length} page{board.pages.length === 1 ? "" : "s"} · {saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save failed" : "Saved"}</span></p>
     <TextEntryDialog pending={pendingText} onClose={() => setPendingText(null)} onSubmit={addTextObject} />
     <RenamePageDialog page={renamingPage ? activePage : null} onClose={() => setRenamingPage(false)} onRename={renamePage} />
   </section>;

@@ -365,6 +365,52 @@ try {
   });
   await waitForStored(page, boardKey, (stored) => stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id)?.width === 8, "resizing the selected line stroke was not persisted");
 
+  // BOARD-001 multi-select: a marquee over both lines selects them, arrows
+  // nudge the group, and copy/paste round-trips through the keyboard.
+  await page.mouse.move(canvasBox.left + canvasBox.width * 0.05, canvasBox.top + canvasBox.height * 0.15);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.left + canvasBox.width * 0.95, canvasBox.top + canvasBox.height * 0.95, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 objects selected"), { timeout: 5_000 })
+    .catch(() => assert.fail("the marquee did not select both lines"));
+  const beforeNudge = await readStored(page, boardKey);
+  const nudgeReference = beforeNudge.pages[1].objects.find((item) => item.id === mouseLine.id).points[0].x;
+  await page.keyboard.press("ArrowRight");
+  await waitForStored(page, boardKey, (stored) => {
+    const moved = stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id);
+    return Boolean(moved) && Math.abs(moved.points[0].x - nudgeReference - 0.01) < 0.001;
+  }, "arrow nudging did not move the selected group by one percent");
+  await page.keyboard.down("Control");
+  await page.keyboard.press("c");
+  await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 objects copied"), { timeout: 5_000 })
+    .catch(() => assert.fail("copying the selection did not confirm"));
+  await page.keyboard.down("Control");
+  await page.keyboard.press("v");
+  await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("4 objects"), { timeout: 5_000 })
+    .catch(() => assert.fail("pasting did not add the copied objects"));
+  await page.keyboard.press("Delete");
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"), { timeout: 5_000 })
+    .catch(() => assert.fail("deleting the pasted group did not restore the two-line page"));
+
+  // BOARD-003: the SVG export is a valid standalone image of the page.
+  await page.click('button[aria-label="Export current whiteboard page as SVG"]');
+  {
+    let svgPath = "";
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && !svgPath) {
+      const files = await readdir(downloadDirectory);
+      const svgName = files.find((name) => name.endsWith(".svg"));
+      if (svgName) svgPath = join(downloadDirectory, svgName);
+      else await delay(100);
+    }
+    assert.ok(svgPath, "whiteboard SVG was not downloaded");
+    const svgText = await readFile(svgPath, "utf8");
+    assert.match(svgText, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    assert.ok((svgText.match(/<path |<polyline /g) || []).length >= 2, "the SVG export is missing the drawn lines");
+  }
+
   await page.$eval(".board-page-controls select", (select) => { select.value = select.options[0].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("5 objects"));
   await page.$eval(".board-page-controls select", (select) => { select.value = select.options[1].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -738,7 +784,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, page-switch and reload persistence, PNG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
