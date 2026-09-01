@@ -1157,10 +1157,13 @@ changing the bundle.
 
 ### P2 — roadmap delivery
 
-- mistake notebook, diagnostics/assessments, plans/reminders;
+- ~~mistake notebook~~ (shipped Partial 2026-09-01: auto-capture, merge,
+  corrective scheduling); diagnostics/assessments, plans/reminders;
 - Python/SQL/simulation labs;
 - structured interview tracks and timed rounds;
-- advanced lexical/semantic search and concept graph;
+- ~~advanced lexical search~~ (typo tolerance, exclusions, saved/recent,
+  highlighted snippets shipped 2026-09-01); stemming/synonyms and field
+  filters, semantic search, and concept graph;
 - collections, revisions, richer import/export;
 - encrypted optional cross-device sync before collaboration;
 - authored teaching decks and advanced board/media/navigation/export;
