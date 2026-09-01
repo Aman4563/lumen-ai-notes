@@ -29,6 +29,30 @@ const cacheUsage = async () => {
   return { bytes: total, requests };
 };
 
+/**
+ * WebLLM keeps downloaded model artifacts (weights, WASM, config) in Cache
+ * Storage under webllm-prefixed cache names. Reported separately (DATA-002):
+ * model bytes dwarf the study workspace and would otherwise read as bloat.
+ */
+const webllmCacheUsage = async () => {
+  if (!("caches" in window)) return { bytes: 0, requests: 0 };
+  let total = 0;
+  let requests = 0;
+  for (const name of await caches.keys()) {
+    if (!name.toLowerCase().startsWith("webllm")) continue;
+    const cache = await caches.open(name);
+    const keys = await cache.keys();
+    requests += keys.length;
+    for (const request of keys) {
+      const response = await cache.match(request);
+      if (!response) continue;
+      const declared = Number(response.headers.get("content-length"));
+      total += Number.isFinite(declared) && declared >= 0 ? declared : (await response.clone().blob()).size;
+    }
+  }
+  return { bytes: total, requests };
+};
+
 const removeOptionalCache = async () => {
   if (!("caches" in window)) return 0;
   // `/api/*` is deliberately excluded from the service worker. A successful
@@ -59,15 +83,16 @@ const removeOptionalCache = async () => {
 };
 
 export default function StorageHealth({ online, onNotify }) {
-  const [state, setState] = useState({ status: "loading", usage: 0, quota: 0, workspaceBytes: 0, workspaceMaximum: 0, boardRecords: 0, boardMaximum: 0, profileBytes: 0, boardBytes: 0, cacheBytes: 0, cacheRequests: 0, error: "" });
+  const [state, setState] = useState({ status: "loading", usage: 0, quota: 0, workspaceBytes: 0, workspaceMaximum: 0, boardRecords: 0, boardMaximum: 0, profileBytes: 0, boardBytes: 0, cacheBytes: 0, cacheRequests: 0, webllmBytes: 0, webllmFiles: 0, error: "" });
 
   const refresh = useCallback(async () => {
     setState((current) => ({ ...current, status: "loading", error: "" }));
     try {
-      const [estimate, budget, cache] = await Promise.all([
+      const [estimate, budget, cache, webllm] = await Promise.all([
         navigator.storage?.estimate?.().catch(() => ({})) || {},
         getStorageBudgetSummary(),
         cacheUsage(),
+        webllmCacheUsage().catch(() => ({ bytes: 0, requests: 0 })),
       ]);
       setState({
         status: "ready",
@@ -81,6 +106,8 @@ export default function StorageHealth({ online, onNotify }) {
         boardBytes: budget.boardBytes,
         cacheBytes: cache.bytes,
         cacheRequests: cache.requests,
+        webllmBytes: webllm.bytes,
+        webllmFiles: webllm.requests,
         error: "",
       });
     } catch (error) {
@@ -108,7 +135,7 @@ export default function StorageHealth({ online, onNotify }) {
     <section className="storage-health" aria-labelledby="storage-health-title">
       <div className="storage-health-heading"><div><Database size={19} /><span><strong id="storage-health-title">Storage health</strong><small>{state.status === "loading" ? "Measuring this device…" : state.quota ? `${formatBytes(state.usage)} of ${formatBytes(state.quota)} used by this origin` : "Browser quota estimate unavailable"}</small></span></div><button className="icon-button small" onClick={refresh} disabled={state.status === "loading"} aria-label="Refresh storage estimate" title="Refresh" type="button"><RefreshCw className={state.status === "loading" ? "spin" : ""} size={16} /></button></div>
       {state.quota > 0 && <div className="storage-meter" aria-label={`${percentage.toFixed(1)} percent of browser storage quota used`}><span style={{ width: `${percentage}%` }} /></div>}
-      {state.status !== "loading" && <><div className="storage-budget-line"><span>Backup-safe workspace</span><strong>{formatBytes(state.workspaceBytes)} / {formatBytes(state.workspaceMaximum)}</strong></div><div className="storage-meter workspace" aria-label={`${workspacePercentage.toFixed(1)} percent of backup-safe workspace budget used`}><span style={{ width: `${workspacePercentage}%` }} /></div><dl className="storage-breakdown"><div><dt>Study profile</dt><dd>{formatBytes(state.profileBytes)}</dd></div><div><dt>Whiteboards</dt><dd>{formatBytes(state.boardBytes)} <small>· {state.boardRecords}/{state.boardMaximum}</small></dd></div><div><dt>Offline assets</dt><dd>{formatBytes(state.cacheBytes)} <small>· {state.cacheRequests} files</small></dd></div></dl></>}
+      {state.status !== "loading" && <><div className="storage-budget-line"><span>Backup-safe workspace</span><strong>{formatBytes(state.workspaceBytes)} / {formatBytes(state.workspaceMaximum)}</strong></div><div className="storage-meter workspace" aria-label={`${workspacePercentage.toFixed(1)} percent of backup-safe workspace budget used`}><span style={{ width: `${workspacePercentage}%` }} /></div><dl className="storage-breakdown"><div><dt>Study profile</dt><dd>{formatBytes(state.profileBytes)}</dd></div><div><dt>Whiteboards</dt><dd>{formatBytes(state.boardBytes)} <small>· {state.boardRecords}/{state.boardMaximum}</small></dd></div><div><dt>Offline assets</dt><dd>{formatBytes(state.cacheBytes)} <small>· {state.cacheRequests} files</small></dd></div>{state.webllmBytes > 0 && <div><dt>On-device AI model</dt><dd>{formatBytes(state.webllmBytes)} <small>· {state.webllmFiles} files</small></dd></div>}</dl></>}
       {state.error && <p className="inline-warning" role="status">{state.error}</p>}
       <button className="button ghost storage-cleanup" onClick={clearOptional} disabled={state.status === "loading" || !state.cacheRequests} title={!online ? "Reconnect before clearing files that may need to be downloaded again" : "Keep the app shell and remove optional offline assets"} type="button"><Trash2 size={16} /> Remove optional offline files</button>
     </section>

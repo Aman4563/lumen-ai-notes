@@ -7088,3 +7088,5 @@ input[type="range"] {
 .diff-added code { color: #24725f; }
 .diff-removed { background: rgba(226, 106, 78, 0.12); }
 .diff-removed code { color: #a84a33; text-decoration: line-through; }
+
+.import-cards-label { cursor: pointer; }

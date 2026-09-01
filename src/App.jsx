@@ -53,6 +53,7 @@ import { searchDocuments } from "./lib/search";
 import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { addTrashEntry, appendRevision, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
+import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
@@ -1898,6 +1899,23 @@ export default function App() {
     notify("Mistake removed.");
   }, [notify]);
 
+  const importCardsFile = useCallback(async (file) => {
+    const text = await file.text().catch(() => "");
+    const parsed = parseCardInterchange(text);
+    if (!parsed.ok) { notify(parsed.error, "error", 6000); return; }
+    const { added, duplicates } = importReviewCards(profileRef.current.reviewItems, parsed.cards);
+    if (!added.length) {
+      notify(duplicates ? "Every card in that file is already in your deck; nothing was imported." : "No valid cards were found in that file.", "warning", 6000);
+      return;
+    }
+    setProfile((current) => ({
+      ...current,
+      reviewItems: [...added, ...current.reviewItems].slice(0, 10_000),
+      activity: recordActivityEntry(current.activity, { kind: "import", label: `Imported ${added.length} review card${added.length === 1 ? "" : "s"}`, refId: "" }),
+    }));
+    notify(`${added.length} card${added.length === 1 ? "" : "s"} imported into the new queue${duplicates ? `; ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped` : ""}${parsed.invalid ? `; ${parsed.invalid} invalid entr${parsed.invalid === 1 ? "y" : "ies"} ignored` : ""}.`, duplicates || parsed.invalid ? "warning" : "success", 6000);
+  }, [notify]);
+
   const logManualMistake = useCallback((draft) => {
     let merged = false;
     setProfile((current) => {
@@ -2232,7 +2250,7 @@ export default function App() {
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><div><span className="eyebrow">Private, source-grounded assistance</span><h1>AI learning studio</h1><p>Choose a larger local model on your Mac or a lightweight model on this phone—without a paid AI API.</p></div></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} />}
+          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} />}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </div>
 
