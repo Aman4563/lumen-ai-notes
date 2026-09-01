@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Clock3, Eye, EyeOff, Expand, Minus, Minimize2, Pause, Play, Plus, RotateCcw, Square } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock3, Eye, EyeOff, Expand, Minus, Minimize2, Pause, Play, Plus, Printer, RotateCcw, Square } from "lucide-react";
 import { renderMarkdown, splitTeachingSections } from "../lib/markdown";
 import { plainTextFromMarkdown } from "../lib/content";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
@@ -11,6 +11,7 @@ export default function TeachingMode({ title, source, onClose, speech }) {
   const [timerStarted, setTimerStarted] = useState(() => Date.now());
   const [concealed, setConcealed] = useState(false);
   const [fontScale, setFontScale] = useState(1);
+  const [printReady, setPrintReady] = useState(false);
   const articleRef = useRef(null);
   const rootRef = useRef(null);
   const touchStartRef = useRef(null);
@@ -18,6 +19,17 @@ export default function TeachingMode({ title, source, onClose, speech }) {
   const currentHtml = useMemo(() => renderMarkdown(current.markdown), [current.markdown]);
   const currentMarkup = useMemo(() => ({ __html: currentHtml }), [currentHtml]);
   useMermaidDiagrams(articleRef, { contentKey: currentHtml, enabled: !concealed, theme: "dark" });
+
+  // PDF export (TEACH-001): render every section into a print-only document
+  // and hand off to the browser's print-to-PDF. The container mounts only for
+  // the print pass so 20+ rendered sections never weigh on teaching itself.
+  const printDocument = () => {
+    setPrintReady(true);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.print();
+      setPrintReady(false);
+    }));
+  };
 
   const move = useCallback((direction) => {
     speech.stop();
@@ -82,7 +94,7 @@ export default function TeachingMode({ title, source, onClose, speech }) {
           <span className="eyebrow">Teaching mode · {index + 1} of {sections.length}</span>
           <strong>{title}</strong>
         </div>
-        <div className="teach-header-actions"><span><Clock3 size={14} /> {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</span><select value={index} onChange={(event) => { speech.stop(); setIndex(Number(event.target.value)); }} aria-label="Jump to teaching section">{sections.map((section, sectionIndex) => <option value={sectionIndex} key={`${section.title}-${sectionIndex}`}>{sectionIndex + 1}. {section.title}</option>)}</select><button className="icon-button inverse" onClick={() => document.documentElement.requestFullscreen?.().catch(() => {})} disabled={!document.documentElement.requestFullscreen} aria-label="Enter fullscreen" type="button"><Expand size={19} /></button><button className="icon-button inverse" onClick={close} aria-label="Exit teaching mode" type="button"><Minimize2 size={21} /></button></div>
+        <div className="teach-header-actions"><span><Clock3 size={14} /> {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</span><select value={index} onChange={(event) => { speech.stop(); setIndex(Number(event.target.value)); }} aria-label="Jump to teaching section">{sections.map((section, sectionIndex) => <option value={sectionIndex} key={`${section.title}-${sectionIndex}`}>{sectionIndex + 1}. {section.title}</option>)}</select><button className="icon-button inverse" onClick={printDocument} aria-label="Print or save as PDF" title="Print all sections / save as PDF" type="button"><Printer size={19} /></button><button className="icon-button inverse" onClick={() => document.documentElement.requestFullscreen?.().catch(() => {})} disabled={!document.documentElement.requestFullscreen} aria-label="Enter fullscreen" type="button"><Expand size={19} /></button><button className="icon-button inverse" onClick={close} aria-label="Exit teaching mode" type="button"><Minimize2 size={21} /></button></div>
       </header>
       <main className="teach-stage" onTouchStart={(event) => { touchStartRef.current = event.touches[0]?.clientX; }} onTouchEnd={(event) => { const start = touchStartRef.current; const end = event.changedTouches[0]?.clientX; if (Number.isFinite(start) && Number.isFinite(end) && Math.abs(end - start) > 55) move(end < start ? 1 : -1); touchStartRef.current = null; }}>
         <div className="teach-card">
@@ -114,6 +126,18 @@ export default function TeachingMode({ title, source, onClose, speech }) {
         </div>
         <div className="teach-section-progress" aria-label={`${index + 1} of ${sections.length} sections`}><span style={{ width: `${((index + 1) / sections.length) * 100}%` }} /></div>
       </footer>
+      {printReady && (
+        <div className="teach-print-document">
+          <h1>{title}</h1>
+          {sections.map((section, sectionIndex) => (
+            <section key={`${section.title}-${sectionIndex}`}>
+              <h2>{sectionIndex + 1}. {section.title}</h2>
+              <div className="markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(section.markdown) }} />
+            </section>
+          ))}
+          <p className="teach-print-footer">Teaching outline exported from Lumen AI Notes.</p>
+        </div>
+      )}
     </div>
   );
 }

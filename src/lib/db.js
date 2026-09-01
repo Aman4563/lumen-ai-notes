@@ -1340,7 +1340,7 @@ export const normalizeProfile = (value) => {
     personalNotes: stringRecord(input.personalNotes, 100_000),
     edits: stringRecord(input.edits, 5 * 1024 * 1024),
     settings: {
-      theme: ["system", "paper", "dark"].includes(rawSettings.theme) ? rawSettings.theme : initialProfile.settings.theme,
+      theme: ["system", "paper", "dark", "contrast"].includes(rawSettings.theme) ? rawSettings.theme : initialProfile.settings.theme,
       fontScale: numberWithin(rawSettings.fontScale, 0.85, 1.35, initialProfile.settings.fontScale),
       lineHeight: numberWithin(rawSettings.lineHeight, 1.45, 2, initialProfile.settings.lineHeight),
       contentWidth: ["focused", "comfortable", "wide"].includes(rawSettings.contentWidth) ? rawSettings.contentWidth : initialProfile.settings.contentWidth,

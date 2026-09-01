@@ -7127,3 +7127,54 @@ input[type="range"] {
 
 /* Wave 9: spoken-block follow */
 .markdown-body .narration-active { border-radius: 8px; background: rgba(246, 223, 174, 0.4); box-shadow: 0 0 0 6px rgba(246, 223, 174, 0.4); transition: background 300ms ease, box-shadow 300ms ease; }
+
+/* Wave 9: teaching print/PDF export */
+.teach-print-document { display: none; }
+@media print {
+  .teach-mode > *:not(.teach-print-document) { display: none !important; }
+  .teach-mode { position: static !important; overflow: visible !important; background: #ffffff !important; }
+  .teach-print-document { display: block; color: #111827; }
+  .teach-print-document h1 { margin: 0 0 18px; font-size: 26px; }
+  .teach-print-document section { margin-bottom: 22px; break-inside: avoid-page; }
+  .teach-print-document h2 { margin: 0 0 8px; font-size: 19px; }
+  .teach-print-document .markdown-body { color: #1f2937; font-size: 13px; line-height: 1.65; }
+  .teach-print-document .diagram-shell,
+  .teach-print-document .code-copy { display: none; }
+  .teach-print-footer { margin-top: 26px; color: #6b7280; font-size: 11px; }
+}
+
+/* Wave 9: high-contrast theme (A11Y-001). Pure white ground, near-black ink,
+   hard borders, no translucency — WCAG-AAA-leaning contrast everywhere. */
+[data-theme="contrast"] {
+  --ink: #000000;
+  --ink-soft: #111111;
+  --ink-faint: #333333;
+  --paper: #ffffff;
+  --paper-2: #ffffff;
+  --paper-3: #f2f2f2;
+  --line: #000000;
+  --line-strong: #000000;
+  --coral: #b30000;
+  --teal: #005c50;
+  --violet: #3b0080;
+  --gold: #6b5300;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+}
+[data-theme="contrast"] .button.primary { border: 2px solid #000; background: #000; color: #fff; }
+[data-theme="contrast"] .button.ghost,
+[data-theme="contrast"] .button.secondary { border: 2px solid #000; }
+[data-theme="contrast"] a { text-decoration: underline; }
+[data-theme="contrast"] .microcopy,
+[data-theme="contrast"] small { color: #222222; }
+
+/* Wave 9: shortcuts sheet */
+.shortcuts-dialog { max-height: min(80dvh, 700px); overflow-y: auto; }
+.shortcut-group { margin-top: 15px; }
+.shortcut-group h3 { margin: 0 0 8px; color: var(--ink); font-size: 0.82rem; }
+.shortcut-group dl { display: grid; gap: 6px; margin: 0; }
+.shortcut-group dl > div { display: flex; align-items: baseline; gap: 12px; }
+.shortcut-group dt { flex-shrink: 0; min-width: 108px; }
+.shortcut-group kbd { padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper-2); color: var(--ink); font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; font-weight: 700; }
+.shortcut-group dd { margin: 0; color: var(--ink-soft); font-size: 0.75rem; }

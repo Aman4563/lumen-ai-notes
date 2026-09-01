@@ -760,6 +760,16 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     setSelectedId(duplicate.id);
   };
 
+  // Keyboard nudging (A11Y-001): arrow keys move the selected object by 1% of
+  // the canvas (Shift: 5%) — a non-drag alternative to pointer moves that goes
+  // through the same history path as any other edit.
+  const nudgeSelected = useCallback((deltaX, deltaY) => {
+    if (!selectedId) return;
+    updateActiveObjects((current) => current.map((object) => object.id === selectedId
+      ? { ...object, points: object.points.map((point) => ({ ...point, x: Math.max(0, Math.min(1, point.x + deltaX)), y: Math.max(0, Math.min(1, point.y + deltaY)) })) }
+      : object));
+  }, [selectedId, updateActiveObjects]);
+
   useEffect(() => {
     const onKeyDown = (event) => {
       const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target?.isContentEditable;
@@ -767,10 +777,18 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
       else if ((event.key === "Delete" || event.key === "Backspace") && selectedId) { event.preventDefault(); deleteSelected(); }
       else if (event.key === "Escape") { setSelectedId(""); setPendingText(null); }
+      else if (event.key.startsWith("Arrow") && selectedId) {
+        event.preventDefault();
+        const step = event.shiftKey ? 0.05 : 0.01;
+        nudgeSelected(
+          event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0,
+          event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0,
+        );
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelected, redo, selectedId, undo]);
+  }, [deleteSelected, nudgeSelected, redo, selectedId, undo]);
 
   const clear = () => {
     if (!objects.length || !window.confirm("Clear every object on this page? You can undo this action.")) return;
