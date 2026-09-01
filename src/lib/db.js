@@ -851,6 +851,10 @@ export const initialProfile = {
   personalNotes: {},
   clippings: [],
   mistakes: [],
+  collections: [],
+  trash: [],
+  activity: [],
+  revisions: [],
   annotations: [],
   reviewItems: [],
   reviewAttempts: [],
@@ -1119,6 +1123,9 @@ export const normalizeProfile = (value) => {
       createdAt: typeof doc.createdAt === "string" ? doc.createdAt : new Date().toISOString(),
       updatedAt: typeof doc.updatedAt === "string" ? doc.updatedAt : (doc.createdAt || new Date().toISOString()),
       tags: uniqueStrings(doc.tags, 20).map((tag) => tag.slice(0, 40)),
+      collectionId: typeof doc.collectionId === "string" ? doc.collectionId.slice(0, 200) : "",
+      archived: Boolean(doc.archived),
+      pinned: Boolean(doc.pinned),
     }));
   const validCustomIds = new Set(customDocuments.map((doc) => doc.id));
   const clippings = (Array.isArray(input.clippings) ? input.clippings : [])
@@ -1133,6 +1140,7 @@ export const normalizeProfile = (value) => {
       title: typeof clip.title === "string" ? clip.title.slice(0, 200) : "",
       text: clip.text.trim().slice(0, 4_000),
       note: typeof clip.note === "string" ? clip.note.slice(0, 4_000) : "",
+      pinned: Boolean(clip.pinned),
       anchor: isRecord(clip.anchor) ? {
         quote: typeof clip.anchor.quote === "string" ? clip.anchor.quote.slice(0, 4_000) : "",
         prefix: typeof clip.anchor.prefix === "string" ? clip.anchor.prefix.slice(-160) : "",
@@ -1239,6 +1247,70 @@ export const normalizeProfile = (value) => {
     }));
   const rawReviewSettings = isRecord(input.reviewSettings) ? input.reviewSettings : {};
 
+  const isoOr = (candidate, fallback) => (typeof candidate === "string" && Number.isFinite(Date.parse(candidate)) ? candidate : fallback);
+  const seenIds = () => {
+    const seen = new Set();
+    return (id) => !seen.has(id) && (seen.add(id), true);
+  };
+  const freshCollectionIds = seenIds();
+  const collections = (Array.isArray(input.collections) ? input.collections : [])
+    .filter((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.name === "string" && entry.name.trim() && freshCollectionIds(entry.id))
+    .slice(0, 100)
+    .map((entry) => ({
+      id: entry.id.slice(0, 200),
+      name: entry.name.trim().slice(0, 60),
+      createdAt: isoOr(entry.createdAt, new Date().toISOString()),
+      updatedAt: isoOr(entry.updatedAt, isoOr(entry.createdAt, new Date().toISOString())),
+    }));
+  const freshTrashIds = seenIds();
+  const trash = (Array.isArray(input.trash) ? input.trash : [])
+    .filter((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.documentId === "string" && typeof entry.raw === "string" && freshTrashIds(entry.id))
+    .sort((left, right) => String(right.deletedAt || "").localeCompare(String(left.deletedAt || "")))
+    .slice(0, 100)
+    .map((entry) => ({
+      id: entry.id.slice(0, 200),
+      documentId: entry.documentId.slice(0, 500),
+      title: typeof entry.title === "string" && entry.title.trim() ? entry.title.trim().slice(0, 180) : "Untitled note",
+      raw: entry.raw.slice(0, 2 * 1024 * 1024),
+      tags: uniqueStrings(entry.tags, 20).map((tag) => tag.slice(0, 40)),
+      collectionId: typeof entry.collectionId === "string" ? entry.collectionId.slice(0, 200) : "",
+      deletedAt: isoOr(entry.deletedAt, new Date().toISOString()),
+      updatedAt: isoOr(entry.updatedAt, isoOr(entry.deletedAt, new Date().toISOString())),
+    }));
+  const freshActivityIds = seenIds();
+  const activity = (Array.isArray(input.activity) ? input.activity : [])
+    .filter((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.kind === "string" && freshActivityIds(entry.id))
+    .sort((left, right) => String(right.at || "").localeCompare(String(left.at || "")))
+    .slice(0, 500)
+    .map((entry) => ({
+      id: entry.id.slice(0, 200),
+      at: isoOr(entry.at, new Date().toISOString()),
+      kind: entry.kind.toLocaleLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40) || "event",
+      label: typeof entry.label === "string" ? entry.label.slice(0, 200) : "",
+      refId: typeof entry.refId === "string" ? entry.refId.slice(0, 500) : "",
+      updatedAt: isoOr(entry.updatedAt, isoOr(entry.at, new Date().toISOString())),
+    }));
+  const freshRevisionIds = seenIds();
+  const perDocumentRevisions = new Map();
+  const revisions = (Array.isArray(input.revisions) ? input.revisions : [])
+    .filter((entry) => isRecord(entry) && typeof entry.id === "string" && typeof entry.documentId === "string" && typeof entry.text === "string" && freshRevisionIds(entry.id))
+    .sort((left, right) => String(right.savedAt || "").localeCompare(String(left.savedAt || "")))
+    .filter((entry) => {
+      const count = perDocumentRevisions.get(entry.documentId) || 0;
+      if (count >= 5) return false;
+      perDocumentRevisions.set(entry.documentId, count + 1);
+      return true;
+    })
+    .slice(0, 60)
+    .map((entry) => ({
+      id: entry.id.slice(0, 200),
+      documentId: entry.documentId.slice(0, 500),
+      text: entry.text.slice(0, 400_000),
+      label: typeof entry.label === "string" ? entry.label.slice(0, 120) : "",
+      savedAt: isoOr(entry.savedAt, new Date().toISOString()),
+      updatedAt: isoOr(entry.updatedAt, isoOr(entry.savedAt, new Date().toISOString())),
+    }));
+
   return {
     ...initialProfile,
     version: PROFILE_VERSION,
@@ -1294,6 +1366,10 @@ export const normalizeProfile = (value) => {
     deletedCustomDocumentIds: uniqueStrings(input.deletedCustomDocumentIds, 1_000).map((id) => id.slice(0, 500)),
     clippings,
     mistakes: normalizeMistakes(input.mistakes),
+    collections,
+    trash,
+    activity,
+    revisions,
     annotations,
     reviewItems,
     reviewAttempts,
