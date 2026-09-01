@@ -259,21 +259,22 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
   const card = cards[index];
 
   useEffect(() => {
-    if (phase === "prep") setSecondsLeft(INTERVIEW_PREP_SECONDS);
-    else if (phase === "answer") setSecondsLeft(INTERVIEW_ANSWER_SECONDS);
+    if (phase !== "prep" && phase !== "answer") return undefined;
+    // The updater stays pure (StrictMode double-invokes it); expiry
+    // transitions happen in the effect below, atomically with the reset.
+    const timer = window.setInterval(() => setSecondsLeft((current) => Math.max(0, current - 1)), 1_000);
+    return () => window.clearInterval(timer);
   }, [phase, index]);
 
   useEffect(() => {
-    if (phase !== "prep" && phase !== "answer") return undefined;
-    const timer = window.setInterval(() => {
-      setSecondsLeft((current) => {
-        if (current > 1) return current - 1;
-        setPhase((currentPhase) => (currentPhase === "prep" ? "answer" : "revealed"));
-        return 0;
-      });
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, [phase, index]);
+    if (secondsLeft > 0) return;
+    if (phase === "prep") {
+      setPhase("answer");
+      setSecondsLeft(INTERVIEW_ANSWER_SECONDS);
+    } else if (phase === "answer") {
+      setPhase("revealed");
+    }
+  }, [secondsLeft, phase]);
 
   if (!card && phase !== "summary") return null;
 
@@ -291,6 +292,7 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
     if (index + 1 < cards.length) {
       setIndex(index + 1);
       setPhase("prep");
+      setSecondsLeft(INTERVIEW_PREP_SECONDS);
     } else {
       setPhase("summary");
     }
@@ -328,7 +330,7 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
           {phase === "revealed" && <div className="review-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.back) }} />}
         </article>
         <div className="review-session-actions">
-          {phase === "prep" && <button className="button primary large" onClick={() => setPhase("answer")} type="button">Start answering</button>}
+          {phase === "prep" && <button className="button primary large" onClick={() => { setPhase("answer"); setSecondsLeft(INTERVIEW_ANSWER_SECONDS); }} type="button">Start answering</button>}
           {phase === "answer" && <button className="button primary large" onClick={() => setPhase("revealed")} type="button"><Eye size={18} /> Show expected answer</button>}
           {phase === "revealed" && <div className="interview-grades"><button className="button secondary" onClick={() => grade(false)} type="button"><Flame size={16} /> Missed it — log the mistake</button><button className="button primary" onClick={() => grade(true)} type="button"><CheckCircle2 size={16} /> Answered well</button></div>}
         </div>
