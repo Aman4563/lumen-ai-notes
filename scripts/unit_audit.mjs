@@ -6,6 +6,7 @@ import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads
 import { createId } from "../src/lib/id.js";
 import {
   buildReviewQueue,
+  classifyReviewItem,
   createReviewItem,
   gradeReviewItem,
   isNewReviewItem,
@@ -86,6 +87,27 @@ assert.equal(normalized.settings.keepScreenAwake, true);
 assert.deepEqual(normalized.reviewItems, [], "v2 profiles should migrate with an empty review deck");
 assert.deepEqual(normalized.reviewAttempts, [], "v2 profiles should migrate without fabricated attempts");
 
+// LEARN-003: queue classes are explicit and mutually exclusive with defined
+// precedence (overdue beats learning beats mature on-time due).
+const classifyNow = new Date("2026-08-21T12:00:00.000Z");
+const classifyFixtures = [
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow) }, expected: "new" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 4, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 1, intervalDays: 1, dueAt: "2026-08-21T10:00:00.000Z" }, expected: "learning" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 4, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 1, intervalDays: 1, dueAt: "2026-08-19T12:00:00.000Z" }, expected: "overdue" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 9, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 5, intervalDays: 30, dueAt: "2026-08-21T11:00:00.000Z" }, expected: "due" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 9, lastReviewedAt: "2026-08-01T00:00:00.000Z", repetitions: 5, intervalDays: 30, dueAt: "2026-08-15T12:00:00.000Z" }, expected: "overdue" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), reviewCount: 9, repetitions: 5, intervalDays: 30, lastReviewedAt: "2026-08-01T00:00:00.000Z", dueAt: "2026-09-10T12:00:00.000Z" }, expected: "scheduled" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), suspended: true, dueAt: "2026-08-15T12:00:00.000Z" }, expected: "suspended" },
+  { fixture: { ...createReviewItem({ front: "q", back: "a" }, classifyNow), archived: true, suspended: true }, expected: "archived" },
+];
+const classes = ["new", "overdue", "learning", "due", "scheduled", "suspended", "archived"];
+for (const { fixture, expected } of classifyFixtures) {
+  const actual = classifyReviewItem(fixture, classifyNow, "UTC");
+  assert.equal(actual, expected, `queue class for dueAt=${fixture.dueAt} repetitions=${fixture.repetitions} should be ${expected}, got ${actual}`);
+  assert.equal(classes.filter((candidate) => candidate === actual).length, 1, "every item maps to exactly one class");
+}
+assert.equal(reviewStats(classifyFixtures.map((entry) => entry.fixture), classifyNow, "UTC").overdue, 2, "stats must count overdue items");
+
 const reviewNow = new Date("2026-08-21T12:00:00.000Z");
 const firstCard = createReviewItem({ front: "Question", back: "Answer" }, reviewNow);
 const secondCard = createReviewItem({ front: "Second", back: "Answer" }, new Date(reviewNow.getTime() + 1_000));
@@ -102,7 +124,7 @@ const lapse = gradeReviewItem(secondGood.item, "again", new Date("2026-08-25T12:
 assert.equal(lapse.item.repetitions, 0);
 assert.equal(lapse.item.lapses, 1);
 assert.equal(lapse.item.intervalDays, 0.01);
-assert.deepEqual(reviewStats([secondGood.item], new Date("2026-09-30T12:00:00.000Z")), { due: 1, newCount: 0, learning: 1, mastered: 0, suspended: 0, archived: 0 });
+assert.deepEqual(reviewStats([secondGood.item], new Date("2026-09-30T12:00:00.000Z")), { due: 1, overdue: 1, newCount: 0, learning: 1, mastered: 0, suspended: 0, archived: 0 });
 
 const thirdCard = createReviewItem({ front: "Third", back: "Answer" }, new Date(reviewNow.getTime() + 2_000));
 const firstUsage = recordReviewUsage([], firstCard, reviewNow, { timeZone: "Asia/Kolkata" });
