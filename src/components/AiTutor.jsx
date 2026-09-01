@@ -13,6 +13,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   MessageCircleQuestion,
+  NotebookPen,
   RefreshCw,
   RotateCcw,
   Search,
@@ -66,6 +67,14 @@ const MODE_OPTIONS = Object.freeze([
     prompt: "Create atomic active-recall flashcards from the selected material. Prefer reasoning and application over copied definitions.",
     description: "Generate validated drafts and choose which cards enter your review deck.",
     structured: true,
+  },
+  {
+    id: "code-review",
+    label: "Code review",
+    task: "code_review",
+    prompt: "Review my code like a rigorous senior engineer: correctness first, then complexity, edge cases, idiom, and missing tests. Quote the lines each finding concerns and propose concrete fixes.\n\n```\n(paste your code here)\n```",
+    description: "Prioritized senior-engineer review of pasted code with concrete fixes.",
+    contextLimit: 8_000,
   },
   {
     id: "interview",
@@ -644,7 +653,7 @@ const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSo
                       disabled={revealed}
                       onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))}
                     />
-                    <span>{option}</span>
+                    <span><InlineCitations text={option} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></span>
                   </label>
                 );
               })}
@@ -707,7 +716,7 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
           <span className="ai-tutor__flashcard-side">Prompt</span>
           <p><InlineCitations text={card.front} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>
           <button className="ai-tutor__text-button" type="button" aria-expanded={Boolean(expanded[index])} onClick={() => setExpanded((current) => ({ ...current, [index]: !current[index] }))}>{expanded[index] ? "Hide answer" : "Reveal answer"}<ChevronDown size={16} aria-hidden="true" /></button>
-          {expanded[index] && <div className="ai-tutor__flashcard-answer"><span className="ai-tutor__flashcard-side">Answer</span><p><InlineCitations text={card.back} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>{card.hint && <p className="ai-tutor__hint"><strong>Hint:</strong> {card.hint}</p>}</div>}
+          {expanded[index] && <div className="ai-tutor__flashcard-answer"><span className="ai-tutor__flashcard-side">Answer</span><p><InlineCitations text={card.back} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>{card.hint && <p className="ai-tutor__hint"><strong>Hint:</strong> <InlineCitations text={card.hint} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>}</div>}
           {card.tags.length > 0 && <div className="ai-tutor__tags" aria-label="Suggested tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
         </article>
       ))}
@@ -723,7 +732,7 @@ const StudyPlanResult = ({ plan, citationSources, webSources, onNavigateSource }
     <ol>
       {plan.milestones.map((milestone, index) => (
         <li key={`${milestone.title}-${index}`}>
-          <div className="ai-tutor__milestone-head"><span>{index + 1}</span><div><h5>{milestone.title}</h5><small>{milestone.estimatedMinutes} minutes</small></div></div>
+          <div className="ai-tutor__milestone-head"><span>{index + 1}</span><div><h5><InlineCitations text={milestone.title} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></h5><small>{milestone.estimatedMinutes} minutes</small></div></div>
           <p><InlineCitations text={milestone.outcome} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p>
           <ul>{milestone.activities.map((activity, activityIndex) => <li key={`${activityIndex}-${activity}`}><InlineCitations text={activity} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></li>)}</ul>
           <p className="ai-tutor__mastery"><strong>Evidence of mastery:</strong> <InlineCitations text={milestone.evidenceOfMastery} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p>
@@ -769,6 +778,7 @@ const requestErrorTitle = (status, code) => {
 const CONFIG_INVALIDATING_REQUEST_ERRORS = new Set([
   "VALIDATION_ERROR",
   "AI_CONTRACT_MISMATCH",
+  "AI_PROFILE_UNSUPPORTED",
   "AI_CONTEXT_LIMIT",
   "AI_INPUT_TOO_LARGE",
   "AI_NETWORK_ERROR",
@@ -841,10 +851,21 @@ const ResponseApproach = ({ message }) => {
   );
 };
 
-const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReusePrompt, requestBusy = false }) => {
+const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReusePrompt, onSaveAnswerNote, requestBusy = false }) => {
   const [panel, setPanel] = useState("");
   const [copyStatus, setCopyStatus] = useState("idle");
+  const [noteStatus, setNoteStatus] = useState("idle");
   const hasEvidence = message.citationSources.length > 0 || message.webSources.length > 0;
+  const canSaveNote = message.role === "assistant" && !message.data && !message.incomplete && typeof onSaveAnswerNote === "function";
+  const saveNote = () => {
+    const saved = onSaveAnswerNote({
+      content: message.content,
+      title: `AI ${modeById(message.mode).label.toLocaleLowerCase()} answer`,
+      citationSources: message.citationSources,
+      webSources: message.webSources,
+    });
+    if (saved) setNoteStatus("saved");
+  };
   const copyMessage = async () => {
     const copied = await copyPlainText(message.role === "assistant" ? tutorMarkdownPlainText(message.content) : message.content);
     setCopyStatus(copied ? "copied" : "error");
@@ -860,6 +881,7 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
         </button>
         {message.role === "user" && <button type="button" disabled={requestBusy} onClick={() => onReusePrompt?.(message)}><RotateCcw size={15} aria-hidden="true" /> Edit & reuse</button>}
         {message.role === "assistant" && <button type="button" disabled={requestBusy} onClick={() => onPrepareRegenerate?.(message)}><RotateCcw size={15} aria-hidden="true" /> Regenerate</button>}
+        {canSaveNote && <button type="button" disabled={noteStatus === "saved"} onClick={saveNote} aria-label="Save this answer to your notebook as a labeled AI note">{noteStatus === "saved" ? <Check size={15} aria-hidden="true" /> : <NotebookPen size={15} aria-hidden="true" />} {noteStatus === "saved" ? "Saved to notes" : "Save to notes"}</button>}
         {message.role === "assistant" && hasEvidence && <button type="button" aria-expanded={panel === "sources"} onClick={() => togglePanel("sources")}><BookOpen size={15} aria-hidden="true" /> Sources <span>{message.citationSources.length + message.webSources.length}</span></button>}
         {message.role === "assistant" && <button type="button" aria-expanded={panel === "approach"} onClick={() => togglePanel("approach")}><Sparkles size={15} aria-hidden="true" /> Approach</button>}
       </div>
@@ -895,6 +917,7 @@ export default function AiTutor({
   onHistoryChange,
   onNavigateSource,
   onCreateFlashcardDrafts,
+  onSaveAnswerNote,
   retrieveLibrary,
   onClose,
   className = "",
@@ -1035,6 +1058,14 @@ export default function AiTutor({
   useEffect(() => {
     if (configState.config?.webSearch?.macToolAvailable !== true) setWebSearch(false);
   }, [configState.config?.webSearch?.macToolAvailable]);
+
+  useEffect(() => {
+    // A configured model without attested thinking support must not keep an
+    // already-selected Deep profile armed; the request would fail upstream.
+    if (configState.status === "ready" && configState.config?.service?.thinkingCapable !== true) {
+      setResponseProfile((profile) => profile === "deep" ? "balanced" : profile);
+    }
+  }, [configState.status, configState.config?.service?.thinkingCapable]);
 
   useEffect(() => () => {
     requestControllerRef.current?.abort();
@@ -1254,6 +1285,9 @@ export default function AiTutor({
   const contextTooSmall = sourceMode !== "library-first" && selectedSources.length > 0 && requestPreview.contextBudget < minimumContextBudget(selectedSources);
   const requestTooLarge = Number.isSafeInteger(configuredRequestByteLimit) && requestPayloadBytes > configuredRequestByteLimit;
   const webSearchAvailable = configState.config?.webSearch?.macToolAvailable === true;
+  // Deep sends `think: true` upstream, so it is offered only when the
+  // installed model actually attests Ollama thinking support (AI-002).
+  const deepProfileAvailable = configState.config?.service?.thinkingCapable === true;
   const requestReady = configState.status === "ready"
     && localDisclosureAcknowledged
     && Boolean(prompt.trim())
@@ -1804,7 +1838,7 @@ export default function AiTutor({
                   {message.role === "assistant"
                     ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
                     : <p className="ai-tutor__user-prompt">{message.content}</p>}
-                  <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, "Request restored. Edit it, review grounding and consent, then send.")} />
+                  <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, "Request restored. Edit it, review grounding and consent, then send.")} onSaveAnswerNote={onSaveAnswerNote} />
                 </article>
               ))}
               {activeResponse && (
@@ -1835,7 +1869,10 @@ export default function AiTutor({
         </div>
         <fieldset className="ai-tutor__response-profiles" disabled={requestState.status === "loading"}>
           <legend>Response</legend>
-          <div>{RESPONSE_PROFILES.map((item) => <label className={responseProfile === item.id ? "is-active" : ""} key={item.id}><input type="radio" name={`${headingId}-response-profile`} value={item.id} checked={responseProfile === item.id} onChange={() => { setResponseProfile(item.id); outboundChanged(); }} /><span><strong>{item.label}</strong><small>{item.detail}</small></span></label>)}</div>
+          <div>{RESPONSE_PROFILES.map((item) => {
+            const unavailable = item.id === "deep" && !deepProfileAvailable;
+            return <label className={`${responseProfile === item.id ? "is-active" : ""}${unavailable ? " is-unavailable" : ""}`} key={item.id}><input type="radio" name={`${headingId}-response-profile`} value={item.id} checked={responseProfile === item.id} disabled={unavailable} onChange={() => { setResponseProfile(item.id); outboundChanged(); }} /><span><strong>{item.label}</strong><small>{unavailable ? "Requires a local model that attests thinking support" : item.detail}</small></span></label>;
+          })}</div>
         </fieldset>
         <label className={`ai-tutor__web-search ${effectiveWebSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={effectiveWebSearch} disabled={!webSearchAvailable || !libraryWebEligible || requestState.status === "loading"} onChange={(event) => changeWebSearch(event.target.checked)} /><span><strong>Allow current-web fallback for this request</strong><small>{!libraryWebEligible ? "Choose Library first so Lumen can check all local notes before any web fallback is allowed." : webSearchAvailable ? "One-request authorization: Lumen checks your full local library first, searches through self-hosted SearXNG only when local evidence is insufficient or the question is time-sensitive, and asks again for every future request or retry." : configState.config?.service?.toolCallingCapable === false ? "The installed Ollama model does not attest tool-calling support. Choose the supported Qwen model or use On-device Lite exact-query search." : configState.config?.webSearch?.configured ? "SearXNG is configured but unreachable. Start it on the host Mac, then check again." : "Unavailable until self-hosted SearXNG is enabled on the host Mac."}</small></span></label>
         {effectiveWebSearch && <WebFallbackBadge status="armed" />}

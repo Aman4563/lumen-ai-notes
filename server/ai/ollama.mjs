@@ -32,6 +32,7 @@ const TASK_INSTRUCTIONS = Object.freeze({
   summarize: "Produce a faithful learning summary with core ideas, formulas, assumptions, pitfalls, and a short recall checklist.",
   study_plan: "Create a dependency-aware study plan with realistic activities and observable evidence of mastery.",
   answer_feedback: "Evaluate the learner answer against the question and supplied context. Be precise, constructive, and calibration-aware.",
+  code_review: "Review the supplied code as a rigorous senior engineer. Report findings in priority order: correctness defects first, then complexity/performance, edge cases and failure handling, API/idiom quality, and missing tests. Quote the exact fragment each finding concerns, explain the concrete failure it can cause, and propose a specific fix (a short corrected snippet where useful). Separate certain defects from stylistic judgment, and say clearly when the code looks correct. If no code was actually supplied, say so and ask for it instead of inventing code to review.",
 });
 
 const SEARCH_TOOL = Object.freeze({

@@ -262,7 +262,7 @@ endpoint. `POST /api/ai/respond` returns the existing bounded JSON envelope;
 validate, rate-limit, and bound every request.
 
 Both `GET /api/health` and `GET /api/ai/config` also publish `requestContract`
-(currently `lumen.ai.request.v1`, defined once in `src/lib/aiContract.js`).
+(currently `lumen.ai.request.v2`, defined once in `src/lib/aiContract.js`).
 Every AI request body must declare the same value in its `contract` field. A
 UI built from a different source than the running server therefore fails
 closed with one typed `AI_CONTRACT_MISMATCH` error (HTTP 409) and actionable

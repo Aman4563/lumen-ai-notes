@@ -882,6 +882,11 @@ export const initialProfile = {
     speechVolume: 1,
     speechScope: "document",
     keepScreenAwake: false,
+    // Explicit no-AI preference (AI-002): when false, AI surfaces and their
+    // configuration checks stay off until the learner re-enables them.
+    aiFeaturesEnabled: true,
+    // Durable Mac-tutor messages kept locally; 0 keeps history session-only.
+    aiHistoryRetention: 50,
   },
 };
 
@@ -1118,6 +1123,10 @@ export const normalizeProfile = (value) => {
     .map((clip) => ({
       id: typeof clip.id === "string" ? clip.id : createId(),
       documentId: clip.documentId,
+      // AI-tutor answers saved to the notebook are ordinary clippings with a
+      // declared origin/title so the UI can label them as generated drafts.
+      origin: clip.origin === "ai-tutor" ? "ai-tutor" : "",
+      title: typeof clip.title === "string" ? clip.title.slice(0, 200) : "",
       text: clip.text.trim().slice(0, 4_000),
       note: typeof clip.note === "string" ? clip.note.slice(0, 4_000) : "",
       anchor: isRecord(clip.anchor) ? {
@@ -1268,6 +1277,10 @@ export const normalizeProfile = (value) => {
         ? rawSettings.speechScope
         : initialProfile.settings.speechScope,
       keepScreenAwake: Boolean(rawSettings.keepScreenAwake),
+      aiFeaturesEnabled: rawSettings.aiFeaturesEnabled !== false,
+      aiHistoryRetention: [0, 10, 25, 50].includes(rawSettings.aiHistoryRetention)
+        ? rawSettings.aiHistoryRetention
+        : initialProfile.settings.aiHistoryRetention,
     },
     bookmarks: uniqueStrings(input.bookmarks),
     customDocuments,

@@ -14,7 +14,7 @@ service URL, or API key.
 Both POST endpoints accept the same strictly validated request. Streaming is a
 transport choice, not a different grounding or safety policy.
 
-Every request body must declare `"contract": "lumen.ai.request.v1"` (the
+Every request body must declare `"contract": "lumen.ai.request.v2"` (the
 identity in `src/lib/aiContract.js`, also advertised as `requestContract` in
 `GET /api/ai/config` and `/api/health`). A missing or different value fails
 with HTTP 409 `AI_CONTRACT_MISMATCH` before any validation detail, so a stale

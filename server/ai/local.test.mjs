@@ -58,7 +58,7 @@ test("the published request-contract identity is exact and version-skewed payloa
   const config = readAiServerConfig({ AI_ENABLED: "true" });
   // Pin the exact published identity: an accidental edit to the shared
   // constant must fail this test, not silently re-version the contract.
-  assert.equal(AI_REQUEST_CONTRACT_ID, "lumen.ai.request.v1");
+  assert.equal(AI_REQUEST_CONTRACT_ID, "lumen.ai.request.v2");
   assert.equal(publicAiConfig(config).requestContract, AI_REQUEST_CONTRACT_ID);
   assert.equal(publicAiConfig(readAiServerConfig({})).requestContract, AI_REQUEST_CONTRACT_ID, "a disabled server must still advertise its contract");
 

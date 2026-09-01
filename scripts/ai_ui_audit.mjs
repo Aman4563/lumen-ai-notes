@@ -22,6 +22,7 @@ const supportedTasks = [
   "summarize",
   "study_plan",
   "answer_feedback",
+  "code_review",
 ];
 
 const secureConfig = Object.freeze({
@@ -34,7 +35,7 @@ const secureConfig = Object.freeze({
   endpoint: "/api/ai/respond",
   streamEndpoint: "/api/ai/respond/stream",
   streamProtocol: "lumen.ai.ndjson.v1",
-  service: { configured: true, reachable: true, modelInstalled: true, modelIdentityRequired: true, modelIdentityVerified: true, completionCapable: true, toolCallingCapable: true, checkedAt: new Date().toISOString() },
+  service: { configured: true, reachable: true, modelInstalled: true, modelIdentityRequired: true, modelIdentityVerified: true, completionCapable: true, toolCallingCapable: true, thinkingCapable: true, checkedAt: new Date().toISOString() },
   webSearch: {
     configured: true,
     reachable: true,
@@ -256,6 +257,11 @@ try {
   assert.match(await page.$eval(".ai-tutor__connection--ready", (node) => node.textContent), /local Ollama model ready/i);
   assert.equal(calls.config.length, 1, "AI configuration was not checked exactly once on initial mount");
   assert.equal(new URL(calls.config[0].url).origin, new URL(baseUrl).origin, "configuration request was not same-origin");
+  assert.equal(
+    await page.$eval('.ai-tutor__response-profiles input[value="deep"]', (input) => input.disabled),
+    false,
+    "Deep profile was unavailable although the model attests thinking support",
+  );
 
   await page.waitForSelector(".ai-tutor__source.is-selected", { timeout: 10_000 });
   const disclosure = await page.$eval(".ai-tutor__privacy-body", (node) => node.textContent.replace(/\s+/g, " "));
@@ -289,7 +295,7 @@ try {
   await page.click(".ai-tutor__web-search input");
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "the web-fallback checkbox did not act as its own one-request authorization");
   assert.match(await page.$eval(".ai-tutor__web-status.is-armed", (node) => node.textContent), /armed for this request/i);
-  await page.click(sendSelector);
+  await page.$eval(sendSelector, (button) => button.click());
   await page.waitForSelector(".ai-tutor__message--assistant .ai-tutor__citation", { timeout: 10_000 });
   await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Sources");
   await page.waitForSelector(".ai-tutor__web-sources a", { timeout: 10_000 });
@@ -337,6 +343,31 @@ try {
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), true, "send stayed enabled after the completed prompt was cleared");
   await waitForStoredHistory(page, "nonempty");
 
+  // Answer-to-note: a completed prose response can be saved as a labeled
+  // AI-origin notebook clipping with durable provenance (AI-001).
+  await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Save to notes");
+  await page.waitForFunction(() => new Promise((resolve) => {
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onerror = () => resolve(false);
+    request.onsuccess = () => {
+      const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile");
+      get.onerror = () => resolve(false);
+      get.onsuccess = () => resolve((get.result?.clippings || []).some((clip) => clip.origin === "ai-tutor"));
+    };
+  }), { timeout: 8_000 });
+  const profileWithNote = await readProfile(page);
+  const savedNote = profileWithNote.clippings.find((clip) => clip.origin === "ai-tutor");
+  assert.ok(savedNote, "saved AI answer did not become an ai-tutor clipping");
+  assert.match(savedNote.title, /^AI /, "saved AI note lost its mode-labelled title");
+  assert.match(savedNote.note, /AI-generated draft/i, "saved AI note is not labeled as a generated draft");
+  assert.doesNotMatch(savedNote.text, /\[W\d+\](?!\()/, "web citations were not materialized into durable links");
+  assert.equal(profileWithNote.clippings.filter((clip) => clip.origin === "ai-tutor").length, 1, "one save action must create exactly one clipping");
+  assert.equal(
+    await page.$eval(".ai-tutor__message--assistant .ai-tutor__message-actions", (node) => [...node.querySelectorAll("button")].find((button) => /saved to notes/i.test(button.textContent))?.disabled),
+    true,
+    "the save action did not disable after saving",
+  );
+
   // Trigger the delegated citation action directly. The asynchronous local
   // history commit can replace this rendered Markdown subtree between
   // Puppeteer's scroll and click phases on a fast machine.
@@ -364,7 +395,7 @@ try {
   await clickByText(page, ".ai-tutor__mode-tabs button", "Quiz");
   assert.equal(await page.$eval(".ai-tutor__mode-tabs button[aria-pressed='true']", (button) => button.textContent.trim()), "Quiz");
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "remembered local acknowledgement did not carry into a local-only follow-up");
-  await page.click(sendSelector);
+  await page.$eval(sendSelector, (button) => button.click());
   await page.waitForSelector(".ai-tutor__quiz", { timeout: 10_000 });
   assert.equal(calls.respond.length, 2, "structured quiz request was not sent exactly once");
   const quizRequest = calls.respond[1];
@@ -484,6 +515,95 @@ try {
   assert.equal(unsafe.calls.respond.length, 0, "unsafe configuration reached the AI response endpoint");
   await unsafe.page.close();
 
+  // A completion-capable model without attested thinking support must disable
+  // the Deep profile with a reason instead of letting the request fail
+  // upstream (AI-002 capability gating).
+  const nonThinkingConfig = {
+    ...secureConfig,
+    service: { ...secureConfig.service, thinkingCapable: false },
+  };
+  const nonThinking = await newAuditPage("non-thinking", () => nonThinkingConfig);
+  await nonThinking.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await nonThinking.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  assert.equal(
+    await nonThinking.page.$eval('.ai-tutor__response-profiles input[value="deep"]', (input) => input.disabled),
+    true,
+    "Deep profile stayed selectable without attested thinking capability",
+  );
+  assert.match(
+    await nonThinking.page.$eval('.ai-tutor__response-profiles label.is-unavailable', (node) => node.textContent),
+    /attests thinking support/i,
+    "disabled Deep profile did not explain its capability requirement",
+  );
+  assert.equal(
+    await nonThinking.page.$eval('.ai-tutor__response-profiles input[value="balanced"]', (input) => input.disabled),
+    false,
+    "capability gating wrongly disabled a non-deep profile",
+  );
+  await nonThinking.page.close();
+
+  // A personal-note citation must open the exact note editor, not merely the
+  // related document (AI-001 exact personal-note deep link).
+  const noteScenario = await newAuditPage("personal-note", () => secureConfig);
+  await noteScenario.page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 30_000 });
+  await noteScenario.page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains("study-data")) request.result.createObjectStore("study-data");
+    };
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction("study-data", "readwrite");
+      const store = transaction.objectStore("study-data");
+      const get = store.get("profile");
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => {
+        const profile = get.result && typeof get.result === "object" ? get.result : {};
+        profile.personalNotes = {
+          ...(profile.personalNotes || {}),
+          "notes/00-roadmap.md": "The zephyrine-quorum trick keeps optimizer updates stable during long study sessions.",
+        };
+        const put = store.put(profile, "profile");
+        put.onerror = () => reject(put.error);
+        put.onsuccess = () => resolve();
+      };
+    };
+  }));
+  await noteScenario.page.evaluate(() => { window.location.hash = "#/ai"; });
+  await noteScenario.page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+  await noteScenario.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  await noteScenario.page.$eval(".ai-tutor__composer textarea", (field) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(field, "Explain the zephyrine-quorum trick from my notes.");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  if (await noteScenario.page.$(".ai-tutor__consent input")) await noteScenario.page.click(".ai-tutor__consent input");
+  await noteScenario.page.$eval(sendSelector, (button) => button.click());
+  await noteScenario.page.waitForSelector(".ai-tutor__message--assistant button.ai-tutor__citation[data-ai-citation]", { timeout: 15_000 });
+  const notePrompt = noteScenario.calls.respond.at(-1);
+  assert.match(notePrompt.body.context, /Personal note/i, "library-first retrieval did not attach the matching personal note");
+  assert.match(notePrompt.body.context, /zephyrine-quorum/i, "the personal note body was not supplied as source text");
+  await noteScenario.page.evaluate(async () => {
+    // The audit browser shares one origin profile, so earlier scenarios'
+    // stored conversation can precede this one; the newest message is last.
+    for (let attempt = 0; attempt < 6 && !window.location.hash.startsWith("#/read/"); attempt += 1) {
+      [...document.querySelectorAll(".ai-tutor__message--assistant button.ai-tutor__citation[data-ai-citation]")].at(-1)?.click();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  });
+  assert.match(await noteScenario.page.evaluate(() => window.location.hash), /^#\/read\//, "personal-note citation did not open its document");
+  await noteScenario.page.waitForSelector(".personal-note-panel textarea", { timeout: 10_000 });
+  await noteScenario.page.waitForFunction(
+    () => document.activeElement === document.querySelector(".personal-note-panel textarea"),
+    { timeout: 8_000 },
+  );
+  assert.match(
+    await noteScenario.page.$eval(".personal-note-panel textarea", (field) => field.value),
+    /zephyrine-quorum/i,
+    "the focused editor did not contain the cited personal note",
+  );
+  await noteScenario.page.close();
+
   // A server from an older build advertises no request contract. The UI must
   // fail closed with restart guidance instead of a misleading Ready state.
   const { requestContract: _omitted, ...skewedConfig } = secureConfig;
@@ -511,7 +631,7 @@ try {
   await disabled.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations, validated quiz, bounded persistence/clear, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, validated quiz, answer-to-note clipping, bounded persistence/clear, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

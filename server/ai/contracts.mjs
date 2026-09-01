@@ -10,6 +10,7 @@ export const AI_TASKS = Object.freeze([
   "summarize",
   "study_plan",
   "answer_feedback",
+  "code_review",
 ]);
 
 export const STRUCTURED_TASKS = Object.freeze(["quiz", "flashcards", "study_plan", "answer_feedback"]);

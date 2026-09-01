@@ -20,4 +20,4 @@
  * semantics. Purely additive response-side fields do not require a bump.
  * Server and `dist/` must always be deployed together from the same source.
  */
-export const AI_REQUEST_CONTRACT_ID = "lumen.ai.request.v1";
+export const AI_REQUEST_CONTRACT_ID = "lumen.ai.request.v2";

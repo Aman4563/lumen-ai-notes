@@ -71,6 +71,7 @@ export default function AiLearningStudio(props) {
             onHistoryChange={props.onPhoneSessionHistoryChange}
             onNavigateSource={props.onNavigateSource}
             onCreateFlashcardDrafts={props.onCreateFlashcardDrafts}
+            onSaveAnswerNote={props.onSaveAnswerNote}
             onNotify={props.onNotify}
             onInteractionChange={setPhoneInteractionLocked}
           />
