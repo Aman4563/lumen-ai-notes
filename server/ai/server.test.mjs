@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
 import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
@@ -12,6 +15,11 @@ afterEach(async () => {
   runningServers.clear();
 });
 
+// A hermetic app-shell fixture: the repository's real dist/ is a build
+// product that does not exist on a fresh clone or CI runner.
+const fixtureDistDirectory = await mkdtemp(join(tmpdir(), "lumen-server-test-dist-"));
+await writeFile(join(fixtureDistDirectory, "index.html"), "<!doctype html><html><body><div id=\"root\"></div></body></html>\n", "utf8");
+
 const start = async ({ enabled = true, env = {}, fetchImpl = async () => {
   throw new Error("Unexpected local-service request");
 } } = {}) => {
@@ -22,7 +30,7 @@ const start = async ({ enabled = true, env = {}, fetchImpl = async () => {
     OLLAMA_MODEL: "test-model",
     ...env,
   };
-  const { server } = createApplicationServer({ env: serverEnv, fetchImpl, logger: silentLogger });
+  const { server } = createApplicationServer({ env: serverEnv, fetchImpl, logger: silentLogger, distDirectory: fixtureDistDirectory });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   runningServers.add(server);

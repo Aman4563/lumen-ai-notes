@@ -1,0 +1,49 @@
+# Deterministic release checks on every push and pull request.
+#
+# This intentionally mirrors `npm run check` (minus nothing): notes audit,
+# unit/scale/storage/backup-memory gates, the AI/data test suites, the
+# versioned retrieval evaluation, and the production build + static PWA audit.
+# The browser audits (`npm run check:browser`) need a pinned local Chrome and
+# a serving profile that this repository treats as release evidence rather
+# than CI; they stay operator-run per ENGINEERING_HANDOFF.md §16.7.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Match the audited workspace (Node 26): the AI timeout/deadline
+          # suites depend on current test-runner timer semantics.
+          node-version: 26
+          cache: npm
+      - name: Install exactly from the lockfile
+        run: npm ci
+      - name: Curriculum notes audit
+        run: npm run audit:notes
+      - name: Unit audit
+        run: npm run audit:unit
+      - name: Scale gates
+        run: npm run audit:scale
+      - name: Storage recovery gates
+        run: npm run audit:storage
+      - name: Backup memory gate
+        run: npm run audit:backup-memory
+      - name: AI/data test suites
+        run: npm run audit:ai
+      - name: Versioned retrieval evaluation
+        run: npm run audit:ai-eval
+      - name: Production build and app/PWA audit
+        run: npm run audit:app
