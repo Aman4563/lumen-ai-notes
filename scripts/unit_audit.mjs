@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chunkSpeechText } from "../src/lib/speech.js";
 import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFILE_VERSION } from "../src/lib/db.js";
-import { searchDocuments, tokenizeExclusions, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
+import { contentCapabilities, foldPluralTerm, searchDocuments, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads.js";
 import { createId } from "../src/lib/id.js";
 import { selectInterviewRound } from "../src/lib/interview.js";
@@ -118,6 +118,35 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   assert.deepEqual(selectInterviewRound(pool), round, "selection must be deterministic");
   assert.equal(selectInterviewRound(pool, { limit: 2 }).length, 2);
   assert.equal(selectInterviewRound([]).length, 0);
+}
+
+// SEARCH-001 field filters, has: capabilities, and plural folding.
+{
+  const fieldCorpus = [
+    { id: "t5", title: "Transformer architecture", partTitle: "Part 09 Deep Learning", description: "Attention", searchText: "transformer attention encoder optimizers", raw: "", partNumber: 9, chapterNumber: 1, tags: [], hasCode: true, hasFormula: true },
+    { id: "t6", title: "Decision trees", partTitle: "Part 05 Classical Supervised Learning", description: "Splits", searchText: "gini entropy transformer mention", raw: "", partNumber: 5, chapterNumber: 2, tags: ["interview"], hasCode: false, hasFormula: false },
+  ];
+  assert.deepEqual(tokenizeFieldFilters('title:transformer part:9 tag:"interview" has:code has:nonsense'), { title: ["transformer"], part: ["9"], tag: ["interview"], has: ["code"] }, "field filters parse and unknown has: values drop");
+  assert.deepEqual(tokenizeQuery("title:transformer gradient"), ["gradient"], "filter tokens never leak into body terms");
+  assert.deepEqual(searchDocuments(fieldCorpus, "title:transformer").map((result) => result.id), ["t5"], "title: restricts to title matches");
+  assert.deepEqual(searchDocuments(fieldCorpus, "part:5 transformer").map((result) => result.id), ["t6"], "part: restricts by part number");
+  assert.deepEqual(searchDocuments(fieldCorpus, "part:supervised transformer").map((result) => result.id), ["t6"], "part: also matches part-title words");
+  assert.deepEqual(searchDocuments(fieldCorpus, "tag:interview").map((result) => result.id), ["t6"], "tag: filters on document tags with no body terms required");
+  assert.deepEqual(searchDocuments(fieldCorpus, "has:code transformer").map((result) => result.id), ["t5"], "has:code keeps only code-bearing documents");
+  assert.deepEqual(searchDocuments(fieldCorpus, "has:formula transformer").map((result) => result.id), ["t5"]);
+  assert.equal(searchDocuments(fieldCorpus, "title:zzz").length, 0, "an unmatched filter yields an honest empty result");
+
+  assert.equal(foldPluralTerm("optimizers"), "optimizer");
+  assert.equal(foldPluralTerm("queries"), "query");
+  assert.equal(foldPluralTerm("losses"), "loss");
+  assert.equal(foldPluralTerm("loss"), "loss", "a trailing double-s never folds");
+  assert.deepEqual(searchDocuments(fieldCorpus, "optimizer").map((result) => result.id), ["t5"], "singular query matches the plural in the body");
+  assert.deepEqual(searchDocuments(fieldCorpus, "optimizerz").map((result) => result.id), ["t5"], "folding and typo tolerance compose without breaking exactness");
+  assert.deepEqual(searchDocuments(fieldCorpus, "optimizers")[0].matchedTerms, ["optimizers"], "an exact plural stays the highlighted term");
+
+  const capabilities = contentCapabilities("Intro\n```python\nprint(1)\n```\nInline $E=mc^2$ formula");
+  assert.deepEqual(capabilities, { hasCode: true, hasFormula: true });
+  assert.deepEqual(contentCapabilities("plain prose only, $5 price"), { hasCode: false, hasFormula: false }, "currency-style dollars never count as formulas");
 }
 
 // LEARN-003: bury/suspend/archive exclusion, crunch weak-first ordering, and

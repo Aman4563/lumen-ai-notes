@@ -8,7 +8,7 @@
  * client degrades to synchronous main-thread search so the library keeps
  * working; the caller can read `usingWorker` for diagnostics.
  */
-import { searchDocuments } from "./search.js";
+import { contentCapabilities, searchDocuments } from "./search.js";
 
 export class LibrarySearchError extends Error {
   constructor(code, message, { cause } = {}) {
@@ -75,7 +75,8 @@ export const createLibrarySearchClient = ({ workerFactory = defaultWorkerFactory
         return;
       }
       for (const document of documents) {
-        fallbackBuiltins.set(document.id, { ...document, raw: "", searchText: new Map(bodies).get(document.id) || document.searchText || "" });
+        const body = new Map(bodies).get(document.id) || document.searchText || "";
+        fallbackBuiltins.set(document.id, { ...document, ...contentCapabilities(body), raw: "", searchText: body });
       }
     },
     updateCustom(upsert = [], removeIds = []) {
@@ -85,7 +86,7 @@ export const createLibrarySearchClient = ({ workerFactory = defaultWorkerFactory
         return;
       }
       for (const id of removeIds) fallbackCustoms.delete(id);
-      for (const document of upsert) fallbackCustoms.set(document.id, document);
+      for (const document of upsert) fallbackCustoms.set(document.id, { ...document, ...contentCapabilities(document.raw ?? document.searchText) });
     },
     search(query, candidateIds) {
       if (terminated) return Promise.reject(new LibrarySearchError("CLIENT_TERMINATED", "The library search client was terminated."));

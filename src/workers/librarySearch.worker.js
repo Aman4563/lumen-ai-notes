@@ -8,7 +8,7 @@
  * per-keystroke NFKD pass over the ~1 MB corpus that previously ran during
  * React render.
  */
-import { buildSearchWords, searchDocuments } from "../lib/search.js";
+import { buildSearchWords, contentCapabilities, searchDocuments } from "../lib/search.js";
 
 const normalize = (value) => String(value || "").toLocaleLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
 
@@ -20,6 +20,7 @@ const upsertBuiltin = (document, body) => {
   const metadata = normalize([document.title, document.partTitle, document.description].filter(Boolean).join(" "));
   builtins.set(document.id, {
     ...document,
+    ...contentCapabilities(body ?? document.searchText),
     raw: "",
     searchText: "",
     normalizedSearchText: normalizedBody,
@@ -34,6 +35,7 @@ const upsertCustom = (document) => {
   const metadata = normalize([document.title, document.partTitle, document.description].filter(Boolean).join(" "));
   customs.set(document.id, {
     ...document,
+    ...contentCapabilities(document.raw ?? document.searchText),
     normalizedSearchText: normalizedBody,
     searchWords: buildSearchWords(`${metadata} ${normalizedBody}`),
   });
