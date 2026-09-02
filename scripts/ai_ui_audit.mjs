@@ -590,7 +590,14 @@ try {
   if (await noteScenario.page.$(".ai-tutor__consent input")) await noteScenario.page.click(".ai-tutor__consent input");
   await noteScenario.page.$eval(sendSelector, (button) => button.click());
   await noteScenario.page.waitForSelector(".ai-tutor__message--assistant button.ai-tutor__citation[data-ai-citation]", { timeout: 15_000 });
+  // The interception callback records the call asynchronously; the rendered
+  // citation can beat it by a tick. Poll briefly instead of flaking.
+  {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !noteScenario.calls.respond.length) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   const notePrompt = noteScenario.calls.respond.at(-1);
+  assert.ok(notePrompt, "the mocked respond call was never recorded");
   assert.match(notePrompt.body.context, /Personal note/i, "library-first retrieval did not attach the matching personal note");
   assert.match(notePrompt.body.context, /zephyrine-quorum/i, "the personal note body was not supplied as source text");
   await noteScenario.page.evaluate(async () => {

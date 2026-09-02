@@ -30,6 +30,27 @@ const wrapLines = (text, maxCharacters) => String(text || "").split("\n").flatMa
   return lines;
 });
 
+/** Mirror of the canvas renderer's objectBounds, for rotation centers. */
+const boundsOf = (object) => {
+  const xs = object.points.map((point) => point.x);
+  const ys = object.points.map((point) => point.y);
+  let minX = Math.min(...xs);
+  const maxXRaw = Math.max(...xs);
+  let minY = Math.min(...ys);
+  const maxYRaw = Math.max(...ys);
+  let maxX = maxXRaw;
+  let maxY = maxYRaw;
+  if (object.tool === "text") {
+    maxX = Math.min(1, minX + 0.42);
+    maxY = Math.min(1, minY + Math.max(0.07, ((object.text || "").split("\n").length * (object.fontSize || 24)) / 500));
+  }
+  if (object.tool === "sticky" && object.points.length === 1) {
+    maxX = Math.min(1, minX + 0.36);
+    maxY = Math.min(1, minY + 0.22);
+  }
+  return { minX, minY, maxX, maxY };
+};
+
 const objectToSvg = (object, width, height, background) => {
   if (!object.points?.length) return "";
   const start = object.points[0];
@@ -81,7 +102,17 @@ const objectToSvg = (object, width, height, background) => {
 };
 
 export const boardPageToSvg = (page, { width = 1600, height = 1000, background = "#ffffff" } = {}) => {
-  const objects = (page?.objects || []).map((object) => objectToSvg(object, width, height, background)).filter(Boolean);
+  const objects = (page?.objects || []).map((object) => {
+    const markup = objectToSvg(object, width, height, background);
+    if (!markup || !object.rotation) return markup;
+    // Rotation matches the canvas renderer: about the bounds center, in the
+    // pixel space of the viewBox.
+    const bounds = boundsOf(object);
+    const centerX = (((bounds.minX + bounds.maxX) / 2) * width).toFixed(1);
+    const centerY = (((bounds.minY + bounds.maxY) / 2) * height).toFixed(1);
+    const degrees = ((object.rotation * 180) / Math.PI).toFixed(2);
+    return `<g transform="rotate(${degrees} ${centerX} ${centerY})">${markup}</g>`;
+  }).filter(Boolean);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
 <rect width="${width}" height="${height}" fill="${escapeXml(background)}"/>
 ${objects.join("\n")}

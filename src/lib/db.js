@@ -1063,6 +1063,11 @@ export const normalizeBoardStrokes = (value) => (Array.isArray(value) ? value : 
     text: typeof stroke.text === "string" ? stroke.text.slice(0, 10_000) : "",
     // Locked objects stay selectable but refuse mutation (BOARD-001).
     locked: stroke.locked === true,
+    // Rotation is sparse: only written when non-zero, so legacy boards and
+    // their backups stay byte-identical. Radians about the bounds center.
+    ...(Number.isFinite(Number(stroke.rotation)) && Number(stroke.rotation) !== 0
+      ? { rotation: Math.max(-Math.PI, Math.min(Math.PI, Number(stroke.rotation))) }
+      : {}),
     points: stroke.points
       .slice(0, 20_000)
       .filter((point) => isRecord(point) && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y)))

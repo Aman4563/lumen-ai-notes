@@ -29,3 +29,17 @@ test("a board page serializes to a faithful standalone SVG", () => {
   assert.match(svg, /rx="12" fill="#fff1a8"/, "sticky notes keep their card");
   assert.equal(boardPageToSvg({ objects: [] }).includes("<polyline"), false);
 });
+
+test("rotated objects export wrapped in a center-anchored rotate transform", () => {
+  const page = {
+    id: "page-1",
+    name: "Rotation",
+    objects: [
+      { id: "straight", tool: "rectangle", color: "#17283e", width: 3, points: [{ x: 0.1, y: 0.1 }, { x: 0.3, y: 0.2 }] },
+      { id: "tilted", tool: "rectangle", color: "#17283e", width: 3, rotation: Math.PI / 2, points: [{ x: 0.4, y: 0.4 }, { x: 0.8, y: 0.6 }] },
+    ],
+  };
+  const svg = boardPageToSvg(page, { width: 1000, height: 500 });
+  assert.match(svg, /<g transform="rotate\(90\.00 600\.0 250\.0\)"><rect/, "rotation must anchor at the object's bounds center in viewBox pixels");
+  assert.equal(svg.match(/<g transform="rotate/g)?.length, 1, "unrotated objects must not grow a transform group");
+});
