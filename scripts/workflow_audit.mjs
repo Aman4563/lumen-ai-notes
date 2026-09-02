@@ -916,12 +916,23 @@ try {
   const evidenceText = (await page.$eval(".device-evidence-page", (node) => node.innerText)).toLocaleLowerCase();
   assert.ok(evidenceText.includes("secure context"), "auto checks did not render");
   assert.ok(evidenceText.includes("speech voices"), "the voice inventory row is missing");
+  // Assisted check (machine-verified): run it and drive the mocked synthesis
+  // to completion — the page must record its own pass with the voice used.
+  await clickByText(page, ".evidence-assisted button", "Run speech check");
+  await page.waitForFunction(() => window.speechSynthesis?.current, { timeout: 5_000 });
+  await page.evaluate(() => window.speechSynthesis.current.onend());
+  await page.waitForFunction(() => document.querySelector(".evidence-assisted-verdict")?.textContent.includes("pass"), { timeout: 5_000 })
+    .catch(() => assert.fail("the assisted speech check did not record its own verdict"));
   await page.evaluate(() => {
-    const check = document.querySelector(".evidence-check");
+    const check = document.querySelector(".evidence-checklist .evidence-check");
     [...check.querySelectorAll(".evidence-verdict button")].find((button) => button.textContent.includes("Pass"))?.click();
   });
-  await page.type(".evidence-check .text-input", "desktop-audit smoke entry");
-  await page.$eval(".evidence-actions button", (button) => button.click());
+  await page.type(".evidence-checklist .evidence-check .text-input", "desktop-audit smoke entry");
+  // Off the LAN serve, sending must degrade honestly, never silently claim.
+  await clickByText(page, ".evidence-actions button", "Send report to the Mac");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Could not reach the Mac"), { timeout: 5_000 })
+    .catch(() => assert.fail("the send action did not report its failure honestly"));
+  await clickByText(page, ".evidence-actions button", "Download JSON");
   {
     let evidencePath = "";
     const deadline = Date.now() + 10_000;
@@ -938,9 +949,14 @@ try {
     assert.ok(report.auto.voices.total >= 1, "the voice inventory must reflect the mocked voice");
     const first = report.manual[0];
     assert.equal(first.result, "pass");
+    assert.equal(first.verifiedBy, "human");
     assert.equal(first.note, "desktop-audit smoke entry");
     assert.ok(report.manual.length >= 8, "every tracker checklist item must be in the report");
-    assert.ok(report.manual.slice(1).every((entry) => entry.result === ""), "unanswered checks must export empty, never fabricated");
+    assert.ok(report.manual.slice(1).every((entry) => entry.result === "" && entry.verifiedBy === ""), "unanswered checks must export empty, never fabricated");
+    const speechAssist = report.assisted.find((entry) => entry.id === "speech-liveness");
+    assert.equal(speechAssist.result, "pass", "the assisted speech verdict must ride the report");
+    assert.equal(speechAssist.verifiedBy, "automation");
+    assert.ok(speechAssist.note.includes("on-device"), "the assisted note must name the voice class used");
   }
   await clickByText(page, ".bottom-nav button", "Notebook");
   await page.waitForSelector(".notebook-page");
@@ -1312,7 +1328,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, handle rotation with rotated-frame hit-testing and SVG transform export, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with choice/numeric auto-grading, missed-question source links, an in-place retry, and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, handle rotation with rotated-frame hit-testing and SVG transform export, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, the self-recording assisted speech check, honest send-failure off the LAN serve, recorded human verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with choice/numeric auto-grading, missed-question source links, an in-place retry, and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

@@ -7348,3 +7348,9 @@ input[type="range"] {
 .assessment-numeric label { display: flex; flex-direction: column; gap: 5px; font-size: 0.85rem; }
 .assessment-missed { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 4px; }
 .assessment-missed-link { display: inline-flex; align-items: center; gap: 6px; text-align: left; }
+
+/* Assisted evidence checks (issue #7): machine-verified, one tap to run. */
+.evidence-assisted-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.evidence-assisted-verdict { display: inline-flex; align-items: center; gap: 6px; font-size: 0.84rem; }
+.evidence-assisted-verdict.pass { color: #2e8b76; }
+.evidence-assisted-verdict.fail { color: #b2543c; }
