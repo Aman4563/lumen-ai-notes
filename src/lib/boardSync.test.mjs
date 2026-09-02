@@ -106,3 +106,34 @@ test("a page edit wins over a concurrent page deletion", () => {
   assert.ok(result.conflicts.some((conflict) => conflict.kind === "page-delete-vs-update"));
 });
 
+
+test("a z-order reorder survives the merge instead of snapping back to base order", () => {
+  const base = board([{ id: "page-1", name: "Page 1", objects: [object("a"), object("b", "", 0.2), object("c", "", 0.3)] }]);
+  // Local brings "a" to the front (end of the array); remote is unchanged —
+  // the exact shape of persistBoard's merge on every debounced save.
+  const local = normalizeBoardDocument({ ...base, pages: [{ ...base.pages[0], objects: [base.pages[0].objects[1], base.pages[0].objects[2], base.pages[0].objects[0]] }] });
+  const result = mergeBoardVersions(base, local, base, { now: NOW });
+  assert.deepEqual(result.board.pages[0].objects.map((item) => item.id), ["b", "c", "a"], "the local reorder must hold after the merge");
+  assert.equal(result.conflicts.some((conflict) => conflict.kind === "concurrent-order-change"), false, "an uncontested reorder is not a conflict");
+
+  // Both sides reorder differently: deterministic winner + a recorded conflict.
+  const remote = normalizeBoardDocument({ ...base, pages: [{ ...base.pages[0], objects: [base.pages[0].objects[2], base.pages[0].objects[0], base.pages[0].objects[1]] }] });
+  const contested = mergeBoardVersions(base, local, remote, { now: NOW });
+  const forward = contested.board.pages[0].objects.map((item) => item.id);
+  const reversed = mergeBoardVersions(base, remote, local, { now: NOW }).board.pages[0].objects.map((item) => item.id);
+  assert.deepEqual(forward, reversed, "contested reorders resolve identically regardless of tab order");
+  assert.ok(contested.conflicts.some((conflict) => conflict.kind === "concurrent-order-change"), "a contested reorder is recorded");
+
+  // A deletion on one side must never read as a reorder on the other.
+  const deleted = normalizeBoardDocument({ ...base, pages: [{ ...base.pages[0], objects: [base.pages[0].objects[0], base.pages[0].objects[2]] }] });
+  const deleteMerge = mergeBoardVersions(base, deleted, base, { now: NOW });
+  assert.deepEqual(deleteMerge.board.pages[0].objects.map((item) => item.id), ["a", "c"]);
+  assert.equal(deleteMerge.conflicts.some((conflict) => conflict.kind === "concurrent-order-change"), false);
+});
+
+test("the locked flag survives merge and normalization", () => {
+  const base = board([{ id: "page-1", name: "Page 1", objects: [{ ...object("a"), locked: true }] }]);
+  assert.equal(base.pages[0].objects[0].locked, true, "normalizeBoardStrokes preserves locked");
+  const merged = mergeBoardVersions(base, base, base, { now: NOW });
+  assert.equal(merged.board.pages[0].objects[0].locked, true);
+});

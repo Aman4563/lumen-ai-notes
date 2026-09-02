@@ -729,6 +729,16 @@ very large diagram performance remain open.
 
 ## 9. Audio, teaching mode, and whiteboard
 
+> **Rotation deferral note (BOARD-001, 2026-09-02).** Object rotation is the
+> one transform deliberately not shipped with lock/z-order/snap/interchange:
+> a `rotation` field touches every layer at once — the stroke normalizer and
+> `boardPayloadEqual`, canvas draw (transform per object), axis-aligned
+> `objectBounds`/hit-testing (which become oriented boxes), the resize handle
+> math, marquee containment, the SVG exporter, and the interchange schema —
+> and half-shipping it (e.g. rotating draw without rotated hit-testing) makes
+> objects unselectable at their visible position. Ship it only as one
+> coherent slice with oriented-bounds hit tests and audit coverage.
+
 ### 9.1 Multiple audio options
 
 Narration uses browser `SpeechSynthesis`; there is no server audio provider. It now supports:

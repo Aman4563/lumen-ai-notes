@@ -438,6 +438,96 @@ try {
   await page.waitForFunction(() => document.querySelector(".board-zoom-level")?.textContent === "100%", { timeout: 5_000 })
     .catch(() => assert.fail("reset did not restore the identity view"));
 
+  // Issue #11: lock refuses deletion, z-order reorders persist, snapped lines
+  // land on the 24px grid, and the JSON interchange round-trips undoably.
+  await page.mouse.click(grabX + canvasBox.width * 0.1, grabY + canvasBox.height * 0.18);
+  await page.waitForSelector('button[aria-label="Lock selection"]', { timeout: 5_000 });
+  await page.$eval('button[aria-label="Lock selection"]', (button) => button.click());
+  await page.keyboard.press("Delete");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("locked"), { timeout: 5_000 })
+    .catch(() => assert.fail("deleting a locked object did not refuse with the lock notice"));
+  assert.ok((await page.$eval(".board-hint", (node) => node.textContent)).includes("2 objects"), "a locked object was deleted");
+  await page.$eval('button[aria-label="Unlock selection"]', (button) => button.click());
+
+  const orderBefore = (await readStored(page, boardKey)).pages[1].objects.map((item) => item.id);
+  await page.$eval('button[aria-label="Bring selection forward"]', (button) => button.click());
+  await waitForStored(page, boardKey, (stored) => {
+    const order = stored.pages[1].objects.map((item) => item.id);
+    return JSON.stringify(order) !== JSON.stringify(orderBefore);
+  }, "bringing forward did not persist the new z-order");
+  await page.$eval('button[aria-label="Send selection backward"]', (button) => button.click());
+  await waitForStored(page, boardKey, (stored) => JSON.stringify(stored.pages[1].objects.map((item) => item.id)) === JSON.stringify(orderBefore), "sending backward did not restore the original order");
+  await page.keyboard.press("Escape");
+
+  await page.$eval('button[aria-label="Snap to grid"]', (button) => button.click());
+  await page.waitForFunction(() => document.querySelector('button[aria-label="Snap to grid"]')?.getAttribute("aria-pressed") === "true", { timeout: 5_000 })
+    .catch(() => assert.fail("the snap toggle did not arm"));
+  await page.$eval('button[aria-label="Straight line"]', (button) => button.click());
+  // The canvas rect can differ from the line-matrix measurement (toolbar rows
+  // appear and disappear) — measure fresh for both drawing and assertion.
+  const snapBox = await page.$eval(".board-canvas", (canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  });
+  await page.mouse.move(snapBox.left + snapBox.width * 0.31, snapBox.top + snapBox.height * 0.11);
+  await page.mouse.down();
+  await page.mouse.move(snapBox.left + snapBox.width * 0.52, snapBox.top + snapBox.height * 0.23, { steps: 4 });
+  await page.mouse.up();
+  await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.length === 3, "the snapped line was not persisted");
+  {
+    const stored = await readStored(page, boardKey);
+    const snapped = stored.pages[1].objects[2];
+    for (const point of snapped.points) {
+      const pixelX = point.x * snapBox.width;
+      const pixelY = point.y * snapBox.height;
+      assert.ok(Math.abs(pixelX - Math.round(pixelX / 24) * 24) < 0.6, `snapped x ${pixelX} is off-grid`);
+      assert.ok(Math.abs(pixelY - Math.round(pixelY / 24) * 24) < 0.6, `snapped y ${pixelY} is off-grid`);
+    }
+  }
+  await page.$eval('button[aria-label="Snap to grid"]', (button) => button.click());
+  await page.$eval('button[aria-label="Select and move objects"]', (button) => button.click());
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll("button")];
+    buttons.find((node) => node.getAttribute("aria-label") === "Undo")?.click();
+  });
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"));
+
+  await page.$eval('button[aria-label="Export the whole board as JSON"]', (button) => button.click());
+  {
+    let boardJsonPath = "";
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && !boardJsonPath) {
+      const files = await readdir(downloadDirectory);
+      const name = files.find((file) => file.endsWith("-board.json"));
+      if (name) boardJsonPath = join(downloadDirectory, name);
+      else await delay(100);
+    }
+    assert.ok(boardJsonPath, "the board JSON export was not downloaded");
+    const exported = JSON.parse(await readFile(boardJsonPath, "utf8"));
+    assert.equal(exported.format, "lumen.board.v1");
+    assert.ok(exported.pages.length >= 2, "the export must carry every page");
+    assert.equal(exported.pages.flatMap((pageEntry) => pageEntry.objects).some((objectEntry) => "id" in objectEntry), false, "object ids must never travel");
+    await page.$eval('input[type="file"][accept*="json"]', (input, payload) => {
+      const file = new File([payload], "reimport-board.json", { type: "application/json" });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }, JSON.stringify(exported));
+    await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("imported"), { timeout: 5_000 })
+      .catch(() => assert.fail("importing the board JSON did not confirm"));
+    // Empty pages deliberately do not import; expect 3 + the non-empty count.
+    const expectedPages = 3 + exported.pages.filter((pageEntry) => pageEntry.objects.length).length;
+    await page.waitForFunction((total) => document.querySelector(".board-hint")?.textContent.includes(`${total} pages`), { timeout: 5_000 }, expectedPages)
+      .catch(() => assert.fail("imported pages did not append"));
+    await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll("button")];
+      buttons.find((node) => node.getAttribute("aria-label") === "Undo")?.click();
+    });
+    await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 pages"), { timeout: 5_000 })
+      .catch(() => assert.fail("the board import was not undoable"));
+  }
+
   await page.$eval(".board-page-controls select", (select) => { select.value = select.options[0].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("5 objects"));
   await page.$eval(".board-page-controls select", (select) => { select.value = select.options[1].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -756,7 +846,7 @@ try {
   let backupPath;
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const files = await readdir(downloadDirectory);
-    const backupName = files.find((name) => name.endsWith(".json"));
+    const backupName = files.find((name) => name.startsWith("lumen-notes-backup-") && name.endsWith(".json"));
     if (backupName) {
       backupPath = join(downloadDirectory, backupName);
       break;
@@ -879,7 +969,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

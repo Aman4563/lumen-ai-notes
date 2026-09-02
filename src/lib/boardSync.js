@@ -30,13 +30,44 @@ export const boardPayloadEqual = (left, right) => equal(
 
 const chooseWinner = (left, right) => stableString(left) >= stableString(right) ? left : right;
 
-const mergeOrderedIds = (baseItems, localItems, remoteItems) => {
+/**
+ * Order-aware three-way id merge (BOARD-001 z-order). The spine is the side
+ * that actually reordered the common ids — projections onto the common-id
+ * set are compared against base order so deletions never read as reorders.
+ * When both sides reordered differently, the deterministic chooseWinner rule
+ * picks a spine and the caller records a concurrent-order-change conflict.
+ * Additions still append at the end in the existing deterministic group
+ * order (new objects draw on top). Behavior is identical to the previous
+ * base-order implementation whenever neither side reordered.
+ */
+const mergeOrderedIds = (baseItems, localItems, remoteItems, onOrderConflict) => {
   const baseIds = baseItems.map((item) => item.id);
   const baseSet = new Set(baseIds);
-  const localAdditions = localItems.map((item) => item.id).filter((id) => !baseSet.has(id));
-  const remoteAdditions = remoteItems.map((item) => item.id).filter((id) => !baseSet.has(id));
+  const localIds = localItems.map((item) => item.id);
+  const remoteIds = remoteItems.map((item) => item.id);
+  const localAdditions = localIds.filter((id) => !baseSet.has(id));
+  const remoteAdditions = remoteIds.filter((id) => !baseSet.has(id));
+
+  const localSet = new Set(localIds);
+  const remoteSet = new Set(remoteIds);
+  const commonIds = new Set(baseIds.filter((id) => localSet.has(id) || remoteSet.has(id)));
+  const project = (ids) => ids.filter((id) => commonIds.has(id));
+  const baseCommon = project(baseIds);
+  const localCommon = project(localIds);
+  const remoteCommon = project(remoteIds);
+  const localReordered = stableString(localCommon) !== stableString(project(baseIds.filter((id) => localSet.has(id))));
+  const remoteReordered = stableString(remoteCommon) !== stableString(project(baseIds.filter((id) => remoteSet.has(id))));
+
+  let spine = baseCommon;
+  if (localReordered && !remoteReordered) spine = localCommon;
+  else if (remoteReordered && !localReordered) spine = remoteCommon;
+  else if (localReordered && remoteReordered && stableString(localCommon) !== stableString(remoteCommon)) {
+    spine = chooseWinner(localCommon, remoteCommon);
+    onOrderConflict?.();
+  } else if (localReordered) spine = localCommon;
+
   const groups = [localAdditions, remoteAdditions].sort((left, right) => stableString(left).localeCompare(stableString(right)));
-  return [...new Set([...baseIds, ...groups[0], ...groups[1]])];
+  return [...new Set([...spine, ...baseIds, ...groups[0], ...groups[1]])];
 };
 
 const scalarMerge = (base, local, remote) => {
@@ -74,7 +105,9 @@ const mergeObjects = (pageId, baseItems, localItems, remoteItems, detectedAt) =>
   const records = new Map();
   const conflicts = [];
 
-  mergeOrderedIds(baseItems, localItems, remoteItems).forEach((id) => {
+  mergeOrderedIds(baseItems, localItems, remoteItems, () => {
+    conflicts.push(conflictRecord({ kind: "concurrent-order-change", pageId, detectedAt }));
+  }).forEach((id) => {
     const baseHas = base.has(id);
     const localHas = local.has(id);
     const remoteHas = remote.has(id);
