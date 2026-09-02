@@ -7342,3 +7342,9 @@ input[type="range"] {
 .review-workload-options button span { font-size: 0.76rem; opacity: 0.75; }
 .review-workload-options button.active { border-color: var(--ink, #17283e); background: var(--ink, #17283e); color: var(--paper, #fff); }
 .review-workload-options button.active span { opacity: 0.9; }
+
+/* Assessment numeric input and missed-question source links (issue #9). */
+.assessment-numeric { display: flex; flex-direction: column; gap: 12px; }
+.assessment-numeric label { display: flex; flex-direction: column; gap: 5px; font-size: 0.85rem; }
+.assessment-missed { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 4px; }
+.assessment-missed-link { display: inline-flex; align-items: center; gap: 6px; text-align: left; }

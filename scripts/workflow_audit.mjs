@@ -1138,13 +1138,14 @@ try {
         const profile = get.result;
         const stamp = new Date().toISOString();
         // Part 02 has no cards from earlier flows, so the pool is exactly
-        // these three and every question uses the self-grade rubric.
+        // these four: three prose answers (choice questions — each has three
+        // distinct distractors) plus one numeric answer (auto-graded).
         const partDoc = "notes/part-02-mathematics/01-notation-algebra-functions.md";
-        profile.reviewItems = [...(profile.reviewItems || []), ...[1, 2, 3].map((index) => ({
+        profile.reviewItems = [...(profile.reviewItems || []), ...[1, 2, 3, 4].map((index) => ({
           id: `readiness-card-${index}`,
           type: "basic",
           front: `Readiness prompt ${index}?`,
-          back: `Readiness answer ${index}`,
+          back: index === 4 ? "42" : `Readiness answer ${index}`,
           documentId: partDoc,
           tags: [],
           suspended: false,
@@ -1175,26 +1176,53 @@ try {
   });
   await page.waitForSelector(".assessment-dialog", { timeout: 5_000 });
   await clickByText(page, ".assessment-dialog button", "Start");
-  for (let answered = 0; answered < 3; answered += 1) {
-    await page.waitForFunction(() => [...document.querySelectorAll(".assessment-dialog button")].some((button) => button.textContent.includes("Reveal expected answer")), { timeout: 5_000 });
-    await clickByText(page, ".assessment-dialog button", "Reveal expected answer");
-    await page.waitForSelector(".assessment-rubric");
-    await clickByText(page, ".assessment-rubric button", answered === 0 ? "Right" : "Wrong");
-  }
-  await page.waitForFunction(() => document.querySelector(".assessment-dialog h2")?.textContent.includes("%"), { timeout: 5_000 });
+  // Answer helper: choice questions pick right/wrong by text; the numeric
+  // question types a tolerant variant of the answer ("42.0" for "42").
+  const answerRound = async (wrongOnQuestions) => {
+    for (let answered = 0; answered < 4; answered += 1) {
+      await page.waitForFunction(() => document.querySelector(".assessment-options") || document.querySelector(".assessment-numeric"), { timeout: 5_000 });
+      if (await page.$(".assessment-numeric")) {
+        await page.$eval(".assessment-numeric input", (input, value) => {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+          setter.call(input, value);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }, wrongOnQuestions.has(answered) ? "41" : "42.0");
+        await clickByText(page, ".assessment-numeric button", "Submit answer");
+        continue;
+      }
+      const prompt = await page.$eval(".assessment-prompt", (node) => node.textContent);
+      const cardNumber = prompt.match(/Readiness prompt (\d)/)?.[1];
+      await page.$$eval(".assessment-option", (options, expected) => {
+        const right = options.find((option) => option.textContent.trim() === expected);
+        const wrong = options.find((option) => option.textContent.trim() !== expected);
+        (expected ? right : wrong)?.click();
+      }, wrongOnQuestions.has(answered) ? "" : `Readiness answer ${cardNumber}`);
+      await clickByText(page, ".assessment-options .button", "Submit answer");
+    }
+    await page.waitForFunction(() => document.querySelector(".assessment-dialog h2")?.textContent.includes("%"), { timeout: 5_000 });
+  };
+  // Round 1: miss two of four (questions 2 and 3) → 50%.
+  await answerRound(new Set([1, 2]));
   assert.ok((await page.$eval(".assessment-dialog", (node) => node.textContent)).includes("2 misses added to your mistake notebook"), "misses did not report to the notebook");
+  assert.equal((await page.$$(".assessment-missed-link")).length, 2, "each missed question must link its source lecture");
+  // Retry (issue #9): same frozen questions, a fresh attempt, all correct.
+  await clickByText(page, ".assessment-dialog button", "Retry this check");
+  await answerRound(new Set());
+  assert.ok((await page.$eval(".assessment-dialog h2", (node) => node.textContent)).includes("100%"), "the retry round must score 100%");
   await clickByText(page, ".assessment-dialog button", "Done");
-  const assessedProfile = await waitForStored(page, "profile", (stored) => (stored.assessments || []).length === 1, "the assessment record was not persisted");
-  assert.equal(assessedProfile.assessments[0].percent, 33, "one right of three must score 33%");
-  assert.equal(assessedProfile.assessments[0].questions.length, 3, "questions must be embedded frozen in the record");
+  const assessedProfile = await waitForStored(page, "profile", (stored) => (stored.assessments || []).length === 2, "both assessment attempts must persist");
+  const percents = assessedProfile.assessments.map((record) => record.percent).sort((left, right) => left - right);
+  assert.deepEqual(percents, [50, 100], "the two attempts must score 50% then 100%");
+  assert.ok(assessedProfile.assessments.every((record) => record.questions.length === 4), "questions must be embedded frozen in each record");
+  assert.ok(assessedProfile.assessments.some((record) => record.questions.some((question) => question.type === "numeric")), "the numeric question type must be recorded");
   assert.ok(assessedProfile.mistakes.filter((mistake) => (mistake.tags || []).includes("assessment")).length >= 2, "assessment misses must land in the mistake notebook");
-  await page.waitForFunction(() => document.querySelector(".mastery-grid")?.textContent.includes("last check 33%"), { timeout: 5_000 })
+  await page.waitForFunction(() => document.querySelector(".mastery-grid")?.textContent.includes("last check 100%"), { timeout: 5_000 })
     .catch(() => assert.fail("the mastery row did not surface the latest readiness score"));
 
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with rubric grading and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with choice/numeric auto-grading, missed-question source links, an in-place retry, and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronRight, ClipboardCheck, Eye, X } from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronRight, ClipboardCheck, Eye, RotateCcw, X } from "lucide-react";
 import { gradeAssessmentAnswer, recommendationForAssessment, scoreAssessment } from "../lib/assessment.js";
 
 const FOCUSABLE = "button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex='-1'])";
@@ -10,12 +10,13 @@ const FOCUSABLE = "button:not(:disabled), input:not(:disabled), [tabindex]:not([
  * per-category scoring and an advisory recommendation. Every answer with less
  * than full credit is reported to the caller as mistake drafts on finish.
  */
-export default function AssessmentDialog({ assessment, onFinish, onClose }) {
+export default function AssessmentDialog({ assessment, onFinish, onClose, onOpenSource }) {
   const [stage, setStage] = useState("intro");
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [clozeInputs, setClozeInputs] = useState([]);
   const [choicePick, setChoicePick] = useState("");
+  const [numericInput, setNumericInput] = useState("");
   const [revealed, setRevealed] = useState(false);
   const dialogRef = useRef(null);
   const finishedRef = useRef(false);
@@ -55,6 +56,7 @@ export default function AssessmentDialog({ assessment, onFinish, onClose }) {
     const nextAnswers = [...answers, { questionId: question.id, response, credit }];
     setAnswers(nextAnswers);
     setChoicePick("");
+    setNumericInput("");
     setClozeInputs([]);
     setRevealed(false);
     if (index + 1 < questions.length) {
@@ -72,6 +74,24 @@ export default function AssessmentDialog({ assessment, onFinish, onClose }) {
     if (!choicePick) return;
     const graded = gradeAssessmentAnswer(question, choicePick);
     record(choicePick, graded.credit);
+  };
+
+  const submitNumeric = () => {
+    if (!numericInput.trim()) return;
+    const graded = gradeAssessmentAnswer(question, numericInput);
+    record(numericInput.trim(), graded.credit);
+  };
+
+  const retry = () => {
+    // Same frozen questions, a fresh attempt; each finish records separately.
+    finishedRef.current = false;
+    setAnswers([]);
+    setIndex(0);
+    setChoicePick("");
+    setNumericInput("");
+    setClozeInputs([]);
+    setRevealed(false);
+    setStage("question");
   };
 
   const submitCloze = () => {
@@ -115,6 +135,13 @@ export default function AssessmentDialog({ assessment, onFinish, onClose }) {
               </div>
             )}
 
+            {question.type === "numeric" && (
+              <div className="assessment-numeric">
+                <label><span>Your answer (a number)</span><input className="text-input" inputMode="decimal" value={numericInput} onChange={(event) => setNumericInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitNumeric(); }} autoComplete="off" /></label>
+                <button className="button primary" onClick={submitNumeric} disabled={!numericInput.trim()} type="button">Submit answer</button>
+              </div>
+            )}
+
             {question.type === "cloze" && (
               <div className="assessment-cloze">
                 {question.answerKey.map((_, blankIndex) => (
@@ -153,7 +180,16 @@ export default function AssessmentDialog({ assessment, onFinish, onClose }) {
               ))}
             </dl>
             {missedCount > 0 && <p className="microcopy"><CheckCircle2 size={14} /> {missedCount} miss{missedCount === 1 ? "" : "es"} added to your mistake notebook for corrective review.</p>}
-            <div className="modal-actions"><button className="button primary" onClick={onClose} type="button">Done</button></div>
+            {missedCount > 0 && (
+              <div className="assessment-missed" aria-label="Missed questions and their source lectures">
+                {score.missed.map((questionId) => {
+                  const missedQuestion = questions.find((entry) => entry.id === questionId);
+                  if (!missedQuestion?.documentId) return null;
+                  return <button key={questionId} className="text-button assessment-missed-link" onClick={() => onOpenSource?.(missedQuestion.documentId)} type="button"><BookOpen size={14} /> {missedQuestion.prompt.length > 70 ? `${missedQuestion.prompt.slice(0, 70)}…` : missedQuestion.prompt}</button>;
+                })}
+              </div>
+            )}
+            <div className="modal-actions"><button className="button ghost" onClick={retry} type="button"><RotateCcw size={16} /> Retry this check</button><button className="button primary" onClick={onClose} type="button">Done</button></div>
           </>
         )}
       </section>

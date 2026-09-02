@@ -168,3 +168,19 @@ test("goal pacing reports honest statuses and the badge count is actionable-only
   ];
   assert.equal(actionableDueCount(profileWith(due), now), 1, "suspended and future cards never inflate the badge");
 });
+
+test("numeric answers auto-grade with tolerant matching and survive normalization", () => {
+  const stamp = "2026-09-02T10:00:00.000Z";
+  const card = (id, back) => ({ id, type: "basic", front: `${id}?`, back, documentId: "notes/part-02-mathematics/01-notation-algebra-functions.md", suspended: false, archived: false, dueAt: stamp, intervalDays: 1, ease: 2.5, repetitions: 1, reviewCount: 1, lapses: 0, createdAt: stamp, updatedAt: stamp, lastReviewedAt: stamp });
+  const documents = [{ id: "notes/part-02-mathematics/01-notation-algebra-functions.md", partNumber: 2, source: "builtin", isIndex: false }];
+  const profile = { reviewItems: [card("n-1", "1.5"), card("n-2", "long prose answer one"), card("n-3", "long prose answer two"), card("n-4", "-42%")], mistakes: [], progress: {}, readingPositions: {} };
+  const built = buildAssessment({ partNumber: 2 }, { documents, profile });
+  assert.equal(built.ok, true);
+  const numeric = built.questions.filter((question) => question.type === "numeric");
+  assert.equal(numeric.length, 2, "plain numbers and signed percents must become numeric questions");
+  const question = numeric.find((entry) => entry.answerKey === "1.5");
+  assert.equal(gradeAssessmentAnswer(question, " 1.50 ").credit, 1, "trailing zeros and whitespace are forgiven");
+  assert.equal(gradeAssessmentAnswer(question, "1.6").credit, 0, "wrong numbers still fail");
+  const normalized = normalizeAssessments([createAssessmentRecord({ partNumber: 2, kind: "diagnostic", questions: built.questions, answers: [], percent: 0, recommendation: { action: "study", reason: "", nextAction: "" }, evidence: built.evidence })]);
+  assert.equal(normalized[0].questions.filter((entry) => entry.type === "numeric").length, 2, "the numeric type must survive storage normalization");
+});
