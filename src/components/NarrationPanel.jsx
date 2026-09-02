@@ -163,6 +163,20 @@ export default function NarrationPanel({
         </div>
       )}
 
+      <div className="speech-sleep-row speech-autoadvance-row">
+        <span>Playlist</span>
+        <label className="setting-toggle">
+          <span>Continue into the next chapter</span>
+          <input
+            type="checkbox"
+            role="switch"
+            checked={settings.narrationAutoAdvance === true}
+            onChange={(event) => onSettingsChange({ narrationAutoAdvance: event.target.checked })}
+            aria-label="Continue narration into the next chapter of this Part"
+          />
+        </label>
+      </div>
+
       <div className="speech-sleep-row" role="radiogroup" aria-label="Sleep timer">
         <span>Sleep timer</span>
         {[0, 10, 20, 30].map((minutes) => (

@@ -1310,6 +1310,10 @@ export default function App() {
     });
   }, []);
 
+  // Narration playlists (issue #17, AUDIO-002): when a full lecture ends and
+  // the opt-in setting is on, continue into the next chapter of the same Part.
+  const autoAdvanceNarrationRef = useRef(null);
+  const [autoNarrateDocId, setAutoNarrateDocId] = useState("");
   const speech = useSpeech({
     pronunciations: profile.settings.pronunciations,
     voiceURI: profile.settings.voiceURI,
@@ -1318,6 +1322,11 @@ export default function App() {
     pitch: profile.settings.speechPitch,
     volume: profile.settings.speechVolume,
     onSettingsChange: updateSettings,
+    onQueueComplete: ({ label }) => {
+      if (label !== "Full lecture") return;
+      if (profileRef.current.settings.narrationAutoAdvance !== true) return;
+      autoAdvanceNarrationRef.current?.();
+    },
   });
   const wakeLock = useWakeLock(profile.settings.keepScreenAwake && (view === "reader" || view === "board"));
 
@@ -1326,6 +1335,17 @@ export default function App() {
   const allDocumentMap = useMemo(() => new Map(allDocuments.map((doc) => [doc.id, doc])), [allDocuments]);
   const currentDocument = allDocumentMap.get(currentDocumentId) || documentMap.get(initialDocumentId) || allDocuments[0];
   const currentIndex = allDocuments.findIndex((doc) => doc.id === currentDocument.id);
+  autoAdvanceNarrationRef.current = () => {
+    const current = allDocuments[currentIndex];
+    const next = allDocuments[currentIndex + 1];
+    if (!current || !next || next.partTitle !== current.partTitle) {
+      notify("Narration finished — that was the last chapter of this Part.", "success", 5000);
+      return;
+    }
+    setAutoNarrateDocId(next.id);
+    openDocument(next.id);
+    notify(`Continuing narration: ${next.title}`, "success", 4000);
+  };
   const currentOriginalSource = currentDocument.source === "custom" ? currentDocument.raw : (builtInSources[currentDocument.id] || "");
   const reviewDueCount = buildReviewQueue(profile.reviewItems, profile.reviewSettings, new Date(), profile.reviewSessions).length;
   const aiFeaturesEnabled = profile.settings.aiFeaturesEnabled !== false;
@@ -2802,7 +2822,7 @@ export default function App() {
         <div className="view-container">
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} onStartAssessment={startAssessment} onGoalsChange={(goals) => setProfile((current) => ({ ...current, goals: { ...current.goals, ...goals } }))} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
-          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onAskAi={profile.settings.aiFeaturesEnabled !== false ? askAiAboutSelection : undefined} onNotify={notify} /></Suspense>)}
+          {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} autoNarrate={autoNarrateDocId === currentDocument.id} onAutoNarrateHandled={() => setAutoNarrateDocId("")} onOpenBoard={() => changeView("board")} onAskAi={profile.settings.aiFeaturesEnabled !== false ? askAiAboutSelection : undefined} onNotify={notify} /></Suspense>)}
           {view === "device-evidence" && <Suspense fallback={<div className="view-loading" role="status">Preparing device checks…</div>}><DeviceEvidence onNotify={notify} /></Suspense>}
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} />}
           {view === "ai" && (!aiFeaturesEnabled

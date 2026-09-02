@@ -32,6 +32,7 @@ export function useSpeech({
   volume = 1,
   pronunciations = [],
   onSettingsChange,
+  onQueueComplete,
 }) {
   const supported = hasSpeechAPI();
   const [voices, setVoices] = useState([]);
@@ -58,6 +59,9 @@ export function useSpeech({
   configRef.current = { voiceURI, language: normalizeSpeechLanguage(language), rate, pitch, volume, pronunciations };
   voicesRef.current = voices;
   statusRef.current = status;
+  const onQueueCompleteRef = useRef(null);
+  onQueueCompleteRef.current = onQueueComplete;
+  const activeLabelRef = useRef("");
 
   const updateStatus = useCallback((nextStatus) => {
     statusRef.current = nextStatus;
@@ -122,6 +126,7 @@ export function useSpeech({
     restartRequiredRef.current = false;
     setCurrentText("");
     setActiveLabel("");
+    activeLabelRef.current = "";
     setProgress({ current: 0, total: 0 });
     updateStatus("idle");
   }, [clearResumeTimer, updateStatus]);
@@ -130,7 +135,10 @@ export function useSpeech({
     if (!supported || session !== sessionRef.current) return;
     const queue = queueRef.current;
     if (index >= queue.length) {
+      // Natural completion only — stop() and the sleep timer never fire this.
+      const completedLabel = activeLabelRef.current;
       finish();
+      onQueueCompleteRef.current?.({ label: completedLabel });
       return;
     }
 
@@ -211,6 +219,7 @@ export function useSpeech({
     restartRequiredRef.current = false;
     setCurrentText("");
     setActiveLabel("");
+    activeLabelRef.current = "";
     updateStatus(supported ? "idle" : "unsupported");
     setProgress({ current: 0, total: 0 });
     setError("");
@@ -257,6 +266,7 @@ export function useSpeech({
       setError("There is no readable text in this target.");
       return false;
     }
+    activeLabelRef.current = String(options.label || "Narration").slice(0, 80);
     setActiveLabel(String(options.label || "Narration").slice(0, 80));
     const startIndex = Number.isInteger(options.startIndex) ? Math.max(0, Math.min(queue.length - 1, options.startIndex)) : 0;
     playIndex(startIndex, sessionRef.current);

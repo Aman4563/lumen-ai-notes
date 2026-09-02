@@ -89,6 +89,8 @@ export default function Reader({
   onSettingsChange,
   previousDocument,
   nextDocument,
+  autoNarrate = false,
+  onAutoNarrateHandled,
   onOpenBoard,
   onAskAi,
   onNotify,
@@ -448,6 +450,25 @@ export default function Reader({
       setShowSpeech(false);
     }
   };
+
+  // Narration playlist arrival (issue #17, AUDIO-002): this chapter was
+  // opened by auto-advance, so begin its full-lecture narration from the top
+  // once the article DOM is in place. Same user-initiated session; the
+  // foreground-safety rules (pagehide cancel, explicit resume) still apply.
+  useEffect(() => {
+    if (!autoNarrate) return;
+    const target = buildSpeechTarget({
+      scope: "document",
+      selectedText: "",
+      article: articleRef.current,
+      scrollContainer: scrollRef.current,
+      sourceText: plainTextFromMarkdown(source),
+      language: settings.speechLanguage,
+    });
+    if (target.available) speech.speak(target.text, { label: target.label, sections: target.sections });
+    onAutoNarrateHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoNarrate, document.id]);
 
   // Spoken-block follow (AUDIO-001): while a lecture-wide narration is
   // speaking, tint the block containing the current sentence and keep it in
