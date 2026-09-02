@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { initialProfile, normalizeProfile } from "./db.js";
 import { isProfileReplacementNewer, mergeProfileVersions, prepareProfileReplacement } from "./profileSync.js";
-import { gradeReviewItem, recordReviewUsage, restoreReviewItemFromAttempt, reverseReviewUsage } from "./review.js";
+import { createReviewItem, gradeReviewItem, recordReviewUsage, restoreReviewItemFromAttempt, reverseReviewUsage } from "./review.js";
 
 const NOW = "2026-08-23T10:00:00.000Z";
 const earlier = "2026-08-23T09:00:00.000Z";
@@ -585,4 +585,43 @@ test("Wave-7 collections, trash, activity, and revisions merge across tabs with 
   const restored = normalizeProfile({ ...third, trash: [] });
   const fourth = mergeProfileVersions(third, restored, third, { now: NOW, writerId: "tab-b" }).profile;
   assert.equal(fourth.trash.length, 0, "a restored/purged trash entry must stay deleted after a three-way merge");
+});
+
+test("cross-tab attempt replay under the merged FSRS scheduler is deterministic and convergent", () => {
+  const createdAt = new Date("2026-08-20T10:00:00.000Z");
+  const card = { ...createReviewItem({ front: "Q", back: "A" }, createdAt), id: "fsrs-card" };
+  const base = normalizeProfile({
+    ...initialProfile,
+    reviewSettings: { ...initialProfile.reviewSettings, scheduler: "fsrs", requestRetention: 0.9 },
+    reviewItems: [card],
+  });
+
+  // Tab A grades the card under FSRS; tab B never saw the attempt.
+  const reviewedAt = new Date("2026-08-23T10:00:00.000Z");
+  const graded = gradeReviewItem(card, "good", reviewedAt, 700, { scheduler: "fsrs", requestRetention: 0.9 });
+  const tabA = normalizeProfile({
+    ...base,
+    reviewItems: [graded.item],
+    reviewAttempts: [graded.attempt],
+  });
+  const tabB = normalizeProfile({ ...base });
+
+  const forward = mergeProfileVersions(base, tabA, tabB, { now: NOW, writerId: "tab-a" }).profile;
+  const reverse = mergeProfileVersions(base, tabB, tabA, { now: NOW, writerId: "tab-b" }).profile;
+  const cardForward = forward.reviewItems.find((item) => item.id === "fsrs-card");
+  const cardReverse = reverse.reviewItems.find((item) => item.id === "fsrs-card");
+
+  assert.ok(cardForward.stability > 0, "the replayed card must carry FSRS stability");
+  assert.equal(cardForward.fsrsState, graded.item.fsrsState, "replay must land in the same FSRS state as the original grade");
+  assert.equal(cardForward.stability, graded.item.stability, "replay under the merged scheduler must reproduce the original stability exactly");
+  assert.equal(cardForward.difficulty, graded.item.difficulty);
+  assert.equal(cardForward.stability, cardReverse.stability, "A+B and B+A must converge on identical FSRS state");
+  assert.equal(cardForward.difficulty, cardReverse.difficulty);
+  assert.equal(cardForward.fsrsState, cardReverse.fsrsState);
+
+  // Idempotence: merging the merged result again changes nothing.
+  const again = mergeProfileVersions(forward, forward, forward, { now: NOW, writerId: "tab-a", advanceRevision: false }).profile;
+  const cardAgain = again.reviewItems.find((item) => item.id === "fsrs-card");
+  assert.equal(cardAgain.stability, cardForward.stability, "re-merging must be idempotent for FSRS state");
+  assert.equal(cardAgain.fsrsState, cardForward.fsrsState);
 });

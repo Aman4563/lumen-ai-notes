@@ -459,7 +459,7 @@ const replayReviewAttempt = (item, attempt, scheduling = {}) => {
  * card. Replay every unique attempt delta onto the common base, and rewrite
  * the new attempts' undo snapshots to match that deterministic order.
  */
-const reconcileReviewAttemptDeltas = (baseItems, mergedItems, baseAttempts, mergedAttempts, ignoredRemovedAttemptIds = new Set()) => {
+const reconcileReviewAttemptDeltas = (baseItems, mergedItems, baseAttempts, mergedAttempts, ignoredRemovedAttemptIds = new Set(), scheduling = {}) => {
   const baseItemsById = new Map(baseItems.map((item) => [item.id, item]));
   const mergedItemsById = new Map(mergedItems.map((item) => [item.id, item]));
   const baseAttemptsById = new Map(baseAttempts.map((attempt) => [attempt.id, attempt]));
@@ -512,7 +512,7 @@ const reconcileReviewAttemptDeltas = (baseItems, mergedItems, baseAttempts, merg
       if (attempt.previousState) cursor = applyReviewSchedule(cursor, attempt.previousState);
     });
     additions.forEach((attempt) => {
-      const result = replayReviewAttempt(cursor, attempt);
+      const result = replayReviewAttempt(cursor, attempt, scheduling);
       cursor = result.item;
       reconciledAttempts.set(attempt.id, result.attempt);
     });
