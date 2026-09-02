@@ -304,8 +304,35 @@ try {
   assert.ok(geometry.left >= 0 && geometry.right <= geometry.viewportWidth, `audio panel overflowed horizontally: ${JSON.stringify(geometry)}`);
   assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.viewportHeight, `audio panel overflowed vertically: ${JSON.stringify(geometry)}`);
   assert.equal(geometry.scrollable, true, "the dense iPhone audio sheet must remain internally scrollable");
+
+  // Issue #17 (AUDIO-002): the opt-in playlist continues a finished full
+  // lecture into the next chapter of the same Part and starts narrating it.
+  await clickByText(page, ".speech-scope-grid button", "Full");
+  await page.$eval('.speech-autoadvance-row input[type="checkbox"]', (input) => input.click());
+  assert.equal(await page.$eval('.speech-autoadvance-row input', (input) => input.checked), true, "the playlist toggle must arm");
+  await clickByText(page, ".speech-controls button", "Read full lecture");
+  await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
+  await page.evaluate(() => {
+    // Drive every utterance to its natural end; when finish() stops queuing
+    // new utterances, the current one stays put and the loop exits.
+    let guard = 5_000;
+    while (guard-- > 0) {
+      const utterance = window.speechSynthesis.current;
+      if (!utterance || !utterance.onend) break;
+      utterance.onend();
+      if (window.speechSynthesis.current === utterance) break;
+    }
+  });
+  await page.waitForFunction(() => window.location.hash.includes("02-problem-framing"), { timeout: 10_000 })
+    .catch(() => assert.fail("finishing a full lecture with the playlist on did not advance to the next chapter"));
+  await page.waitForFunction(() => document.querySelector(".markdown-body h1")?.textContent.toLowerCase().includes("problem framing"), { timeout: 10_000 });
+  await page.waitForFunction(() => window.speechSynthesis.current?.text.length > 0, { timeout: 10_000 })
+    .catch(() => assert.fail("the next chapter did not begin narrating after auto-advance"));
+  assert.ok(await page.$eval(".audio-label", (node) => node.textContent.includes("Full lecture")), "auto-advanced narration must be a full-lecture queue");
+  await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+
   assert.deepEqual(runtimeErrors, [], `audio runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, and iPhone layout.");
+  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

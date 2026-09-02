@@ -7324,3 +7324,7 @@ input[type="range"] {
   .reader-layout { max-width: 100% !important; }
   .reader-main a { color: #000 !important; text-decoration: underline; }
 }
+
+/* Narration playlist toggle (issue #17): matches the sleep-timer row. */
+.speech-autoadvance-row .setting-toggle { display: flex; align-items: center; gap: 10px; flex: 1; justify-content: space-between; }
+.speech-autoadvance-row .setting-toggle span { font-size: 0.86rem; }

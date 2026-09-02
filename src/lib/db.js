@@ -908,6 +908,7 @@ export const initialProfile = {
     pronunciations: [],
     // Opt-in app-icon badge with today's due-review count (PLAN-002).
     dueBadgeEnabled: false,
+    narrationAutoAdvance: false,
   },
 };
 
@@ -1376,6 +1377,7 @@ export const normalizeProfile = (value) => {
         : initialProfile.settings.speechScope,
       keepScreenAwake: Boolean(rawSettings.keepScreenAwake),
       dueBadgeEnabled: Boolean(rawSettings.dueBadgeEnabled),
+      narrationAutoAdvance: rawSettings.narrationAutoAdvance === true,
       aiFeaturesEnabled: rawSettings.aiFeaturesEnabled !== false,
       aiHistoryRetention: [0, 10, 25, 50].includes(rawSettings.aiHistoryRetention)
         ? rawSettings.aiHistoryRetention
