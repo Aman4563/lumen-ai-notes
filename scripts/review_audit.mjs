@@ -292,6 +292,11 @@ try {
   const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
   assert.ok(seasoned, "a reviewed card must exist for the migration check");
   assert.ok(seasoned.stability > 0 && seasoned.fsrsState !== "", `migration must seed reviewed cards (stability ${seasoned.stability}, state ${seasoned.fsrsState})`);
+  // Issue #16: calibration refuses honestly on a thin history instead of
+  // overfitting a handful of grades (successful fits are unit-tested).
+  await clickByText(page, ".review-calibrate button", "Calibrate from my history");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Calibration needs at least 50 spaced reviews"), { timeout: 5_000 })
+    .catch(() => assert.fail("thin-history calibration did not refuse with the typed reason"));
   await page.select('select[aria-label="Scheduling algorithm"]', "sm2");
   await new Promise((resolve) => setTimeout(resolve, 400));
 
@@ -373,7 +378,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

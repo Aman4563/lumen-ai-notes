@@ -261,9 +261,9 @@ const intervalForRating = (item, rating) => {
   return { intervalDays: firstReview ? 4 : Math.max(4, priorInterval * priorEase * 1.3), ease: clamp(priorEase + 0.15, 1.3, 3.5), repetitions: (Number(item.repetitions) || 0) + 1 };
 };
 
-export const previewReviewIntervals = (item, { scheduler = "sm2", requestRetention = FSRS_DEFAULT_RETENTION } = {}) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
+export const previewReviewIntervals = (item, { scheduler = "sm2", requestRetention = FSRS_DEFAULT_RETENTION, weights } = {}) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
   if (scheduler === "fsrs") {
-    const result = fsrsGrade(item, id, new Date(), { requestRetention });
+    const result = fsrsGrade(item, id, new Date(), { requestRetention, ...(Array.isArray(weights) && weights.length === 17 ? { weights } : {}) });
     return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
   }
   const result = intervalForRating(item, id);
@@ -292,7 +292,7 @@ export const gradeReviewItem = (item, rating, now = new Date(), elapsedMs = 0, m
   // FSRS mode keeps writing the legacy fields (intervalDays, frozen ease,
   // repetitions) so stats, mastery, weak-first ordering, and interval labels
   // stay correct and toggling back to SM-2 is graceful.
-  const fsrs = useFsrs ? fsrsGrade(item, rating, now, { requestRetention: metadata.requestRetention }) : null;
+  const fsrs = useFsrs ? fsrsGrade(item, rating, now, { requestRetention: metadata.requestRetention, ...(Array.isArray(metadata.weights) && metadata.weights.length === 17 ? { weights: metadata.weights } : {}) }) : null;
   const schedule = useFsrs
     ? {
       intervalDays: fsrs.intervalDays,
