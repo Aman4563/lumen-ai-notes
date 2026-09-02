@@ -24,10 +24,17 @@ import {
   Type,
   Undo2,
   X,
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Grid3x3,
+  Import,
+  Lock,
+  LockOpen,
 } from "lucide-react";
 import { getData, normalizeBoardDocument, updateDataGuarded } from "../lib/db";
 import { createId } from "../lib/id.js";
 import { boardPageToSvg } from "../lib/boardSvg.js";
+import { exportBoardDocument, mergeImportedPages, parseBoardInterchange } from "../lib/boardInterchange.js";
 import {
   BOARD_SYNC_CHANNEL,
   BOARD_SYNC_SIGNAL_KEY,
@@ -336,6 +343,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   // Zoom/pan (BOARD-003): screen = world · scale + offset, in normalized
   // units. Identity view keeps every legacy interaction byte-identical.
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
+  const [snapEnabled, setSnapEnabled] = useState(false);
   const pinchRef = useRef(new Map());
   const pinchStateRef = useRef(null);
   const clampView = (candidate) => {
@@ -680,6 +688,20 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       y: Math.max(0, Math.min(1, (screenY - view.y) / view.scale)),
     };
   };
+  // Snap-to-grid (BOARD-001): quantize world coordinates to the same 24
+  // CSS-px grid drawBackground renders, after the inverse view transform so
+  // zoom never changes the grid. Freehand strokes and keyboard nudges are
+  // deliberately never snapped.
+  const GRID_STEP = 24;
+  const snapWorld = (point) => {
+    if (!snapEnabled) return point;
+    const rect = canvasRef.current.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, Math.round((point.x * rect.width) / GRID_STEP) * GRID_STEP / rect.width)),
+      y: Math.max(0, Math.min(1, Math.round((point.y * rect.height) / GRID_STEP) * GRID_STEP / rect.height)),
+    };
+  };
+
   const hitTest = (point) => [...objects].reverse().find((object) => {
     if (object.tool === "eraser") return false;
     const bounds = objectBounds(object);
@@ -712,7 +734,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     if (tool === "select") {
       // Resize (BOARD-001): with exactly one object selected, grabbing its
       // bottom-right handle scales the object around its top-left corner.
-      if (selectedObjects.length === 1 && selectedObjects[0].tool !== "text") {
+      if (selectedObjects.length === 1 && selectedObjects[0].tool !== "text" && !selectedObjects[0].locked) {
         const bounds = objectBounds(selectedObjects[0]);
         const rect = canvasRef.current.getBoundingClientRect();
         const handleX = bounds.maxX + 7 / rect.width;
@@ -737,13 +759,18 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       if (hit) {
         const group = selectedIds.includes(hit.id) ? selectedIds : [hit.id];
         setSelectedIds(group);
-        movingRef.current = {
-          ids: group,
-          start: point,
-          originals: new Map(objects.filter((object) => group.includes(object.id)).map((object) => [object.id, object.points])),
-          before: boardRef.current,
-          moved: false,
-        };
+        const movable = objects.filter((object) => group.includes(object.id) && !object.locked);
+        if (movable.length) {
+          const anchorBounds = objectBounds(objects.find((object) => object.id === hit.id) || movable[0]);
+          movingRef.current = {
+            ids: movable.map((object) => object.id),
+            start: point,
+            anchorMin: { x: anchorBounds.minX, y: anchorBounds.minY },
+            originals: new Map(movable.map((object) => [object.id, object.points])),
+            before: boardRef.current,
+            moved: false,
+          };
+        }
         return;
       }
       // Empty space starts a marquee: release selects every contained object.
@@ -752,11 +779,11 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       return;
     }
     if (tool === "text" || tool === "sticky") {
-      setPendingText({ tool, point });
+      setPendingText({ tool, point: snapWorld(point) });
       return;
     }
     setSelectedId("");
-    drawingRef.current = { id: createId(), tool, color, fill: "#fff1a8", fontSize: 24, text: "", width: (tool === "eraser" ? lineWidth * 5 : tool === "marker" ? lineWidth * 4 : lineWidth) * (event.pointerType === "pen" ? 0.72 + Math.max(event.pressure, 0.1) * 0.7 : 1), points: [point] };
+    drawingRef.current = { id: createId(), tool, color, fill: "#fff1a8", fontSize: 24, text: "", width: (tool === "eraser" ? lineWidth * 5 : tool === "marker" ? lineWidth * 4 : lineWidth) * (event.pointerType === "pen" ? 0.72 + Math.max(event.pressure, 0.1) * 0.7 : 1), points: [shapeTools.has(tool) ? snapWorld(point) : point] };
   };
 
   const continueDrawing = (event) => {
@@ -780,8 +807,9 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       const point = pointFromEvent(event);
       const resize = resizingRef.current;
       const { minX, minY, maxX, maxY } = resize.bounds;
-      const scaleX = Math.max(0.05, (point.x - minX) / Math.max(0.01, maxX - minX));
-      const scaleY = Math.max(0.05, (point.y - minY) / Math.max(0.01, maxY - minY));
+      const corner = snapWorld(point);
+      const scaleX = Math.max(0.05, (corner.x - minX) / Math.max(0.01, maxX - minX));
+      const scaleY = Math.max(0.05, (corner.y - minY) / Math.max(0.01, maxY - minY));
       resize.resized = true;
       updateActiveObjects((current) => current.map((object) => object.id === resize.id
         ? {
@@ -797,8 +825,13 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       event.preventDefault();
       const point = pointFromEvent(event);
       const move = movingRef.current;
-      const deltaX = point.x - move.start.x;
-      const deltaY = point.y - move.start.y;
+      let deltaX = point.x - move.start.x;
+      let deltaY = point.y - move.start.y;
+      if (snapEnabled && move.anchorMin) {
+        const snapped = snapWorld({ x: move.anchorMin.x + deltaX, y: move.anchorMin.y + deltaY });
+        deltaX = snapped.x - move.anchorMin.x;
+        deltaY = snapped.y - move.anchorMin.y;
+      }
       move.moved = move.moved || Math.abs(deltaX) + Math.abs(deltaY) > 0.002;
       updateActiveObjects((current) => current.map((object) => move.originals.has(object.id)
         ? { ...object, points: move.originals.get(object.id).map((item) => ({ x: Math.max(0, Math.min(1, item.x + deltaX)), y: Math.max(0, Math.min(1, item.y + deltaY)) })) }
@@ -831,7 +864,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const nextPoints = events.map(pointFromEvent);
     const isShape = shapeTools.has(drawingRef.current.tool);
     const previous = drawingRef.current.points.at(-1);
-    if (isShape) drawingRef.current.points = [drawingRef.current.points[0], nextPoints.at(-1)];
+    if (isShape) drawingRef.current.points = [drawingRef.current.points[0], snapWorld(nextPoints.at(-1))];
     else drawingRef.current.points.push(...nextPoints);
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -870,7 +903,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       const box = { minX: Math.min(start.x, end.x), maxX: Math.max(start.x, end.x), minY: Math.min(start.y, end.y), maxY: Math.max(start.y, end.y) };
       if ((box.maxX - box.minX) + (box.maxY - box.minY) > 0.01) {
         const contained = objects.filter((object) => {
-          if (object.tool === "eraser") return false;
+          if (object.tool === "eraser" || object.locked) return false;
           const bounds = objectBounds(object);
           return bounds.minX >= box.minX && bounds.maxX <= box.maxX && bounds.minY >= box.minY && bounds.maxY <= box.maxY;
         }).map((object) => object.id);
@@ -901,7 +934,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     }
     const draft = drawingRef.current;
     const endpoint = pointFromEvent(event);
-    if (shapeTools.has(draft.tool)) draft.points = [draft.points[0], endpoint];
+    if (shapeTools.has(draft.tool)) draft.points = [draft.points[0], snapWorld(endpoint)];
     else {
       const previous = draft.points.at(-1);
       if (!previous || Math.abs(previous.x - endpoint.x) + Math.abs(previous.y - endpoint.y) > 0.0005) draft.points.push(endpoint);
@@ -948,13 +981,18 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
 
   const deleteSelected = useCallback(() => {
     if (!selectedIds.length) return;
-    const removing = new Set(selectedIds);
+    const removing = new Set(selectedObjects.filter((object) => !object.locked).map((object) => object.id));
+    if (!removing.size) {
+      notify?.("The selection is locked. Unlock it first.", "warning");
+      return;
+    }
     updateActiveObjects((current) => current.filter((object) => !removing.has(object.id)));
     setSelectedIds([]);
     notify?.(`${removing.size === 1 ? "Selected object" : `${removing.size} objects`} deleted. Undo is available.`);
-  }, [notify, selectedIds, updateActiveObjects]);
+  }, [notify, selectedIds, selectedObjects, updateActiveObjects]);
   const cloneWithOffset = (object, offset) => ({
     ...object,
+    locked: false,
     id: createId(),
     points: object.points.map((point) => ({ ...point, x: Math.min(1, point.x + offset), y: Math.min(1, point.y + offset) })),
   });
@@ -964,6 +1002,38 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     updateActiveObjects((current) => [...current, ...duplicates]);
     setSelectedIds(duplicates.map((object) => object.id));
   };
+  const toggleLockSelected = () => {
+    if (!selectedObjects.length) return;
+    const lockAll = !selectedObjects.every((object) => object.locked);
+    const targets = new Set(selectedIds);
+    updateActiveObjects((current) => current.map((object) => targets.has(object.id) ? { ...object, locked: lockAll } : object));
+    notify?.(lockAll ? "Selection locked — it stays visible and selectable but refuses edits." : "Selection unlocked.");
+  };
+
+  // Z-order (BOARD-001): the renderer draws in array order, so reordering the
+  // array is the whole feature; the order-aware board merge keeps it durable.
+  const reorderSelected = (direction) => {
+    const movable = new Set(selectedObjects.filter((object) => !object.locked).map((object) => object.id));
+    if (!movable.size) return;
+    updateActiveObjects((current) => {
+      const result = [...current];
+      const indices = result.map((object, index) => ({ object, index })).filter((entry) => movable.has(entry.object.id));
+      const ordered = direction > 0 ? [...indices].reverse() : indices;
+      for (const entry of ordered) {
+        const from = result.indexOf(entry.object);
+        let to = from + direction;
+        // Skip past other selected objects so relative order is preserved.
+        while (to >= 0 && to < result.length && movable.has(result[to].id)) to += direction;
+        if (to < 0 || to >= result.length) continue;
+        const [moved] = result.splice(from, 1);
+        result.splice(to, 0, moved);
+      }
+      return result;
+    });
+  };
+  const bringForward = () => reorderSelected(1);
+  const sendBackward = () => reorderSelected(-1);
+
   const copySelected = useCallback(() => {
     if (!selectedObjects.length) return;
     clipboardRef.current = selectedObjects.map((object) => ({ ...object, points: object.points.map((point) => ({ ...point })) }));
@@ -982,11 +1052,12 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   // through the same history path as any other edit.
   const nudgeSelected = useCallback((deltaX, deltaY) => {
     if (!selectedIds.length) return;
-    const moving = new Set(selectedIds);
+    const moving = new Set(selectedObjects.filter((object) => !object.locked).map((object) => object.id));
+    if (!moving.size) return;
     updateActiveObjects((current) => current.map((object) => moving.has(object.id)
       ? { ...object, points: object.points.map((point) => ({ ...point, x: Math.max(0, Math.min(1, point.x + deltaX)), y: Math.max(0, Math.min(1, point.y + deltaY)) })) }
       : object));
-  }, [selectedIds, updateActiveObjects]);
+  }, [selectedIds, selectedObjects, updateActiveObjects]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -1061,12 +1132,12 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
 
   const changeColor = (ink) => {
     setColor(ink);
-    if (selectedObject) updateActiveObjects((current) => current.map((object) => object.id === selectedId ? { ...object, color: ink } : object));
+    if (selectedObject && !selectedObject.locked) updateActiveObjects((current) => current.map((object) => object.id === selectedId ? { ...object, color: ink } : object));
     if (tool === "eraser") setTool("pen");
   };
   const changeWidth = (value) => {
     setLineWidth(value);
-    if (selectedObject && !["text", "sticky"].includes(selectedObject.tool)) updateActiveObjects((current) => current.map((object) => object.id === selectedId ? { ...object, width: value } : object));
+    if (selectedObject && !selectedObject.locked && !["text", "sticky"].includes(selectedObject.tool)) updateActiveObjects((current) => current.map((object) => object.id === selectedId ? { ...object, width: value } : object));
   };
 
   const exportBoard = () => {
@@ -1096,6 +1167,41 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     notify?.(`${activePage.name} exported as a high-resolution PNG.`);
   };
 
+  const boardFileRef = useRef(null);
+  const exportBoardJson = () => {
+    const envelope = exportBoardDocument(boardRef.current, { title: documentTitle });
+    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = `${documentTitle.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-board.json`;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 2_000);
+    notify?.("Board exported as shareable JSON (content only — no local ids).");
+  };
+  const importBoardJson = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const parsed = parseBoardInterchange(await file.text());
+    if (!parsed.ok) {
+      notify?.(parsed.error, "error", 6000);
+      return;
+    }
+    setWithHistory((current) => {
+      const merged = mergeImportedPages(current, parsed.pages);
+      notify?.(merged.added
+        ? `${merged.added} page${merged.added === 1 ? "" : "s"} imported${merged.skipped ? `; ${merged.skipped} skipped (20-page cap)` : ""}. Undo is available.`
+        : "The 20-page cap leaves no room to import. Delete a page first.", merged.added ? "success" : "warning", 6000);
+      return merged.board;
+    });
+    setSelectedIds([]);
+  };
+
   const exportSvg = () => {
     const rect = canvasRef.current?.getBoundingClientRect();
     const aspect = rect && rect.width ? rect.height / rect.width : 0.625;
@@ -1119,7 +1225,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   return <section className="board-view advanced-board" aria-label={`Whiteboard for ${documentTitle}`}>
-    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><div className="board-header-actions"><button className="button ghost" onClick={exportSvg} aria-label="Export current whiteboard page as SVG" type="button"><Download size={16} /> SVG</button><button className="button secondary" onClick={exportBoard} aria-label="Export current whiteboard page as PNG" type="button"><Download size={18} /> Export PNG</button></div></header>
+    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><div className="board-header-actions"><input ref={boardFileRef} type="file" accept="application/json,.json" hidden onChange={importBoardJson} /><button className="button ghost" onClick={() => boardFileRef.current?.click()} aria-label="Import a board JSON file" type="button"><Import size={16} /> Import</button><button className="button ghost" onClick={exportBoardJson} aria-label="Export the whole board as JSON" type="button"><Download size={16} /> JSON</button><button className="button ghost" onClick={exportSvg} aria-label="Export current whiteboard page as SVG" type="button"><Download size={16} /> SVG</button><button className="button secondary" onClick={exportBoard} aria-label="Export current whiteboard page as PNG" type="button"><Download size={18} /> Export PNG</button></div></header>
 
     <div className="board-pagebar">
       <div className="board-page-controls"><Files size={17} /><select value={activePage.id} onChange={(event) => switchPage(event.target.value)} aria-label="Current whiteboard page">{board.pages.map((page, index) => <option value={page.id} key={page.id}>{index + 1}. {page.name}</option>)}</select><span>{activePageIndex + 1}/{board.pages.length}</span><button onClick={() => setRenamingPage(true)} aria-label="Rename whiteboard page" title="Rename page" type="button"><Pencil size={17} /></button><button onClick={addPage} aria-label="Add whiteboard page" title="New page" type="button"><Plus size={18} /></button><button onClick={duplicatePage} aria-label="Duplicate whiteboard page" title="Duplicate page" type="button"><Copy size={17} /></button><button onClick={deletePage} aria-label="Delete whiteboard page" title="Delete page" type="button"><Trash2 size={17} /></button></div>
@@ -1131,8 +1237,9 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       <div className="tool-segment shape-tools"><button className={tool === "line" ? "active" : ""} onClick={() => setTool("line")} aria-label="Straight line" type="button"><Minus size={19} /></button><button className={tool === "rectangle" ? "active" : ""} onClick={() => setTool("rectangle")} aria-label="Rectangle" type="button"><Square size={18} /></button><button className={tool === "ellipse" ? "active" : ""} onClick={() => setTool("ellipse")} aria-label="Ellipse" type="button"><Circle size={18} /></button><button className={tool === "arrow" ? "active" : ""} onClick={() => setTool("arrow")} aria-label="Arrow" type="button"><MoveUpRight size={19} /></button><button className={tool === "text" ? "active" : ""} onClick={() => setTool("text")} aria-label="Text" type="button"><Type size={19} /></button><button className={tool === "sticky" ? "active" : ""} onClick={() => setTool("sticky")} aria-label="Sticky note" type="button"><StickyNote size={19} /></button></div>
       <div className="color-row" aria-label="Ink color">{colors.map((ink) => <button key={ink} className={(selectedObject?.color || color) === ink ? "color-dot active" : "color-dot"} style={{ "--ink": ink }} onClick={() => changeColor(ink)} aria-label={`Use color ${ink}`} type="button" />)}</div>
       <label className="stroke-size"><span>Size</span><input type="range" min="1" max="12" value={selectedObject && !["text", "sticky"].includes(selectedObject.tool) ? Math.min(12, selectedObject.width) : lineWidth} onChange={(event) => changeWidth(Number(event.target.value))} aria-label="Stroke size" /></label>
-      {selectedObjects.length > 0 && <div className="tool-segment board-selection-actions"><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
+      {selectedObjects.length > 0 && <div className="tool-segment board-selection-actions"><button onClick={bringForward} disabled={selectedObjects.every((object) => object.locked)} aria-label="Bring selection forward" title="Bring forward" type="button"><ArrowUpToLine size={18} /></button><button onClick={sendBackward} disabled={selectedObjects.every((object) => object.locked)} aria-label="Send selection backward" title="Send backward" type="button"><ArrowDownToLine size={18} /></button><button className={selectedObjects.every((object) => object.locked) ? "active" : ""} onClick={toggleLockSelected} aria-label={selectedObjects.every((object) => object.locked) ? "Unlock selection" : "Lock selection"} title={selectedObjects.every((object) => object.locked) ? "Unlock (allow edits again)" : "Lock (prevent accidental edits)"} type="button">{selectedObjects.every((object) => object.locked) ? <Lock size={18} /> : <LockOpen size={18} />}</button><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
       <div className="tool-segment board-history"><button onClick={undo} disabled={!historyCounts.past} aria-label="Undo" type="button"><Undo2 size={19} /></button><button onClick={redo} disabled={!historyCounts.future} aria-label="Redo" type="button"><Redo2 size={19} /></button><button onClick={clear} disabled={!objects.length} aria-label="Clear current page" type="button"><Trash2 size={19} /></button></div>
+      <div className="tool-segment"><button className={snapEnabled ? "active" : ""} onClick={() => setSnapEnabled((value) => !value)} aria-pressed={snapEnabled} aria-label="Snap to grid" title="Snap shape endpoints, placement, moves, and resizes to the 24px grid" type="button"><Grid3x3 size={18} /></button></div>
       <div className="tool-segment board-zoom" role="group" aria-label="Zoom"><button onClick={() => zoomAround(1 / 1.25)} disabled={view.scale <= 1} aria-label="Zoom out" type="button"><ZoomOut size={18} /></button><button className="board-zoom-level" onClick={() => setView({ scale: 1, x: 0, y: 0 })} disabled={view.scale === 1} aria-label="Reset zoom" title="Reset zoom and position" type="button">{Math.round(view.scale * 100)}%</button><button onClick={() => zoomAround(1.25)} disabled={view.scale >= 4} aria-label="Zoom in" type="button"><ZoomIn size={18} /></button></div>
     </div></div>
 

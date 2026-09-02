@@ -1059,6 +1059,8 @@ export const normalizeBoardStrokes = (value) => (Array.isArray(value) ? value : 
     width: Math.max(0.5, Math.min(100, Number(stroke.width) || 3)),
     fontSize: Math.max(12, Math.min(72, Number(stroke.fontSize) || 24)),
     text: typeof stroke.text === "string" ? stroke.text.slice(0, 10_000) : "",
+    // Locked objects stay selectable but refuse mutation (BOARD-001).
+    locked: stroke.locked === true,
     points: stroke.points
       .slice(0, 20_000)
       .filter((point) => isRecord(point) && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y)))
