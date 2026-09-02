@@ -1,4 +1,5 @@
 import { createId } from "./id.js";
+import { checkLabAnswer } from "./labs.js";
 import { masteryByPart } from "./mastery.js";
 import { categoryForReviewItem } from "./mistakes.js";
 import { hasClozeMarkup } from "./review.js";
@@ -102,6 +103,12 @@ export const buildAssessment = ({ partNumber, kind = "diagnostic" }, { documents
       return { ...base, type: "cloze", answerKey: blanks };
     }
     const correct = normalizeText(item.back);
+    // Purely numeric answers auto-grade with the labs' tolerant matcher
+    // (trailing zeros, whitespace, an optional % or unit-free sign) instead
+    // of hiding behind self-grading or leaking as one obvious choice option.
+    if (/^-?\d+(?:\.\d+)?\s*%?$/.test(correct)) {
+      return { ...base, type: "numeric", answerKey: bounded(correct, 80) };
+    }
     const distractors = [...new Set(distractorPool.filter((candidate) => compareText(candidate) !== compareText(correct)))].slice(0, 12);
     if (correct.length <= 400 && distractors.length >= MIN_DISTRACTORS) {
       const options = [correct, ...distractors.slice(0, 3)]
@@ -127,6 +134,10 @@ export const buildAssessment = ({ partNumber, kind = "diagnostic" }, { documents
 export const gradeAssessmentAnswer = (question, response) => {
   if (question.type === "choice") {
     const correct = compareText(response) === compareText(question.answerKey);
+    return { credit: correct ? 1 : 0, correct, expected: question.answerKey };
+  }
+  if (question.type === "numeric") {
+    const correct = checkLabAnswer(question.answerKey, typeof response === "string" ? response : String(response ?? ""));
     return { credit: correct ? 1 : 0, correct, expected: question.answerKey };
   }
   if (question.type === "cloze") {
@@ -224,7 +235,7 @@ export const normalizeAssessments = (input) => (Array.isArray(input) ? input : [
     questions: (Array.isArray(record.questions) ? record.questions : []).slice(0, 12).map((question) => ({
       id: typeof question.id === "string" ? question.id.slice(0, 200) : createId(),
       schemaVersion: Number.isInteger(question.schemaVersion) ? question.schemaVersion : 1,
-      type: ["choice", "cloze", "self"].includes(question.type) ? question.type : "self",
+      type: ["choice", "cloze", "self", "numeric"].includes(question.type) ? question.type : "self",
       prompt: bounded(question.prompt, 2_000),
       ...(Array.isArray(question.options) ? { options: question.options.slice(0, 4).map((option) => bounded(option, 400)) } : {}),
       answerKey: Array.isArray(question.answerKey)

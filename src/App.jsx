@@ -2862,7 +2862,7 @@ export default function App() {
       <ManageDocumentDialog doc={profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <EncryptedImportDialog pending={encryptedImport} onSubmit={unlockEncryptedImport} onCancel={() => setEncryptedImport(null)} />
-      {assessmentDraft && <AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} />}
+      {assessmentDraft && <AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} />}
       <ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} />
       {updateRegistration && <div className="update-banner" role="status"><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={() => setToast(null)} />
