@@ -7280,3 +7280,20 @@ input[type="range"] {
 .speech-bookmark-row { display: flex; align-items: center; gap: 6px; }
 .speech-bookmark-play { display: flex; flex: 1; align-items: center; gap: 7px; overflow: hidden; min-width: 0; padding: 7px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-2); color: var(--ink-soft); font-size: 0.7rem; text-align: left; }
 .speech-bookmark-play span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Device evidence page */
+.evidence-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin: 0; }
+.evidence-grid > div { padding: 11px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); }
+.evidence-grid dt { color: var(--ink-faint); font-size: 0.62rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
+.evidence-grid dd { margin: 4px 0 0; color: var(--ink); font-size: 0.8rem; overflow-wrap: anywhere; }
+.evidence-checklist { display: grid; gap: 11px; }
+.evidence-check { display: grid; gap: 8px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); }
+.evidence-area { color: var(--violet); font-size: 0.62rem; font-weight: 850; letter-spacing: 0.06em; text-transform: uppercase; }
+.evidence-check p { margin: 0; color: var(--ink); font-size: 0.8rem; line-height: 1.55; }
+.evidence-verdict { display: flex; gap: 7px; }
+.evidence-verdict button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 13px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--paper-2); color: var(--ink-soft); font-size: 0.7rem; font-weight: 750; }
+.evidence-verdict button.active { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.evidence-verdict button.active.pass { border-color: #2e8b76; background: #2e8b76; }
+.evidence-verdict button.active.fail { border-color: #b2543c; background: #b2543c; }
+.evidence-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.evidence-actions .microcopy { flex-basis: 100%; }
