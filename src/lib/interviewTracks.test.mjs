@@ -15,8 +15,8 @@ test("the authored interview bank is valid, complete, and anchored to real lectu
   const { tracks, questions } = normalizeTrackBank(trackBank);
   assert.equal(tracks.length, 8, "all eight PRD tracks must be registered");
   const seeded = tracks.filter((track) => track.seeded);
-  assert.equal(seeded.length, 6, "six tracks ship seeded this campaign");
-  assert.ok(questions.length >= 48, `expected a substantial bank, got ${questions.length}`);
+  assert.equal(seeded.length, 8, "all eight PRD tracks now ship seeded");
+  assert.ok(questions.length >= 70, `expected a substantial bank, got ${questions.length}`);
   for (const track of seeded) {
     const count = questions.filter((question) => question.trackIds.includes(track.id)).length;
     assert.ok(count >= 8, `track ${track.id} has only ${count} questions`);
@@ -49,7 +49,10 @@ test("track rounds are deterministic, bounded, and missed-first", () => {
   const biased = buildTrackRound(trackBank, { trackId: "mle" }, [{ reviewItemId: missedId, correctedAt: "", tags: ["interview-track"] }]);
   assert.equal(biased.cards[0].id, missedId, "previously missed questions come first");
 
-  assert.equal(buildTrackRound(trackBank, { trackId: "vision" }).ok, false, "unseeded tracks refuse with a reason");
+  assert.equal(buildTrackRound(trackBank, { trackId: "vision" }).ok, true, "the vision track is seeded and builds rounds");
+  assert.equal(buildTrackRound(trackBank, { trackId: "research-engineering" }).ok, true, "the research-engineering track is seeded and builds rounds");
+  const unseededBank = { ...trackBank, tracks: trackBank.tracks.map((track) => (track.id === "vision" ? { ...track, seeded: false } : track)) };
+  assert.equal(buildTrackRound(unseededBank, { trackId: "vision" }).ok, false, "unseeded tracks refuse with a reason");
   assert.equal(answerSecondsFor({ expectedMinutes: 10 }), 300, "answer time clamps at five minutes");
 });
 
