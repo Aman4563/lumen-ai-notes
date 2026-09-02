@@ -33,6 +33,7 @@ import {
   MoreVertical,
   NotebookPen,
   Palette,
+  RefreshCw,
   RotateCcw,
   History,
   Search,
@@ -63,7 +64,9 @@ import { htmlToMarkdown, isHtmlFileName } from "./lib/htmlImport.js";
 import { describeEpubReport, importEpub, isEpubFileName } from "./lib/epubImport.js";
 import { auditLearnerLinks } from "./lib/linkAudit.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
-import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile } from "./lib/backupCrypto.js";
+import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile, readEncryptedHeader } from "./lib/backupCrypto.js";
+import { mergeBoardVersions } from "./lib/boardSync.js";
+import { adoptVaultConfig, checkSyncHeader, clearSyncBaseline, clearVaultConfig, createVaultConfig, foldPeerSnapshots, getDeviceId, loadSyncBaseline, readVaultConfig, recordVaultSync, saveSyncBaseline, syncFileNameFor } from "./lib/syncVault.js";
 import { buildConceptMap } from "./lib/conceptMap.js";
 import { migrateItemsToFsrs } from "./lib/fsrs.js";
 import { MAX_ASSESSMENTS, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
@@ -771,9 +774,11 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
   );
 }
 
-function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage }) {
+function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage, syncVault, syncDeviceId, onCreateSyncVault, onLeaveSyncVault, onSyncExport, onSyncImport }) {
   const importRef = useRef(null);
+  const syncImportRef = useRef(null);
   const [backupPassword, setBackupPassword] = useState("");
+  const [syncPassphrase, setSyncPassphrase] = useState("");
   const cryptoAvailable = secureContext && Boolean(globalThis.crypto?.subtle);
   return (
     <div className="page settings-page">
@@ -822,6 +827,24 @@ function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, 
         <div className="settings-local-data"><div><strong>AI features</strong><span>{settings.aiFeaturesEnabled !== false ? "The AI learning studio is available. Turning it off hides AI surfaces without touching your notes or reviews." : "The AI learning studio is hidden. Reading, notes, reviews, narration, and whiteboards are unaffected."}</span></div><button className="button ghost" onClick={() => { const next = settings.aiFeaturesEnabled === false; onSettingsChange({ aiFeaturesEnabled: next }); onNotify(next ? "AI features are enabled again." : "AI features are now off. You can re-enable them here at any time."); }} type="button"><BrainCircuit size={16} /> {settings.aiFeaturesEnabled !== false ? "Turn AI off" : "Turn AI on"}</button></div>
         <div className="settings-local-data"><div><strong>Mac tutor history retention</strong><span>Choose how many tutor messages stay saved in this browser and in backups. “Session only” stops saving and removes the stored conversation.</span></div><label className="settings-retention"><span className="visually-hidden">Mac tutor history retention</span><select value={[0, 10, 25, 50].includes(settings.aiHistoryRetention) ? settings.aiHistoryRetention : 50} onChange={(event) => { const retention = Number(event.target.value); onSettingsChange({ aiHistoryRetention: retention }); onNotify(retention === 0 ? "Tutor history is now session-only; the saved conversation was removed." : `Up to ${retention} tutor messages will be kept locally.`); }}><option value={50}>Up to 50 messages</option><option value={25}>Up to 25 messages</option><option value={10}>Up to 10 messages</option><option value={0}>Session only (do not save)</option></select></label></div>
         <div className="settings-local-data"><div><strong>AI tutor history</strong><span>{aiHistoryCount ? `${aiHistoryCount} locally saved message${aiHistoryCount === 1 ? "" : "s"}; included in backups.` : "No locally saved AI conversation messages."}</span></div><button className="button ghost" onClick={onClearAiHistory} disabled={!aiHistoryCount} type="button"><Trash2 size={16} /> Clear AI history</button></div>
+      </section>
+      <section className="settings-card sync-card">
+        <div className="settings-card-heading"><RefreshCw size={21} /><div><strong>Cross-device sync</strong><span>Encrypted, account-free vault sync through files you control.</span></div></div>
+        <input ref={syncImportRef} type="file" accept=".lumenc" multiple hidden onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; if (files.length) onSyncImport(files, syncPassphrase); }} />
+        {!cryptoAvailable && <p className="inline-warning">Sync needs WebCrypto in a secure (HTTPS) context. There is no weak-crypto fallback.</p>}
+        {!syncVault && <p className="microcopy">Each device in a vault writes one encrypted file into a folder you share however you like — iCloud Drive, Syncthing, a USB stick. One passphrase per vault, entered on each device and never stored. Create a vault here, or pick a peer's <code>.lumenc</code> sync file to join theirs.</p>}
+        {syncVault && <p className="microcopy sync-status-line">Vault <code>{syncVault.vaultId.slice(0, 8)}…</code> · this device <code>{syncDeviceId.slice(0, 8)}…</code> · last sync {syncVault.lastSyncAt ? new Date(syncVault.lastSyncAt).toLocaleString() : "never"}. Your file is <code>{syncFileNameFor(syncDeviceId)}</code>; each device only ever writes its own.</p>}
+        <label className="backup-password-field"><span>Vault passphrase <small>never stored — needed for every export and import</small></span><input className="text-input" type="password" value={syncPassphrase} minLength={8} maxLength={128} onChange={(event) => setSyncPassphrase(event.target.value)} placeholder={syncVault ? "Required for export and import" : "Required to create or join a vault"} disabled={!cryptoAvailable} autoComplete="off" aria-label="Sync vault passphrase" /></label>
+        {!syncVault && <div className="settings-action-row">
+          <button className="button secondary" onClick={onCreateSyncVault} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><RefreshCw size={16} /> Create sync vault</button>
+          <button className="button ghost" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Import size={16} /> Join via a peer's file</button>
+        </div>}
+        {syncVault && <div className="settings-action-row">
+          <button className="button secondary" onClick={() => onSyncExport(syncPassphrase)} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Download size={17} /> Export my sync file</button>
+          <button className="button secondary" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Import size={17} /> Import peer files</button>
+          <button className="button ghost" onClick={onLeaveSyncVault} type="button">Leave vault</button>
+        </div>}
+        <p className="microcopy">Import folds every selected peer file through the same conflict-safe merge that already reconciles your tabs, then asks you to re-export so peers see the result. Deletions travel as tombstones, concurrent edits become recovered copies, and a reset/restore on one device propagates instead of resurrecting. A forgotten passphrase cannot be recovered.</p>
       </section>
       <Suspense fallback={<div className="settings-card"><p className="microcopy">Measuring storage health…</p></div>}><StorageHealth online={online} onNotify={onNotify} /></Suspense>
       <section className="settings-card install-card">
@@ -2446,6 +2469,136 @@ export default function App() {
     }
   };
 
+  // --- Cross-device sync (SYNC-001, issue #14) -------------------------------
+  const [syncVaultConfig, setSyncVaultConfig] = useState(() => readVaultConfig());
+  const syncDeviceIdRef = useRef("");
+  if (!syncDeviceIdRef.current) syncDeviceIdRef.current = getDeviceId();
+
+  const createSyncVaultAction = useCallback(() => {
+    const config = createVaultConfig();
+    setSyncVaultConfig(config);
+    notify("Sync vault created. Choose a strong passphrase, export your sync file, and share the vault folder between your devices.", "success", 7000);
+  }, [notify]);
+
+  const leaveSyncVaultAction = useCallback(async () => {
+    if (!window.confirm("Leave this sync vault? Your local data stays; only the vault membership and sync baseline are removed.")) return;
+    clearVaultConfig();
+    await clearSyncBaseline();
+    setSyncVaultConfig(null);
+    notify("Left the sync vault. Nothing in your notes or reviews changed.");
+  }, [notify]);
+
+  const exportSyncFile = async (passphrase) => {
+    const config = readVaultConfig();
+    if (!config) return;
+    try {
+      const exportedAt = new Date().toISOString();
+      const deviceId = syncDeviceIdRef.current;
+      const data = await getAllData();
+      // Same read-only three-way snapshot discipline as backup export; the
+      // durable writerId marks this device per the sync design.
+      const snapshotMerge = mergeProfileVersions(profileBaseRef.current, profileRef.current, data.profile, { advanceRevision: false, writerId: deviceId, now: exportedAt });
+      data.profile = snapshotMerge.profile;
+      reportSyncConflicts(snapshotMerge.conflicts);
+      const result = await createBackup(data, { exportedAt, secureContext: window.isSecureContext });
+      const { blobParts } = await encryptBackupJson(result.json, passphrase, { exportedAt, vaultId: config.vaultId, deviceId });
+      downloadBlob(syncFileNameFor(deviceId), blobParts);
+      notify(`Sync file exported as ${syncFileNameFor(deviceId)}. Keep every device's file together in one shared vault folder.`, "success", 7000);
+    } catch (error) {
+      notify(`Sync export failed: ${error.message}`, "error", 6000);
+    }
+  };
+
+  const importSyncFiles = async (files, passphrase) => {
+    if (!files?.length) return;
+    if (typeof passphrase !== "string" || passphrase.length < 8) {
+      notify("Enter the vault passphrase (at least 8 characters) above, then import the sync files again.", "warning", 6000);
+      return;
+    }
+    try {
+      const now = new Date().toISOString();
+      const deviceId = syncDeviceIdRef.current;
+      let config = readVaultConfig();
+      const skipped = [];
+      const peers = [];
+      for (const file of files) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let header;
+        try {
+          ({ header } = readEncryptedHeader(bytes));
+        } catch (error) {
+          skipped.push(`${file.name}: ${error.message}`);
+          continue;
+        }
+        if (!config && typeof header.vaultId === "string" && header.vaultId) {
+          if (!window.confirm(`Join sync vault ${header.vaultId.slice(0, 8)}…? This device's data will merge with that vault.`)) {
+            skipped.push(`${file.name}: join declined`);
+            continue;
+          }
+          config = adoptVaultConfig(header.vaultId);
+          setSyncVaultConfig(config);
+        }
+        const admission = checkSyncHeader(header, { vaultId: config?.vaultId || "", deviceId });
+        if (!admission.ok) {
+          skipped.push(`${file.name}: ${admission.message}`);
+          continue;
+        }
+        let json;
+        try {
+          json = await decryptBackupFile(bytes.buffer, passphrase);
+        } catch (error) {
+          skipped.push(`${file.name}: ${error.message}`);
+          continue;
+        }
+        const checked = await preflightBackup(json);
+        peers.push({ deviceId: admission.deviceId, records: checked.data });
+      }
+      if (!peers.length) {
+        notify(`No sync files were folded. ${skipped.join(" · ")}`, "warning", 9000);
+        return;
+      }
+      const storedBaseline = await loadSyncBaseline();
+      const baselineRecords = storedBaseline && storedBaseline.vaultId === config.vaultId ? storedBaseline.records : null;
+      const data = await getAllData();
+      const preMerge = mergeProfileVersions(profileBaseRef.current, profileRef.current, data.profile, { advanceRevision: false, writerId: deviceId, now });
+      const localRecords = { ...data, profile: preMerge.profile };
+      const folded = foldPeerSnapshots({ baselineRecords, localRecords, peers, writerId: deviceId, now });
+
+      const localAtCommit = profileRef.current;
+      let commitConflicts = [];
+      const committedValue = await updateData("profile", (stored) => {
+        const merged = mergeProfileVersions(localRecords.profile, folded.profile, stored, { writerId: deviceId, now });
+        commitConflicts = merged.conflicts;
+        return merged.profile;
+      });
+      const committed = normalizeProfile(committedValue);
+      profileBaseRef.current = committed;
+      signalProfileSyncRef.current(committed);
+      if (profileRef.current === localAtCommit) {
+        profileRef.current = committed;
+        setProfile(committed);
+      } else {
+        const rebased = mergeProfileVersions(localAtCommit, profileRef.current, committed, { advanceRevision: false, writerId: deviceId });
+        profileRef.current = rebased.profile;
+        setProfile(rebased.profile);
+        reportSyncConflicts(rebased.conflicts);
+      }
+      reportSyncConflicts([...folded.conflicts, ...commitConflicts]);
+
+      for (const [key, board] of Object.entries(folded.boards)) {
+        await updateData(key, (stored) => mergeBoardVersions(localRecords[key] ?? null, board, stored, { writerId: deviceId, now }).board);
+      }
+      // The fold result becomes the new vault baseline (design §5) so the
+      // next import three-ways against what this vault last agreed on.
+      await saveSyncBaseline({ vaultId: config.vaultId, records: { profile: folded.profile, ...folded.boards }, updatedAt: now });
+      setSyncVaultConfig(recordVaultSync());
+      const conflictCount = folded.conflicts.length + commitConflicts.length;
+      notify(`Merged ${peers.length} peer file${peers.length === 1 ? "" : "s"}${conflictCount ? `; ${conflictCount} conflict${conflictCount === 1 ? "" : "s"} recorded` : ""}${folded.replacementApplied ? "; a reset/restore from another device was applied" : ""}${skipped.length ? `; skipped — ${skipped.join(" · ")}` : ""}. Export your sync file now so peers see this state.`, skipped.length || conflictCount ? "warning" : "success", 9000);
+    } catch (error) {
+      notify(`Sync import failed: ${error.message}`, "error", 8000);
+    }
+  };
+
   const importBackup = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -2664,7 +2817,7 @@ export default function App() {
         </nav>
       </div>
 
-      {settingsOpen && <div className="settings-overlay"><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-label="Application settings"><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} /></div></div>}
+      {settingsOpen && <div className="settings-overlay"><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-label="Application settings"><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} syncVault={syncVaultConfig} syncDeviceId={syncDeviceIdRef.current} onCreateSyncVault={createSyncVaultAction} onLeaveSyncVault={leaveSyncVaultAction} onSyncExport={exportSyncFile} onSyncImport={importSyncFiles} /></div></div>}
       {installOpen && <InstallSheet secureContext={window.isSecureContext} onClose={() => setInstallOpen(false)} />}
       <BackupImportDialog candidate={backupCandidate} busy={backupBusy} onClose={() => { if (!backupBusy) setBackupCandidate(null); }} onConfirm={confirmBackupImport} />
       <CreateNoteDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createNote} />
