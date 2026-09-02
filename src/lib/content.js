@@ -86,18 +86,7 @@ export const parts = Array.from({ length: 23 }, (_, index) => {
 
 export const guides = documents.filter((doc) => doc.partNumber === 0);
 
-export const resolveDocumentLink = (currentPath, href) => {
-  if (!href || /^(https?:|mailto:|tel:|#)/i.test(href)) return null;
-  const cleanHref = href.split("#")[0];
-  if (!cleanHref.endsWith(".md")) return null;
-  try {
-    const base = new URL(currentPath, "https://lumen.local/");
-    const resolved = new URL(cleanHref, base);
-    return resolved.pathname.replace(/^\//, "");
-  } catch {
-    return null;
-  }
-};
+export { resolveDocumentLink } from "./links.js";
 
 export const makeCustomDocument = ({ id, title, raw, createdAt = new Date().toISOString(), updatedAt = createdAt, tags = [], collectionId = "", archived = false, pinned = false }) => {
   const documentId = id || `custom/${createId()}.md`;

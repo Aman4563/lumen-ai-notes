@@ -8,7 +8,7 @@ export const MAX_CUSTOM_DOCUMENT_BYTES = 16 * 1024 * 1024;
 export const selectUploadFiles = (files, existingCount, existingBytes = 0) => {
   const offered = Array.from(files || []).slice(0, MAX_UPLOAD_FILES_PER_BATCH);
   const capacity = Math.max(0, MAX_CUSTOM_DOCUMENTS - Math.max(0, Number(existingCount) || 0));
-  const valid = offered.filter((file) => /\.(md|markdown|txt)$/i.test(String(file?.name || "")) && Number(file?.size) <= MAX_UPLOAD_BYTES);
+  const valid = offered.filter((file) => /\.(md|markdown|txt|html?)$/i.test(String(file?.name || "")) && Number(file?.size) <= MAX_UPLOAD_BYTES);
   let remainingBytes = Math.max(0, MAX_CUSTOM_DOCUMENT_BYTES - Math.max(0, Number(existingBytes) || 0));
   const accepted = [];
   valid.forEach((file) => {

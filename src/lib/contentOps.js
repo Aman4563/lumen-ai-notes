@@ -100,3 +100,37 @@ export const appendRevision = (revisions, revision) => {
   }
   return kept;
 };
+
+/**
+ * Batch actions (CONTENT-001, issue #12): one pure pass over the custom
+ * documents for a selected id set. Organize assigns a collection and/or
+ * archive state; delete routes every selected document through the same
+ * trash entry shape single deletion uses.
+ */
+export const applyBatchOrganize = (customDocuments, selectedIds, changes, now = new Date()) => {
+  const targets = new Set(selectedIds);
+  let touched = 0;
+  const documents = customDocuments.map((document) => {
+    if (!targets.has(document.id)) return document;
+    touched += 1;
+    return {
+      ...document,
+      ...(changes.collectionId !== undefined ? { collectionId: changes.collectionId } : {}),
+      ...(changes.archived !== undefined ? { archived: Boolean(changes.archived) } : {}),
+      updatedAt: now.toISOString(),
+    };
+  });
+  return { documents, touched };
+};
+
+export const applyBatchDelete = (customDocuments, trash, selectedIds, now = new Date()) => {
+  const targets = new Set(selectedIds);
+  const removed = customDocuments.filter((document) => targets.has(document.id));
+  let nextTrash = trash;
+  for (const document of removed) nextTrash = addTrashEntry(nextTrash, trashEntryForDocument(document, now));
+  return {
+    documents: customDocuments.filter((document) => !targets.has(document.id)),
+    trash: nextTrash,
+    removedIds: removed.map((document) => document.id),
+  };
+};
