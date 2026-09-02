@@ -204,6 +204,29 @@ try {
   await page.waitForSelector('.audio-bar[aria-label="Narration controls"]');
   const resumedAt = await page.$eval(".audio-label strong", (node) => Number(node.textContent.match(/(\d+)\//)?.[1] || 0));
   assert.equal(resumedAt, resumeIndex, `full-lecture narration must resume from the persisted position (expected ${resumeIndex}, got ${resumedAt})`);
+
+  // Issue #17: bookmark the current sentence, jump back via the panel, delete.
+  await page.$eval('button[aria-label="Bookmark this sentence"]', (node) => node.click());
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("bookmarked"), { timeout: 5_000 })
+    .catch(() => assert.fail("bookmarking the sentence did not confirm"));
+  await page.$eval('button[aria-label="Next narration sentence"]', (node) => node.click());
+  await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+  await page.$eval('button[aria-label="Listen"]', (node) => node.click());
+  await page.waitForSelector(".speech-bookmarks .speech-bookmark-play", { timeout: 5_000 });
+  await page.$eval(".speech-bookmarks .speech-bookmark-play", (node) => node.click());
+  await page.waitForSelector('.audio-bar[aria-label="Narration controls"]', { timeout: 5_000 });
+  const bookmarkedAt = await page.$eval(".audio-label strong", (node) => Number(node.textContent.match(/(\d+)\//)?.[1] || 0));
+  assert.equal(bookmarkedAt, resumeIndex, `playing a bookmark must start at its sentence (expected ${resumeIndex}, got ${bookmarkedAt})`);
+  await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+  await page.$eval('button[aria-label="Listen"]', (node) => node.click());
+  await page.waitForSelector(".speech-bookmarks", { timeout: 5_000 });
+  await page.$eval('.speech-bookmark-row button[aria-label="Delete this audio bookmark"]', (node) => node.click());
+  await page.waitForFunction(() => !document.querySelector(".speech-bookmarks"), { timeout: 5_000 })
+    .catch(() => assert.fail("deleting the audio bookmark did not clear the list"));
+  // Leave the flow as the next block expects: full-lecture narration playing.
+  await clickByText(page, ".speech-controls button", "Read full lecture");
+  await page.waitForSelector('.audio-bar[aria-label="Narration controls"]', { timeout: 5_000 });
+
   await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
   await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("lumen-narration-")).forEach((key) => localStorage.removeItem(key)));
   await page.$eval('button[aria-label="Listen"]', (node) => node.click());
@@ -282,7 +305,7 @@ try {
   assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.viewportHeight, `audio panel overflowed vertically: ${JSON.stringify(geometry)}`);
   assert.equal(geometry.scrollable, true, "the dense iPhone audio sheet must remain internally scrollable");
   assert.deepEqual(runtimeErrors, [], `audio runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("Audio audit passed: section skip, persisted resume position, sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, and iPhone layout.");
+  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, and iPhone layout.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
