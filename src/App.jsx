@@ -62,11 +62,13 @@ import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.j
 import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile } from "./lib/backupCrypto.js";
 import { buildConceptMap } from "./lib/conceptMap.js";
 import { migrateItemsToFsrs } from "./lib/fsrs.js";
+import { MAX_ASSESSMENTS, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
+import AssessmentDialog from "./components/AssessmentDialog.jsx";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
 import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
-import { buildDailySession, SESSION_LENGTHS } from "./lib/plan.js";
+import { actionableDueCount, buildDailySession, planPace, SESSION_LENGTHS } from "./lib/plan.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
@@ -356,7 +358,7 @@ function DocumentCard({ doc, profile, onOpen, compact = false }) {
   );
 }
 
-function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onReview }) {
+function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onReview, onStartAssessment, onGoalsChange }) {
   const [sessionMinutes, setSessionMinutes] = useState(30);
   const dailySession = useMemo(() => buildDailySession(sessionMinutes, { profile, documents: allDocuments }), [allDocuments, profile, sessionMinutes]);
   const mastery = useMemo(() => masteryByPart(allDocuments, profile), [allDocuments, profile]);
@@ -438,6 +440,22 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
           </div>}
       </section>
 
+      <section className="page-section goal-section" aria-label="Study goal">
+        <div className="section-heading"><div><span className="eyebrow">Direction</span><h2>Study goal</h2></div></div>
+        <div className="goal-editor">
+          <label><span>Target Parts <small>comma-separated numbers 1–23</small></span><input className="text-input" defaultValue={(profile.goals?.targetParts || []).join(", ")} onBlur={(event) => {
+            const targetParts = [...new Set(event.target.value.split(",").map((value) => Number(value.trim())).filter((part) => Number.isInteger(part) && part >= 1 && part <= 23))].slice(0, 23);
+            onGoalsChange({ targetParts });
+          }} placeholder="e.g. 5, 6, 9" aria-label="Goal target Parts" /></label>
+          <label><span>Target date</span><input className="text-input" type="date" defaultValue={profile.goals?.targetDate || ""} onBlur={(event) => onGoalsChange({ targetDate: /^\d{4}-\d{2}-\d{2}$/.test(event.target.value) ? event.target.value : "" })} aria-label="Goal target date" /></label>
+        </div>
+        {(() => {
+          const pace = planPace({ profile, documents: allDocuments });
+          if (!pace) return <p className="microcopy">Set target Parts and a date to see the honest daily pace they imply. Goals guide the plan; nothing is ever locked.</p>;
+          return <p className={`goal-pace pace-${pace.status}`} role="status">{pace.message}</p>;
+        })()}
+      </section>
+
       <section className="page-section concept-map-section" aria-label="Curriculum map">
         <div className="section-heading"><div><span className="eyebrow">Prerequisite path</span><h2>Curriculum map</h2></div></div>
         {(() => {
@@ -464,11 +482,14 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
       <section className="page-section mastery-section" aria-label="Mastery by Part">
         <div className="section-heading"><div><span className="eyebrow">Evidence-based</span><h2>Mastery by Part</h2></div><button className="text-button" onClick={onReview} type="button">Review center <ArrowRight size={16} /></button></div>
         <div className="mastery-grid">
-          {mastery.map((part) => <article className={`mastery-row state-${part.state}`} key={part.partNumber} title={`${part.reason} Next: ${part.nextAction}`}>
-            <span className="mastery-part">{String(part.partNumber).padStart(2, "0")}</span>
-            <div className="mastery-copy"><strong>{part.partTitle}</strong><span>{part.completedChapters}/{part.chapters} chapters · {part.masteredCards}/{part.activeCards || 0} cards mastered{part.overdueCards ? ` · ${part.overdueCards} overdue` : ""}</span><small className="mastery-next">{part.nextAction}</small></div>
-            <span className={`mastery-state state-${part.state}`}>{masteryLabel(part.state)}</span>
-          </article>)}
+          {mastery.map((part) => {
+            const lastCheck = (profile.assessments || []).find((record) => record.partNumber === part.partNumber);
+            return <article className={`mastery-row state-${part.state}`} key={part.partNumber} title={`${part.reason} Next: ${part.nextAction}`}>
+              <span className="mastery-part">{String(part.partNumber).padStart(2, "0")}</span>
+              <div className="mastery-copy"><strong>{part.partTitle}</strong><span>{part.completedChapters}/{part.chapters} chapters · {part.masteredCards}/{part.activeCards || 0} cards mastered{part.overdueCards ? ` · ${part.overdueCards} overdue` : ""}{lastCheck ? ` · last check ${lastCheck.percent}%` : ""}</span><small className="mastery-next">{part.nextAction}</small></div>
+              <div className="mastery-row-actions"><button className="text-button mastery-check" onClick={() => onStartAssessment(part.partNumber)} type="button">Check readiness</button><span className={`mastery-state state-${part.state}`}>{masteryLabel(part.state)}</span></div>
+            </article>;
+          })}
         </div>
       </section>
 
@@ -783,6 +804,7 @@ function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, 
         {backupPassword && <p className="inline-warning">A forgotten password means permanent loss of this file — there is no recovery or escrow. The pre-restore recovery download stays unencrypted so a restore can always be undone.</p>}
         <div className="settings-action-row"><button className="button secondary" onClick={() => onExport(backupPassword.trim() || undefined)} disabled={Boolean(backupPassword.trim()) && backupPassword.trim().length < 8} type="button"><Download size={17} /> Export {backupPassword.trim() ? "encrypted " : ""}backup</button><button className="button secondary" onClick={() => importRef.current?.click()} type="button"><Import size={17} /> Import backup</button>{!storagePersisted && <button className="button ghost" onClick={onRequestStorage} type="button">Protect local storage</button>}</div>
         <p className="microcopy">Backups include progress, positions, bookmarks, highlights, clippings, review history, locally saved AI conversations, personal notes, edited copies, uploads, preferences, and whiteboards. Every new backup is checksummed and every restore is preflighted. Storage: {storagePersisted ? "persistent" : "best effort"} · Save status: {saveStatus} · Last export: {backupMeta?.lastExportAt ? new Date(backupMeta.lastExportAt).toLocaleString() : "never"}.</p>
+        <div className="settings-local-data"><div><strong>App badge for due reviews</strong><span>{typeof navigator !== "undefined" && "setAppBadge" in navigator ? "Shows today’s due-card count on the app icon. Opt-in, silent, no notifications; it clears the moment the queue drains." : "This browser does not support app badges; nothing will be shown either way."}</span></div><label className="setting-toggle settings-badge-toggle"><span className="visually-hidden">App badge for due reviews</span><input type="checkbox" role="switch" checked={Boolean(settings.dueBadgeEnabled)} onChange={(event) => onSettingsChange({ dueBadgeEnabled: event.target.checked })} aria-label="Show due-review count on the app icon" /></label></div>
         <div className="settings-local-data"><div><strong>AI features</strong><span>{settings.aiFeaturesEnabled !== false ? "The AI learning studio is available. Turning it off hides AI surfaces without touching your notes or reviews." : "The AI learning studio is hidden. Reading, notes, reviews, narration, and whiteboards are unaffected."}</span></div><button className="button ghost" onClick={() => { const next = settings.aiFeaturesEnabled === false; onSettingsChange({ aiFeaturesEnabled: next }); onNotify(next ? "AI features are enabled again." : "AI features are now off. You can re-enable them here at any time."); }} type="button"><BrainCircuit size={16} /> {settings.aiFeaturesEnabled !== false ? "Turn AI off" : "Turn AI on"}</button></div>
         <div className="settings-local-data"><div><strong>Mac tutor history retention</strong><span>Choose how many tutor messages stay saved in this browser and in backups. “Session only” stops saving and removes the stored conversation.</span></div><label className="settings-retention"><span className="visually-hidden">Mac tutor history retention</span><select value={[0, 10, 25, 50].includes(settings.aiHistoryRetention) ? settings.aiHistoryRetention : 50} onChange={(event) => { const retention = Number(event.target.value); onSettingsChange({ aiHistoryRetention: retention }); onNotify(retention === 0 ? "Tutor history is now session-only; the saved conversation was removed." : `Up to ${retention} tutor messages will be kept locally.`); }}><option value={50}>Up to 50 messages</option><option value={25}>Up to 25 messages</option><option value={10}>Up to 10 messages</option><option value={0}>Session only (do not save)</option></select></label></div>
         <div className="settings-local-data"><div><strong>AI tutor history</strong><span>{aiHistoryCount ? `${aiHistoryCount} locally saved message${aiHistoryCount === 1 ? "" : "s"}; included in backups.` : "No locally saved AI conversation messages."}</span></div><button className="button ghost" onClick={onClearAiHistory} disabled={!aiHistoryCount} type="button"><Trash2 size={16} /> Clear AI history</button></div>
@@ -851,6 +873,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [aiInsert, setAiInsert] = useState(null);
   const [encryptedImport, setEncryptedImport] = useState(null);
+  const [assessmentDraft, setAssessmentDraft] = useState(null);
   const [reviewDraft, setReviewDraft] = useState(null);
   const [backupCandidate, setBackupCandidate] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -1747,6 +1770,18 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Opt-in app-icon badge (PLAN-002): today's actionable due count, cleared
+  // predictably when the queue drains or the toggle turns off. No
+  // notifications, no permission prompts — setAppBadge is silent by design.
+  useEffect(() => {
+    if (!hydrated || typeof navigator.setAppBadge !== "function") return;
+    try {
+      const count = profile.settings.dueBadgeEnabled ? actionableDueCount(profile) : 0;
+      if (count > 0) navigator.setAppBadge(count);
+      else navigator.clearAppBadge?.();
+    } catch { /* Badging is best-effort; never surface an error for it. */ }
+  }, [hydrated, profile]);
+
   useEffect(() => {
     if (!hydrated) return;
     const purged = purgeExpiredTrash(profileRef.current.trash || []);
@@ -2058,6 +2093,44 @@ export default function App() {
     changeView("ai");
     notify("Selection inserted into the AI tutor prompt — review and send when ready.");
   }, [changeView, notify]);
+
+  const startAssessment = useCallback((partNumber) => {
+    const built = buildAssessment({ partNumber }, { documents: allDocuments, profile: profileRef.current });
+    if (!built.ok) {
+      notify(built.reason, "warning", 7000);
+      return;
+    }
+    setAssessmentDraft(built);
+  }, [allDocuments, notify]);
+
+  const finishAssessment = useCallback((answers) => {
+    setAssessmentDraft((draft) => {
+      if (!draft) return null;
+      const score = scoreAssessment(draft.questions, answers);
+      const recommendation = recommendationForAssessment(score.percent, draft.evidence);
+      const record = createAssessmentRecord({
+        partNumber: draft.evidence.partNumber,
+        kind: draft.kind,
+        questions: draft.questions,
+        answers,
+        percent: score.percent,
+        recommendation,
+        evidence: draft.evidence,
+      });
+      const drafts = assessmentMistakeDrafts(draft.questions, answers);
+      setProfile((current) => {
+        let mistakes = current.mistakes;
+        for (const mistakeDraft of drafts) mistakes = recordMistake(mistakes, mistakeDraft).mistakes;
+        return {
+          ...current,
+          assessments: [record, ...current.assessments].slice(0, MAX_ASSESSMENTS),
+          mistakes,
+          activity: recordActivityEntry(current.activity, { kind: "assessment", label: `Readiness check: ${draft.evidence.partTitle} — ${score.percent}%`, refId: record.id }),
+        };
+      });
+      return draft;
+    });
+  }, []);
 
   const importCardsFile = useCallback(async (file) => {
     const text = await file.text().catch(() => "");
@@ -2450,7 +2523,7 @@ export default function App() {
         {(!window.isSecureContext || pwaIssue) && <div className="secure-context-banner" role="status"><AlertTriangle size={17} /><div><strong>{window.isSecureContext ? "Offline mode needs attention" : "Limited LAN mode"}</strong><span>{pwaIssue || "Reading, editing, reviews, and local notes work here. Use an HTTPS address for iPhone installation, offline caching, secure clipboard, wake lock, persistent storage, and AI."}</span></div><button className="text-button" onClick={() => setSettingsOpen(true)} type="button">Details</button>{pwaIssue && window.isSecureContext && <button className="icon-button small" onClick={() => setPwaIssue("")} aria-label="Dismiss offline-mode notice" type="button"><X size={15} /></button>}</div>}
 
         <div className="view-container">
-          {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} />}
+          {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} onStartAssessment={startAssessment} onGoalsChange={(goals) => setProfile((current) => ({ ...current, goals: { ...current.goals, ...goals } }))} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
           {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} onOpenBoard={() => changeView("board")} onAskAi={profile.settings.aiFeaturesEnabled !== false ? askAiAboutSelection : undefined} onNotify={notify} /></Suspense>)}
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} />}
@@ -2473,6 +2546,7 @@ export default function App() {
       <ManageDocumentDialog doc={profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <EncryptedImportDialog pending={encryptedImport} onSubmit={unlockEncryptedImport} onCancel={() => setEncryptedImport(null)} />
+      {assessmentDraft && <AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} />}
       <ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} />
       {updateRegistration && <div className="update-banner" role="status"><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={() => setToast(null)} />

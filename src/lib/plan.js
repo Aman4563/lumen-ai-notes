@@ -55,7 +55,13 @@ export const buildDailySession = (minutes, { profile, documents }, now = new Dat
   const unread = builtin
     .filter((document) => progressOf(document.id) === 0)
     .sort((left, right) => left.partNumber - right.partNumber || left.chapterNumber - right.chapterNumber);
-  const readingTarget = inProgress[0] || unread[0] || null;
+  // Goal bias (PLAN-001): chapters inside the learner's target Parts come
+  // first within each tier; ties keep curriculum order.
+  const goalParts = new Set((profile.goals?.targetParts || []));
+  const goalFirst = (list) => (goalParts.size
+    ? [...list].sort((left, right) => Number(goalParts.has(right.partNumber)) - Number(goalParts.has(left.partNumber)))
+    : list);
+  const readingTarget = goalFirst(inProgress)[0] || goalFirst(unread)[0] || null;
   if (readingTarget && remaining >= 5) {
     const chapterMinutes = Math.max(5, Number(readingTarget.minutes) || 10);
     const readingMinutes = Math.min(remaining, chapterMinutes);
@@ -76,3 +82,39 @@ export const buildDailySession = (minutes, { profile, documents }, now = new Dat
     empty: blocks.length === 0,
   };
 };
+
+/**
+ * Goal pacing (PLAN-001): given target Parts and a target date, how many
+ * chapters per day the remaining runway requires, with an honest status.
+ * Copy is deliberately neutral — behind is a scheduling fact, not a failing.
+ */
+export const planPace = ({ profile, documents }, now = new Date()) => {
+  const goals = profile.goals;
+  if (!goals?.targetDate || !(goals.targetParts || []).length) return null;
+  const targetMs = Date.parse(`${goals.targetDate}T23:59:59`);
+  if (!Number.isFinite(targetMs)) return null;
+  const targetParts = new Set(goals.targetParts);
+  const remainingChapters = documents.filter((document) => document.source === "builtin"
+    && !document.isIndex
+    && targetParts.has(document.partNumber)
+    && (Number(profile.progress?.[document.id]) || 0) < 0.96).length;
+  const daysLeft = Math.ceil((targetMs - now.getTime()) / 86_400_000);
+  if (remainingChapters === 0) {
+    return { status: "done", remainingChapters: 0, daysLeft: Math.max(0, daysLeft), chaptersPerDay: 0, message: "Every chapter in your goal Parts is read — reviews keep it durable." };
+  }
+  if (daysLeft <= 0) {
+    return { status: "past-due", remainingChapters, daysLeft: 0, chaptersPerDay: remainingChapters, message: `${remainingChapters} chapter${remainingChapters === 1 ? "" : "s"} remain past the target date. Pick a new date that fits — steady beats rushed.` };
+  }
+  const chaptersPerDay = Math.ceil((remainingChapters / daysLeft) * 10) / 10;
+  const status = chaptersPerDay <= 1 ? "on-track" : chaptersPerDay <= 2 ? "tight" : "behind";
+  const message = status === "on-track"
+    ? `${remainingChapters} chapter${remainingChapters === 1 ? "" : "s"} over ${daysLeft} day${daysLeft === 1 ? "" : "s"} — about ${chaptersPerDay}/day keeps you on track.`
+    : status === "tight"
+      ? `${chaptersPerDay} chapters/day needed — doable, but consider trimming the goal or the date.`
+      : `${chaptersPerDay} chapters/day needed. Moving the date or narrowing the Parts keeps the plan honest.`;
+  return { status, remainingChapters, daysLeft, chaptersPerDay, message };
+};
+
+/** Due count for the opt-in app badge: actionable reviews right now. */
+export const actionableDueCount = (profile, now = new Date()) => (profile.reviewItems || [])
+  .filter((item) => !item.suspended && !item.archived && Date.parse(item.dueAt) <= now.getTime()).length;

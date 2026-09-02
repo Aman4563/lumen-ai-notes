@@ -809,10 +809,77 @@ try {
   assert.equal(storedMouseLine.color, "#e36f4a", "recolored line did not survive to the end of the session");
   assert.equal(storedMouseLine.width, 8, "resized line stroke did not survive to the end of the session");
   assert.notEqual(storedPenLine.width, mouseLine.width, "pen-pressure stroke width did not survive to the end of the session");
+  // Issue #9: a per-Part readiness check builds from the learner's own cards,
+  // grades with the self rubric, records an assessment, and feeds misses into
+  // the mistake notebook.
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction("study-data", "readwrite");
+      const store = transaction.objectStore("study-data");
+      const get = store.get("profile");
+      get.onsuccess = () => {
+        const profile = get.result;
+        const stamp = new Date().toISOString();
+        // Part 02 has no cards from earlier flows, so the pool is exactly
+        // these three and every question uses the self-grade rubric.
+        const partDoc = "notes/part-02-mathematics/01-notation-algebra-functions.md";
+        profile.reviewItems = [...(profile.reviewItems || []), ...[1, 2, 3].map((index) => ({
+          id: `readiness-card-${index}`,
+          type: "basic",
+          front: `Readiness prompt ${index}?`,
+          back: `Readiness answer ${index}`,
+          documentId: partDoc,
+          tags: [],
+          suspended: false,
+          archived: false,
+          buriedOnDay: "",
+          dueAt: stamp,
+          intervalDays: 1,
+          ease: 2.5,
+          repetitions: 1,
+          reviewCount: 1,
+          lapses: 0,
+          createdAt: stamp,
+          updatedAt: stamp,
+          lastReviewedAt: stamp,
+        }))];
+        store.put(profile, "profile");
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    };
+  }));
+  await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+  await clickByText(page, ".bottom-nav button", "Home");
+  await page.waitForSelector(".mastery-grid");
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".mastery-row")].find((node) => node.querySelector(".mastery-part")?.textContent === "02");
+    row?.querySelector(".mastery-check")?.click();
+  });
+  await page.waitForSelector(".assessment-dialog", { timeout: 5_000 });
+  await clickByText(page, ".assessment-dialog button", "Start");
+  for (let answered = 0; answered < 3; answered += 1) {
+    await page.waitForFunction(() => [...document.querySelectorAll(".assessment-dialog button")].some((button) => button.textContent.includes("Reveal expected answer")), { timeout: 5_000 });
+    await clickByText(page, ".assessment-dialog button", "Reveal expected answer");
+    await page.waitForSelector(".assessment-rubric");
+    await clickByText(page, ".assessment-rubric button", answered === 0 ? "Right" : "Wrong");
+  }
+  await page.waitForFunction(() => document.querySelector(".assessment-dialog h2")?.textContent.includes("%"), { timeout: 5_000 });
+  assert.ok((await page.$eval(".assessment-dialog", (node) => node.textContent)).includes("2 misses added to your mistake notebook"), "misses did not report to the notebook");
+  await clickByText(page, ".assessment-dialog button", "Done");
+  const assessedProfile = await waitForStored(page, "profile", (stored) => (stored.assessments || []).length === 1, "the assessment record was not persisted");
+  assert.equal(assessedProfile.assessments[0].percent, 33, "one right of three must score 33%");
+  assert.equal(assessedProfile.assessments[0].questions.length, 3, "questions must be embedded frozen in the record");
+  assert.ok(assessedProfile.mistakes.filter((mistake) => (mistake.tags || []).includes("assessment")).length >= 2, "assessment misses must land in the mistake notebook");
+  await page.waitForFunction(() => document.querySelector(".mastery-grid")?.textContent.includes("last check 33%"), { timeout: 5_000 })
+    .catch(() => assert.fail("the mastery row did not surface the latest readiness score"));
+
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
