@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   ChevronLeft,
+  BookmarkPlus,
   BrainCircuit,
   ChevronRight,
   ChevronsLeft,
@@ -44,6 +45,7 @@ import { plainTextFromMarkdown, resolveDocumentLink } from "../lib/content";
 import { renderMarkdown, slugifyHeading } from "../lib/markdown";
 import { diffLines, diffSummary } from "../lib/diff.js";
 import { documentToStandaloneHtml } from "../lib/exportHtml.js";
+import { addAudioBookmark, listAudioBookmarks, removeAudioBookmark } from "../lib/audioBookmarks.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import { applyAnnotationHighlights, captureTextAnchor, resolveTextAnchor } from "../lib/annotations";
 import { copyText } from "../lib/clipboard.js";
@@ -564,6 +566,27 @@ export default function Reader({
   };
 
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [audioBookmarks, setAudioBookmarks] = useState(() => listAudioBookmarks(document.id));
+  useEffect(() => setAudioBookmarks(listAudioBookmarks(document.id)), [document.id]);
+  const bookmarkCurrentSentence = () => {
+    if (speech.activeLabel !== "Full lecture") return;
+    addAudioBookmark({ documentId: document.id, index: speech.progress.current, snippet: speech.currentText.slice(0, 160) });
+    setAudioBookmarks(listAudioBookmarks(document.id));
+    onNotify?.("Sentence bookmarked — jump back to it from the narration panel.");
+  };
+  const playFromBookmark = (bookmark) => {
+    const target = speechTarget();
+    if (!target.available || target.scope !== "document") {
+      onNotify?.("Switch the narration target to Full to jump to an audio bookmark.", "warning");
+      return;
+    }
+    speech.speak(target.text, { label: target.label, sections: target.sections, startIndex: bookmark.index });
+    setShowSpeech(false);
+  };
+  const deleteAudioBookmark = (id) => {
+    removeAudioBookmark(id);
+    setAudioBookmarks(listAudioBookmarks(document.id));
+  };
   const [selectedRevisionId, setSelectedRevisionId] = useState("");
   const exportHtml = () => {
     const fileHtml = documentToStandaloneHtml({
@@ -638,7 +661,7 @@ export default function Reader({
         </div>
       </header>
 
-      {showSpeech && <NarrationPanel settings={settings} speech={speech} hasSelection={Boolean(selectedText || speechSelection)} target={speechTarget()} onSettingsChange={onSettingsChange} onRead={readSpeechTarget} onClose={() => setShowSpeech(false)} />}
+      {showSpeech && <NarrationPanel settings={settings} speech={speech} hasSelection={Boolean(selectedText || speechSelection)} target={speechTarget()} onSettingsChange={onSettingsChange} onRead={readSpeechTarget} onClose={() => setShowSpeech(false)} audioBookmarks={audioBookmarks} onPlayBookmark={playFromBookmark} onDeleteBookmark={deleteAudioBookmark} />}
 
       {showDisplay && (
         <div className="reader-popover display-popover">
@@ -757,7 +780,7 @@ export default function Reader({
       </div>
 
       {drawer && <button className="drawer-scrim" onClick={() => setDrawer(null)} aria-label="Close panel" type="button" />}
-      {(speech.status === "speaking" || speech.status === "paused") && <div className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button><button className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button><button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong><span>{speech.currentText}</span></div><button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
+      {(speech.status === "speaking" || speech.status === "paused") && <div className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button><button className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button><button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong><span>{speech.currentText}</span></div>{speech.activeLabel === "Full lecture" && <button className="icon-button" onClick={bookmarkCurrentSentence} aria-label="Bookmark this sentence" title="Bookmark this sentence" type="button"><BookmarkPlus size={17} /></button>}<button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
       {teaching && <TeachingMode title={document.title} source={source} onClose={() => setTeaching(false)} speech={speech} />}
       <AnnotationDialog draft={annotationDraft} onClose={() => setAnnotationDraft(null)} onSave={saveAnnotation} />
     </section>

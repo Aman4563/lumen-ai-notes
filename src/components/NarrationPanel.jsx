@@ -33,6 +33,9 @@ export default function NarrationPanel({
   onSettingsChange,
   onRead,
   onClose,
+  audioBookmarks = [],
+  onPlayBookmark,
+  onDeleteBookmark,
 }) {
   const active = speech.status === "speaking" || speech.status === "paused";
   const matchingVoiceValues = new Set(speech.voiceGroups.flatMap((group) => group.voices.map(voiceValue)));
@@ -147,6 +150,18 @@ export default function NarrationPanel({
         ))}
         <button onClick={() => onSettingsChange({ speechRate: 1, speechPitch: 1, speechVolume: 1 })} aria-label="Reset narration sound" title="Reset speed, pitch, and volume" type="button"><RotateCcw size={15} /></button>
       </div>
+
+      {audioBookmarks.length > 0 && (
+        <div className="speech-bookmarks" aria-label="Audio bookmarks">
+          <span className="speech-bookmarks-title">Audio bookmarks</span>
+          {audioBookmarks.slice(0, 6).map((bookmark) => (
+            <div className="speech-bookmark-row" key={bookmark.id}>
+              <button className="speech-bookmark-play" onClick={() => onPlayBookmark?.(bookmark)} title="Play the full lecture from this sentence" type="button"><Play size={13} /> <span>{bookmark.snippet || `Sentence ${bookmark.index + 1}`}</span></button>
+              <button className="icon-button small" onClick={() => onDeleteBookmark?.(bookmark.id)} aria-label="Delete this audio bookmark" type="button"><X size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="speech-sleep-row" role="radiogroup" aria-label="Sleep timer">
         <span>Sleep timer</span>
