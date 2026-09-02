@@ -759,6 +759,42 @@ try {
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 documents updated"), { timeout: 5_000 });
   await clickByText(page, ".collection-chips button", "All (");
 
+  // Issues #7/#17: the device-evidence page probes capabilities, records a
+  // manual verdict, and downloads a dated report.
+  await page.goto(`${baseUrl}#/device-evidence`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".evidence-grid", { timeout: 10_000 });
+  const evidenceText = (await page.$eval(".device-evidence-page", (node) => node.innerText)).toLocaleLowerCase();
+  assert.ok(evidenceText.includes("secure context"), "auto checks did not render");
+  assert.ok(evidenceText.includes("speech voices"), "the voice inventory row is missing");
+  await page.evaluate(() => {
+    const check = document.querySelector(".evidence-check");
+    [...check.querySelectorAll(".evidence-verdict button")].find((button) => button.textContent.includes("Pass"))?.click();
+  });
+  await page.type(".evidence-check .text-input", "desktop-audit smoke entry");
+  await page.$eval(".evidence-actions button", (button) => button.click());
+  {
+    let evidencePath = "";
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && !evidencePath) {
+      const files = await readdir(downloadDirectory);
+      const name = files.find((file) => file.startsWith("lumen-device-evidence-") && file.endsWith(".json"));
+      if (name) evidencePath = join(downloadDirectory, name);
+      else await delay(100);
+    }
+    assert.ok(evidencePath, "the evidence report was not downloaded");
+    const report = JSON.parse(await readFile(evidencePath, "utf8"));
+    assert.equal(report.format, "lumen.device-evidence.v1");
+    assert.equal(typeof report.auto.secureContext, "boolean");
+    assert.ok(report.auto.voices.total >= 1, "the voice inventory must reflect the mocked voice");
+    const first = report.manual[0];
+    assert.equal(first.result, "pass");
+    assert.equal(first.note, "desktop-audit smoke entry");
+    assert.ok(report.manual.length >= 8, "every tracker checklist item must be in the report");
+    assert.ok(report.manual.slice(1).every((entry) => entry.result === ""), "unanswered checks must export empty, never fabricated");
+  }
+  await clickByText(page, ".bottom-nav button", "Notebook");
+  await page.waitForSelector(".notebook-page");
+
   // DATA-003 activity ledger: the Home panel narrates the content operations.
   await clickByText(page, ".bottom-nav button", "Home");
   await page.waitForSelector(".activity-list", { timeout: 5_000 });
@@ -1019,7 +1055,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
