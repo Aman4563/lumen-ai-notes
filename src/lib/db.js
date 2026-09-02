@@ -1,5 +1,6 @@
 import { createId } from "./id.js";
 import { normalizeMistakes } from "./mistakes.js";
+import { normalizeAssessments } from "./assessment.js";
 import {
   assertOwnedDataBudgetTransition,
   isOwnedDataKey,
@@ -853,6 +854,12 @@ export const initialProfile = {
   mistakes: [],
   collections: [],
   trash: [],
+  assessments: [],
+  goals: {
+    targetParts: [],
+    targetDate: "",
+    dailyMinutes: 0,
+  },
   activity: [],
   revisions: [],
   annotations: [],
@@ -899,6 +906,8 @@ export const initialProfile = {
     savedSearches: [],
     // Narration pronunciation overrides (AUDIO-001): [{ term, spoken }].
     pronunciations: [],
+    // Opt-in app-icon badge with today's due-review count (PLAN-002).
+    dueBadgeEnabled: false,
   },
 };
 
@@ -1364,6 +1373,7 @@ export const normalizeProfile = (value) => {
         ? rawSettings.speechScope
         : initialProfile.settings.speechScope,
       keepScreenAwake: Boolean(rawSettings.keepScreenAwake),
+      dueBadgeEnabled: Boolean(rawSettings.dueBadgeEnabled),
       aiFeaturesEnabled: rawSettings.aiFeaturesEnabled !== false,
       aiHistoryRetention: [0, 10, 25, 50].includes(rawSettings.aiHistoryRetention)
         ? rawSettings.aiHistoryRetention
@@ -1381,6 +1391,13 @@ export const normalizeProfile = (value) => {
     deletedCustomDocumentIds: uniqueStrings(input.deletedCustomDocumentIds, 1_000).map((id) => id.slice(0, 500)),
     clippings,
     mistakes: normalizeMistakes(input.mistakes),
+    assessments: normalizeAssessments(input.assessments),
+    goals: {
+      targetParts: [...new Set((Array.isArray(input.goals?.targetParts) ? input.goals.targetParts : [])
+        .filter((part) => Number.isInteger(part) && part >= 1 && part <= 23))].slice(0, 23),
+      targetDate: typeof input.goals?.targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.goals.targetDate) ? input.goals.targetDate : "",
+      dailyMinutes: [0, 15, 30, 60].includes(input.goals?.dailyMinutes) ? input.goals.dailyMinutes : 0,
+    },
     collections,
     trash,
     activity,

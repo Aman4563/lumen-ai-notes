@@ -73,6 +73,7 @@ const RECORD_COLLECTION_LIMITS = Object.freeze({
   aiTutorHistory: 50,
   collections: 100,
   trash: 100,
+  assessments: 100,
   activity: 500,
   revisions: 60,
 });
@@ -80,7 +81,7 @@ const RECORD_COLLECTION_LIMITS = Object.freeze({
 // Rolling histories retain the newest records at capacity instead of
 // protecting base records; trash/activity/revisions are append-mostly logs
 // whose pruning (30-day purge, per-document caps) must not read as conflicts.
-const ROLLING_RECORD_COLLECTIONS = new Set(["reviewAttempts", "aiTutorHistory", "trash", "activity", "revisions"]);
+const ROLLING_RECORD_COLLECTIONS = new Set(["reviewAttempts", "aiTutorHistory", "trash", "activity", "revisions", "assessments"]);
 
 const compareOldestFirst = (left, right) => (
   itemTime(left) - itemTime(right)
@@ -659,6 +660,7 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
   const trashMerge = mergeRecordCollection("trash", base.trash || [], local.trash || [], remote.trash || [], detectedAt);
   const activityMerge = mergeRecordCollection("activity", base.activity || [], local.activity || [], remote.activity || [], detectedAt);
   const revisionsMerge = mergeRecordCollection("revisions", base.revisions || [], local.revisions || [], remote.revisions || [], detectedAt);
+  const assessmentsMerge = mergeRecordCollection("assessments", base.assessments || [], local.assessments || [], remote.assessments || [], detectedAt);
   const reviewItems = mergeRecordCollection("reviewItems", base.reviewItems, local.reviewItems, remote.reviewItems, detectedAt);
   const attempts = mergeRecordCollection("reviewAttempts", base.reviewAttempts, local.reviewAttempts, remote.reviewAttempts, detectedAt);
   const aiTutorHistoryTombstones = [...new Set([
@@ -675,7 +677,7 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
     withoutClearedAiMessages(remote.aiTutorHistory),
     detectedAt,
   );
-  conflicts.push(...custom.conflicts, ...clippings.conflicts, ...annotations.conflicts, ...mistakes.conflicts, ...collectionsMerge.conflicts, ...trashMerge.conflicts, ...activityMerge.conflicts, ...revisionsMerge.conflicts, ...reviewItems.conflicts, ...attempts.conflicts, ...aiHistory.conflicts);
+  conflicts.push(...custom.conflicts, ...clippings.conflicts, ...annotations.conflicts, ...mistakes.conflicts, ...collectionsMerge.conflicts, ...trashMerge.conflicts, ...activityMerge.conflicts, ...revisionsMerge.conflicts, ...assessmentsMerge.conflicts, ...reviewItems.conflicts, ...attempts.conflicts, ...aiHistory.conflicts);
 
   const recoveryDocuments = [];
   const personalNotes = mergeMap("personalNotes", base.personalNotes, local.personalNotes, remote.personalNotes, detectedAt, recoverStringConflict("personalNotes", recoveryDocuments, conflicts));
@@ -730,6 +732,8 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
     trash: trashMerge.records,
     activity: activityMerge.records,
     revisions: revisionsMerge.records,
+    assessments: assessmentsMerge.records,
+    goals: mergeObjectFields(base.goals, local.goals, remote.goals),
     annotations: annotations.records,
     reviewItems: reconciledReviews.items,
     reviewAttempts: reconciledReviews.attempts,

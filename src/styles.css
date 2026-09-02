@@ -7203,3 +7203,31 @@ input[type="range"] {
 /* Issue 18: encrypted backup */
 .backup-password-field { display: grid; gap: 6px; margin: 13px 0 4px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 750; }
 .backup-password-field small { color: var(--ink-faint); font-weight: 600; }
+
+/* Issue 9: readiness checks, goals, pacing */
+.mastery-row-actions { display: grid; justify-items: end; gap: 5px; }
+.mastery-check { font-size: 0.66rem; }
+.goal-editor { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+.goal-editor label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 750; }
+.goal-editor small { color: var(--ink-faint); font-weight: 600; }
+.goal-pace { margin: 11px 0 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink-soft); font-size: 0.76rem; }
+.goal-pace.pace-behind, .goal-pace.pace-past-due { border-color: rgba(226, 106, 78, 0.4); }
+.goal-pace.pace-on-track, .goal-pace.pace-done { border-color: rgba(46, 139, 118, 0.4); }
+.assessment-dialog { max-height: min(85dvh, 720px); overflow-y: auto; }
+.assessment-prompt { margin: 10px 0 14px; color: var(--ink); font-size: 0.95rem; line-height: 1.6; white-space: pre-wrap; }
+.assessment-evidence { display: flex; gap: 16px; margin: 12px 0 4px; }
+.assessment-evidence div { display: grid; gap: 2px; }
+.assessment-evidence dt { color: var(--ink-faint); font-size: 0.62rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
+.assessment-evidence dd { margin: 0; color: var(--ink); font-family: "Manrope", sans-serif; font-size: 1.05rem; }
+.assessment-options { display: grid; gap: 8px; }
+.assessment-option { padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--paper); color: var(--ink); text-align: left; font-size: 0.8rem; line-height: 1.5; }
+.assessment-option.active { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.assessment-cloze { display: grid; gap: 10px; }
+.assessment-cloze label { display: grid; gap: 5px; color: var(--ink-soft); font-size: 0.7rem; font-weight: 750; }
+.assessment-self { display: grid; gap: 12px; }
+.assessment-expected { margin: 0; padding: 12px 15px; border-left: 3px solid var(--teal); border-radius: 0 12px 12px 0; background: var(--paper-2); color: var(--ink); font-size: 0.82rem; line-height: 1.6; }
+.assessment-rubric { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.assessment-rubric button { padding: 11px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--paper); color: var(--ink); font-size: 0.74rem; font-weight: 750; }
+@media (max-width: 740px) {
+  .goal-editor { grid-template-columns: 1fr; }
+}
