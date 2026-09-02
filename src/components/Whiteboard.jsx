@@ -129,6 +129,56 @@ const wrapText = (context, text, x, y, maximumWidth, lineHeight, maximumLines = 
   return Math.min(lines.length, maximumLines);
 };
 
+/**
+ * Rotation (BOARD-001, issue #11) is a per-object angle in radians about the
+ * bounds center, applied in PIXEL space — the canvas aspect is non-uniform
+ * in normalized coordinates, so a normalized-space rotation would shear.
+ * Points stay stored unrotated; every pointer interaction maps through the
+ * object's local (unrotated) frame via these helpers.
+ */
+const toLocalPoint = (point, object, rect) => {
+  const rotation = object.rotation || 0;
+  if (!rotation) return point;
+  const bounds = objectBounds(object);
+  const center = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
+  const px = (point.x - center.x) * rect.width;
+  const py = (point.y - center.y) * rect.height;
+  const cos = Math.cos(-rotation);
+  const sin = Math.sin(-rotation);
+  return { x: center.x + (px * cos - py * sin) / rect.width, y: center.y + (px * sin + py * cos) / rect.height };
+};
+
+/** Screen-space bounding box of a possibly-rotated object. */
+const rotatedAabb = (object, rect) => {
+  const rotation = object.rotation || 0;
+  const bounds = objectBounds(object);
+  if (!rotation) return bounds;
+  const center = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const corners = [[bounds.minX, bounds.minY], [bounds.maxX, bounds.minY], [bounds.minX, bounds.maxY], [bounds.maxX, bounds.maxY]].map(([x, y]) => {
+    const px = (x - center.x) * rect.width;
+    const py = (y - center.y) * rect.height;
+    return { x: center.x + (px * cos - py * sin) / rect.width, y: center.y + (px * sin + py * cos) / rect.height };
+  });
+  return {
+    minX: Math.min(...corners.map((corner) => corner.x)),
+    maxX: Math.max(...corners.map((corner) => corner.x)),
+    minY: Math.min(...corners.map((corner) => corner.y)),
+    maxY: Math.max(...corners.map((corner) => corner.y)),
+  };
+};
+
+const applyObjectRotation = (context, object, width, height) => {
+  if (!object.rotation) return;
+  const bounds = objectBounds(object);
+  const centerX = ((bounds.minX + bounds.maxX) / 2) * width;
+  const centerY = ((bounds.minY + bounds.maxY) / 2) * height;
+  context.translate(centerX, centerY);
+  context.rotate(object.rotation);
+  context.translate(-centerX, -centerY);
+};
+
 const objectBounds = (object) => {
   const xs = object.points.map((point) => point.x);
   const ys = object.points.map((point) => point.y);
@@ -156,6 +206,7 @@ function drawObject(context, object, width, height) {
   const endX = end.x * width;
   const endY = end.y * height;
   context.save();
+  applyObjectRotation(context, object, width, height);
   context.lineCap = "round";
   context.lineJoin = "round";
   context.lineWidth = object.width;
@@ -221,7 +272,7 @@ function drawObject(context, object, width, height) {
   context.restore();
 }
 
-const drawSelection = (context, object, width, height) => {
+const drawSelection = (context, object, width, height, withRotateHandle = false) => {
   if (!object) return;
   const bounds = objectBounds(object);
   const x = bounds.minX * width - 7;
@@ -229,6 +280,7 @@ const drawSelection = (context, object, width, height) => {
   const boxWidth = Math.max(18, (bounds.maxX - bounds.minX) * width + 14);
   const boxHeight = Math.max(18, (bounds.maxY - bounds.minY) * height + 14);
   context.save();
+  applyObjectRotation(context, object, width, height);
   context.strokeStyle = "#e36f4a";
   context.lineWidth = 1.5;
   context.setLineDash([6, 4]);
@@ -241,6 +293,18 @@ const drawSelection = (context, object, width, height) => {
     context.fill();
     context.stroke();
   });
+  if (withRotateHandle && !object.locked) {
+    const handleX = x + boxWidth / 2;
+    const handleY = y - 26;
+    context.beginPath();
+    context.moveTo(handleX, y);
+    context.lineTo(handleX, handleY + 6);
+    context.stroke();
+    context.beginPath();
+    context.arc(handleX, handleY, 6, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+  }
   context.restore();
 };
 
@@ -340,6 +404,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   const setSelectedId = useCallback((id) => setSelectedIds(id ? [id] : []), []);
   const marqueeRef = useRef(null);
   const resizingRef = useRef(null);
+  const rotatingRef = useRef(null);
   // Zoom/pan (BOARD-003): screen = world · scale + offset, in normalized
   // units. Identity view keeps every legacy interaction byte-identical.
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
@@ -654,7 +719,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     context.scale(view.scale, view.scale);
     drawBackground(context, rect.width, rect.height, board.background);
     objects.forEach((object) => drawObject(context, object, rect.width, rect.height));
-    objects.filter((object) => selectedIds.includes(object.id)).forEach((object) => drawSelection(context, object, rect.width, rect.height));
+    objects.filter((object) => selectedIds.includes(object.id)).forEach((object) => drawSelection(context, object, rect.width, rect.height, selectedIds.length === 1));
     context.restore();
   }, [board.background, objects, selectedIds, view]);
 
@@ -702,12 +767,18 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     };
   };
 
-  const hitTest = (point) => [...objects].reverse().find((object) => {
-    if (object.tool === "eraser") return false;
-    const bounds = objectBounds(object);
-    const margin = Math.max(0.018, object.width / 800);
-    return point.x >= bounds.minX - margin && point.x <= bounds.maxX + margin && point.y >= bounds.minY - margin && point.y <= bounds.maxY + margin;
-  });
+  const hitTest = (point) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    return [...objects].reverse().find((object) => {
+      if (object.tool === "eraser") return false;
+      // Rotated objects hit-test in their local frame: inverse-rotate the
+      // pointer around the bounds center, then the box compare is exact.
+      const local = toLocalPoint(point, object, rect);
+      const bounds = objectBounds(object);
+      const margin = Math.max(0.018, object.width / 800);
+      return local.x >= bounds.minX - margin && local.x <= bounds.maxX + margin && local.y >= bounds.minY - margin && local.y <= bounds.maxY + margin;
+    });
+  };
 
   const startDrawing = (event) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
@@ -721,6 +792,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       movingRef.current = null;
       marqueeRef.current = null;
       resizingRef.current = null;
+      rotatingRef.current = null;
       const [first, second] = [...pinchRef.current.values()];
       const rect = canvasRef.current.getBoundingClientRect();
       pinchStateRef.current = {
@@ -732,18 +804,43 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       return;
     }
     if (tool === "select") {
+      // Rotate (BOARD-001, issue #11): with exactly one object selected, the
+      // handle floating above the box spins it about its bounds center.
+      if (selectedObjects.length === 1 && !selectedObjects[0].locked) {
+        const target = selectedObjects[0];
+        const bounds = objectBounds(target);
+        const rect = canvasRef.current.getBoundingClientRect();
+        const center = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
+        const local = toLocalPoint(point, target, rect);
+        const rotateHandleY = bounds.minY - 33 / rect.height;
+        if (Math.abs(local.x - center.x) < 14 / rect.width && Math.abs(local.y - rotateHandleY) < 14 / rect.height) {
+          rotatingRef.current = {
+            id: target.id,
+            center,
+            startPointerAngle: Math.atan2((point.y - center.y) * rect.height, (point.x - center.x) * rect.width),
+            startRotation: target.rotation || 0,
+            before: boardRef.current,
+            rotated: false,
+          };
+          return;
+        }
+      }
       // Resize (BOARD-001): with exactly one object selected, grabbing its
       // bottom-right handle scales the object around its top-left corner.
+      // On a rotated object the handle lives in the local frame.
       if (selectedObjects.length === 1 && selectedObjects[0].tool !== "text" && !selectedObjects[0].locked) {
-        const bounds = objectBounds(selectedObjects[0]);
+        const target = selectedObjects[0];
+        const bounds = objectBounds(target);
         const rect = canvasRef.current.getBoundingClientRect();
+        const local = toLocalPoint(point, target, rect);
         const handleX = bounds.maxX + 7 / rect.width;
         const handleY = bounds.maxY + 7 / rect.height;
-        if (Math.abs(point.x - handleX) < 14 / rect.width && Math.abs(point.y - handleY) < 14 / rect.height) {
-          const target = selectedObjects[0];
+        if (Math.abs(local.x - handleX) < 14 / rect.width && Math.abs(local.y - handleY) < 14 / rect.height) {
           resizingRef.current = {
             id: target.id,
             bounds,
+            rotation: target.rotation || 0,
+            center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 },
             originalPoints: target.points.map((item) => ({ ...item })),
             before: boardRef.current,
             resized: false,
@@ -802,11 +899,37 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       setView(clampView({ scale, x: midpoint.x - worldX * scale, y: midpoint.y - worldY * scale }));
       return;
     }
-    if (resizingRef.current) {
+    if (rotatingRef.current) {
       event.preventDefault();
       const point = pointFromEvent(event);
+      const rotating = rotatingRef.current;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const pointerAngle = Math.atan2((point.y - rotating.center.y) * rect.height, (point.x - rotating.center.x) * rect.width);
+      let rotation = rotating.startRotation + pointerAngle - rotating.startPointerAngle;
+      rotation = Math.atan2(Math.sin(rotation), Math.cos(rotation));
+      // Snap mode quantizes to 15° so square alignments are reachable.
+      if (snapEnabled) rotation = Math.round(rotation / (Math.PI / 12)) * (Math.PI / 12);
+      if (Math.abs(rotation) < 0.01) rotation = 0;
+      rotating.rotated = true;
+      updateActiveObjects((current) => current.map((object) => object.id === rotating.id ? { ...object, rotation } : object), false);
+      return;
+    }
+    if (resizingRef.current) {
+      event.preventDefault();
+      const rawPoint = pointFromEvent(event);
       const resize = resizingRef.current;
       const { minX, minY, maxX, maxY } = resize.bounds;
+      // A rotated object resizes in its local frame: inverse-rotate the
+      // pointer around the ORIGINAL center so the corner math stays exact.
+      let point = rawPoint;
+      if (resize.rotation) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const px = (rawPoint.x - resize.center.x) * rect.width;
+        const py = (rawPoint.y - resize.center.y) * rect.height;
+        const cos = Math.cos(-resize.rotation);
+        const sin = Math.sin(-resize.rotation);
+        point = { x: resize.center.x + (px * cos - py * sin) / rect.width, y: resize.center.y + (px * sin + py * cos) / rect.height };
+      }
       const corner = snapWorld(point);
       const scaleX = Math.max(0.05, (corner.x - minX) / Math.max(0.01, maxX - minX));
       const scaleY = Math.max(0.05, (corner.y - minY) / Math.max(0.01, maxY - minY));
@@ -886,6 +1009,17 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
       return;
     }
+    if (rotatingRef.current) {
+      const rotating = rotatingRef.current;
+      rotatingRef.current = null;
+      if (rotating.rotated) {
+        historyRef.current.past = [...historyRef.current.past, rotating.before].slice(-60);
+        historyRef.current.future = [];
+        syncHistoryCounts();
+      }
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
     if (resizingRef.current) {
       const resize = resizingRef.current;
       resizingRef.current = null;
@@ -902,9 +1036,10 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       marqueeRef.current = null;
       const box = { minX: Math.min(start.x, end.x), maxX: Math.max(start.x, end.x), minY: Math.min(start.y, end.y), maxY: Math.max(start.y, end.y) };
       if ((box.maxX - box.minX) + (box.maxY - box.minY) > 0.01) {
+        const marqueeRect = canvasRef.current.getBoundingClientRect();
         const contained = objects.filter((object) => {
           if (object.tool === "eraser" || object.locked) return false;
-          const bounds = objectBounds(object);
+          const bounds = rotatedAabb(object, marqueeRect);
           return bounds.minX >= box.minX && bounds.maxX <= box.maxX && bounds.minY >= box.minY && bounds.maxY <= box.maxY;
         }).map((object) => object.id);
         setSelectedIds(contained);

@@ -550,6 +550,79 @@ try {
   });
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"));
 
+  // Issue #11: rotation — the handle above a single selection spins the
+  // object about its bounds center; hit-testing follows the rotated shape;
+  // the SVG export carries the transform.
+  {
+    const resetDisabled = await page.$eval(".board-zoom-level", (button) => button.disabled);
+    if (!resetDisabled) {
+      await page.$eval(".board-zoom-level", (button) => button.click());
+      await delay(150);
+    }
+    const rotateBox = await page.$eval(".board-canvas", (canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    });
+    await page.$eval('button[aria-label="Rectangle"]', (button) => button.click());
+    await page.mouse.move(rotateBox.left + rotateBox.width * 0.6, rotateBox.top + rotateBox.height * 0.6);
+    await page.mouse.down();
+    await page.mouse.move(rotateBox.left + rotateBox.width * 0.8, rotateBox.top + rotateBox.height * 0.7, { steps: 4 });
+    await page.mouse.up();
+    await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.length === 3, "the rotation-test rectangle was not persisted");
+    await page.$eval('button[aria-label="Select and move objects"]', (button) => button.click());
+    await page.mouse.click(rotateBox.left + rotateBox.width * 0.7, rotateBox.top + rotateBox.height * 0.65);
+    await page.waitForSelector(".board-selection-actions", { timeout: 5_000 });
+    // Selecting grows the toolbar and RESIZES the canvas — measure fresh, or
+    // every client coordinate below maps to the wrong world point.
+    const selectedBox = await page.$eval(".board-canvas", (canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    });
+    const centerX = selectedBox.left + selectedBox.width * 0.7;
+    const centerY = selectedBox.top + selectedBox.height * 0.65;
+    // Grab the rotate handle (top-center, 33px above the box) and swing the
+    // pointer to due-east of the center: −90° of handle travel = +90° spin.
+    const handleY = selectedBox.top + selectedBox.height * 0.6 - 33;
+    await page.mouse.move(centerX, handleY);
+    await page.mouse.down();
+    await page.mouse.move(centerX + 50, (handleY + centerY) / 2, { steps: 3 });
+    await page.mouse.move(centerX + 80, centerY, { steps: 5 });
+    await page.mouse.up();
+    const rotatedBoard = await waitForStored(page, boardKey, (stored) => Math.abs((stored.pages[1].objects[2].rotation || 0) - Math.PI / 2) < 0.05, "the rectangle's rotation did not persist near 90°");
+    const rotation = rotatedBoard.pages[1].objects[2].rotation;
+    // Hit-test in the rotated frame: a point below center at ~45% of the
+    // object's pixel WIDTH is inside the rotated rectangle (its long side is
+    // now vertical) but outside the unrotated bounds plus margin. Deselecting
+    // resizes the canvas again, so measure a third time.
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".board-selection-actions"), { timeout: 5_000 });
+    const deselectedBox = await page.$eval(".board-canvas", (canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    });
+    await page.mouse.click(deselectedBox.left + deselectedBox.width * 0.7, deselectedBox.top + deselectedBox.height * 0.65 + Math.round(deselectedBox.width * 0.09));
+    await page.waitForSelector(".board-selection-actions", { timeout: 5_000 })
+      .catch(() => assert.fail(`clicking inside the rotated footprint (rotation ${rotation}) did not select the object`));
+    // SVG export carries the center-anchored transform.
+    const svgExportStarted = Date.now();
+    await page.$eval('button[aria-label="Export current whiteboard page as SVG"]', (button) => button.click());
+    let rotatedSvg = "";
+    const svgDeadline = Date.now() + 10_000;
+    while (Date.now() < svgDeadline && !rotatedSvg) {
+      for (const name of await readdir(downloadDirectory)) {
+        if (!name.endsWith(".svg")) continue;
+        const candidate = await readFile(join(downloadDirectory, name), "utf8").catch(() => "");
+        if (candidate.includes('transform="rotate(')) rotatedSvg = candidate;
+      }
+      if (!rotatedSvg) await delay(150);
+    }
+    assert.ok(rotatedSvg, `no exported SVG carried the rotation transform within ${Date.now() - svgExportStarted}ms`);
+    assert.match(rotatedSvg, /transform="rotate\((8[5-9]|9[0-5])\./, "the exported rotation must be near 90 degrees");
+    // Clean up: delete the test rectangle so later object-count pins hold.
+    await page.keyboard.press("Delete");
+    await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.length === 2, "deleting the rotation-test rectangle did not persist");
+  }
+
   await page.$eval('button[aria-label="Export the whole board as JSON"]', (button) => button.click());
   {
     let boardJsonPath = "";
@@ -957,19 +1030,36 @@ try {
   await page.$$eval(".filter-row button", (nodes) => nodes.find((node) => node.textContent === "All")?.click());
   await page.click('button[aria-label="Clear search"]');
   // The worker caps ranked results at 100, while the pre-search candidate list
-  // shows every document — wait for a settled (capped) count before reading.
+  // shows every document — wait for a settled (capped) count before reading,
+  // and require two identical consecutive reads: while the background index
+  // is still filling, early queries return partial counts that then grow.
   const settledResultCount = async () => {
     await page.waitForFunction(() => {
       const match = document.querySelector(".library-results-meta")?.textContent.match(/(\d+) results/);
       return match && Number(match[1]) <= 100;
     }, { timeout: 10_000 });
-    return page.$eval(".library-results-meta", (node) => Number(node.textContent.match(/(\d+) results/)?.[1] || 0));
+    let previous = -1;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = await page.$eval(".library-results-meta", (node) => Number(node.textContent.match(/(\d+) results/)?.[1] || 0));
+      if (current === previous) return current;
+      previous = current;
+      await delay(500);
+    }
+    return previous;
   };
-  await page.type(".library-search input", "has:formula attention");
-  const formulaCount = await settledResultCount();
-  await page.click('button[aria-label="Clear search"]');
-  await page.type(".library-search input", "attention");
-  const plainCount = await settledResultCount();
+  let formulaCount = 0;
+  let plainCount = 0;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.type(".library-search input", "has:formula attention");
+    formulaCount = await settledResultCount();
+    await page.click('button[aria-label="Clear search"]');
+    await page.type(".library-search input", "attention");
+    plainCount = await settledResultCount();
+    if (formulaCount > 0 && formulaCount <= plainCount) break;
+    // Index still filling between the two reads — clear and try again.
+    await page.click('button[aria-label="Clear search"]');
+    await delay(1_000);
+  }
   assert.ok(formulaCount > 0 && formulaCount <= plainCount, `has:formula must narrow results (${formulaCount} of ${plainCount})`);
 
   await page.click('button[aria-label="Clear search"]');
@@ -1222,7 +1312,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with choice/numeric auto-grading, missed-question source links, an in-place retry, and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, handle rotation with rotated-frame hit-testing and SVG transform export, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with choice/numeric auto-grading, missed-question source links, an in-place retry, and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

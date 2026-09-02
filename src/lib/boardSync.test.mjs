@@ -137,3 +137,17 @@ test("the locked flag survives merge and normalization", () => {
   const merged = mergeBoardVersions(base, base, base, { now: NOW });
   assert.equal(merged.board.pages[0].objects[0].locked, true);
 });
+
+test("a peer's rotation survives the three-way board merge as object data", () => {
+  const NOW = "2026-09-02T12:00:00.000Z";
+  const rect = (rotation) => ({ id: "object-1", tool: "rectangle", color: "#17283e", width: 3, points: [{ x: 0.1, y: 0.1 }, { x: 0.4, y: 0.3 }], ...(rotation ? { rotation } : {}) });
+  const boardWith = (object) => ({ version: 2, activePageId: "page-1", background: "grid", pages: [{ id: "page-1", name: "Page 1", objects: [object] }], syncMeta: { revision: 1, updatedAt: NOW, writerId: "", conflicts: [] } });
+  const base = boardWith(rect(0));
+  const local = boardWith(rect(0));
+  const remote = boardWith(rect(Math.PI / 4));
+  const { board } = mergeBoardVersions(base, local, remote, { now: NOW });
+  assert.equal(board.pages[0].objects[0].rotation, Math.PI / 4, "the rotated copy must win the uncontested field change");
+  const clamped = mergeBoardVersions(null, null, boardWith(rect(9)), { now: NOW }).board;
+  const arrived = clamped.pages.flatMap((page) => page.objects).find((object) => object.id === "object-1");
+  assert.equal(arrived.rotation, Math.PI, "normalization must clamp rotation into [-π, π]");
+});
