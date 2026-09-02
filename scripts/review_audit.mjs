@@ -292,6 +292,19 @@ try {
   const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
   assert.ok(seasoned, "a reviewed card must exist for the migration check");
   assert.ok(seasoned.stability > 0 && seasoned.fsrsState !== "", `migration must seed reviewed cards (stability ${seasoned.stability}, state ${seasoned.fsrsState})`);
+  // Issue #16: the workload planner shows steady-state daily reviews per
+  // retention choice, monotone in retention, and switches the setting.
+  await page.waitForSelector(".review-workload-strip", { timeout: 5_000 });
+  const workloads = await page.$$eval(".review-workload-options button span", (nodes) => nodes.map((node) => Number(node.textContent.match(/~([\d.]+)\//)?.[1])));
+  assert.equal(workloads.length, 4, "four retention choices must render");
+  for (let index = 1; index < workloads.length; index += 1) {
+    assert.ok(workloads[index] >= workloads[index - 1], `workload must not fall as retention rises (${workloads.join(", ")})`);
+  }
+  await clickByText(page, ".review-workload-options button", "95%");
+  await page.waitForFunction(() => document.querySelector('select[aria-label="Target retention"]')?.value === "0.95", { timeout: 5_000 })
+    .catch(() => assert.fail("choosing a planner option did not update the retention setting"));
+  await page.select('select[aria-label="Target retention"]', "0.9");
+
   // Issue #16: calibration refuses honestly on a thin history instead of
   // overfitting a handful of grades (successful fits are unit-tested).
   await clickByText(page, ".review-calibrate button", "Calibrate from my history");
@@ -378,7 +391,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

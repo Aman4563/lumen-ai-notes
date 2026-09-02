@@ -7332,3 +7332,13 @@ input[type="range"] {
 /* FSRS calibration controls (issue #16) in the review settings strip. */
 .review-calibrate { display: inline-flex; align-items: center; gap: 8px; }
 .review-calibrated-badge { font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--accent-soft, #e8f0eb); color: var(--accent-strong, #2e6b57); font-weight: 600; }
+
+/* Retention-vs-workload planner (issue #16). */
+.review-workload-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--line, #e3ddd2); border-radius: 14px; margin-top: 10px; }
+.review-workload-strip > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 200px; flex: 1; }
+.review-workload-strip > div:first-child span { font-size: 0.8rem; opacity: 0.75; }
+.review-workload-options { display: flex; gap: 8px; flex-wrap: wrap; }
+.review-workload-options button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 7px 12px; border-radius: 11px; border: 1px solid var(--line, #e3ddd2); background: transparent; color: inherit; font: inherit; }
+.review-workload-options button span { font-size: 0.76rem; opacity: 0.75; }
+.review-workload-options button.active { border-color: var(--ink, #17283e); background: var(--ink, #17283e); color: var(--paper, #fff); }
+.review-workload-options button.active span { opacity: 0.9; }
