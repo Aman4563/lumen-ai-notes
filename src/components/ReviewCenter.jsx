@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { exportReviewCards } from "../lib/cardInterchange.js";
 import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound } from "../lib/interview.js";
+import { ROUND_TYPES, buildTrackRound, normalizeTrackBank } from "../lib/interviewTracks.js";
+import { checkLabAnswer, labMistakeDraft, normalizeLabBank } from "../lib/labs.js";
 import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
 import {
   Archive,
@@ -250,6 +252,69 @@ function MistakeCorrectionField({ mistake, onEditMistake }) {
 }
 
 /**
+ * Worksheet lab bench (LAB-001/002 slice): inline dataset, deterministic
+ * self-checks, reveal, and honest self-assessment — misses feed the mistake
+ * notebook. No code execution happens in the app; the learner works in their
+ * own editor/terminal and checks results here.
+ */
+function LabBench({ lab, onClose, onLogMistake, onOpenSource }) {
+  const [taskIndex, setTaskIndex] = useState(0);
+  const [response, setResponse] = useState("");
+  const [outcome, setOutcome] = useState(null);
+  const [results, setResults] = useState([]);
+  const task = lab.tasks[taskIndex];
+  const finished = taskIndex >= lab.tasks.length;
+
+  const check = () => {
+    const correct = checkLabAnswer(task.selfCheck.expected, response);
+    setOutcome(correct ? "correct" : "incorrect");
+    if (!correct) onLogMistake?.(labMistakeDraft(lab, task, response));
+    setResults((current) => [...current, correct]);
+  };
+  const advance = () => {
+    setResponse("");
+    setOutcome(null);
+    setTaskIndex((current) => current + 1);
+  };
+
+  return (
+    <div className="page review-session-page lab-bench" aria-label={`Lab: ${lab.title}`}>
+      <header className="review-session-header">
+        <button className="button ghost" onClick={onClose} type="button"><ArrowLeft size={17} /> {finished ? "Done" : "Exit lab"}</button>
+        <div><strong>{Math.min(taskIndex + 1, lab.tasks.length)}/{lab.tasks.length}</strong><span>task</span></div>
+        <span className="lab-minutes"><Clock3 size={15} /> ~{lab.estimatedMinutes} min</span>
+      </header>
+      <main className="review-stage lab-stage">
+        {!finished && (
+          <article className="review-flashcard revealed lab-card">
+            <span className="eyebrow">{lab.kind} lab · work in your own editor, check here</span>
+            <div className="review-markdown lab-prompt" dangerouslySetInnerHTML={{ __html: renderMarkdown(taskIndex === 0 ? `${lab.prompt}\n\n\`\`\`\n${lab.dataset}\n\`\`\`` : lab.prompt) }} />
+            <div className="lab-task">
+              <strong>{task.instruction}</strong>
+              <label><span>{task.selfCheck.question}</span><input className="text-input" value={response} onChange={(event) => setResponse(event.target.value)} disabled={outcome !== null} autoComplete="off" aria-label="Your computed answer" /></label>
+              {outcome === null && <button className="button primary" onClick={check} disabled={!response.trim()} type="button">Check answer</button>}
+              {outcome === "correct" && <p className="lab-outcome is-correct"><CheckCircle2 size={16} /> Correct. {task.selfCheck.explanation}</p>}
+              {outcome === "incorrect" && <p className="lab-outcome is-incorrect"><Flame size={16} /> Expected <strong>{task.selfCheck.expected}</strong>. {task.selfCheck.explanation} Logged to your mistake notebook.</p>}
+              {outcome !== null && <button className="button secondary" onClick={advance} type="button">{taskIndex + 1 < lab.tasks.length ? "Next task" : "Finish lab"}</button>}
+            </div>
+          </article>
+        )}
+        {finished && (
+          <article className="review-flashcard revealed lab-card">
+            <span className="eyebrow">Lab complete · {results.filter(Boolean).length}/{results.length} checks passed</span>
+            <div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(`**Worked solution**\n\n${lab.solution}${lab.complexityNote ? `\n\n*${lab.complexityNote}*` : ""}`) }} />
+            <div className="review-session-actions">
+              {lab.documentId && onOpenSource && <button className="button ghost" onClick={() => onOpenSource(lab.documentId)} type="button"><BookOpen size={16} /> Open the source lecture</button>}
+              <button className="button primary" onClick={onClose} type="button">Back to review center</button>
+            </div>
+          </article>
+        )}
+      </main>
+    </div>
+  );
+}
+
+/**
  * Timed interview round (INTERVIEW-002 slice): prep/answer countdowns over a
  * bounded weak-first selection. Practice-only — the scheduler is untouched —
  * and a miss logs an interview-category mistake.
@@ -273,7 +338,7 @@ function InterviewRound({ cards, onClose, onLogMistake, onImportCards }) {
     if (secondsLeft > 0) return;
     if (phase === "prep") {
       setPhase("answer");
-      setSecondsLeft(INTERVIEW_ANSWER_SECONDS);
+      setSecondsLeft(card?.answerSeconds || INTERVIEW_ANSWER_SECONDS);
     } else if (phase === "answer") {
       setPhase("revealed");
     }
@@ -286,8 +351,9 @@ function InterviewRound({ cards, onClose, onLogMistake, onImportCards }) {
       onLogMistake?.({
         prompt: card.front,
         expected: card.back,
-        category: "interview",
+        category: card.mistakeCategory || "interview",
         reviewItemId: card.id,
+        documentId: card.documentId || "",
         tags: [...new Set([...(card.tags || []), "interview"])],
       });
     }
@@ -333,7 +399,7 @@ function InterviewRound({ cards, onClose, onLogMistake, onImportCards }) {
           {phase === "revealed" && <div className="review-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.back) }} />}
         </article>
         <div className="review-session-actions">
-          {phase === "prep" && <button className="button primary large" onClick={() => { setPhase("answer"); setSecondsLeft(INTERVIEW_ANSWER_SECONDS); }} type="button">Start answering</button>}
+          {phase === "prep" && <button className="button primary large" onClick={() => { setPhase("answer"); setSecondsLeft(card?.answerSeconds || INTERVIEW_ANSWER_SECONDS); }} type="button">Start answering</button>}
           {phase === "answer" && <button className="button primary large" onClick={() => setPhase("revealed")} type="button"><Eye size={18} /> Show expected answer</button>}
           {phase === "revealed" && <div className="interview-grades"><button className="button secondary" onClick={() => grade(false)} type="button"><Flame size={16} /> Missed it — log the mistake</button><button className="button primary" onClick={() => grade(true)} type="button"><CheckCircle2 size={16} /> Answered well</button></div>}
         </div>
@@ -365,6 +431,9 @@ export default function ReviewCenter({
   const [mistakeFilter, setMistakeFilter] = useState("all");
   const [mistakeDialogOpen, setMistakeDialogOpen] = useState(false);
   const [interviewCards, setInterviewCards] = useState(null);
+  const [trackChoice, setTrackChoice] = useState("mle");
+  const [roundTypeChoice, setRoundTypeChoice] = useState("");
+  const [activeLab, setActiveLab] = useState(null);
   const [showCorrectedMistakes, setShowCorrectedMistakes] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [currentId, setCurrentId] = useState("");
@@ -444,6 +513,24 @@ export default function ReviewCenter({
     }, 2_000);
   };
   const interviewPool = useMemo(() => selectInterviewRound(profile.reviewItems), [profile.reviewItems]);
+  // The authored banks are sizeable JSON: load them lazily so they never
+  // weigh on the startup bundle (the app audit gates entry size).
+  const [trackBankRaw, setTrackBankRaw] = useState(null);
+  const [labBankRaw, setLabBankRaw] = useState(null);
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      import("../data/interviewTracks.v1.json"),
+      import("../data/labs.v1.json"),
+    ]).then(([tracks, labs]) => {
+      if (!active) return;
+      setTrackBankRaw(tracks.default);
+      setLabBankRaw(labs.default);
+    }).catch(() => { /* strips simply stay hidden if the banks fail to load */ });
+    return () => { active = false; };
+  }, []);
+  const trackBank = useMemo(() => normalizeTrackBank(trackBankRaw), [trackBankRaw]);
+  const labBank = useMemo(() => normalizeLabBank(labBankRaw), [labBankRaw]);
   const queue = session && crunch ? baseQueue.filter((item) => !sessionSeen.includes(item.id)) : baseQueue;
   const queueSignature = queue.map((item) => `${String(item.id).length}:${item.id}`).join("");
   const stats = useMemo(() => reviewStats(profile.reviewItems, queueNow, timeZone), [profile.reviewItems, queueNow.getTime(), timeZone]);
@@ -536,6 +623,10 @@ export default function ReviewCenter({
     setCurrentId("");
   };
 
+  if (activeLab) {
+    return <LabBench lab={activeLab} onClose={() => setActiveLab(null)} onLogMistake={onLogMistake} onOpenSource={onOpenSource} />;
+  }
+
   if (interviewCards) {
     return <InterviewRound cards={interviewCards} onClose={() => setInterviewCards(null)} onLogMistake={onLogMistake} />;
   }
@@ -595,6 +686,22 @@ export default function ReviewCenter({
         <article className="review-forecast"><div><strong>Next 7 days</strong><span>Scheduled forecast</span></div><div className="forecast-bars" aria-label={`Seven-day review forecast: ${analytics.forecast.join(", ")}`}>{analytics.forecast.map((value, index) => <span key={index} style={{ height: `${Math.max(8, (value / Math.max(...analytics.forecast, 1)) * 100)}%` }} title={`Day ${index}: ${value} reviews`} />)}</div></article>
         <article className="review-forecast review-retention-trend"><div><strong>12-week recall</strong><span>Weekly retention trend</span></div><div className="forecast-bars" aria-label={`Twelve-week retention trend: ${analytics.retentionTrend.map((week) => week.percent === null ? "no reviews" : `${week.percent}%`).join(", ")}`}>{analytics.retentionTrend.map((week, index) => <span key={index} className={week.percent === null ? "is-empty" : ""} style={{ height: `${week.percent === null ? 8 : Math.max(8, week.percent)}%` }} title={week.percent === null ? `Week ${index - 11}: no reviews` : `Week ${index - 11}: ${week.percent}% retained over ${week.count} attempts`} />)}</div></article>
       </section>
+      {trackBank.tracks.length > 0 && <section className="interview-track-strip" aria-label="Structured interview practice">
+        <div><strong>Interview tracks</strong><span>Authored role tracks with rubrics; misses feed the mistake notebook.</span></div>
+        <label>Track<select value={trackChoice} onChange={(event) => setTrackChoice(event.target.value)} aria-label="Interview track">{trackBank.tracks.map((track) => <option value={track.id} key={track.id} disabled={!track.seeded}>{track.label}{track.seeded ? "" : " (coming soon)"}</option>)}</select></label>
+        <label>Round<select value={roundTypeChoice} onChange={(event) => setRoundTypeChoice(event.target.value)} aria-label="Interview round type"><option value="">Mixed</option>{ROUND_TYPES.map((round) => <option value={round.id} key={round.id}>{round.label}</option>)}</select></label>
+        <button className="button secondary" onClick={() => {
+          const round = buildTrackRound(trackBankRaw, { trackId: trackChoice, roundType: roundTypeChoice }, mistakes);
+          if (!round.ok) return;
+          setInterviewCards(round.cards);
+        }} disabled={!buildTrackRound(trackBankRaw, { trackId: trackChoice, roundType: roundTypeChoice }, mistakes).ok} type="button"><Clock3 size={16} /> Start track round</button>
+      </section>}
+
+      {labBank.labs.length > 0 && <section className="lab-strip" aria-label="Worksheet labs">
+        <div><strong>Worksheet labs</strong><span>Work in your own editor; check exact results here. No code runs in the app.</span></div>
+        <div className="lab-list">{labBank.labs.map((lab) => <button className="lab-tile" onClick={() => setActiveLab(lab)} key={lab.id} type="button"><span className="lab-kind">{lab.kind}</span><strong>{lab.title}</strong><small>~{lab.estimatedMinutes} min · {lab.tasks.length} checks</small></button>)}</div>
+      </section>}
+
       <section className="review-settings-strip" aria-label="Daily review limits"><div><strong>Daily limits</strong><span>Counts persist by local date ({timeZone}) and cannot refill when a card leaves the queue.</span></div><label>New<select value={profile.reviewSettings.dailyNewLimit} onChange={(event) => onSettingsChange({ dailyNewLimit: Number(event.target.value) })}>{[5, 10, 15, 20, 30, 50].map((value) => <option value={value} key={value}>{value}</option>)}</select></label><label>Reviews<select value={profile.reviewSettings.dailyReviewLimit} onChange={(event) => onSettingsChange({ dailyReviewLimit: Number(event.target.value) })}>{[20, 50, 100, 200, 500].map((value) => <option value={value} key={value}>{value}</option>)}</select></label><label>Scheduler<select value={profile.reviewSettings.scheduler || "sm2"} onChange={(event) => onSettingsChange({ scheduler: event.target.value })} aria-label="Scheduling algorithm" title="Adaptive (FSRS-4.5) models each card's memory stability and difficulty; Classic is the fixed-ease SM-2 family. Switching is safe — enabling Adaptive calibrates from your review history once."><option value="sm2">Classic</option><option value="fsrs">Adaptive (FSRS)</option></select></label>{(profile.reviewSettings.scheduler || "sm2") === "fsrs" && <label>Retention<select value={String(profile.reviewSettings.requestRetention ?? 0.9)} onChange={(event) => onSettingsChange({ requestRetention: Number(event.target.value) })} aria-label="Target retention" title="Target recall probability at review time: higher retention means shorter intervals and more daily reviews"><option value="0.8">80%</option><option value="0.85">85%</option><option value="0.9">90%</option><option value="0.95">95%</option></select></label>}</section>
       {(mistakes.length > 0 || onLogMistake) && <section className="review-mistakes" aria-label="Mistake notebook">
         <div className="section-heading"><div><span className="eyebrow">Learn from failures</span><h2>Mistake notebook</h2></div><div className="mistake-controls"><label>Category<select value={mistakeFilter} onChange={(event) => setMistakeFilter(event.target.value)}><option value="all">All</option>{MISTAKE_CATEGORIES.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label><label className="mistake-corrected-toggle"><input type="checkbox" checked={showCorrectedMistakes} onChange={(event) => setShowCorrectedMistakes(event.target.checked)} /> Show corrected</label>{mistakes.length > 0 && <button className="button ghost" onClick={exportMistakes} type="button"><Download size={15} /> Export</button>}{onLogMistake && <button className="button ghost" onClick={() => setMistakeDialogOpen(true)} type="button"><Flame size={15} /> Log mistake</button>}</div></div>
