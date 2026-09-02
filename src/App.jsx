@@ -61,6 +61,7 @@ import { addTrashEntry, appendRevision, documentFromTrashEntry, findDuplicateDoc
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile } from "./lib/backupCrypto.js";
 import { buildConceptMap } from "./lib/conceptMap.js";
+import { migrateItemsToFsrs } from "./lib/fsrs.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
@@ -2018,7 +2019,7 @@ export default function App() {
       if (!target) return current;
       const now = new Date();
       const usage = recordReviewUsage(current.reviewSessions, target, now, metadata);
-      const result = gradeReviewItem(target, rating, now, elapsedMs, { ...metadata, sessionKind: usage.kind, sessionKey: usage.sessionKey });
+      const result = gradeReviewItem(target, rating, now, elapsedMs, { ...metadata, sessionKind: usage.kind, sessionKey: usage.sessionKey, scheduler: current.reviewSettings.scheduler, requestRetention: current.reviewSettings.requestRetention });
       const next = {
         ...current,
         reviewItems: current.reviewItems.map((item) => item.id === id ? result.item : item),
@@ -2162,8 +2163,24 @@ export default function App() {
   }, [notify]);
 
   const updateReviewSettings = useCallback((patch) => {
-    setProfile((current) => ({ ...current, reviewSettings: { ...current.reviewSettings, ...patch } }));
-  }, []);
+    setProfile((current) => {
+      const next = { ...current, reviewSettings: { ...current.reviewSettings, ...patch } };
+      // Enabling FSRS runs the one-time seeding migration: faithful replay of
+      // each card's complete attempt trail where available, the labeled SM-2
+      // heuristic otherwise. Already-seeded cards and new cards are untouched,
+      // so re-enabling later never rewrites state.
+      if (patch.scheduler === "fsrs" && current.reviewSettings.scheduler !== "fsrs") {
+        const migrated = migrateItemsToFsrs(current.reviewItems, current.reviewAttempts, { requestRetention: next.reviewSettings.requestRetention });
+        next.reviewItems = migrated.items;
+        if (migrated.fromHistory || migrated.fromSm2) {
+          notify(`Adaptive scheduling enabled. ${migrated.fromHistory} card${migrated.fromHistory === 1 ? "" : "s"} calibrated from full review history, ${migrated.fromSm2} seeded from current intervals.`, "success", 7000);
+        } else {
+          notify("Adaptive scheduling enabled for new reviews.");
+        }
+      }
+      return next;
+    });
+  }, [notify]);
 
   const exportBackup = async (password) => {
     try {

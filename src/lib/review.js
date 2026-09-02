@@ -1,4 +1,5 @@
 import { createId } from "./id.js";
+import { FSRS_DEFAULT_RETENTION, fsrsGrade } from "./fsrs.js";
 
 const DAY_MS = 86_400_000;
 const DAY_FORMATTER_CACHE_LIMIT = 32;
@@ -156,6 +157,10 @@ export const createReviewItem = ({ front, back, documentId = "", sourceClippingI
   repetitions: 0,
   reviewCount: 0,
   lapses: 0,
+  // FSRS-4.5 state (opt-in scheduler); 0/empty = unseeded.
+  stability: 0,
+  difficulty: 0,
+  fsrsState: "",
   createdAt: now.toISOString(),
   updatedAt: now.toISOString(),
   lastReviewedAt: "",
@@ -256,7 +261,11 @@ const intervalForRating = (item, rating) => {
   return { intervalDays: firstReview ? 4 : Math.max(4, priorInterval * priorEase * 1.3), ease: clamp(priorEase + 0.15, 1.3, 3.5), repetitions: (Number(item.repetitions) || 0) + 1 };
 };
 
-export const previewReviewIntervals = (item) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
+export const previewReviewIntervals = (item, { scheduler = "sm2", requestRetention = FSRS_DEFAULT_RETENTION } = {}) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
+  if (scheduler === "fsrs") {
+    const result = fsrsGrade(item, id, new Date(), { requestRetention });
+    return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
+  }
   const result = intervalForRating(item, id);
   return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
 }));
@@ -268,6 +277,9 @@ const schedulingSnapshot = (item) => ({
   repetitions: item.repetitions,
   reviewCount: item.reviewCount,
   lapses: item.lapses,
+  stability: item.stability,
+  difficulty: item.difficulty,
+  fsrsState: item.fsrsState,
   lastReviewedAt: item.lastReviewedAt,
   updatedAt: item.updatedAt,
 });
@@ -276,12 +288,24 @@ export const gradeReviewItem = (item, rating, now = new Date(), elapsedMs = 0, m
   if (!REVIEW_RATINGS.some((entry) => entry.id === rating)) throw new Error("Unknown review rating");
   const priorInterval = Number(item.intervalDays) || 0;
   const priorReviewCount = Number(item.reviewCount) || (item.lastReviewedAt ? 1 : 0);
-  const schedule = intervalForRating(item, rating);
+  const useFsrs = metadata.scheduler === "fsrs";
+  // FSRS mode keeps writing the legacy fields (intervalDays, frozen ease,
+  // repetitions) so stats, mastery, weak-first ordering, and interval labels
+  // stay correct and toggling back to SM-2 is graceful.
+  const fsrs = useFsrs ? fsrsGrade(item, rating, now, { requestRetention: metadata.requestRetention }) : null;
+  const schedule = useFsrs
+    ? {
+      intervalDays: fsrs.intervalDays,
+      ease: Number(item.ease) || 2.5,
+      repetitions: rating === "again" ? 0 : (Number(item.repetitions) || 0) + 1,
+    }
+    : intervalForRating(item, rating);
   const intervalDays = Math.round(clamp(schedule.intervalDays, 10 / 1_440, 36_500) * 100) / 100;
   const nextDueAt = new Date(now.getTime() + intervalDays * DAY_MS).toISOString();
   const lapses = (Number(item.lapses) || 0) + (rating === "again" && priorReviewCount > 0 ? 1 : 0);
   const updated = {
     ...item,
+    ...(fsrs ? { stability: fsrs.stability, difficulty: fsrs.difficulty, fsrsState: fsrs.fsrsState } : {}),
     intervalDays,
     ease: Math.round(schedule.ease * 100) / 100,
     repetitions: schedule.repetitions,

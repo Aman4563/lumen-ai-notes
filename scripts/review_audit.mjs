@@ -280,6 +280,21 @@ try {
     target?.querySelector('button[aria-label="Delete review card"]')?.click();
   });
 
+  // Issue #16: enabling the Adaptive (FSRS) scheduler migrates existing
+  // cards once (history replay or SM-2 seed) and grades store FSRS state.
+  await page.select('select[aria-label="Scheduling algorithm"]', "fsrs");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Adaptive scheduling enabled"), { timeout: 5_000 })
+    .catch(() => assert.fail("enabling FSRS did not confirm the calibration"));
+  await page.waitForSelector('select[aria-label="Target retention"]', { timeout: 5_000 });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const fsrsProfile = await readProfile(page);
+  assert.equal(fsrsProfile.reviewSettings.scheduler, "fsrs");
+  const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
+  assert.ok(seasoned, "a reviewed card must exist for the migration check");
+  assert.ok(seasoned.stability > 0 && seasoned.fsrsState !== "", `migration must seed reviewed cards (stability ${seasoned.stability}, state ${seasoned.fsrsState})`);
+  await page.select('select[aria-label="Scheduling algorithm"]', "sm2");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
   // Exercise the maximum persisted deck size. The center must keep the DOM
   // bounded on an iPhone instead of rendering 10,000 Markdown cards at once.
   await page.evaluate(() => new Promise((resolve, reject) => {
@@ -326,7 +341,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
