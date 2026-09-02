@@ -387,6 +387,9 @@ const REVIEW_SCHEDULE_FIELDS = [
   "repetitions",
   "reviewCount",
   "lapses",
+  "stability",
+  "difficulty",
+  "fsrsState",
   "lastReviewedAt",
   "updatedAt",
 ];
@@ -420,7 +423,7 @@ const compareReviewAttempts = (left, right) => (
   || stableString(reviewAttemptEvent(left)).localeCompare(stableString(reviewAttemptEvent(right)))
 );
 
-const replayReviewAttempt = (item, attempt) => {
+const replayReviewAttempt = (item, attempt, scheduling = {}) => {
   const reviewedAt = new Date(isoTime(attempt.reviewedAt));
   const sessionKind = attempt.crunch
     ? "crunch"
@@ -430,6 +433,10 @@ const replayReviewAttempt = (item, attempt) => {
     sessionKind,
     sessionKey: attempt.sessionKey,
     crunch: attempt.crunch,
+    // Reconciliation must replay under the same scheduler the merged profile
+    // uses, or two devices would rebuild different card states.
+    scheduler: scheduling.scheduler,
+    requestRetention: scheduling.requestRetention,
   });
   return {
     item: replayed.item,
@@ -685,12 +692,14 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
   conflicts.push(...finalCustomCapacity.conflicts);
 
   const rolledOffAttemptIds = reviewHistoryRolloverIds(base.reviewAttempts, attempts.records, attempts.conflicts);
+  const mergedReviewSettings = mergeObjectFields(base.reviewSettings, local.reviewSettings, remote.reviewSettings);
   const reconciledReviews = reconcileReviewAttemptDeltas(
     base.reviewItems,
     reviewItems.records,
     base.reviewAttempts,
     attempts.records,
     rolledOffAttemptIds,
+    { scheduler: mergedReviewSettings.scheduler, requestRetention: mergedReviewSettings.requestRetention },
   );
   const reconciledReviewSessions = reconcileReviewSessionCounters(
     base.reviewSessions,
@@ -734,7 +743,7 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
     bookmarks: mergeMembership(base.bookmarks, local.bookmarks, remote.bookmarks),
     recent: mergeMembership(base.recent, local.recent, remote.recent).slice(0, 50),
     settings: mergeObjectFields(base.settings, local.settings, remote.settings),
-    reviewSettings: mergeObjectFields(base.reviewSettings, local.reviewSettings, remote.reviewSettings),
+    reviewSettings: mergedReviewSettings,
     backupMeta: mergeObjectFields(base.backupMeta, local.backupMeta, remote.backupMeta),
     lastDocumentId: mergeObjectFields({ value: base.lastDocumentId }, { value: local.lastDocumentId }, { value: remote.lastDocumentId }).value,
   });

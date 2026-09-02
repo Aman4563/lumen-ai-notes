@@ -860,6 +860,8 @@ export const initialProfile = {
   reviewAttempts: [],
   reviewSessions: [],
   reviewSettings: {
+    scheduler: "sm2",
+    requestRetention: 0.9,
     dailyNewLimit: 10,
     dailyReviewLimit: 50,
   },
@@ -1199,6 +1201,10 @@ export const normalizeProfile = (value) => {
       repetitions: Math.round(numberWithin(item.repetitions, 0, 100_000, 0)),
       reviewCount: Math.round(numberWithin(item.reviewCount, 0, 1_000_000, item.lastReviewedAt ? Math.max(1, Number(item.repetitions) || 0) : 0)),
       lapses: Math.round(numberWithin(item.lapses, 0, 100_000, 0)),
+      // FSRS-4.5 opt-in scheduler state; 0/empty means unseeded.
+      stability: numberWithin(item.stability, 0, 36_500, 0),
+      difficulty: numberWithin(item.difficulty, 0, 10, 0),
+      fsrsState: ["", "learning", "review", "relearning"].includes(item.fsrsState) ? item.fsrsState : "",
       createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
       updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : (item.createdAt || new Date().toISOString()),
       lastReviewedAt: typeof item.lastReviewedAt === "string" && Number.isFinite(Date.parse(item.lastReviewedAt)) ? item.lastReviewedAt : "",
@@ -1229,6 +1235,9 @@ export const normalizeProfile = (value) => {
         repetitions: Math.round(numberWithin(attempt.previousState.repetitions, 0, 100_000, 0)),
         reviewCount: Math.round(numberWithin(attempt.previousState.reviewCount, 0, 1_000_000, 0)),
         lapses: Math.round(numberWithin(attempt.previousState.lapses, 0, 100_000, 0)),
+        stability: numberWithin(attempt.previousState.stability, 0, 36_500, 0),
+        difficulty: numberWithin(attempt.previousState.difficulty, 0, 10, 0),
+        fsrsState: ["", "learning", "review", "relearning"].includes(attempt.previousState.fsrsState) ? attempt.previousState.fsrsState : "",
         lastReviewedAt: typeof attempt.previousState.lastReviewedAt === "string" ? attempt.previousState.lastReviewedAt : "",
         updatedAt: typeof attempt.previousState.updatedAt === "string" ? attempt.previousState.updatedAt : "",
       } : null,
@@ -1381,6 +1390,8 @@ export const normalizeProfile = (value) => {
     reviewAttempts,
     reviewSessions,
     reviewSettings: {
+      scheduler: ["sm2", "fsrs"].includes(rawReviewSettings.scheduler) ? rawReviewSettings.scheduler : "sm2",
+      requestRetention: numberWithin(rawReviewSettings.requestRetention, 0.7, 0.97, 0.9),
       dailyNewLimit: Math.round(numberWithin(rawReviewSettings.dailyNewLimit, 1, 100, initialProfile.reviewSettings.dailyNewLimit)),
       dailyReviewLimit: Math.round(numberWithin(rawReviewSettings.dailyReviewLimit, 1, 500, initialProfile.reviewSettings.dailyReviewLimit)),
     },
