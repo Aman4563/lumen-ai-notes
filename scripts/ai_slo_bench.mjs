@@ -22,11 +22,55 @@
  * The first run is reported separately as the cold run; percentiles cover
  * the warm runs. Results print as JSON for pasting into the tracker.
  */
+import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 
 const baseUrl = new URL(process.env.LUMEN_AI_URL || "https://127.0.0.1:4202");
+
+// Pairing (issue #8): with AI_AUTH=pairing set globally, the bench must
+// authenticate like any client. Pass AI_PAIRING_CODE (from .env) and the
+// session cookie rides every request below.
+let sessionCookie = "";
+const pairIfNeeded = async () => {
+  const code = process.env.AI_PAIRING_CODE || "";
+  if (!code) return;
+  const response = await fetch(new URL("/api/auth/pair", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: baseUrl.origin },
+    body: JSON.stringify({ code }),
+  });
+  if (!response.ok) {
+    console.error(`Pairing failed (HTTP ${response.status}): ${(await response.text()).slice(0, 200)}`);
+    process.exit(1);
+  }
+  sessionCookie = (response.headers.get("set-cookie") || "").split(";")[0];
+  console.error("Paired with the server; session cookie attached.");
+};
+
+// Memory SLO (issue #15): sample the Ollama process's resident set before,
+// during, and after the runs. RSS is the honest, sudo-free memory signal on
+// macOS; energy/thermal need powermetrics (root) and stay operator-manual.
+const ollamaRssMb = () => {
+  try {
+    const pids = execFileSync("pgrep", ["-f", "ollama"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    let total = 0;
+    for (const pid of pids) {
+      const rss = Number(execFileSync("ps", ["-o", "rss=", "-p", pid], { encoding: "utf8" }).trim());
+      if (Number.isFinite(rss)) total += rss;
+    }
+    return total ? Math.round(total / 1024) : null;
+  } catch {
+    return null;
+  }
+};
+let peakOllamaRssMb = null;
+const sampleMemory = () => {
+  const rss = ollamaRssMb();
+  if (rss !== null && (peakOllamaRssMb === null || rss > peakOllamaRssMb)) peakOllamaRssMb = rss;
+  return rss;
+};
 const runs = Math.max(1, Math.min(20, Number(process.env.RUNS) || 5));
 const responseProfile = ["fast", "balanced", "deep"].includes(process.env.PROFILE) ? process.env.PROFILE : "balanced";
 
@@ -71,6 +115,7 @@ const benchOnce = async (variant) => {
       "Content-Type": "application/json",
       Accept: "application/x-ndjson",
       Origin: baseUrl.origin,
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
     },
     body: bodyFor(variant),
   });
@@ -109,6 +154,8 @@ if (!health.ok) {
   console.error("Server health check failed:", JSON.stringify(health));
   process.exit(1);
 }
+await pairIfNeeded();
+const memoryIdleMb = sampleMemory();
 
 const summarize = (results) => {
   const failures = results.filter((metric) => metric.error);
@@ -142,6 +189,7 @@ for (const variant of ["grounded", "source-free"]) {
   const results = [];
   for (let run = 0; run < runs; run += 1) {
     const metrics = await benchOnce(variant);
+    sampleMemory();
     results.push(metrics);
     totalRuns += 1;
     if (metrics.error) totalFailures += 1;
@@ -156,6 +204,12 @@ const summary = {
   responseProfile,
   runsPerVariant: runs,
   note: "grounded first-delta ≈ total by design (citation-validation buffering); source-free measures token-live streaming",
+  memory: {
+    ollamaIdleRssMb: memoryIdleMb,
+    ollamaPeakRssMb: peakOllamaRssMb,
+    settledRssMb: sampleMemory(),
+    note: "resident-set of the ollama processes (pgrep+ps, sudo-free); energy/thermal need root powermetrics and stay operator-manual",
+  },
   ...variantResults,
 };
 console.log(JSON.stringify(summary, null, 2));
