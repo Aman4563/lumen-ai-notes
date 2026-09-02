@@ -7297,3 +7297,30 @@ input[type="range"] {
 .evidence-verdict button.active.fail { border-color: #b2543c; background: #b2543c; }
 .evidence-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .evidence-actions .microcopy { flex-basis: 100%; }
+
+/* Print / Save-as-PDF (issue #12): the reader article prints as a clean
+   document — chrome, drawers, and overlays all vanish, the scroll container
+   unrolls to full height, and ink stays black on white regardless of the
+   on-screen theme. */
+@media print {
+  .sidebar-primary,
+  .sidebar-parts,
+  .app-topbar,
+  .bottom-nav,
+  .reader-toolbar,
+  .reading-progress,
+  .reading-time-left,
+  .reader-find,
+  .reader-popover,
+  .reader-action-menu,
+  .reader-action-scrim,
+  .reader-side-panel,
+  .toast,
+  .fab { display: none !important; }
+  body, .app-shell { background: #fff !important; color: #000 !important; }
+  .app-main, .main-area { margin-left: 0 !important; }
+  .reader-scroll { overflow: visible !important; height: auto !important; max-height: none !important; }
+  .reader-view { display: block !important; height: auto !important; }
+  .reader-layout { max-width: 100% !important; }
+  .reader-main a { color: #000 !important; text-decoration: underline; }
+}

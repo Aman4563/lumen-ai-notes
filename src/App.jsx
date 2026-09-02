@@ -22,7 +22,6 @@ import {
   Pin,
   FilePlus2,
   GraduationCap,
-  Headphones,
   Highlighter,
   Home,
   Import,
@@ -61,6 +60,7 @@ import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
 import { htmlToMarkdown, isHtmlFileName } from "./lib/htmlImport.js";
+import { describeEpubReport, importEpub, isEpubFileName } from "./lib/epubImport.js";
 import { auditLearnerLinks } from "./lib/linkAudit.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile } from "./lib/backupCrypto.js";
@@ -732,7 +732,7 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
       <header className="page-title">
         <div><span className="eyebrow">Your work</span><h1>Study notebook</h1><p>Private notes, edits, uploads, and saved lectures live on this device.</p></div>
         <div className="notebook-actions">
-          <input ref={uploadRef} type="file" accept=".md,.markdown,.txt,.html,.htm,text/markdown,text/plain,text/html" multiple hidden onChange={onUpload} />
+          <input ref={uploadRef} type="file" accept=".md,.markdown,.txt,.html,.htm,.epub,text/markdown,text/plain,text/html,application/epub+zip" multiple hidden onChange={onUpload} />
           <button className="button secondary" onClick={() => uploadRef.current?.click()} type="button"><Upload size={17} /> Upload</button>
           <button className="button primary" onClick={onCreate} type="button"><FilePlus2 size={17} /> New note</button>
         </div>
@@ -1643,12 +1643,29 @@ export default function App() {
       return;
     }
     if (!accepted.length) {
-      notify(byteCapacityReached ? "These files exceed the 16 MB backup-safe document budget. Delete an unneeded note or choose a smaller file." : "Choose Markdown or text files smaller than 2 MB.", "error", 6000);
+      notify(byteCapacityReached ? "These files exceed the 16 MB backup-safe document budget. Delete an unneeded note or choose a smaller file." : "Choose Markdown, text, HTML, or EPUB files smaller than 2 MB.", "error", 6000);
       return;
     }
     try {
-      const uploaded = await Promise.all(accepted.map(async (file) => {
+      const uploaded = [];
+      const bookSummaries = [];
+      for (const file of accepted) {
         const now = new Date().toISOString();
+        if (isEpubFileName(file.name)) {
+          // An EPUB fans out to one document per chapter, in spine order,
+          // with the lossy-import report surfaced in the notification.
+          try {
+            const book = await importEpub(await file.arrayBuffer());
+            const single = book.chapters.length === 1;
+            for (const chapter of book.chapters) {
+              uploaded.push({ id: `custom/${createId()}.md`, title: (single ? book.bookTitle || chapter.title : `${book.bookTitle}: ${chapter.title}`).slice(0, 180), raw: chapter.markdown, createdAt: now, updatedAt: now, tags: ["epub"] });
+            }
+            bookSummaries.push(describeEpubReport(file.name, book));
+          } catch (error) {
+            bookSummaries.push(`${file.name} was not imported — ${error.message}`);
+          }
+          continue;
+        }
         let raw = await file.text();
         let htmlTitle = "";
         if (isHtmlFileName(file.name)) {
@@ -1660,8 +1677,8 @@ export default function App() {
         }
         const heading = raw.match(/^#\s+(.+)$/m)?.[1]?.replace(/[*_`~]/g, "").trim();
         const filename = file.name.replace(/\.(md|markdown|txt|html?)$/i, "").replace(/[-_]/g, " ").trim();
-        return { id: `custom/${createId()}.md`, title: (htmlTitle || heading || filename || "Untitled upload").slice(0, 180), raw, createdAt: now, updatedAt: now, tags: [] };
-      }));
+        uploaded.push({ id: `custom/${createId()}.md`, title: (htmlTitle || heading || filename || "Untitled upload").slice(0, 180), raw, createdAt: now, updatedAt: now, tags: [] });
+      }
       // Duplicate detection (CONTENT-001): identical content — whitespace and
       // case aside — is skipped instead of silently doubling the library.
       const fresh = [];
@@ -1675,19 +1692,41 @@ export default function App() {
         fresh.push(doc);
       }
       if (!fresh.length) {
-        notify(`Every selected file matches a document already in your notebook (${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped). Nothing was imported.`, "warning", 6000);
+        notify(bookSummaries.length && !duplicateCount
+          ? `Nothing was imported. ${bookSummaries.join(" · ")}`
+          : `Every selected file matches a document already in your notebook (${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped). Nothing was imported.`, "warning", 6000);
+        return;
+      }
+      // Post-conversion byte budget: EPUB and HTML text can outgrow the
+      // compressed file the picker admitted, and the 16 MB envelope is an
+      // aggregate promise to the backup format — enforce it on real bytes.
+      let usedBytes = customDocumentBytes(profileRef.current.customDocuments);
+      const budgeted = [];
+      let droppedForBudget = 0;
+      for (const doc of fresh) {
+        const size = utf8Bytes(doc.raw);
+        if (usedBytes + size > MAX_CUSTOM_DOCUMENT_BYTES) {
+          droppedForBudget += 1;
+          continue;
+        }
+        usedBytes += size;
+        budgeted.push(doc);
+      }
+      if (!budgeted.length) {
+        notify("These files exceed the 16 MB backup-safe document budget. Delete an unneeded note or choose a smaller file.", "error", 6000);
         return;
       }
       setProfile((current) => {
         const remaining = Math.max(0, 500 - current.customDocuments.length);
-        const admitted = fresh.slice(0, remaining);
+        const admitted = budgeted.slice(0, remaining);
         return {
           ...current,
           customDocuments: [...admitted, ...current.customDocuments],
           activity: recordActivityEntry(current.activity, { kind: "upload", label: admitted.length === 1 ? `Uploaded “${admitted[0].title}”` : `Uploaded ${admitted.length} documents`, refId: admitted[0]?.id || "" }),
         };
       });
-      notify(`${fresh.length} document${fresh.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. No existing notes were replaced.`, rejected || duplicateCount ? "warning" : "success", rejected || duplicateCount ? 6000 : undefined);
+      const cautions = rejected || duplicateCount || droppedForBudget;
+      notify(`${budgeted.length} document${budgeted.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped` : ""}${droppedForBudget ? `; ${droppedForBudget} over the 16 MB budget` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. ${bookSummaries.length ? `${bookSummaries.join(" · ")}. ` : ""}No existing notes were replaced.`, cautions ? "warning" : "success", cautions ? 6000 : undefined);
     } catch (error) {
       notify(`Import failed: ${error.message}`, "error", 5000);
     }

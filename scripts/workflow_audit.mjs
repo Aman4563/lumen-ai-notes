@@ -2,7 +2,56 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
+import zlib from "node:zlib";
 import puppeteer from "puppeteer-core";
+
+/**
+ * Minimal EPUB fixture (issue #12), zipped by hand: local headers + central
+ * directory + EOCD. The importer never checks CRCs, so they stay zero.
+ */
+const buildAuditEpubBase64 = () => {
+  const files = [
+    ["META-INF/container.xml", '<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'],
+    ["OEBPS/book.opf", '<package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>Audit Field Notes</dc:title></metadata><manifest><item id="c1" href="one.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>'],
+    ["OEBPS/one.xhtml", "<html><head><title>Optimizers</title></head><body><h1>Optimizers</h1><p>Momentum accumulates a running average of gradients so descent keeps moving through flat regions.</p></body></html>"],
+    ["OEBPS/two.xhtml", "<html><head><title>Schedulers</title></head><body><h1>Schedulers</h1><p>Cosine decay anneals the learning rate smoothly toward zero across the training budget.</p></body></html>"],
+  ];
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, content] of files) {
+    const nameBytes = Buffer.from(name, "utf-8");
+    const raw = Buffer.from(content, "utf-8");
+    const data = zlib.deflateRawSync(raw);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    chunks.push(local, nameBytes, data);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(20, 4);
+    entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(8, 10);
+    entry.writeUInt32LE(data.length, 20);
+    entry.writeUInt32LE(raw.length, 24);
+    entry.writeUInt16LE(nameBytes.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    central.push(Buffer.concat([entry, nameBytes]));
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const directory = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(directory.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, directory, eocd]).toString("base64");
+};
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -142,6 +191,15 @@ try {
     assert.ok(exported.includes("Exported from Lumen AI Notes"), "HTML export is missing its provenance footer");
     assert.doesNotMatch(exported, /src="https?:/, "HTML export must not reference external assets");
   }
+
+  // Issue #12: Print / Save PDF opens the browser print dialog over the
+  // print stylesheet. Headless Chrome has no dialog, so stub window.print.
+  await page.evaluate(() => { window.__printCalls = 0; window.print = () => { window.__printCalls += 1; }; });
+  await page.$eval('button[aria-label="Open lecture actions"]', (button) => button.click());
+  await page.waitForSelector(".reader-action-menu");
+  await clickByText(page, ".reader-action-grid button", "Print / Save PDF");
+  await page.waitForFunction(() => window.__printCalls === 1, { timeout: 5_000 })
+    .catch(() => assert.fail("the Print / Save PDF action did not invoke window.print"));
 
   // Quick-insert: a lecture selection lands in the AI tutor prompt.
   await page.$eval(".markdown-body", (article) => {
@@ -759,6 +817,25 @@ try {
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 documents updated"), { timeout: 5_000 });
   await clickByText(page, ".collection-chips button", "All (");
 
+  // Issue #12: an EPUB fans out to one document per spine chapter through
+  // the dependency-free zip reader, and the toast carries the book report.
+  await page.$eval('.notebook-actions input[type="file"]', (input, base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "field-notes.epub", { type: "application/epub+zip" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, buildAuditEpubBase64());
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 chapters"), { timeout: 5_000 })
+    .catch(() => assert.fail("the EPUB upload did not report its chapters"));
+  {
+    const stored = await waitForStored(page, "profile", (profile) => profile.customDocuments.some((doc) => doc.title === "Audit Field Notes: Schedulers"), "EPUB chapters were not persisted");
+    const chapterOne = stored.customDocuments.find((doc) => doc.title === "Audit Field Notes: Optimizers");
+    assert.ok(chapterOne, "the first spine chapter is missing");
+    assert.ok(chapterOne.raw.includes("# Optimizers"), "EPUB XHTML did not convert to Markdown");
+    assert.deepEqual(chapterOne.tags, ["epub"], "EPUB documents must carry the epub tag");
+  }
+
   // Issues #7/#17: the device-evidence page probes capabilities, records a
   // manual verdict, and downloads a dated report.
   await page.goto(`${baseUrl}#/device-evidence`, { waitUntil: "networkidle2", timeout: 30_000 });
@@ -947,12 +1024,12 @@ try {
   assert.equal(backup.integrity.algorithm, "SHA-256");
   assert.equal(backup.integrity.cryptographic, true);
   assert.match(backup.integrity.digest, /^[0-9a-f]{64}$/);
-  assert.equal(backup.summary.counts.customDocuments, 3, "created + uploaded + the HTML import proof");
+  assert.equal(backup.summary.counts.customDocuments, 5, "created + uploaded + the HTML import proof + two EPUB chapters");
   assert.ok(backup.data.profile.clippings.length === 1, "backup omitted clippings");
   assert.equal(backup.data.profile.clippings[0].note, "Connect this excerpt to model-system tradeoffs.");
   assert.equal(backup.data.profile.reviewItems.length, 1, "backup omitted the source-linked review card");
   assert.equal(backup.data.profile.reviewItems[0].sourceClippingId, backup.data.profile.clippings[0].id, "review card lost its clipping source link");
-  assert.ok(backup.data.profile.customDocuments.length === 3, "backup omitted created, uploaded, or HTML-imported notes");
+  assert.ok(backup.data.profile.customDocuments.length === 5, "backup omitted created, uploaded, HTML-imported, or EPUB notes");
 
   await clickByText(page, ".theme-choices button", "Night");
   await clickByText(page, ".settings-drawer button", "Restore reading defaults");
@@ -970,7 +1047,7 @@ try {
   assert.ok(storedProfile.progress[documentId] >= 0.6, "maximum reading progress was not persisted");
   assert.ok(storedProfile.readingPositions[documentId] >= 0.6, "reading position was not persisted");
   assert.equal(storedProfile.clippings.length, 1);
-  assert.equal(storedProfile.customDocuments.length, 3);
+  assert.equal(storedProfile.customDocuments.length, 5);
   assert.equal(storedBoard.version, 2, "whiteboard was not stored in the versioned document format");
   assert.equal(storedBoard.background, "dots", "whiteboard background was not persisted");
   assert.equal(storedBoard.pages.length, 3, "whiteboard pages were not persisted");
@@ -1055,7 +1132,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
