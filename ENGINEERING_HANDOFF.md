@@ -1194,26 +1194,29 @@ roadmap; PRODUCT_REQUIREMENTS.md's verification log is the authority.
 - ~~worksheet labs~~ (PR #28: Python/SQL/debugging/metrics with verified
   literals); the isolated WASM runtime remains;
 - ~~timed interview rounds~~ and ~~structured per-track question banks~~
-  (PR #28: six seeded tracks, 56 questions with rubrics); two tracks
-  remain unseeded;
+  (PR #28, PR #37: all eight tracks seeded, 76 questions with rubrics);
 - ~~advanced lexical search~~ (typo tolerance, exclusions, saved/recent,
   highlighted snippets, title:/part:/tag: field filters, has:code/has:formula,
   plural folding, facet counts); ~~concept map v1~~ (Part-level serpentine
-  grid with mastery overlay); synonyms, semantic search, and the concept-level
-  graph remain;
+  grid with mastery overlay); ~~synonyms~~ (PR #31); semantic search and the
+  concept-level graph remain (design-gated: docs/SEMANTIC_SEARCH_DESIGN.md);
 - ~~collections/organize/pins/archive~~, ~~30-day trash~~, ~~revisions with
   line diff~~, ~~HTML export~~, ~~review-card JSON interchange~~,
-  ~~activity ledger~~, ~~upload duplicate detection~~; PDF/EPUB/GitHub import
-  remains;
-- ~~encrypted backups~~ (PR #25: lumen.backup.enc.v1) and the ~~sync
-  design~~ (PR #32: docs/SYNC_DESIGN.md); the sync implementation and
-  collaboration remain, in that order;
-- ~~board multi-select/copy-paste/resize/zoom-pan/SVG export~~ and
-  ~~teaching print-to-PDF~~; authored decks, rotate/layers, and board
-  import remain;
+  ~~activity ledger~~, ~~upload duplicate detection~~, ~~HTML import with
+  link audit~~ (PR #30), ~~EPUB import and print/save-as-PDF~~ (PR #36);
+  PDF/GitHub import stays deferred (docs/IMPORT_DEFERRAL.md);
+- ~~encrypted backups~~ (PR #25: lumen.backup.enc.v1), the ~~sync
+  design~~ (PR #32), and ~~sync v1 itself~~ (PR #38: lumen.backup.enc.v2
+  vault files, deviceId-sorted peer fold, Settings vault flow);
+  folder-watching, the relay, and collaboration remain, in that order;
+- ~~board multi-select/copy-paste/resize/zoom-pan/SVG export~~,
+  ~~teaching print-to-PDF~~, ~~lock/z-order/snap/JSON interchange~~
+  (PR #29), and ~~rotation~~ (PR #45: pixel-space center-anchored, rotated
+  hit-testing, SVG transforms); authored decks and layers remain;
 - ~~narration depth~~ (section skip, sleep timer, persisted resume,
-  pronunciation overrides, spoken-block follow); audio bookmarks, playlists,
-  and generated audio remain;
+  pronunciation overrides, spoken-block follow), ~~audio bookmarks~~
+  (PR #33), and ~~playlists~~ (PR #39: opt-in next-chapter auto-advance);
+  generated audio (AUDIO-002) remains;
 - ~~high-contrast theme, keyboard board nudging, reduced-motion coverage,
   shortcuts sheet~~; WCAG 2.2 AA/VoiceOver device evidence remains.
 
