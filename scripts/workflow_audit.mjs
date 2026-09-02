@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -1031,6 +1031,68 @@ try {
   assert.equal(backup.data.profile.reviewItems[0].sourceClippingId, backup.data.profile.clippings[0].id, "review card lost its clipping source link");
   assert.ok(backup.data.profile.customDocuments.length === 5, "backup omitted created, uploaded, HTML-imported, or EPUB notes");
 
+  // Issue #14 (SYNC-001): create a vault, export this device's sync file,
+  // then fold a peer's file end to end — vault admission, decrypt, merge,
+  // and idempotent re-import all proven against the real UI.
+  const vaultPassphrase = "orbit-lantern-42-vault";
+  await page.$eval('.sync-card input[type="password"]', (input, value) => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, vaultPassphrase);
+  await clickByText(page, ".sync-card button", "Create sync vault");
+  await page.waitForSelector(".sync-status-line", { timeout: 5_000 });
+  await clickByText(page, ".sync-card button", "Export my sync file");
+  let syncFilePath = "";
+  {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && !syncFilePath) {
+      const files = await readdir(downloadDirectory);
+      const name = files.find((entry) => entry.endsWith(".lumenc"));
+      if (name) syncFilePath = join(downloadDirectory, name);
+      else await delay(150);
+    }
+  }
+  assert.ok(syncFilePath, "the sync file did not download");
+  const { decryptBackupFile, encryptBackupJson, readEncryptedHeader } = await import("../src/lib/backupCrypto.js");
+  const { createBackup, preflightBackup } = await import("../src/lib/backup.js");
+  const syncBytes = new Uint8Array(await readFile(syncFilePath));
+  const syncHeader = readEncryptedHeader(syncBytes).header;
+  assert.equal(syncHeader.format, "lumen.backup.enc.v2", "sync files must use the v2 container");
+  assert.ok(syncHeader.vaultId && syncHeader.deviceId, "sync headers carry vault and device identity");
+  assert.ok(syncFilePath.endsWith(`${syncHeader.deviceId}.lumenc`), "the file is named after its writing device");
+  const syncChecked = await preflightBackup(await decryptBackupFile(syncBytes.buffer, vaultPassphrase));
+  const peerRecords = {
+    ...syncChecked.data,
+    profile: {
+      ...syncChecked.data.profile,
+      customDocuments: [
+        { id: "custom/peer-sync.md", title: "Synced Over The Vault", raw: "# Synced Over The Vault\n\nWritten on the peer device.", createdAt: "2026-09-02T09:00:00.000Z", updatedAt: "2026-09-02T09:00:00.000Z", tags: [] },
+        ...syncChecked.data.profile.customDocuments,
+      ],
+    },
+  };
+  const peerBackup = await createBackup(peerRecords, { exportedAt: new Date().toISOString(), secureContext: true });
+  const peerEncrypted = await encryptBackupJson(peerBackup.json, vaultPassphrase, { vaultId: syncHeader.vaultId, deviceId: "peer-device-0001", iterations: 100_000 });
+  const peerPath = join(downloadDirectory, "peer-device-0001.lumenc");
+  await writeFile(peerPath, Buffer.concat(peerEncrypted.blobParts.map((part) => Buffer.from(part))));
+  const syncInput = await page.$('.sync-card input[type="file"]');
+  await syncInput.uploadFile(peerPath);
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Merged 1 peer file"), { timeout: 20_000 })
+    .catch(() => assert.fail("the peer sync file did not fold in"));
+  await waitForStored(page, "profile", (profile) => profile.customDocuments.some((doc) => doc.id === "custom/peer-sync.md"), "the peer's document did not arrive through sync");
+  // Idempotence: folding the same peer file again must not duplicate.
+  // Dismiss the first toast so the wait below sees the SECOND import's toast.
+  await page.$eval('.toast button[aria-label="Dismiss notification"]', (button) => button.click());
+  await page.waitForFunction(() => !document.querySelector(".toast"), { timeout: 5_000 });
+  await syncInput.uploadFile(peerPath);
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Export your sync file now"), { timeout: 20_000 });
+  {
+    const stored = await readStored(page, "profile");
+    assert.equal(stored.customDocuments.filter((doc) => doc.title === "Synced Over The Vault").length, 1, "re-importing the same sync file duplicated records");
+    assert.equal(stored.customDocuments.length, 6, "sync fold changed unrelated documents");
+  }
+
   await clickByText(page, ".theme-choices button", "Night");
   await clickByText(page, ".settings-drawer button", "Restore reading defaults");
   assert.ok(await page.$('.theme-choices button.active:nth-child(1)'), "reading defaults did not restore the system theme");
@@ -1047,7 +1109,7 @@ try {
   assert.ok(storedProfile.progress[documentId] >= 0.6, "maximum reading progress was not persisted");
   assert.ok(storedProfile.readingPositions[documentId] >= 0.6, "reading position was not persisted");
   assert.equal(storedProfile.clippings.length, 1);
-  assert.equal(storedProfile.customDocuments.length, 5);
+  assert.equal(storedProfile.customDocuments.length, 6, "5 local + 1 arrived through the sync vault");
   assert.equal(storedBoard.version, 2, "whiteboard was not stored in the versioned document format");
   assert.equal(storedBoard.background, "dots", "whiteboard background was not persisted");
   assert.equal(storedBoard.pages.length, 3, "whiteboard pages were not persisted");
@@ -1132,7 +1194,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, recorded verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with rubric grading and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

@@ -13,6 +13,14 @@ import { BackupValidationError, MAX_BACKUP_BYTES, canonicalStringify } from "./b
  * authentication.
  */
 export const ENCRYPTED_BACKUP_FORMAT = "lumen.backup.enc.v1";
+/**
+ * v2 (SYNC-001, issue #14): the same container plus two authenticated header
+ * fields — `vaultId` (shared by every device in a sync vault) and `deviceId`
+ * (the writer). Both ride inside the AAD prefix, so a sync file cannot be
+ * silently re-attributed to another vault or device. v1 files stay readable;
+ * v1 headers still reject the sync fields as unknown.
+ */
+export const ENCRYPTED_BACKUP_FORMAT_V2 = "lumen.backup.enc.v2";
 export const ENCRYPTED_MAGIC = new Uint8Array([0x4c, 0x55, 0x4d, 0x45, 0x4e, 0x45, 0x4e, 0x43]); // "LUMENENC"
 export const PBKDF2_ITERATIONS = 600_000; // OWASP current PBKDF2-HMAC-SHA256 guidance
 export const ITERATION_FLOOR = 100_000;
@@ -69,6 +77,8 @@ export const encryptBackupJson = async (json, password, {
   cryptoApi,
   iterations = PBKDF2_ITERATIONS,
   exportedAt = new Date().toISOString(),
+  vaultId,
+  deviceId,
   unsafeTestSalt,
   unsafeTestIv,
 } = {}) => {
@@ -76,14 +86,19 @@ export const encryptBackupJson = async (json, password, {
   if (typeof password !== "string" || password.length < 8) {
     throw new BackupValidationError("MALFORMED_ENC_HEADER", "The backup password must be at least 8 characters.");
   }
+  const sync = vaultId !== undefined || deviceId !== undefined;
+  if (sync && !(isSyncIdentity(vaultId) && isSyncIdentity(deviceId))) {
+    throw new BackupValidationError("MALFORMED_ENC_HEADER", "Sync containers need both a vault id and a device id (1–200 characters).");
+  }
   const salt = unsafeTestSalt || api.getRandomValues(new Uint8Array(16));
   const iv = unsafeTestIv || api.getRandomValues(new Uint8Array(12));
   const header = {
-    format: ENCRYPTED_BACKUP_FORMAT,
+    format: sync ? ENCRYPTED_BACKUP_FORMAT_V2 : ENCRYPTED_BACKUP_FORMAT,
     kdf: { name: "PBKDF2", hash: "SHA-256", iterations, salt: toBase64(salt) },
     cipher: { name: "AES-GCM", iv: toBase64(iv), tagLength: 128 },
     compression: "none",
     exportedAt,
+    ...(sync ? { vaultId, deviceId } : {}),
   };
   const headerBytes = textEncoder.encode(canonicalStringify(header));
   const prefix = new Uint8Array(ENCRYPTED_MAGIC.length + 4 + headerBytes.length);
@@ -114,6 +129,8 @@ export const isEncryptedBackupFile = async (file) => {
 
 const malformed = (message, details) => new BackupValidationError("MALFORMED_ENC_HEADER", message, details);
 
+const isSyncIdentity = (value) => typeof value === "string" && value.length >= 1 && value.length <= 200;
+
 /**
  * Reads the header without deriving any key — used both by decryption and by
  * the pre-password dialog (exportedAt display). Every bound is enforced here
@@ -135,12 +152,21 @@ export const readEncryptedHeader = (bytes) => {
     throw malformed("The encrypted header is not valid JSON.");
   }
   if (!header || typeof header !== "object" || Array.isArray(header)) throw malformed("The encrypted header must be an object.");
+  if (header.format !== ENCRYPTED_BACKUP_FORMAT && header.format !== ENCRYPTED_BACKUP_FORMAT_V2) {
+    throw new BackupValidationError("UNSUPPORTED_ENC_FORMAT", `Unsupported encrypted-backup format ${JSON.stringify(header.format ?? null)}.`);
+  }
+  // Each version rejects fields it does not define — a v1 file can never
+  // smuggle sync attribution, and future fields force an explicit bump.
   const allowedKeys = new Set(["format", "kdf", "cipher", "compression", "exportedAt"]);
+  if (header.format === ENCRYPTED_BACKUP_FORMAT_V2) {
+    allowedKeys.add("vaultId");
+    allowedKeys.add("deviceId");
+    if (!isSyncIdentity(header.vaultId) || !isSyncIdentity(header.deviceId)) {
+      throw malformed("A sync container must carry a vault id and a device id (1–200 characters).");
+    }
+  }
   for (const key of Object.keys(header)) {
     if (!allowedKeys.has(key)) throw new BackupValidationError("UNSUPPORTED_ENC_FORMAT", `Unknown encrypted-header field "${key}".`);
-  }
-  if (header.format !== ENCRYPTED_BACKUP_FORMAT) {
-    throw new BackupValidationError("UNSUPPORTED_ENC_FORMAT", `Unsupported encrypted-backup format ${JSON.stringify(header.format ?? null)}.`);
   }
   if (header.compression !== "none") throw new BackupValidationError("UNSUPPORTED_ENC_FORMAT", "Unsupported compression in the encrypted header.");
   const kdf = header.kdf;

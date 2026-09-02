@@ -1,8 +1,12 @@
 # SYNC-001 design — encrypted, account-free, file-based cross-device sync
 
-Status: design accepted 2026-09-02 (issue #14). This document is the gate for
-any sync implementation; COLLAB-001 remains strictly out of scope until this
-design ships and holds. Nothing here is implemented yet.
+Status: design accepted 2026-09-02; **v1 implemented 2026-09-02** (issue
+#14) — container v2 (`vaultId`/`deviceId` in the authenticated header),
+durable device identity, vault membership, the deviceId-sorted peer fold
+with baseline reset on replacement, the out-of-store baseline database, and
+the manual export/import UI (§9.3's mobile-Safari fallback is the v1 UI on
+every platform). Folder-watching via the File System Access API and the
+relay remain future work; COLLAB-001 stays out of scope.
 
 ## 1. Goals and non-goals
 

@@ -148,3 +148,66 @@ test("format-stability vector: fixed salt and IV produce a pinned container pref
     "ciphertext for the fixed salt/IV/password vector drifted (KDF or cipher assembly changed)",
   );
 });
+
+test("v2 sync containers carry authenticated vault and device identity", async () => {
+  const { bytes } = await makeContainer({ vaultId: "vault-alpha", deviceId: "device-one" });
+  const { header } = readEncryptedHeader(bytes);
+  assert.equal(header.format, "lumen.backup.enc.v2");
+  assert.equal(header.vaultId, "vault-alpha");
+  assert.equal(header.deviceId, "device-one");
+  const json = await decryptBackupFile(bytes.buffer, password, { cryptoApi: webcrypto });
+  const checked = await preflightBackup(json, { cryptoApi: webcrypto });
+  assert.equal(checked.data.profile.bookmarks[0], "notes/part-01", "v2 plaintext is the same canonical backup JSON");
+});
+
+test("v2 identity is tamper-evident: editing the header in place fails authentication", async () => {
+  const { bytes } = await makeContainer({ vaultId: "vault-alpha", deviceId: "device-one" });
+  const headerText = new TextDecoder().decode(bytes);
+  const index = headerText.indexOf("device-one");
+  const tampered = new Uint8Array(bytes);
+  tampered.set(new TextEncoder().encode("device-two"), index);
+  const parsed = readEncryptedHeader(tampered);
+  assert.equal(parsed.header.deviceId, "device-two", "the parse itself cannot detect the swap");
+  await assert.rejects(
+    decryptBackupFile(tampered.buffer, password, { cryptoApi: webcrypto }),
+    (error) => error instanceof BackupValidationError && error.code === "WRONG_PASSWORD",
+    "re-attribution must fail the GCM tag",
+  );
+});
+
+test("sync fields are version-gated: v1 rejects them, v2 requires both, unknown v2 fields refuse", async () => {
+  await assert.rejects(
+    makeContainer({ vaultId: "vault-alpha" }),
+    (error) => error instanceof BackupValidationError && error.code === "MALFORMED_ENC_HEADER",
+    "a vault id without a device id must refuse at encrypt time",
+  );
+  const { bytes } = await makeContainer({ vaultId: "vault-alpha", deviceId: "device-one" });
+  const rewriteHeader = (mutate) => {
+    const view = new DataView(bytes.buffer, bytes.byteOffset);
+    const headerLength = view.getUint32(ENCRYPTED_MAGIC.length, false);
+    const start = ENCRYPTED_MAGIC.length + 4;
+    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(start, start + headerLength)));
+    mutate(header);
+    const rewritten = new TextEncoder().encode(JSON.stringify(header));
+    const out = new Uint8Array(ENCRYPTED_MAGIC.length + 4 + rewritten.length + 16);
+    out.set(ENCRYPTED_MAGIC, 0);
+    new DataView(out.buffer).setUint32(ENCRYPTED_MAGIC.length, rewritten.length, false);
+    out.set(rewritten, start);
+    return out;
+  };
+  assert.throws(
+    () => readEncryptedHeader(rewriteHeader((header) => { header.format = ENCRYPTED_BACKUP_FORMAT; })),
+    (error) => error.code === "UNSUPPORTED_ENC_FORMAT",
+    "a v1 header carrying sync fields is refused as unknown fields",
+  );
+  assert.throws(
+    () => readEncryptedHeader(rewriteHeader((header) => { delete header.deviceId; })),
+    (error) => error.code === "MALFORMED_ENC_HEADER",
+    "a v2 header without a device id is malformed",
+  );
+  assert.throws(
+    () => readEncryptedHeader(rewriteHeader((header) => { header.relayUrl = "https://x"; })),
+    (error) => error.code === "UNSUPPORTED_ENC_FORMAT",
+    "future fields force an explicit version bump",
+  );
+});
