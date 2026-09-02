@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { extname, resolve, sep } from "node:path";
@@ -945,6 +945,44 @@ export const createApplicationServer = ({
         sessionActive: config.authMode === "pairing" ? hasActiveSession(request) : null,
       };
       sendJson(response, 200, { ok: true, requestId, ...publicConfig }, {}, request.method === "HEAD");
+      return;
+    }
+    if (url.pathname === "/api/evidence") {
+      // Device-evidence intake (issue #7): the #/device-evidence page on a
+      // LAN device posts its probe/checklist state here so the operator's
+      // machine can verify real-device capabilities without cables or
+      // WebDriver. Same-origin-gated like every /api route; reports land in
+      // the gitignored .local/evidence/, newest 20 kept.
+      if (request.method !== "POST") {
+        sendJson(response, 405, errorPayload(requestId, "METHOD_NOT_ALLOWED", "Use POST to submit a device-evidence report."), { Allow: "POST" });
+        return;
+      }
+      let payload;
+      try {
+        payload = await readJsonBody(request, config);
+      } catch (error) {
+        if (error.code === "REQUEST_ABORTED") return;
+        sendJson(response, 400, errorPayload(requestId, "INVALID_JSON", error.message));
+        return;
+      }
+      if (payload?.format !== "lumen.device-evidence.v1") {
+        sendJson(response, 422, errorPayload(requestId, "NOT_AN_EVIDENCE_REPORT", "Only lumen.device-evidence.v1 reports are accepted."));
+        return;
+      }
+      try {
+        const evidenceDirectory = resolve(ROOT_DIRECTORY, ".local", "evidence");
+        await mkdir(evidenceDirectory, { recursive: true });
+        const savedAs = `report-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+        await writeFile(resolve(evidenceDirectory, savedAs), JSON.stringify({ ...payload, receivedAt: new Date().toISOString(), remoteAddress: request.socket.remoteAddress || "" }, null, 2));
+        const existing = (await readdir(evidenceDirectory)).filter((name) => name.startsWith("report-")).sort();
+        for (const stale of existing.slice(0, Math.max(0, existing.length - 20))) {
+          await unlink(resolve(evidenceDirectory, stale)).catch(() => {});
+        }
+        logger.info?.(JSON.stringify({ event: "evidence_received", requestId, savedAs, kind: payload.kind || "full", checks: Array.isArray(payload.manual) ? payload.manual.length : 0 }));
+        sendJson(response, 200, { ok: true, requestId, savedAs });
+      } catch (error) {
+        sendJson(response, 500, errorPayload(requestId, "EVIDENCE_WRITE_FAILED", `Could not store the report: ${error.message}`));
+      }
       return;
     }
     if (url.pathname === "/api/auth/pair") {
