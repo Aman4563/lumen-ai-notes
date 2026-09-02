@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { applyPronunciations, chunkSpeechText, normalizePronunciations } from "../src/lib/speech.js";
 import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFILE_VERSION } from "../src/lib/db.js";
-import { contentCapabilities, foldPluralTerm, searchDocuments, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
+import { contentCapabilities, foldPluralTerm, searchDocuments, spellingAlternates, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
+import { synonymAlternatesFor } from "../src/lib/searchSynonyms.js";
 import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads.js";
 import { createId } from "../src/lib/id.js";
 import { selectInterviewRound } from "../src/lib/interview.js";
@@ -118,6 +119,32 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   assert.deepEqual(selectInterviewRound(pool), round, "selection must be deterministic");
   assert.equal(selectInterviewRound(pool, { limit: 2 }).length, 2);
   assert.equal(selectInterviewRound([]).length, 0);
+}
+
+// SEARCH-001 synonyms: curated alternates at a dedicated tier, spelling and
+// hyphen folds at the exact tier, precision operators never expanded.
+{
+  const synonymCorpus = [
+    { id: "opt", title: "Optimization basics", partTitle: "Math", description: "Schedules", searchText: "the learning rate controls the step size of stochastic gradient descent", raw: "", partNumber: 2, chapterNumber: 1, tags: [] },
+    { id: "reg", title: "Regularization", partTitle: "Supervised", description: "Shrinkage", searchText: "l2 regularization shrinks weights toward zero", raw: "", partNumber: 5, chapterNumber: 1, tags: [] },
+    { id: "exact-sgd", title: "SGD deep dive", partTitle: "Optim", description: "sgd", searchText: "sgd with momentum and sgd variants", raw: "", partNumber: 7, chapterNumber: 1, tags: [] },
+  ];
+  assert.deepEqual(searchDocuments(synonymCorpus, "sgd").map((result) => result.id), ["exact-sgd", "opt"], "an exact match outranks a synonym match of the same query");
+  assert.deepEqual(searchDocuments([synonymCorpus[0]], "lr").map((result) => result.id), ["opt"], "the directed lr → learning-rate expansion works");
+  assert.equal(searchDocuments([synonymCorpus[0]], "learning").some((result) => result.id === "opt"), true);
+  assert.deepEqual(searchDocuments([synonymCorpus[1]], "regularisation").map((result) => result.id), ["reg"], "British spelling folds onto the corpus's American form");
+  assert.deepEqual(spellingAlternates("optimise"), ["optimize"]);
+  assert.deepEqual(spellingAlternates("k-means"), ["kmeans"]);
+  assert.equal(searchDocuments(synonymCorpus, "sgd -regularization").some((result) => result.id === "reg"), false, "exclusions stay literal");
+  // Boundary rule: "reinforcement learning" expands to the short alternate
+  // "rl", which must only match as a standalone word — never inside "girl".
+  const boundaryDoc = [{ id: "girl", title: "Notes", partTitle: "X", description: "Y", searchText: "a girl studies daily", raw: "", partNumber: 1, chapterNumber: 1, tags: [] }];
+  assert.equal(searchDocuments(boundaryDoc, '"reinforcement learning"').length, 0, "short synonym alternates need word boundaries");
+  const rlDoc = [{ id: "rl", title: "Notes", partTitle: "X", description: "Y", searchText: "an rl agent explores", raw: "", partNumber: 1, chapterNumber: 1, tags: [] }];
+  assert.deepEqual(searchDocuments(rlDoc, '"reinforcement learning"').map((result) => result.id), ["rl"], "the standalone short alternate still matches");
+  assert.ok(synonymAlternatesFor("backprop").some((alternate) => alternate.text === "backpropagation"));
+  const highlighted = searchDocuments([synonymCorpus[0]], "sgd")[0];
+  assert.ok(highlighted.matchedTerms.includes("stochastic gradient descent"), "the matched synonym variant is reported for highlighting");
 }
 
 // AUDIO-001 pronunciation overrides: whole-word, case-insensitive, bounded.
