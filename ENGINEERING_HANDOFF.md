@@ -317,6 +317,21 @@ Restore is deliberately two-phase:
 The 2026-09-01 memory gate processed a 16,778,784-byte supported backup at 94 MB RSS
 growth. This is desktop evidence, not a physical-iPhone memory guarantee.
 
+Optional password protection (issue #18, 2026-09-02) wraps the exact canonical
+JSON in a binary `lumen.backup.enc.v1` container: "LUMENENC" magic ‖ uint32-BE
+header length ‖ canonical header (PBKDF2-HMAC-SHA256 600k per OWASP, 16-byte
+salt, AES-256-GCM with 12-byte IV) ‖ ciphertext, with the raw file prefix as
+GCM AAD so header tamper fails authentication. `src/lib/backup.js` is
+untouched — decrypt feeds the unchanged preflight, and the plain v4 path stays
+byte-identical. Wrong password surfaces as typed `WRONG_PASSWORD` (honestly
+indistinguishable from corruption under GCM); insecure contexts disable the
+feature (`CRYPTO_UNAVAILABLE`) with no weak fallback; the mid-restore recovery
+snapshot deliberately stays plaintext so restores survive a forgotten
+password. The extended memory gate round-trips the maximum workspace encrypted
+(2026-09-02: +284 bytes container overhead, 65 MB RSS, ~0.2 s including both
+PBKDF2 derivations on the reviewed Mac). Full rationale:
+docs/ENCRYPTED_BACKUP_DESIGN.md.
+
 Critical history distinction:
 
 - Mac tutor history is automatically retained as disclosed local profile data, capped at

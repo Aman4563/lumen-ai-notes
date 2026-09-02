@@ -39,6 +39,7 @@ import {
   Star,
   Settings,
   Share,
+  ShieldCheck,
   Sparkles,
   Sun,
   Trash2,
@@ -58,6 +59,7 @@ import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { addTrashEntry, appendRevision, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
+import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile } from "./lib/backupCrypto.js";
 import { buildConceptMap } from "./lib/conceptMap.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
@@ -111,6 +113,19 @@ const routeFor = (view, documentId) => {
   if (view === "reader") return `#/read/${encodeURIComponent(documentId)}`;
   if (view === "board") return `#/board/${encodeURIComponent(documentId)}`;
   return `#/${view === "settings" ? "home" : view}`;
+};
+
+const downloadBlob = (name, parts, type = "application/octet-stream") => {
+  const url = URL.createObjectURL(new Blob(parts, { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    link.remove();
+  }, 2_000);
 };
 
 const downloadText = (name, value, type = "application/json") => {
@@ -186,6 +201,30 @@ function useModalKeyboard(active, dialogRef, onClose) {
       });
     };
   }, [active, dialogRef]);
+}
+
+/** Password prompt for an encrypted backup import (lumen.backup.enc.v1). */
+function EncryptedImportDialog({ pending, onSubmit, onCancel }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const dialogRef = useRef(null);
+  useModalKeyboard(Boolean(pending), dialogRef, onCancel);
+
+  useEffect(() => {
+    if (!pending) return;
+    setBusy(false);
+    dialogRef.current?.querySelector("input")?.focus();
+  }, [pending?.fileName, pending?.error]);
+
+  if (!pending) return null;
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!password || busy) return;
+    setBusy(true);
+    await onSubmit(password);
+    setBusy(false);
+  };
+  return <div className="modal-layer"><button className="modal-scrim" onClick={onCancel} aria-label="Cancel encrypted import" type="button" /><form ref={dialogRef} className="create-note-dialog encrypted-import-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="encrypted-import-title"><div className="dialog-icon"><ShieldCheck size={22} /></div><span className="eyebrow">Encrypted backup</span><h2 id="encrypted-import-title">Enter the backup password</h2><p>“{pending.fileName}” is protected with AES-256-GCM. Decryption happens entirely on this device.</p><label><span>Password</span><input className="text-input" type="password" value={password} maxLength={128} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>{pending.error && <p className="inline-warning">{pending.error}</p>}<div className="modal-actions"><button className="button ghost" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!password || busy} type="submit">{busy ? "Decrypting…" : "Unlock and preflight"}</button></div></form></div>;
 }
 
 /** Keyboard shortcuts sheet, opened with "?" anywhere or from Settings. */
@@ -698,6 +737,8 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
 
 function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage }) {
   const importRef = useRef(null);
+  const [backupPassword, setBackupPassword] = useState("");
+  const cryptoAvailable = secureContext && Boolean(globalThis.crypto?.subtle);
   return (
     <div className="page settings-page">
       <header className="page-title"><div><span className="eyebrow">Make it yours</span><h1>Settings</h1><p>Appearance, reading comfort, backups, and iPhone installation.</p></div></header>
@@ -736,8 +777,10 @@ function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, 
       </section>
       <section className="settings-card">
         <div className="settings-card-heading"><Share size={21} /><div><strong>Backup and transfer</strong><span>Move your private study data between devices.</span></div></div>
-        <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={onImport} />
-        <div className="settings-action-row"><button className="button secondary" onClick={onExport} type="button"><Download size={17} /> Export backup</button><button className="button secondary" onClick={() => importRef.current?.click()} type="button"><Import size={17} /> Import backup</button>{!storagePersisted && <button className="button ghost" onClick={onRequestStorage} type="button">Protect local storage</button>}</div>
+        <input ref={importRef} type="file" accept="application/json,.json,.lumenc" hidden onChange={onImport} />
+        <label className="backup-password-field"><span>Backup password <small>optional — encrypts the export with AES-256-GCM</small></span><input className="text-input" type="password" value={backupPassword} minLength={8} maxLength={128} onChange={(event) => setBackupPassword(event.target.value)} placeholder={cryptoAvailable ? "Leave empty for a plain backup" : "Needs a secure (HTTPS) context"} disabled={!cryptoAvailable} autoComplete="new-password" aria-label="Optional backup encryption password" /></label>
+        {backupPassword && <p className="inline-warning">A forgotten password means permanent loss of this file — there is no recovery or escrow. The pre-restore recovery download stays unencrypted so a restore can always be undone.</p>}
+        <div className="settings-action-row"><button className="button secondary" onClick={() => onExport(backupPassword.trim() || undefined)} disabled={Boolean(backupPassword.trim()) && backupPassword.trim().length < 8} type="button"><Download size={17} /> Export {backupPassword.trim() ? "encrypted " : ""}backup</button><button className="button secondary" onClick={() => importRef.current?.click()} type="button"><Import size={17} /> Import backup</button>{!storagePersisted && <button className="button ghost" onClick={onRequestStorage} type="button">Protect local storage</button>}</div>
         <p className="microcopy">Backups include progress, positions, bookmarks, highlights, clippings, review history, locally saved AI conversations, personal notes, edited copies, uploads, preferences, and whiteboards. Every new backup is checksummed and every restore is preflighted. Storage: {storagePersisted ? "persistent" : "best effort"} · Save status: {saveStatus} · Last export: {backupMeta?.lastExportAt ? new Date(backupMeta.lastExportAt).toLocaleString() : "never"}.</p>
         <div className="settings-local-data"><div><strong>AI features</strong><span>{settings.aiFeaturesEnabled !== false ? "The AI learning studio is available. Turning it off hides AI surfaces without touching your notes or reviews." : "The AI learning studio is hidden. Reading, notes, reviews, narration, and whiteboards are unaffected."}</span></div><button className="button ghost" onClick={() => { const next = settings.aiFeaturesEnabled === false; onSettingsChange({ aiFeaturesEnabled: next }); onNotify(next ? "AI features are enabled again." : "AI features are now off. You can re-enable them here at any time."); }} type="button"><BrainCircuit size={16} /> {settings.aiFeaturesEnabled !== false ? "Turn AI off" : "Turn AI on"}</button></div>
         <div className="settings-local-data"><div><strong>Mac tutor history retention</strong><span>Choose how many tutor messages stay saved in this browser and in backups. “Session only” stops saving and removes the stored conversation.</span></div><label className="settings-retention"><span className="visually-hidden">Mac tutor history retention</span><select value={[0, 10, 25, 50].includes(settings.aiHistoryRetention) ? settings.aiHistoryRetention : 50} onChange={(event) => { const retention = Number(event.target.value); onSettingsChange({ aiHistoryRetention: retention }); onNotify(retention === 0 ? "Tutor history is now session-only; the saved conversation was removed." : `Up to ${retention} tutor messages will be kept locally.`); }}><option value={50}>Up to 50 messages</option><option value={25}>Up to 25 messages</option><option value={10}>Up to 10 messages</option><option value={0}>Session only (do not save)</option></select></label></div>
@@ -780,6 +823,7 @@ function BackupImportDialog({ candidate, busy, onClose, onConfirm }) {
         <div className="dialog-icon"><Import size={22} /></div><span className="eyebrow">{recoveryPrepared ? "Recovery checkpoint" : "Verified before restore"}</span>
         <h2 id="backup-preflight-title">{recoveryPrepared ? "Verify the recovery file" : "Review this backup"}</h2>
         <p>{recoveryPrepared ? "Lumen requested a recovery download and has not replaced any local data. Check Files or Downloads for the recovery JSON before continuing." : "No local data has changed. Confirm the inventory and warnings before replacing this device’s current study workspace."}</p>
+        {candidate.encrypted && <p className="inline-warning">This backup was imported from an encrypted file. The recovery snapshot below downloads as plain unencrypted JSON so a restore can always be undone even if the password is lost.</p>}
         <div className="backup-integrity-state"><CheckCircle2 size={18} /><div><strong>{candidate.integrity.verified ? "Integrity check passed" : "Legacy file has no checksum"}</strong><span>{candidate.integrity.algorithm} · version {candidate.sourceVersion} → {candidate.targetVersion} · {sizeLabel}</span></div></div>
         <dl className="backup-inventory"><div><dt>Documents</dt><dd>{counts.customDocuments}</dd></div><div><dt>Notes</dt><dd>{counts.personalNotes}</dd></div><div><dt>Highlights</dt><dd>{counts.annotations}</dd></div><div><dt>Review cards</dt><dd>{counts.reviewItems}</dd></div><div><dt>Attempts</dt><dd>{counts.reviewAttempts}</dd></div><div><dt>AI messages</dt><dd>{counts.aiTutorMessages || 0}</dd></div><div><dt>Whiteboards</dt><dd>{counts.boards}</dd></div></dl>
         <p className="backup-exported-at">Exported {candidate.exportedAt ? new Date(candidate.exportedAt).toLocaleString() : "at an unknown time"}.</p>
@@ -805,6 +849,7 @@ export default function App() {
   const [manageDocumentId, setManageDocumentId] = useState("");
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [aiInsert, setAiInsert] = useState(null);
+  const [encryptedImport, setEncryptedImport] = useState(null);
   const [reviewDraft, setReviewDraft] = useState(null);
   const [backupCandidate, setBackupCandidate] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -2120,7 +2165,7 @@ export default function App() {
     setProfile((current) => ({ ...current, reviewSettings: { ...current.reviewSettings, ...patch } }));
   }, []);
 
-  const exportBackup = async () => {
+  const exportBackup = async (password) => {
     try {
       const exportedAt = new Date().toISOString();
       const data = await getAllData();
@@ -2135,7 +2180,14 @@ export default function App() {
       data.profile = snapshotMerge.profile;
       reportSyncConflicts(snapshotMerge.conflicts);
       const result = await createBackup(data, { exportedAt, secureContext: window.isSecureContext });
-      downloadText(`lumen-notes-backup-${exportedAt.slice(0, 10)}.json`, result.json);
+      if (password) {
+        // Transport wrapper only: the plaintext is the exact canonical JSON
+        // above, so preflight and integrity behave identically after decrypt.
+        const { blobParts } = await encryptBackupJson(result.json, password, { exportedAt });
+        downloadBlob(`lumen-notes-backup-${exportedAt.slice(0, 10)}.lumenc`, blobParts);
+      } else {
+        downloadText(`lumen-notes-backup-${exportedAt.slice(0, 10)}.json`, result.json);
+      }
 
       // Only a successfully created and triggered download earns export
       // metadata. Commit it atomically against the latest cross-tab profile.
@@ -2174,7 +2226,7 @@ export default function App() {
         setProfile(rebased.profile);
         reportSyncConflicts(rebased.conflicts);
       }
-      notify(`Backup verified with ${result.envelope.integrity.algorithm} and downloaded.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
+      notify(`Backup verified with ${result.envelope.integrity.algorithm}${password ? ", encrypted with AES-256-GCM," : ""} and downloaded.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
     } catch (error) {
       notify(`Backup failed: ${error.message}`, "error", 5000);
     }
@@ -2185,11 +2237,35 @@ export default function App() {
     event.target.value = "";
     if (!file) return;
     try {
+      if (await isEncryptedBackupFile(file)) {
+        setEncryptedImport({ file, fileName: file.name, error: "" });
+        setSettingsOpen(false);
+        return;
+      }
       const checked = await preflightBackup(file);
       setBackupCandidate({ ...checked, fileName: file.name });
       setSettingsOpen(false);
     } catch (error) {
       notify(`Could not import backup: ${error.message}`, "error", 6000);
+    }
+  };
+
+  const unlockEncryptedImport = async (password) => {
+    const pending = encryptedImport;
+    if (!pending) return;
+    try {
+      const json = await decryptBackupFile(pending.file, password);
+      const checked = await preflightBackup(json);
+      setEncryptedImport(null);
+      setBackupCandidate({ ...checked, fileName: pending.fileName, encrypted: true });
+    } catch (error) {
+      if (error?.code === "WRONG_PASSWORD") {
+        // Keep the stashed file and dialog so the learner can retry.
+        setEncryptedImport({ ...pending, error: error.message });
+        return;
+      }
+      setEncryptedImport(null);
+      notify(`Could not import the encrypted backup: ${error.message}`, "error", 7000);
     }
   };
 
@@ -2379,6 +2455,7 @@ export default function App() {
       <CreateNoteDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createNote} />
       <ManageDocumentDialog doc={profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <EncryptedImportDialog pending={encryptedImport} onSubmit={unlockEncryptedImport} onCancel={() => setEncryptedImport(null)} />
       <ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} />
       {updateRegistration && <div className="update-banner" role="status"><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={() => setToast(null)} />
