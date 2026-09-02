@@ -1,5 +1,7 @@
 const normalize = (value) => String(value || "").toLocaleLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
 
+import { synonymAlternatesFor } from "./searchSynonyms.js";
+
 /**
  * Field filters (SEARCH-001): `title:term`, `part:5` / `part:math`,
  * `tag:interview`, and `has:code` / `has:formula`. Values may be quoted for
@@ -45,6 +47,21 @@ export const contentCapabilities = (text) => {
  * singular ("optimizers" → "optimizer", "queries" → "query") or its plain
  * plural. No dictionary — just the three regular English suffixes.
  */
+/**
+ * Deterministic spelling folds (SEARCH-001 synonyms slice): British -ise
+ * variants map onto the corpus's American -ize forms, and hyphen/squash
+ * variants (k-means/kmeans) fold both ways. Applied as match alternates,
+ * never as index rewrites.
+ */
+export const spellingAlternates = (term) => {
+  const alternates = new Set();
+  if (/is(e|ed|es|ing|ation)$/.test(term)) alternates.add(term.replace(/is(e|ed|es|ing|ation)$/, "iz$1"));
+  if (/iz(e|ed|es|ing|ation)$/.test(term)) alternates.add(term.replace(/iz(e|ed|es|ing|ation)$/, "is$1"));
+  if (term.includes("-")) alternates.add(term.replaceAll("-", ""));
+  alternates.delete(term);
+  return [...alternates];
+};
+
 export const foldPluralTerm = (term) => {
   if (term.length < 4) return term;
   if (term.endsWith("ies")) return `${term.slice(0, -3)}y`;
@@ -176,6 +193,7 @@ export const searchDocuments = (documents, query) => {
       // document word within one edit so a single typo does not zero results.
       let fuzzyTerms = 0;
       const matchedTerms = [];
+      const synonymTerms = [];
       for (const term of terms) {
         if (all.includes(term)) {
           matchedTerms.push(term);
@@ -190,6 +208,20 @@ export const searchDocuments = (documents, query) => {
         }
         if (!term.includes(" ") && all.includes(`${term}s`)) {
           matchedTerms.push(`${term}s`);
+          continue;
+        }
+        // Spelling/hyphen folds rank with exact matches; curated synonyms
+        // rank at a dedicated half-weight tier above typo tolerance.
+        const spelled = spellingAlternates(term).find((alternate) => all.includes(alternate));
+        if (spelled) {
+          matchedTerms.push(spelled);
+          continue;
+        }
+        const synonym = synonymAlternatesFor(term).find(({ text, boundary }) => (boundary
+          ? new RegExp(`(^|[^a-z0-9])${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(all)
+          : all.includes(text)));
+        if (synonym) {
+          synonymTerms.push(synonym.text);
           continue;
         }
         if (term.length >= 5 && !term.includes(" ")) {
@@ -210,11 +242,20 @@ export const searchDocuments = (documents, query) => {
         if (description.includes(term)) score += 7;
         score += Math.min(occurrences(body, term), 6) * 1.5;
       }
+      // Synonym tier: half the exact field weights, so an exact match of the
+      // same shape always outranks a synonym match, which outranks fuzzy.
+      for (const alternate of synonymTerms) {
+        if (title.includes(alternate)) score += 9;
+        if (part.includes(alternate)) score += 4;
+        if (description.includes(alternate)) score += 3.5;
+        score += Math.min(occurrences(body, alternate), 6) * 0.75;
+      }
       // A typo-tolerant hit keeps the document visible but ranks below any
-      // exact match of the same shape.
-      score += fuzzyTerms * 1;
-      const snippetTerm = matchedTerms[0] || terms[0] || filters.title[0] || filters.tag[0] || "";
-      return { ...doc, description: snippetTerm ? snippetAround(doc, snippetTerm) : doc.description, searchScore: score, matchedTerms };
+      // exact or synonym match of the same shape.
+      score += fuzzyTerms * 0.5;
+      const allMatched = [...matchedTerms, ...synonymTerms];
+      const snippetTerm = allMatched[0] || terms[0] || filters.title[0] || filters.tag[0] || "";
+      return { ...doc, description: snippetTerm ? snippetAround(doc, snippetTerm) : doc.description, searchScore: score, matchedTerms: allMatched };
     })
     .filter(Boolean)
     .sort((a, b) => b.searchScore - a.searchScore || a.partNumber - b.partNumber || a.chapterNumber - b.chapterNumber)
