@@ -7256,3 +7256,20 @@ input[type="range"] {
 .lab-outcome.is-correct { color: #2e8b76; }
 .lab-outcome.is-incorrect { color: #b2543c; }
 .lab-minutes { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-faint); font-size: 0.7rem; font-weight: 750; }
+
+/* Issue 12: batch actions, link report */
+.notebook-heading-actions { display: flex; align-items: center; gap: 8px; }
+.batch-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--paper-2); }
+.batch-toolbar strong { color: var(--ink); font-size: 0.76rem; }
+.batch-toolbar label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-faint); font-size: 0.68rem; font-weight: 750; }
+.batch-toolbar select { min-height: 34px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--paper); color: var(--ink); }
+.batch-check { display: flex; align-items: center; padding-right: 4px; }
+.batch-check input { width: 18px; height: 18px; }
+.notebook-document-row.is-selected { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 14px; }
+.link-report { position: relative; margin: 0 0 12px; padding: 12px 38px 12px 14px; border: 1px solid rgba(46, 139, 118, 0.4); border-radius: 13px; background: var(--paper); color: var(--ink-soft); font-size: 0.74rem; }
+.link-report.has-findings { border-color: rgba(226, 106, 78, 0.45); }
+.link-report ul { margin: 8px 0 0; padding-left: 18px; }
+.link-report li { margin: 3px 0; }
+.link-report code { padding: 1px 5px; border-radius: 5px; background: var(--paper-3); font-size: 0.68rem; }
+.link-report .icon-button { position: absolute; top: 8px; right: 8px; }
+.danger-text { color: #b2543c; }

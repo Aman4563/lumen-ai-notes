@@ -709,11 +709,61 @@ try {
   await clickByText(page, ".manage-doc-dialog button", "Save");
   await page.waitForFunction(() => document.querySelectorAll(".collection-chips button").length === 2, { timeout: 5_000 });
 
+  // The archive round-trip leaves the (now empty) Archived filter active;
+  // return to All so new uploads are visible.
+  await clickByText(page, ".collection-chips button", "All (");
+  // Issue #12: HTML upload converts to Markdown; the link audit reports a
+  // broken internal link; batch select archives and restores two documents.
+  await page.$eval('.notebook-actions input[type="file"]', (input) => {
+    const html = "<html><head><title>HTML Import Proof</title></head><body><h1>HTML Import Proof</h1><p>Converted <strong>cleanly</strong>.</p><p><a href=\"./missing-lecture.md\">a broken internal link</a></p><script>evil()</scr" + "ipt></body></html>";
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([html], "import-proof.html", { type: "text/html" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector(".notebook-page")?.innerText.includes("HTML Import Proof"), { timeout: 5_000 })
+    .catch(() => assert.fail("the HTML upload did not import"));
+  {
+    const stored = await waitForStored(page, "profile", (profile) => profile.customDocuments.some((doc) => doc.title === "HTML Import Proof"), "the converted document was not persisted");
+    const imported = stored.customDocuments.find((doc) => doc.title === "HTML Import Proof");
+    assert.ok(imported.raw.includes("**cleanly**"), "HTML did not convert to Markdown emphasis");
+    assert.equal(imported.raw.includes("evil()"), false, "script content leaked through the importer");
+  }
+  await clickByText(page, ".notebook-heading-actions button", "Check links");
+  await page.waitForSelector(".link-report.has-findings", { timeout: 5_000 });
+  assert.ok((await page.$eval(".link-report", (node) => node.textContent)).includes("missing-lecture.md"), "the link audit missed the broken link");
+  await page.$eval('.link-report button[aria-label="Dismiss link report"]', (button) => button.click());
+
+  await clickByText(page, ".notebook-heading-actions button", "Select");
+  await page.$$eval(".batch-check input", (boxes) => boxes.slice(0, 2).forEach((box) => box.click()));
+  await page.waitForSelector(".batch-toolbar", { timeout: 5_000 });
+  await clickByText(page, ".batch-toolbar button", "Archive");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 documents updated"), { timeout: 5_000 })
+    .catch(() => assert.fail("batch archive did not confirm"));
+  await clickByText(page, ".collection-chips button", "Archived");
+  await page.waitForFunction(() => document.querySelectorAll(".notebook-document-row").length >= 2, { timeout: 5_000 });
+  await clickByText(page, ".notebook-heading-actions button", "Select");
+  await page.$$eval(".batch-check input", (boxes) => boxes.slice(0, 2).forEach((box) => box.click()));
+  await page.waitForSelector(".batch-toolbar");
+  await page.evaluate(() => {
+    const select = document.querySelector('.batch-toolbar select[aria-label="Assign selection to a collection"]');
+    select.value = "__none__";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 documents updated"), { timeout: 5_000 });
+  // Unarchive them back (the toolbar flips to Unarchive in the archived view).
+  await clickByText(page, ".notebook-heading-actions button", "Select");
+  await page.$$eval(".batch-check input", (boxes) => boxes.slice(0, 2).forEach((box) => box.click()));
+  await page.waitForSelector(".batch-toolbar");
+  await clickByText(page, ".batch-toolbar button", "Unarchive");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 documents updated"), { timeout: 5_000 });
+  await clickByText(page, ".collection-chips button", "All (");
+
   // DATA-003 activity ledger: the Home panel narrates the content operations.
   await clickByText(page, ".bottom-nav button", "Home");
   await page.waitForSelector(".activity-list", { timeout: 5_000 });
   const activityText = await page.$eval(".activity-list", (node) => node.innerText);
-  assert.ok(activityText.includes("Renamed") && activityText.includes("Restored"), `activity ledger is missing entries: ${activityText.slice(0, 200)}`);
+  assert.ok(activityText.includes("narchived 2 documents") && activityText.includes("Uploaded"), `activity ledger is missing the recent batch and upload entries: ${activityText.slice(0, 200)}`);
   await clickByText(page, ".bottom-nav button", "Notebook");
   await page.waitForSelector(".notebook-page");
 
@@ -861,12 +911,12 @@ try {
   assert.equal(backup.integrity.algorithm, "SHA-256");
   assert.equal(backup.integrity.cryptographic, true);
   assert.match(backup.integrity.digest, /^[0-9a-f]{64}$/);
-  assert.equal(backup.summary.counts.customDocuments, 2);
+  assert.equal(backup.summary.counts.customDocuments, 3, "created + uploaded + the HTML import proof");
   assert.ok(backup.data.profile.clippings.length === 1, "backup omitted clippings");
   assert.equal(backup.data.profile.clippings[0].note, "Connect this excerpt to model-system tradeoffs.");
   assert.equal(backup.data.profile.reviewItems.length, 1, "backup omitted the source-linked review card");
   assert.equal(backup.data.profile.reviewItems[0].sourceClippingId, backup.data.profile.clippings[0].id, "review card lost its clipping source link");
-  assert.ok(backup.data.profile.customDocuments.length === 2, "backup omitted created or uploaded notes");
+  assert.ok(backup.data.profile.customDocuments.length === 3, "backup omitted created, uploaded, or HTML-imported notes");
 
   await clickByText(page, ".theme-choices button", "Night");
   await clickByText(page, ".settings-drawer button", "Restore reading defaults");
@@ -884,7 +934,7 @@ try {
   assert.ok(storedProfile.progress[documentId] >= 0.6, "maximum reading progress was not persisted");
   assert.ok(storedProfile.readingPositions[documentId] >= 0.6, "reading position was not persisted");
   assert.equal(storedProfile.clippings.length, 1);
-  assert.equal(storedProfile.customDocuments.length, 2);
+  assert.equal(storedProfile.customDocuments.length, 3);
   assert.equal(storedBoard.version, 2, "whiteboard was not stored in the versioned document format");
   assert.equal(storedBoard.background, "dots", "whiteboard background was not persisted");
   assert.equal(storedBoard.pages.length, 3, "whiteboard pages were not persisted");
@@ -969,7 +1019,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), the Home activity ledger, per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, per-Part readiness checks with rubric grading and mistake capture, advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
