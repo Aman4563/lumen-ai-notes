@@ -1185,13 +1185,17 @@ changing the bundle.
 Waves 6–10 (PRs #19–#23, 2026-09-01/02) delivered large slices of this
 roadmap; PRODUCT_REQUIREMENTS.md's verification log is the authority.
 
-- ~~mistake notebook~~ (auto-capture, merge, corrective scheduling, manual
-  dialog, Markdown export); ~~daily session builder~~ and ~~mastery ladder~~
-  (deterministic 15/30/60-minute plans, per-Part evidence ladder);
-  diagnostics/assessments and calibrated scheduling remain;
-- Python/SQL/simulation labs remain;
-- ~~timed interview rounds~~ (weak-first selection, prep/answer countdowns,
-  miss-to-notebook); structured per-track question banks remain;
+- ~~mistake notebook~~, ~~daily session builder~~, ~~mastery ladder~~,
+  ~~readiness assessments~~ (PR #27: frozen versioned questions, rubric
+  scoring, advisory recommendations), ~~goal capture/pacing~~, and the
+  ~~calibrated scheduler~~ (PR #26: opt-in FSRS-4.5, engine-exact against
+  ts-fsrs vectors, history-replay migration); per-learner weight
+  optimization remains;
+- ~~worksheet labs~~ (PR #28: Python/SQL/debugging/metrics with verified
+  literals); the isolated WASM runtime remains;
+- ~~timed interview rounds~~ and ~~structured per-track question banks~~
+  (PR #28: six seeded tracks, 56 questions with rubrics); two tracks
+  remain unseeded;
 - ~~advanced lexical search~~ (typo tolerance, exclusions, saved/recent,
   highlighted snippets, title:/part:/tag: field filters, has:code/has:formula,
   plural folding, facet counts); ~~concept map v1~~ (Part-level serpentine
@@ -1201,8 +1205,9 @@ roadmap; PRODUCT_REQUIREMENTS.md's verification log is the authority.
   line diff~~, ~~HTML export~~, ~~review-card JSON interchange~~,
   ~~activity ledger~~, ~~upload duplicate detection~~; PDF/EPUB/GitHub import
   remains;
-- encrypted optional cross-device sync before collaboration (issue #18 holds
-  the encrypted-backup design);
+- ~~encrypted backups~~ (PR #25: lumen.backup.enc.v1) and the ~~sync
+  design~~ (PR #32: docs/SYNC_DESIGN.md); the sync implementation and
+  collaboration remain, in that order;
 - ~~board multi-select/copy-paste/resize/zoom-pan/SVG export~~ and
   ~~teaching print-to-PDF~~; authored decks, rotate/layers, and board
   import remain;
