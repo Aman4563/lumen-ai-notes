@@ -7328,3 +7328,7 @@ input[type="range"] {
 /* Narration playlist toggle (issue #17): matches the sleep-timer row. */
 .speech-autoadvance-row .setting-toggle { display: flex; align-items: center; gap: 10px; flex: 1; justify-content: space-between; }
 .speech-autoadvance-row .setting-toggle span { font-size: 0.86rem; }
+
+/* FSRS calibration controls (issue #16) in the review settings strip. */
+.review-calibrate { display: inline-flex; align-items: center; gap: 8px; }
+.review-calibrated-badge { font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--accent-soft, #e8f0eb); color: var(--accent-strong, #2e6b57); font-weight: 600; }

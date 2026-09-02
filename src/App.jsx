@@ -2221,7 +2221,7 @@ export default function App() {
       if (!target) return current;
       const now = new Date();
       const usage = recordReviewUsage(current.reviewSessions, target, now, metadata);
-      const result = gradeReviewItem(target, rating, now, elapsedMs, { ...metadata, sessionKind: usage.kind, sessionKey: usage.sessionKey, scheduler: current.reviewSettings.scheduler, requestRetention: current.reviewSettings.requestRetention });
+      const result = gradeReviewItem(target, rating, now, elapsedMs, { ...metadata, sessionKind: usage.kind, sessionKey: usage.sessionKey, scheduler: current.reviewSettings.scheduler, requestRetention: current.reviewSettings.requestRetention, weights: current.reviewSettings.fsrsWeights });
       const next = {
         ...current,
         reviewItems: current.reviewItems.map((item) => item.id === id ? result.item : item),
@@ -2400,6 +2400,24 @@ export default function App() {
     if (!window.confirm("Delete this review card and its review history?")) return;
     setProfile((current) => ({ ...current, reviewItems: current.reviewItems.filter((item) => item.id !== id), reviewAttempts: current.reviewAttempts.filter((attempt) => attempt.reviewItemId !== id) }));
     notify("Review card deleted.");
+  }, [notify]);
+
+  // Per-learner FSRS calibration (issue #16): fit the 17 weights to this
+  // learner's review history; accept only a measurable improvement.
+  const calibrateScheduler = useCallback(async () => {
+    try {
+      const { optimizeFsrsWeights } = await import("./lib/fsrsOptimizer.js");
+      const result = optimizeFsrsWeights(profileRef.current.reviewAttempts);
+      if (!result.ok) {
+        notify(result.reason, "warning", 9000);
+        return;
+      }
+      const improvement = Math.round((1 - result.afterLogLoss / result.beforeLogLoss) * 100);
+      setProfile((current) => ({ ...current, reviewSettings: { ...current.reviewSettings, fsrsWeights: result.weights } }));
+      notify(`Scheduler calibrated from ${result.predictions} spaced reviews (${result.lapses} lapses): prediction error improved ${improvement}%. New cards and future grades use your personal weights; you can reset to the published defaults any time.`, "success", 10_000);
+    } catch (error) {
+      notify(`Calibration failed: ${error.message}`, "error", 6000);
+    }
   }, [notify]);
 
   const updateReviewSettings = useCallback((patch) => {
@@ -2828,7 +2846,7 @@ export default function App() {
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><div><span className="eyebrow">Private, source-grounded assistance</span><h1>AI learning studio</h1><p>Choose a larger local model on your Mac or a lightweight model on this phone—without a paid AI API.</p></div></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} />}
+          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} />}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </div>
 

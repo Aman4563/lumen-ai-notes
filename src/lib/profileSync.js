@@ -438,6 +438,7 @@ const replayReviewAttempt = (item, attempt, scheduling = {}) => {
     // uses, or two devices would rebuild different card states.
     scheduler: scheduling.scheduler,
     requestRetention: scheduling.requestRetention,
+    weights: scheduling.weights,
   });
   return {
     item: replayed.item,
@@ -701,7 +702,7 @@ export const mergeProfileVersions = (baseValue, localValue, remoteValue, options
     base.reviewAttempts,
     attempts.records,
     rolledOffAttemptIds,
-    { scheduler: mergedReviewSettings.scheduler, requestRetention: mergedReviewSettings.requestRetention },
+    { scheduler: mergedReviewSettings.scheduler, requestRetention: mergedReviewSettings.requestRetention, weights: mergedReviewSettings.fsrsWeights },
   );
   const reconciledReviewSessions = reconcileReviewSessionCounters(
     base.reviewSessions,

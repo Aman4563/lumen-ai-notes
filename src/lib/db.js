@@ -871,6 +871,7 @@ export const initialProfile = {
     requestRetention: 0.9,
     dailyNewLimit: 10,
     dailyReviewLimit: 50,
+    fsrsWeights: [],
   },
   backupMeta: {
     lastExportAt: "",
@@ -1415,6 +1416,13 @@ export const normalizeProfile = (value) => {
       requestRetention: numberWithin(rawReviewSettings.requestRetention, 0.7, 0.97, 0.9),
       dailyNewLimit: Math.round(numberWithin(rawReviewSettings.dailyNewLimit, 1, 100, initialProfile.reviewSettings.dailyNewLimit)),
       dailyReviewLimit: Math.round(numberWithin(rawReviewSettings.dailyReviewLimit, 1, 500, initialProfile.reviewSettings.dailyReviewLimit)),
+      // Calibrated FSRS weights (issue #16): exactly 17 finite numbers or
+      // empty (= published defaults). Bounds are enforced by the optimizer.
+      fsrsWeights: Array.isArray(rawReviewSettings.fsrsWeights)
+        && rawReviewSettings.fsrsWeights.length === 17
+        && rawReviewSettings.fsrsWeights.every((weight) => Number.isFinite(Number(weight)))
+        ? rawReviewSettings.fsrsWeights.map((weight) => Math.round(Number(weight) * 1e4) / 1e4)
+        : [],
     },
     backupMeta: {
       lastExportAt: typeof input.backupMeta?.lastExportAt === "string" && Number.isFinite(Date.parse(input.backupMeta.lastExportAt)) ? input.backupMeta.lastExportAt : "",
