@@ -7199,3 +7199,7 @@ input[type="range"] {
   .today-widgets { grid-template-columns: 1fr 1fr; }
   .today-widget--wide { grid-column: 1 / -1; }
 }
+
+/* Issue 18: encrypted backup */
+.backup-password-field { display: grid; gap: 6px; margin: 13px 0 4px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 750; }
+.backup-password-field small { color: var(--ink-faint); font-weight: 600; }

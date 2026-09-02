@@ -30,4 +30,23 @@ assert.ok(result.summary.fileBytes < 25 * 1024 * 1024, "maximum supported worksp
 assert.ok(elapsedMs < 3_000, `maximum backup took ${Math.round(elapsedMs)} ms`);
 assert.ok(rssGrowth < 220 * 1024 * 1024, `maximum backup grew RSS by ${Math.round(rssGrowth / 1024 / 1024)} MB`);
 
-console.log(`Backup memory audit passed: ${Math.round(elapsedMs)} ms, ${Math.round(rssGrowth / 1024 / 1024)} MB RSS growth, ${result.summary.fileBytes} bytes.`);
+// Issue #18: the encrypted container must fit the same memory envelope. The
+// plaintext is result.json itself, so this exercises the real maximum size.
+globalThis.gc?.();
+const { webcrypto } = await import("node:crypto");
+const { encryptBackupJson, decryptBackupFile } = await import("../src/lib/backupCrypto.js");
+const encryptedBefore = process.memoryUsage().rss;
+const encryptedStartedAt = performance.now();
+const { blobParts } = await encryptBackupJson(result.json, "memory-gate-password", { cryptoApi: webcrypto, exportedAt: timestamp });
+const container = new Uint8Array(blobParts[0].length + blobParts[1].length);
+container.set(blobParts[0], 0);
+container.set(blobParts[1], blobParts[0].length);
+const decrypted = await decryptBackupFile(container.buffer, "memory-gate-password", { cryptoApi: webcrypto });
+const encryptedElapsedMs = performance.now() - encryptedStartedAt;
+const encryptedGrowth = Math.max(0, process.memoryUsage().rss - encryptedBefore);
+
+assert.equal(decrypted, result.json, "the encrypted round trip must return the byte-exact backup JSON");
+assert.ok(encryptedElapsedMs < 12_000, `encrypted round trip took ${Math.round(encryptedElapsedMs)} ms (PBKDF2 600k budgeted)`);
+assert.ok(encryptedGrowth < 220 * 1024 * 1024, `encrypted round trip grew RSS by ${Math.round(encryptedGrowth / 1024 / 1024)} MB`);
+
+console.log(`Backup memory audit passed: plain ${Math.round(elapsedMs)} ms / ${Math.round(rssGrowth / 1024 / 1024)} MB RSS / ${result.summary.fileBytes} bytes; encrypted round trip ${Math.round(encryptedElapsedMs)} ms / ${Math.round(encryptedGrowth / 1024 / 1024)} MB RSS / ${container.length} bytes.`);
