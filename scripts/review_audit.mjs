@@ -295,6 +295,38 @@ try {
   await page.select('select[aria-label="Scheduling algorithm"]', "sm2");
   await new Promise((resolve) => setTimeout(resolve, 400));
 
+  // Issue #10: an authored track round runs through the interview timers,
+  // and a worksheet lab check logs a miss into the notebook.
+  await page.waitForSelector(".interview-track-strip", { timeout: 10_000 });
+  await page.select('select[aria-label="Interview track"]', "mle");
+  await clickByText(page, ".interview-track-strip button", "Start track round");
+  await page.waitForSelector(".interview-round .interview-timer", { timeout: 5_000 });
+  const trackQuestion = await page.$eval(".interview-round .review-question", (node) => node.textContent);
+  assert.ok(trackQuestion.length > 40, "the track round must render an authored question");
+  await clickByText(page, ".interview-round button", "Start answering");
+  await clickByText(page, ".interview-round button", "Show expected answer");
+  await page.waitForFunction(() => document.querySelector(".interview-round .review-answer")?.textContent.includes("Rubric"), { timeout: 5_000 })
+    .catch(() => assert.fail("the revealed track answer did not include its rubric"));
+  await clickByText(page, ".interview-round button", "End round");
+  await page.waitForSelector(".review-center-page");
+
+  await page.waitForSelector(".lab-strip .lab-tile", { timeout: 10_000 });
+  await page.$eval(".lab-strip .lab-tile", (node) => node.click());
+  await page.waitForSelector(".lab-bench .lab-task", { timeout: 5_000 });
+  await page.type(".lab-task input", "definitely-wrong-answer");
+  await clickByText(page, ".lab-task button", "Check answer");
+  await page.waitForFunction(() => document.querySelector(".lab-outcome.is-incorrect")?.textContent.includes("mistake notebook"), { timeout: 5_000 })
+    .catch(() => assert.fail("a wrong lab check did not report the notebook capture"));
+  await clickByText(page, ".review-session-header button", "Exit lab");
+  await page.waitForSelector(".review-center-page");
+  await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("Code")), { timeout: 5_000 })
+    .catch(() => assert.fail("the lab miss did not land as a code-category mistake"));
+  await page.evaluate(() => {
+    const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("Code"));
+    card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
+  });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
   // Exercise the maximum persisted deck size. The center must keep the DOM
   // bounded on an iPhone instead of rendering 10,000 Markdown cards at once.
   await page.evaluate(() => new Promise((resolve, reject) => {
@@ -341,7 +373,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

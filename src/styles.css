@@ -7231,3 +7231,28 @@ input[type="range"] {
 @media (max-width: 740px) {
   .goal-editor { grid-template-columns: 1fr; }
 }
+
+/* Issue 10: interview tracks, worksheet labs */
+.interview-track-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; padding: 13px 16px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
+.interview-track-strip > div { flex: 1; min-width: 200px; }
+.interview-track-strip strong { display: block; color: var(--ink); font-size: 0.8rem; }
+.interview-track-strip span { color: var(--ink-faint); font-size: 0.66rem; }
+.interview-track-strip label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 0.64rem; font-weight: 800; text-transform: uppercase; }
+.interview-track-strip select { min-height: 38px; padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--ink); background: var(--paper-2); }
+.lab-strip { margin-bottom: 12px; padding: 13px 16px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
+.lab-strip strong { display: block; color: var(--ink); font-size: 0.8rem; }
+.lab-strip > div > span { color: var(--ink-faint); font-size: 0.66rem; }
+.lab-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 9px; margin-top: 11px; }
+.lab-tile { display: grid; justify-items: start; gap: 3px; padding: 12px 13px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--paper-2); text-align: left; }
+.lab-kind { padding: 1px 8px; border-radius: 99px; background: var(--paper-3); color: var(--ink-faint); font-size: 0.6rem; font-weight: 850; letter-spacing: 0.06em; text-transform: uppercase; }
+.lab-tile strong { color: var(--ink); font-size: 0.76rem; }
+.lab-tile small { color: var(--ink-faint); font-size: 0.64rem; }
+.lab-stage { text-align: left; }
+.lab-card { align-items: stretch; }
+.lab-prompt { width: 100%; }
+.lab-task { display: grid; gap: 10px; width: 100%; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.lab-task label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 0.74rem; font-weight: 700; }
+.lab-outcome { display: flex; align-items: baseline; gap: 7px; margin: 0; font-size: 0.78rem; }
+.lab-outcome.is-correct { color: #2e8b76; }
+.lab-outcome.is-incorrect { color: #b2543c; }
+.lab-minutes { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-faint); font-size: 0.7rem; font-weight: 750; }

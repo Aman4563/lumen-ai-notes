@@ -1,0 +1,193 @@
+{
+  "format": "lumen.labs.v1",
+  "version": 1,
+  "labs": [
+    {
+      "id": "lab-gd-python",
+      "title": "Gradient Descent by Hand",
+      "kind": "python",
+      "documentId": "notes/part-07-deep-learning/01-neural-networks-and-backprop.md",
+      "prompt": "Run gradient descent yourself, on paper, for the tiniest possible model: one weight, one data point. The model is y_hat = w * x fit to the single point (x=1, y=3), so the loss is L(w) = (w - 3)^2. Compute each quantity exactly as a decimal - every number in this lab is exact in binary floating point, so your hand arithmetic should match Python to the last digit. Then check yourself with the tasks below.",
+      "dataset": "x,y\n1,3\n\nModel:      y_hat = w * x\nLoss:       L(w) = (y_hat - y)^2 = (w - 3)^2\nGradient:   dL/dw = 2 * (w - 3)\nStart:      w = 0.0\nLearn rate: lr = 0.25\nUpdate:     w := w - lr * dL/dw",
+      "tasks": [
+        {
+          "id": "gd-t1",
+          "instruction": "Evaluate the gradient dL/dw = 2 * (w - 3) at the starting point w = 0.",
+          "selfCheck": {
+            "question": "What is the gradient at w = 0? Answer as an integer (include the sign).",
+            "expected": "-6",
+            "explanation": "dL/dw = 2 * (0 - 3) = -6. The negative sign means the loss decreases as w increases, so the update will move w upward, toward the minimum at 3."
+          }
+        },
+        {
+          "id": "gd-t2",
+          "instruction": "Apply one update w := w - lr * dL/dw with lr = 0.25.",
+          "selfCheck": {
+            "question": "What is w after the first update? Answer as a decimal, e.g. 0.5.",
+            "expected": "1.5",
+            "explanation": "w1 = 0 - 0.25 * (-6) = 0 + 1.5 = 1.5. Subtracting a negative gradient moves w in the positive direction."
+          }
+        },
+        {
+          "id": "gd-t3",
+          "instruction": "From w = 1.5, compute the new gradient and apply the second update.",
+          "selfCheck": {
+            "question": "What is w after the second update? Answer as a decimal, e.g. 2.5.",
+            "expected": "2.25",
+            "explanation": "Gradient at 1.5 is 2 * (1.5 - 3) = -3, so w2 = 1.5 - 0.25 * (-3) = 1.5 + 0.75 = 2.25. Each step halves the remaining distance to 3 because (1 - 2*lr) = 0.5."
+          }
+        },
+        {
+          "id": "gd-t4",
+          "instruction": "Look at the pattern of iterates: 0, 1.5, 2.25, ... Decide where the sequence is headed and why.",
+          "selfCheck": {
+            "question": "If you keep iterating forever, what value does w converge to? Answer as an integer.",
+            "expected": "3",
+            "explanation": "The gap to the optimum shrinks by the factor (1 - 2*lr) = 0.5 each step: 3, 1.5, 0.75, ... so w converges geometrically to the minimizer w = 3, where the gradient is zero."
+          }
+        }
+      ],
+      "solution": "Work each step with the update rule w := w - lr * 2 * (w - 3).\n\nStep 0: w = 0.0. Gradient = 2 * (0 - 3) = -6. The gradient is negative, so the update moves w up, toward the minimum at 3.\nStep 1: w = 0.0 - 0.25 * (-6) = 0.0 + 1.5 = 1.5.\nStep 2: gradient at 1.5 is 2 * (1.5 - 3) = -3. w = 1.5 - 0.25 * (-3) = 1.5 + 0.75 = 2.25.\n\nEach step multiplies the remaining distance to the optimum by (1 - 2 * lr) = 0.5: the gap goes 3 -> 1.5 -> 0.75, so w goes 0 -> 1.5 -> 2.25 and converges geometrically to 3. In Python:\n\nw = 0.0\nlr = 0.25\nfor _ in range(2):\n    grad = 2 * (w - 3)\n    w = w - lr * grad\nprint(w)  # 2.25\n\nNote the exactness: 0.25, 1.5, and 2.25 are all exact in binary floating point, so the printed value is exactly 2.25, not 2.2500000001.",
+      "complexityNote": "Each update is O(1) here; for n training examples a full-batch gradient step costs O(n), which is what motivates minibatch SGD at scale. Convergence rate for this quadratic is geometric with ratio |1 - 2*lr|; lr > 1 would diverge.",
+      "estimatedMinutes": 15
+    },
+    {
+      "id": "lab-sql-window",
+      "title": "SQL Aggregates and Windows",
+      "kind": "sql",
+      "documentId": "notes/part-03-python-data-stack/03-sql.md",
+      "prompt": "Using the 12-row employees table below, write one aggregation query and one window-function query, then verify your results by hand against the raw rows. Work the arithmetic exactly - every self-check answer is an exact integer or a name from the table.",
+      "dataset": "employees\nid,name,department,salary\n1,Asha,Engineering,165000\n2,Bruno,Engineering,142000\n3,Chen,Engineering,158000\n4,Divya,Engineering,131000\n5,Elena,Sales,98000\n6,Farid,Sales,87000\n7,Grace,Sales,105000\n8,Hiro,Sales,92000\n9,Ines,Finance,118000\n10,Jonas,Finance,125000\n11,Kavya,Finance,112000\n12,Liam,Finance,121000",
+      "tasks": [
+        {
+          "id": "sql-t1",
+          "instruction": "Write a GROUP BY query computing SUM(salary) per department, and sum the rows by hand to verify it.",
+          "selfCheck": {
+            "question": "Which department has the highest total salary? Answer with the department name.",
+            "expected": "Engineering",
+            "explanation": "Engineering totals 165000 + 142000 + 158000 + 131000 = 596000, versus Finance 476000 and Sales 382000."
+          }
+        },
+        {
+          "id": "sql-t2",
+          "instruction": "Write a query for the average salary in Finance.",
+          "selfCheck": {
+            "question": "What is the average salary in Finance? Answer as an integer, no separators.",
+            "expected": "119000",
+            "explanation": "Finance salaries sum to 118000 + 125000 + 112000 + 121000 = 476000, and 476000 / 4 = 119000."
+          }
+        },
+        {
+          "id": "sql-t3",
+          "instruction": "Write the top-2-salaries-per-department query using ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC), filtered to rn <= 2 in an outer query.",
+          "selfCheck": {
+            "question": "How many rows does the top-2-per-department query return? Answer as an integer.",
+            "expected": "6",
+            "explanation": "Three departments times two rows each = 6. The filter must sit in an outer query or CTE because WHERE runs before window functions are evaluated."
+          }
+        },
+        {
+          "id": "sql-t4",
+          "instruction": "Read the second-ranked row for Engineering out of your result.",
+          "selfCheck": {
+            "question": "Who is the second-highest-paid employee in Engineering? Answer with the first name.",
+            "expected": "Chen",
+            "explanation": "Engineering ordered by salary descending: Asha 165000, then Chen 158000. Salaries are distinct so ROW_NUMBER is deterministic here; with ties you would need a tiebreaker column."
+          }
+        }
+      ],
+      "solution": "Task 1 - totals per department:\n\nSELECT department, SUM(salary) AS total\nFROM employees\nGROUP BY department;\n\nEngineering = 165000 + 142000 + 158000 + 131000 = 596000\nFinance     = 118000 + 125000 + 112000 + 121000 = 476000\nSales       =  98000 +  87000 + 105000 +  92000 = 382000\n\nEngineering has the highest total.\n\nTask 2 - average in Finance:\n\nSELECT AVG(salary) FROM employees WHERE department = 'Finance';\n-- 476000 / 4 = 119000\n\nTask 3 and 4 - top-2 per department with a window function:\n\nSELECT department, name, salary\nFROM (\n  SELECT e.*,\n         ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn\n  FROM employees e\n) t\nWHERE rn <= 2\nORDER BY department, rn;\n\nResult (6 rows = 3 departments x 2):\nEngineering: Asha 165000 (rn 1), Chen 158000 (rn 2)\nFinance:     Jonas 125000 (rn 1), Liam 121000 (rn 2)\nSales:       Grace 105000 (rn 1), Elena 98000 (rn 2)\n\nSo the second-highest-paid in Engineering is Chen. The window function must live in a subquery or CTE because WHERE is evaluated before window functions; filtering on rn directly in the same level is invalid SQL. Salaries here are distinct, so ROW_NUMBER is deterministic; with ties you would add a unique tiebreaker (for example, ORDER BY salary DESC, id) or switch to DENSE_RANK depending on the requirement.",
+      "complexityNote": "GROUP BY is a hash aggregation, O(n); the window query sorts within partitions, O(n log n) worst case. On real tables an index on (department, salary DESC) lets the top-N-per-group pattern read only the head of each partition.",
+      "estimatedMinutes": 20
+    },
+    {
+      "id": "lab-debug-training-loop",
+      "title": "Broken Training Loop",
+      "kind": "debugging",
+      "documentId": "notes/part-07-deep-learning/05-pytorch-and-systems.md",
+      "prompt": "The eight-line PyTorch training loop below compiles and runs without error, but the loss oscillates and then blows up. Exactly one required call is missing. Read the code, name the bug, reason out the numeric consequence, and explain why the framework stays silent about it.",
+      "dataset": "L1: model = nn.Linear(10, 1)\nL2: opt = torch.optim.SGD(model.parameters(), lr=0.01)\nL3: for epoch in range(20):\nL4:     for xb, yb in loader:\nL5:         pred = model(xb)\nL6:         loss = F.mse_loss(pred, yb)\nL7:         loss.backward()\nL8:         opt.step()\n\nObserved behavior: loss falls briefly, then oscillates and grows;\nby epoch 5 the weights blow up. No exception is ever raised.",
+      "tasks": [
+        {
+          "id": "dbg-t1",
+          "instruction": "Compare the loop against the canonical PyTorch training step and identify the missing call.",
+          "selfCheck": {
+            "question": "Which single call is missing from the inner loop? Answer as code, e.g. foo.bar().",
+            "expected": "opt.zero_grad()",
+            "explanation": "PyTorch accumulates gradients into .grad on every backward() call instead of overwriting them. Without opt.zero_grad() between steps, each opt.step() applies the sum of all previous batches' gradients."
+          }
+        },
+        {
+          "id": "dbg-t2",
+          "instruction": "Quantify the damage. Assume, hypothetically, that each batch alone would contribute a gradient of exactly 3.0 to some weight at every iteration.",
+          "selfCheck": {
+            "question": "With the bug present, what gradient value does opt.step() apply at the third iteration? Answer as a decimal, e.g. 6.0.",
+            "expected": "9.0",
+            "explanation": "Gradients accumulate across the three backward() calls: 3.0 + 3.0 + 3.0 = 9.0. The applied gradient grows linearly with iteration count, which is why the loss oscillates and then diverges. (In a real run the weights change every step, so per-batch gradients would not stay at 3.0 - the assumption isolates the accumulation effect.)"
+          }
+        },
+        {
+          "id": "dbg-t3",
+          "instruction": "Explain why this bug produces no exception - why does PyTorch let gradients accumulate silently?",
+          "selfCheck": {
+            "question": "Does PyTorch raise an error when gradients are never zeroed between iterations? Answer yes or no.",
+            "expected": "No",
+            "explanation": "Accumulation is deliberate, documented behavior: it is the mechanism behind gradient accumulation over micro-batches for large effective batch sizes. The framework cannot distinguish intent from omission, so the bug manifests only as training instability."
+          }
+        }
+      ],
+      "solution": "The bug: opt.zero_grad() is never called. PyTorch accumulates gradients into each parameter's .grad on every backward() call - it does not overwrite them. So step 1 applies g1, step 2 applies g1+g2, step 3 applies g1+g2+g3, and so on: the effective step size grows roughly linearly with the iteration count, which is exactly the observed pattern of brief progress followed by oscillation and blow-up. Under the lab's hypothetical (each batch alone contributing gradient 3.0), the optimizer at iteration 3 applies 3.0 + 3.0 + 3.0 = 9.0.\n\nNo error is raised because accumulation is intentional, documented behavior - it is what makes gradient accumulation across micro-batches work when you *do* want it. The framework cannot know you didn't.\n\nFixed loop:\n\nfor epoch in range(20):\n    for xb, yb in loader:\n        opt.zero_grad()          # the fix (set_to_none=True is the modern default)\n        pred = model(xb)\n        loss = F.mse_loss(pred, yb)\n        loss.backward()\n        opt.step()\n\nAny position in the iteration works as long as gradients are zeroed between opt.step() and the next loss.backward().",
+      "complexityNote": "The fix costs one O(1) call per step. The same silent-accumulation trap reappears when computing metrics or extra losses that call backward() on shared parameters.",
+      "estimatedMinutes": 15
+    },
+    {
+      "id": "lab-metrics-confusion",
+      "title": "Confusion Matrix Metrics",
+      "kind": "metrics",
+      "documentId": "notes/part-01-foundations/04-evaluation-and-metrics.md",
+      "prompt": "From the confusion matrix below, compute precision, recall, F1, and accuracy by hand. Every answer comes out to an exact decimal - use the integer-ratio forms shown in each task and you will not need a calculator. Then draw the imbalance lesson the numbers are teaching.",
+      "dataset": "Binary classifier evaluated on 1000 examples.\n\n                    predicted positive    predicted negative\nactual positive          90 (TP)               60 (FN)\nactual negative          10 (FP)              840 (TN)",
+      "tasks": [
+        {
+          "id": "met-t1",
+          "instruction": "Compute precision = TP / (TP + FP).",
+          "selfCheck": {
+            "question": "What is the precision? Answer as a decimal, e.g. 0.75.",
+            "expected": "0.9",
+            "explanation": "Precision = 90 / (90 + 10) = 90 / 100 = 0.9. Of the 100 examples the model flagged positive, 90 were truly positive."
+          }
+        },
+        {
+          "id": "met-t2",
+          "instruction": "Compute recall = TP / (TP + FN).",
+          "selfCheck": {
+            "question": "What is the recall? Answer as a decimal, e.g. 0.75.",
+            "expected": "0.6",
+            "explanation": "Recall = 90 / (90 + 60) = 90 / 150 = 0.6. The model caught only 60 percent of the 150 actual positives - high precision is hiding a large miss rate."
+          }
+        },
+        {
+          "id": "met-t3",
+          "instruction": "Compute F1 using the integer-ratio form F1 = 2*TP / (2*TP + FP + FN), which avoids intermediate rounding.",
+          "selfCheck": {
+            "question": "What is the F1 score? Answer as a decimal, e.g. 0.75.",
+            "expected": "0.72",
+            "explanation": "F1 = 180 / (180 + 10 + 60) = 180 / 250 = 0.72. The harmonic mean sits below the arithmetic mean of 0.9 and 0.6 (which is 0.75) - F1 punishes imbalance between precision and recall."
+          }
+        },
+        {
+          "id": "met-t4",
+          "instruction": "Compute accuracy = (TP + TN) / total, then compare it against the accuracy of a model that predicts negative for every example.",
+          "selfCheck": {
+            "question": "What is the accuracy? Answer as a decimal, e.g. 0.75.",
+            "expected": "0.93",
+            "explanation": "Accuracy = (90 + 840) / 1000 = 930 / 1000 = 0.93. An always-negative model would already score 850/1000 = 0.85 on this data, so 0.93 overstates the model badly - recall 0.6 is the honest headline number here."
+          }
+        }
+      ],
+      "solution": "Precision = TP / (TP + FP) = 90 / (90 + 10) = 90 / 100 = 0.9\n  Of everything flagged positive, 90 percent really was.\n\nRecall = TP / (TP + FN) = 90 / (90 + 60) = 90 / 150 = 0.6\n  Of all actual positives, the model caught 60 percent.\n\nF1 = 2*TP / (2*TP + FP + FN) = 180 / (180 + 10 + 60) = 180 / 250 = 0.72\n  This integer-ratio form is the safest way to compute F1 by hand; it is\n  algebraically identical to 2PR/(P+R) but avoids intermediate rounding.\n\nAccuracy = (TP + TN) / total = (90 + 840) / 1000 = 930 / 1000 = 0.93\n\nThe imbalance lesson: 850 of 1000 examples are negative, so a useless model\nthat predicts negative for everything scores 0.85 accuracy - the 0.93 here is\nmuch less impressive than it sounds, while recall = 0.6 exposes that the model\nmisses 40 percent of true positives. This is why precision/recall/F1, not\naccuracy, are the headline metrics on imbalanced problems.",
+      "complexityNote": "All four metrics are O(1) given the matrix; the real cost is building the matrix, one pass over predictions. At different thresholds the matrix changes - precision/recall trade off along that sweep, which is what a PR curve plots.",
+      "estimatedMinutes": 12
+    }
+  ]
+}
