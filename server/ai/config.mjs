@@ -139,6 +139,11 @@ export const readAiServerConfig = (env = process.env) => {
   const webSearchEnabled = readBoolean(env, "WEB_SEARCH_ENABLED", false);
   const authMode = String(env.AI_AUTH || "open").trim().toLowerCase();
   if (!["open", "pairing"].includes(authMode)) throw new Error("AI_AUTH must be open or pairing");
+  // Loopback posture under pairing: "exempt" (default) trusts whoever is at
+  // the serving machine itself — they can read .env anyway — while "require"
+  // keeps the fully global gate for shared-machine setups.
+  const authLoopback = String(env.AI_AUTH_LOOPBACK || "exempt").trim().toLowerCase();
+  if (!["exempt", "require"].includes(authLoopback)) throw new Error("AI_AUTH_LOOPBACK must be exempt or require");
   const pairingCode = String(env.AI_PAIRING_CODE || "");
   if (authMode === "pairing" && pairingCode.trim().length < 8) {
     throw new Error("AI_AUTH=pairing requires AI_PAIRING_CODE with at least 8 characters");
@@ -193,6 +198,7 @@ export const readAiServerConfig = (env = process.env) => {
     // behind a session minted from AI_PAIRING_CODE; "open" preserves the
     // documented single-learner trusted-LAN profile.
     authMode,
+    authLoopback,
     pairingCode,
     sessionSecret,
     sessionTtlHours: readInteger(env, "AI_SESSION_TTL_HOURS", 720, 1, 8_760),
