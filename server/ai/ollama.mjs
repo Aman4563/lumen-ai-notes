@@ -95,7 +95,7 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
     // family. Any provider `message.thinking` is deliberately discarded and
     // never becomes a browser event, response field, history item, or log.
     think: responseProfile === "deep",
-    keep_alive: "10m",
+    keep_alive: config.keepAlive || "30m",
     options: {
       num_predict: request.maxOutputTokens,
       num_ctx: config.contextWindowTokens || 16_384,
@@ -437,6 +437,33 @@ const sanitizeFallbackQuery = (value) => String(value || "")
 // The citation/privacy suffix added by the browser is deliberately not a good
 // search query. Prefer the latest question-like/current-information segment so
 // a short preamble cannot make an approved fallback search the wrong subject.
+/**
+ * Loads the configured model into Ollama's memory ahead of the first real
+ * request (a cold load costs 10-30 s of first-token latency). One token,
+ * fire-and-forget; failures only log — warming is an optimization, never a
+ * gate.
+ */
+export const warmUpOllamaModel = async ({ config, fetchImpl = fetch, logger = console } = {}) => {
+  try {
+    const response = await fetchImpl(new URL("/api/chat", config.ollamaUrl), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.model,
+        stream: false,
+        keep_alive: config.keepAlive || "30m",
+        messages: [{ role: "user", content: "ok" }],
+        options: { num_predict: 1 },
+      }),
+    });
+    logger.info?.(JSON.stringify({ event: "model_warmup", model: config.model, ok: response.ok }));
+    return response.ok;
+  } catch (error) {
+    logger.warn?.(JSON.stringify({ event: "model_warmup_failed", model: config.model, message: error.message }));
+    return false;
+  }
+};
+
 export const fallbackWebSearchQuery = (request) => {
   const prompt = String(request?.prompt || "").replace(/\r\n?/g, "\n");
   const paragraphs = prompt.split(/\n+/)

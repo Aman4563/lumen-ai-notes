@@ -143,6 +143,11 @@ export const readAiServerConfig = (env = process.env) => {
   // the serving machine itself — they can read .env anyway — while "require"
   // keeps the fully global gate for shared-machine setups.
   const authLoopback = String(env.AI_AUTH_LOOPBACK || "exempt").trim().toLowerCase();
+  // How long Ollama keeps the model resident after a request. Cold loads
+  // cost 10-30 s of first-token latency, so the default is generous; -1
+  // pins the model in memory until Ollama exits.
+  const keepAlive = String(env.OLLAMA_KEEP_ALIVE || "30m").trim();
+  if (!/^(-1|\d+(\.\d+)?[smh]?)$/.test(keepAlive)) throw new Error("OLLAMA_KEEP_ALIVE must be -1 or a duration like 90, 30m, or 2h");
   if (!["exempt", "require"].includes(authLoopback)) throw new Error("AI_AUTH_LOOPBACK must be exempt or require");
   const pairingCode = String(env.AI_PAIRING_CODE || "");
   if (authMode === "pairing" && pairingCode.trim().length < 8) {
@@ -199,6 +204,7 @@ export const readAiServerConfig = (env = process.env) => {
     // documented single-learner trusted-LAN profile.
     authMode,
     authLoopback,
+    keepAlive,
     pairingCode,
     sessionSecret,
     sessionTtlHours: readInteger(env, "AI_SESSION_TTL_HOURS", 720, 1, 8_760),

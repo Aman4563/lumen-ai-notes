@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { publicAiConfig, readAiServerConfig } from "./ai/config.mjs";
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { validateAiRequest } from "./ai/contracts.mjs";
-import { createOllamaResponse, createOllamaStreamingResponse, OllamaProxyError, probeInstalledModelIdentity, probeLocalAiServices } from "./ai/ollama.mjs";
+import { createOllamaResponse, createOllamaStreamingResponse, OllamaProxyError, probeInstalledModelIdentity, probeLocalAiServices, warmUpOllamaModel } from "./ai/ollama.mjs";
 import { searchSearxng, validateSearchQuery, WebSearchError } from "./ai/searxng.mjs";
 import { AI_STREAM_PROTOCOL, createAnswerApproach, createNdjsonWriter } from "./ai/streaming.mjs";
 
@@ -1146,6 +1146,9 @@ if (isMainModule) {
       provider: config.provider,
       model: config.enabled ? config.model : null,
     });
+    // Load the model into memory before the first learner request arrives —
+    // fire-and-forget, failures only log.
+    if (config.enabled) warmUpOllamaModel({ config, logger: console });
     let closing = false;
     const shutdown = (signal) => {
       if (closing) return;

@@ -116,7 +116,7 @@ const siteTargets = (query) => [...query.matchAll(/(?:^|\s)site:([a-z0-9.-]+)/gi
   .map((match) => match[1].toLowerCase().replace(/^www\./, "").replace(/\.+$/, ""))
   .filter(Boolean);
 
-const hasMinimumQueryRelevance = (result, query) => {
+const hasMinimumQueryRelevance = (result, query, { relaxed = false } = {}) => {
   const parsed = new URL(result.url);
   const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
   const targets = siteTargets(query);
@@ -130,11 +130,22 @@ const hasMinimumQueryRelevance = (result, query) => {
   const evidenceTokens = lexicalTokens(`${result.title} ${hostname.replace(/[.-]/g, " ")} ${result.snippet}`);
   const distinctiveTokens = [...queryTokens].filter((token) => !GENERIC_SEARCH_TOKENS.has(token));
   const requiredTokens = distinctiveTokens.length ? distinctiveTokens : [...queryTokens];
-  const matchingTokens = requiredTokens.filter((token) => evidenceTokens.has(token)).length;
+  // Relaxed matching also accepts shared 5-character stems, so ordinary
+  // morphology (transformer/transformers, encoding/encodes) cannot zero out
+  // a genuinely relevant page.
+  const tokenMatches = relaxed
+    ? (token) => evidenceTokens.has(token) || [...evidenceTokens].some((candidate) => {
+      const stem = Math.min(token.length, candidate.length, 5);
+      return stem >= 5 && token.slice(0, stem) === candidate.slice(0, stem);
+    })
+    : (token) => evidenceTokens.has(token);
+  const matchingTokens = requiredTokens.filter(tokenMatches).length;
   // One product/entity token is enough for short or generic queries. Longer
   // specific queries need majority coverage so a generic product homepage
   // cannot masquerade as evidence for a requested feature or behavior.
-  const minimumMatches = requiredTokens.length <= 2 ? 1 : Math.ceil(requiredTokens.length * 0.6);
+  const minimumMatches = requiredTokens.length <= 2 || relaxed
+    ? Math.max(1, relaxed ? Math.ceil(requiredTokens.length / 3) : 1)
+    : Math.ceil(requiredTokens.length * 0.6);
   return matchingTokens >= minimumMatches;
 };
 
@@ -160,8 +171,8 @@ const rankingScore = (result, query, index, now = Date.now()) => {
   return score - index * 1e-6;
 };
 
-export const rankPublicSearchResults = (results, query, maximum, now = Date.now()) => results
-  .filter((result) => hasMinimumQueryRelevance(result, query))
+export const rankPublicSearchResults = (results, query, maximum, now = Date.now(), { relaxed = false } = {}) => results
+  .filter((result) => hasMinimumQueryRelevance(result, query, { relaxed }))
   .map((result, index) => ({ result, score: rankingScore(result, query, index, now) }))
   .sort((left, right) => right.score - left.score)
   .slice(0, maximum)
@@ -241,6 +252,15 @@ export const searchSearxng = async ({ query, config, fetchImpl = fetch, signal }
     seen.add(url);
     candidates.push({ title, url, snippet, ...(source ? { source } : {}), ...(publishedAt ? { publishedAt } : {}) });
   }
-  const results = rankPublicSearchResults(candidates, validatedQuery, config.webSearchMaxResults);
+  let results = rankPublicSearchResults(candidates, validatedQuery, config.webSearchMaxResults);
+  if (!results.length && candidates.length) {
+    // Verbose model-written queries can fail strict majority-coverage on
+    // every result even when genuinely relevant pages came back (observed
+    // live: a 72-second learner request died with WEB_SEARCH_NO_RESULTS).
+    // One relaxed pass — a third of the distinctive tokens, minimum one —
+    // beats returning nothing; the downstream web-grounding validator still
+    // decides what may actually be cited.
+    results = rankPublicSearchResults(candidates, validatedQuery, config.webSearchMaxResults, Date.now(), { relaxed: true });
+  }
   return { query: validatedQuery, results };
 };

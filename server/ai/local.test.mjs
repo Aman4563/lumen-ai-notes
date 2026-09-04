@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
 import { readAiServerConfig, publicAiConfig } from "./config.mjs";
 import { validateAiRequest } from "./contracts.mjs";
-import { buildOllamaRequest, createOllamaResponse, fallbackWebSearchQuery, OllamaProxyError, probeLocalAiServices } from "./ollama.mjs";
+import { buildOllamaRequest, createOllamaResponse, fallbackWebSearchQuery, OllamaProxyError, probeLocalAiServices, warmUpOllamaModel } from "./ollama.mjs";
 import { rankPublicSearchResults, sanitizePublicResultUrl, searchSearxng, validateSearchQuery, WebSearchError } from "./searxng.mjs";
 
 const request = Object.freeze({
@@ -1037,4 +1037,49 @@ test("server and public request budgets use the configured Ollama context window
     fetchImpl: async () => { fetchCalls += 1; return response({}); },
   }), (error) => error instanceof OllamaProxyError && error.code === "AI_CONTEXT_LIMIT");
   assert.equal(fetchCalls, 0);
+});
+
+
+test("empty strict search ranking relaxes once instead of returning nothing", () => {
+  const query = "explain how transformer positional encoding rotary embeddings extrapolate context length";
+  const results = [
+    { title: "Rotary Embeddings explained", url: "https://example.org/rope", snippet: "How RoPE encodes positions in transformers." },
+    { title: "Cooking pasta at home", url: "https://example.org/pasta", snippet: "Boil water and add salt." },
+  ];
+  // The verbose query fails 60% distinctive-token coverage on every result…
+  assert.equal(rankPublicSearchResults(results, query, 5).length, 0);
+  // …but the relaxed pass keeps the genuinely related page and still drops
+  // the unrelated one.
+  const relaxed = rankPublicSearchResults(results, query, 5, Date.now(), { relaxed: true });
+  assert.equal(relaxed.length, 1);
+  assert.match(relaxed[0].title, /Rotary/);
+});
+
+test("the model keep-alive rides every request from configuration", () => {
+  const config = { model: "test-model", ollamaUrl: "http://127.0.0.1:11434", keepAlive: "2h" };
+  const body = buildOllamaRequest({ task: "explain", prompt: "p", responseFormat: "markdown", responseProfile: "balanced", maxOutputTokens: 400 }, config, [{ role: "system", content: "s" }, { role: "user", content: "p" }]);
+  assert.equal(body.keep_alive, "2h");
+});
+
+test("model warm-up posts one single-token request and never throws", async () => {
+  const bodies = [];
+  const ok = await warmUpOllamaModel({
+    config: { model: "test-model", ollamaUrl: "http://127.0.0.1:11434", keepAlive: "2h" },
+    logger: { info: () => {}, warn: () => {} },
+    fetchImpl: async (url, init) => {
+      bodies.push({ url: String(url), body: JSON.parse(init.body) });
+      return { ok: true };
+    },
+  });
+  assert.equal(ok, true);
+  assert.equal(bodies.length, 1);
+  assert.match(bodies[0].url, /\/api\/chat$/);
+  assert.equal(bodies[0].body.options.num_predict, 1);
+  assert.equal(bodies[0].body.keep_alive, "2h");
+  const failed = await warmUpOllamaModel({
+    config: { model: "test-model", ollamaUrl: "http://127.0.0.1:11434" },
+    logger: { info: () => {}, warn: () => {} },
+    fetchImpl: async () => { throw new Error("connection refused"); },
+  });
+  assert.equal(failed, false, "warm-up failures degrade to false, never throw");
 });
