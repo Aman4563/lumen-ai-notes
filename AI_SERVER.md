@@ -365,7 +365,13 @@ validated text-delta events plus a matching terminal envelope.
   boot, so a restart alone revokes). Health, configuration, pairing, and
   static assets stay public; configuration additionally reports
   `auth.sessionActive` so the UI can show the pairing gate before a request
-  fails. Serving AI or search beyond loopback now **fails closed at startup**
+  fails. Two ergonomics layers sit on top: `AI_AUTH_LOOPBACK` (default
+  `exempt`) trusts requests from the serving machine itself — whoever sits
+  there can read `.env` anyway — while `require` restores the fully global
+  gate; and `./scripts/pair_device.sh` mints a single-use five-minute
+  pairing ticket (`POST /api/auth/pair/ticket`, loopback or paired sessions
+  only) rendered as a QR — scanning it opens `#/pair?ticket=…`, which
+  redeems the ticket for the same 30-day session with nothing to type. Serving AI or search beyond loopback now **fails closed at startup**
   unless pairing is enabled or the single-learner trusted-LAN profile is
   explicitly acknowledged with `AI_ALLOW_UNAUTHENTICATED_LAN=true`.
 - A local-LAN HTTP URL is not encrypted. Use the private trusted-certificate

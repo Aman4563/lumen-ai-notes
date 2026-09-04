@@ -1016,6 +1016,32 @@ export default function App() {
     setToast({ id: createId(), message, kind, duration });
   }, []);
 
+  // One-time pairing-link redemption: scanning the QR from
+  // scripts/pair_device.sh opens #/pair?ticket=… — redeem it for the 30-day
+  // session cookie, report honestly either way, then clean the URL.
+  useEffect(() => {
+    const match = window.location.hash.match(/^#\/pair\?ticket=([A-Za-z0-9_-]{8,})$/);
+    if (!match) return;
+    (async () => {
+      try {
+        const response = await fetch("/api/auth/pair", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticket: match[1] }),
+        });
+        if (response.ok) {
+          notify("This device is now paired with the Lumen server — AI features are unlocked for 30 days.", "success", 8000);
+        } else {
+          const body = await response.json().catch(() => null);
+          notify(`The pairing link did not work: ${body?.error?.message || `HTTP ${response.status}`}`, "error", 9000);
+        }
+      } catch (error) {
+        notify(`The pairing link did not work: ${error.message}`, "error", 9000);
+      }
+      window.location.hash = "#/";
+    })();
+  }, [notify]);
+
   const reportPersistenceError = useCallback((error) => {
     const message = error instanceof StorageBudgetError
       ? `${error.message} The current unsaved change remains visible in this tab; reduce local data before closing or reloading.`

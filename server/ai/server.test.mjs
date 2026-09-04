@@ -71,7 +71,7 @@ test("TLS configuration fails closed when only one credential path is set", () =
 test("private AI cannot bind beyond loopback without TLS and an exact HTTPS origin", () => {
   // Pairing (or its explicit waiver) is checked first; these cases opt into
   // pairing so the TLS/origin invariants stay independently proven.
-  const pairedLan = { HOST: "0.0.0.0", PORT: "0", AI_ENABLED: "true", AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" };
+  const pairedLan = { HOST: "0.0.0.0", PORT: "0", AI_ENABLED: "true", AI_AUTH: "pairing", AI_AUTH_LOOPBACK: "require", AI_PAIRING_CODE: "correct-horse-battery" };
   assert.throws(() => createApplicationServer({
     env: pairedLan,
     logger: silentLogger,
@@ -550,7 +550,7 @@ test("the Deep profile is capability-gated on attested model thinking support", 
 
 test("learner pairing guards AI and search endpoints behind an HttpOnly session", async () => {
   const baseUrl = await start({
-    env: { AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" },
+    env: { AI_AUTH: "pairing", AI_AUTH_LOOPBACK: "require", AI_PAIRING_CODE: "correct-horse-battery" },
     fetchImpl: async () => ollamaReply("ok"),
   });
 
@@ -611,7 +611,7 @@ test("learner pairing guards AI and search endpoints behind an HttpOnly session"
 
 test("pairing attempts are strictly rate limited per client", async () => {
   const baseUrl = await start({
-    env: { AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" },
+    env: { AI_AUTH: "pairing", AI_AUTH_LOOPBACK: "require", AI_PAIRING_CODE: "correct-horse-battery" },
     fetchImpl: async () => ollamaReply("ok"),
   });
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -629,6 +629,62 @@ test("pairing attempts are strictly rate limited per client", async () => {
   });
   assert.equal(limited.status, 429, "the sixth attempt in the window was not rate limited");
   assert.equal((await limited.json()).error.code, "PAIRING_RATE_LIMITED");
+});
+
+test("loopback is exempt by default under pairing; LAN posture still requires a session", async () => {
+  const baseUrl = await start({
+    env: { AI_AUTH: "pairing", AI_PAIRING_CODE: "correct-horse-battery" },
+    fetchImpl: async () => ollamaReply("ok"),
+  });
+  // The test client IS loopback: with the default exempt posture, AI works
+  // without any session and the config reports the browser as active.
+  const allowed = await post(baseUrl, plainRequest);
+  assert.equal(allowed.status, 200, "loopback must not be asked for its own machine's code");
+  const reported = await fetch(`${baseUrl}/api/ai/config`).then((response) => response.json());
+  assert.equal(reported.auth.required, true);
+  assert.equal(reported.auth.sessionActive, true, "an exempt loopback client must present as paired so the UI never prompts");
+});
+
+test("one-time pairing tickets mint at the machine, redeem once, then die", async () => {
+  const baseUrl = await start({
+    env: { AI_AUTH: "pairing", AI_AUTH_LOOPBACK: "require", AI_PAIRING_CODE: "correct-horse-battery" },
+    fetchImpl: async () => ollamaReply("ok"),
+  });
+  const minted = await fetch(`${baseUrl}/api/auth/pair/ticket`, { method: "POST" });
+  assert.equal(minted.status, 200);
+  const { ticket, expiresAt } = await minted.json();
+  assert.match(ticket, /^[A-Za-z0-9_-]{16,}$/);
+  assert.ok(Date.parse(expiresAt) > Date.now());
+
+  const redeemed = await fetch(`${baseUrl}/api/auth/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticket }),
+  });
+  assert.equal(redeemed.status, 200);
+  const cookie = redeemed.headers.getSetCookie()[0].split(";")[0];
+  const allowed = await post(baseUrl, plainRequest, { Cookie: cookie });
+  assert.equal(allowed.status, 200, "a ticket-paired session must reach the AI");
+
+  const replayed = await fetch(`${baseUrl}/api/auth/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticket }),
+  });
+  assert.equal(replayed.status, 401, "tickets are single-use");
+  assert.equal((await replayed.json()).error.code, "PAIRING_TICKET_INVALID");
+
+  const bogus = await fetch(`${baseUrl}/api/auth/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticket: "never-minted-ticket" }),
+  });
+  assert.equal(bogus.status, 401);
+  assert.equal((await bogus.json()).error.code, "PAIRING_TICKET_INVALID");
+
+  const openServer = await start({ fetchImpl: async () => ollamaReply("ok") });
+  const notEnabled = await fetch(`${openServer}/api/auth/pair/ticket`, { method: "POST" });
+  assert.equal(notEnabled.status, 409, "ticket minting requires pairing mode");
 });
 
 test("non-loopback AI serving fails closed without pairing or an explicit acknowledgment", () => {

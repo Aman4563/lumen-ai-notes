@@ -877,6 +877,18 @@ export const createApplicationServer = ({
     return true;
   };
   const hasActiveSession = (request) => verifySessionToken(sessionSecret, readSessionCookie(request));
+  const isLoopbackRequest = (request) => ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket?.remoteAddress || "");
+  const loopbackExempt = (request) => config.authLoopback === "exempt" && isLoopbackRequest(request);
+  // One-time pairing tickets (minted at the machine, redeemed by any LAN
+  // device that scans the link) — in-memory, five minutes, single use.
+  const pairingTickets = new Map();
+  const PAIRING_TICKET_TTL_MS = 5 * 60 * 1_000;
+  const prunePairingTickets = () => {
+    const now = Date.now();
+    for (const [ticket, expiresAt] of pairingTickets) {
+      if (expiresAt <= now) pairingTickets.delete(ticket);
+    }
+  };
   let serviceStatusCache = null;
   let serviceStatusProbe = null;
   const readServiceStatus = async () => {
@@ -942,7 +954,9 @@ export const createApplicationServer = ({
       publicConfig.auth = {
         ...publicConfig.auth,
         required: config.authMode === "pairing",
-        sessionActive: config.authMode === "pairing" ? hasActiveSession(request) : null,
+        // A loopback-exempt client is effectively paired: the UI must not
+        // prompt someone sitting at the serving machine for its own code.
+        sessionActive: config.authMode === "pairing" ? (hasActiveSession(request) || loopbackExempt(request)) : null,
       };
       sendJson(response, 200, { ok: true, requestId, ...publicConfig }, {}, request.method === "HEAD");
       return;
@@ -985,6 +999,32 @@ export const createApplicationServer = ({
       }
       return;
     }
+    if (url.pathname === "/api/auth/pair/ticket") {
+      if (request.method !== "POST") {
+        sendJson(response, 405, errorPayload(requestId, "METHOD_NOT_ALLOWED", "Use POST to mint a pairing ticket."), { Allow: "POST" });
+        return;
+      }
+      if (config.authMode !== "pairing") {
+        sendJson(response, 409, errorPayload(requestId, "AI_AUTH_NOT_ENABLED", "This server does not use learner pairing."));
+        return;
+      }
+      // Only someone already trusted may mint: at the machine itself, or a
+      // browser that has paired before.
+      if (!isLoopbackRequest(request) && !hasActiveSession(request)) {
+        sendJson(response, 403, errorPayload(requestId, "PAIRING_TICKET_FORBIDDEN", "Pairing tickets can only be minted from the serving machine or an already-paired browser."));
+        return;
+      }
+      prunePairingTickets();
+      if (pairingTickets.size >= 20) {
+        sendJson(response, 429, errorPayload(requestId, "PAIRING_TICKET_LIMIT", "Too many outstanding pairing tickets. Wait for one to expire."));
+        return;
+      }
+      const ticket = randomBytes(16).toString("base64url");
+      pairingTickets.set(ticket, Date.now() + PAIRING_TICKET_TTL_MS);
+      logger.info?.(JSON.stringify({ event: "pairing_ticket_minted", requestId }));
+      sendJson(response, 200, { ok: true, requestId, ticket, expiresAt: new Date(Date.now() + PAIRING_TICKET_TTL_MS).toISOString() });
+      return;
+    }
     if (url.pathname === "/api/auth/pair") {
       if (request.method !== "POST") {
         sendJson(response, 405, errorPayload(requestId, "METHOD_NOT_ALLOWED", "Use POST to pair this browser."), { Allow: "POST, OPTIONS" });
@@ -1007,11 +1047,22 @@ export const createApplicationServer = ({
         sendJson(response, 400, errorPayload(requestId, "INVALID_JSON", error.message));
         return;
       }
-      const code = typeof payload?.code === "string" ? payload.code.trim() : "";
-      if (!code || code.length > 200 || !pairingCodesMatch(config.pairingCode.trim(), code)) {
-        logger.warn?.(JSON.stringify({ event: "pairing_rejected", requestId, client: clientKey }));
-        sendJson(response, 401, errorPayload(requestId, "PAIRING_CODE_INVALID", "That pairing code does not match this server. Check it with the server operator."));
-        return;
+      const ticket = typeof payload?.ticket === "string" ? payload.ticket.trim() : "";
+      if (ticket) {
+        prunePairingTickets();
+        if (!pairingTickets.has(ticket)) {
+          logger.warn?.(JSON.stringify({ event: "pairing_ticket_rejected", requestId, client: clientKey }));
+          sendJson(response, 401, errorPayload(requestId, "PAIRING_TICKET_INVALID", "That pairing link has expired or was already used. Mint a fresh one from the serving machine."));
+          return;
+        }
+        pairingTickets.delete(ticket);
+      } else {
+        const code = typeof payload?.code === "string" ? payload.code.trim() : "";
+        if (!code || code.length > 200 || !pairingCodesMatch(config.pairingCode.trim(), code)) {
+          logger.warn?.(JSON.stringify({ event: "pairing_rejected", requestId, client: clientKey }));
+          sendJson(response, 401, errorPayload(requestId, "PAIRING_CODE_INVALID", "That pairing code does not match this server. Check it with the server operator."));
+          return;
+        }
       }
       const token = mintSessionToken(sessionSecret, sessionTtlMs);
       const cookie = [
@@ -1028,7 +1079,8 @@ export const createApplicationServer = ({
     }
     if (config.authMode === "pairing"
       && ["/api/ai/respond/stream", "/api/ai/respond", "/api/local-search"].includes(url.pathname)
-      && !hasActiveSession(request)) {
+      && !hasActiveSession(request)
+      && !loopbackExempt(request)) {
       sendJson(response, 401, errorPayload(
         requestId,
         "AI_AUTH_REQUIRED",

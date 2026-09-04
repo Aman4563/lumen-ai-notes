@@ -965,7 +965,57 @@ test("structured web final phase rejects a fabricated tool call when no tool is 
       return response({ model: "test-model", done: true, done_reason: "stop", message: { role: "assistant", content: "", tool_calls: [{ function: { name: "search_web", arguments: { query: "unauthorized extra search" } } }] } });
     },
   }), (error) => error instanceof OllamaProxyError && error.code === "AI_TOOL_NOT_ALLOWED");
-  assert.equal(ollamaTurns, 3);
+  // Four turns: search, planning, the fabricated tool call (which now earns
+  // one no-tools recovery turn), and the repeat offense that fails typed.
+  assert.equal(ollamaTurns, 4);
+});
+
+test("a spurious tool call on a tool-free request recovers once and answers", async () => {
+  const config = {
+    model: "test-model",
+    ollamaUrl: "http://127.0.0.1:11434",
+    requestTimeoutMs: 1_000,
+    webSearchEnabled: false,
+  };
+  const ollamaBodies = [];
+  const result = await createOllamaResponse({
+    request,
+    config,
+    requestId: "tool-recovery",
+    fetchImpl: async (url, init) => {
+      ollamaBodies.push(JSON.parse(init.body));
+      if (ollamaBodies.length === 1) {
+        return response({ model: "test-model", done: true, done_reason: "stop", message: { role: "assistant", content: "", tool_calls: [{ function: { name: "search_web", arguments: { query: "spurious" } } }] } });
+      }
+      return response({ model: "test-model", done: true, done_reason: "stop", message: { role: "assistant", content: "Gradient descent follows the negative gradient." } });
+    },
+  });
+  assert.equal(result.status, "completed");
+  assert.match(result.outputText, /negative gradient/);
+  assert.equal(ollamaBodies.length, 2, "exactly one recovery turn");
+  assert.equal(Object.hasOwn(ollamaBodies[0], "tools"), false, "tool-free requests never declare tools");
+  const recoverySystem = ollamaBodies[1].messages.find((message) => message.role === "system");
+  assert.match(recoverySystem.content, /no tools are available/i, "the recovery turn must carry the no-tools instruction");
+});
+
+test("repeated spurious tool calls on a tool-free request fail typed", async () => {
+  const config = {
+    model: "test-model",
+    ollamaUrl: "http://127.0.0.1:11434",
+    requestTimeoutMs: 1_000,
+    webSearchEnabled: false,
+  };
+  let turns = 0;
+  await assert.rejects(createOllamaResponse({
+    request,
+    config,
+    requestId: "tool-recovery-exhausted",
+    fetchImpl: async () => {
+      turns += 1;
+      return response({ model: "test-model", done: true, done_reason: "stop", message: { role: "assistant", content: "", tool_calls: [{ function: { name: "search_web", arguments: { query: "again" } } }] } });
+    },
+  }), (error) => error instanceof OllamaProxyError && error.code === "AI_TOOL_NOT_ALLOWED");
+  assert.equal(turns, 2, "one recovery turn, then the typed refusal");
 });
 
 test("server and public request budgets use the configured Ollama context window", async () => {

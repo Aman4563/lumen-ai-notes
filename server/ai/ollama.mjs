@@ -553,6 +553,19 @@ const addCompletionRecoveryInstruction = (messages, request) => {
   return true;
 };
 
+/**
+ * Small local models (observed live with qwen3.5:4b) sometimes emit a
+ * spurious tool call in a turn where no tool is offered, discarding an
+ * otherwise long-running generation. One bounded recovery turn with an
+ * explicit no-tools instruction rescues it; a second offense fails typed.
+ */
+const addToolRecoveryInstruction = (messages) => {
+  const systemIndex = messages.findIndex((message) => message?.role === "system" && typeof message.content === "string");
+  if (systemIndex < 0) return false;
+  messages[systemIndex] = { ...messages[systemIndex], content: `${messages[systemIndex].content}\nRecovery instruction: no tools are available in this phase. Do not emit any tool call. Answer the request directly in the required format using only the material already provided.` };
+  return true;
+};
+
 const addGroundingRecoveryInstruction = (messages, request, errorCode, hasWebEvidence) => {
   if (!["AI_CURRICULUM_UNGROUNDED", "WEB_SEARCH_UNGROUNDED"].includes(errorCode)) return false;
   const sourceLabels = (Array.isArray(request.contextCitations) ? request.contextCitations : [])
@@ -736,6 +749,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
   let forceStructuredFinal = false;
   let completionRecoveryUsed = false;
   let groundingRecoveryUsed = false;
+  let toolRecoveryUsed = false;
 
   try {
     while (true) {
@@ -840,10 +854,14 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         };
       }
 
-      if (!allowSearchTool) {
-        throw new OllamaProxyError("AI_TOOL_NOT_ALLOWED", "The local model attempted a tool call during a tool-free final generation phase.", 502);
-      }
-      if (!request.webSearch) {
+      if (!allowSearchTool || !request.webSearch) {
+        if (!toolRecoveryUsed && addToolRecoveryInstruction(messages)) {
+          toolRecoveryUsed = true;
+          continue;
+        }
+        if (!allowSearchTool) {
+          throw new OllamaProxyError("AI_TOOL_NOT_ALLOWED", "The local model attempted a tool call during a tool-free final generation phase.", 502);
+        }
         throw new OllamaProxyError("WEB_SEARCH_NOT_ALLOWED", "The local model attempted web search without learner permission.", 403);
       }
       if (toolCalls.length !== 1 || searchRounds >= config.webSearchMaxRounds) {
@@ -919,6 +937,7 @@ export const createOllamaStreamingResponse = async ({
   let forceStructuredFinal = false;
   let completionRecoveryUsed = false;
   let groundingRecoveryUsed = false;
+  let toolRecoveryUsed = false;
 
   const emitPhase = async (phase, message) => {
     if (typeof onPhase === "function") await onPhase({ phase, message });
@@ -1063,10 +1082,17 @@ export const createOllamaStreamingResponse = async ({
         };
       }
 
-      if (!allowSearchTool) {
-        throw new OllamaProxyError("AI_TOOL_NOT_ALLOWED", "The local model attempted a tool call during a tool-free final generation phase.", 502);
-      }
-      if (!request.webSearch) {
+      if (!allowSearchTool || !request.webSearch) {
+        // Recovery only while nothing has streamed to the client — a live
+        // token stream cannot be un-said, so that case still fails typed.
+        if (!toolRecoveryUsed && !streamImmediately && addToolRecoveryInstruction(messages)) {
+          toolRecoveryUsed = true;
+          await emitPhase("generating", "The model tried to call a tool it does not have. Regenerating a direct answer.");
+          continue;
+        }
+        if (!allowSearchTool) {
+          throw new OllamaProxyError("AI_TOOL_NOT_ALLOWED", "The local model attempted a tool call during a tool-free final generation phase.", 502);
+        }
         throw new OllamaProxyError("WEB_SEARCH_NOT_ALLOWED", "The local model attempted web search without learner permission.", 403);
       }
       if (toolCalls.length !== 1 || searchRounds >= config.webSearchMaxRounds) {
