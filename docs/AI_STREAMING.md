@@ -64,12 +64,22 @@ Profiles choose a server-owned default when `maxOutputTokens` is omitted:
 | --- | ---: | --- | --- |
 | `fast` | 900 tokens | Off | Quick clarification and mobile follow-up |
 | `balanced` | 1,800 tokens | Off | Default learning answer |
-| `deep` | 3,200 tokens | On when supported | Opt-in difficult analysis |
+| `deep` | 3,200 tokens | Bounded first pass, then direct completion if needed | Opt-in difficult analysis |
 
 The operator ceiling is 4,096 tokens on the shipped 16,384-token Qwen profile;
 a request can choose fewer but never exceed it. Each profile has a distinct
 advertised UTF-8 input budget because answer tokens and source/history tokens
 share one context window.
+
+Deep's first pass is capped at 768 generated tokens (or the requested cap,
+if smaller). Ollama counts internal thinking against the generation ceiling;
+the local Qwen model can consume a full 3,200-token turn without producing
+answer text. If this pass stops at its limit or contains only thinking, Lumen
+discards it and retries once with thinking disabled and the full requested
+answer allowance. The overall request deadline still covers both turns.
+Partial Deep drafts remain buffered, and a second incomplete answer still
+returns a typed error rather than a false success. Thinking is never replayed
+into the completion prompt or returned to the browser.
 
 The browser fits the exact canonical JSON body it will submit. Normalized
 `conversationSummary` and `responseFormat` fields, history, profile, output cap,

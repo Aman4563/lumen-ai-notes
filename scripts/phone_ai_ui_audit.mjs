@@ -268,7 +268,8 @@ try {
   assert.equal(await page.$eval(".phone-tutor__search-toggle input", (input) => input.disabled), false, "returning to Library first did not restore the web-fallback control");
   await page.click(".phone-tutor__search-toggle input");
   assert.equal(await page.$eval(".phone-tutor__search-toggle input", (input) => input.checked), true, "web-fallback proposal preference did not turn on");
-  assert.match(await page.$eval(".phone-tutor__search-toggle", (node) => node.textContent), /Proposal enabled/i, "enabled web fallback did not explain its active state");
+  assert.equal(await page.$eval(".phone-tutor__search-toggle", (node) => node.classList.contains("is-enabled")), true, "enabled web fallback was not visibly selected");
+  assert.match(await page.$eval(".phone-tutor__search-toggle", (node) => node.textContent), /approve the exact query/i, "web fallback did not explain query approval");
 
   // Learner permission alone is insufficient: a strong full-library match
   // must still answer locally without invoking the planner or showing a card.
@@ -353,6 +354,7 @@ try {
   await clickByText(page, ".phone-local-ai-actions button", "Clear model files");
   await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Deleting"));
   assert.equal(await page.$$eval(".phone-local-ai-actions button", (buttons) => buttons.every((button) => button.disabled)), true, "lifecycle controls became active before deletion verification finished");
+  await page.evaluate(() => window.__PHONE_AI_AUDIT__.finishDeleteVerification());
   await page.waitForFunction(() => document.querySelector(".phone-local-ai-error")?.textContent.includes("Simulated cache deletion verification failure"));
   assert.match(await page.$eval(".phone-local-ai-error", (node) => node.textContent), /deletion verification failure/);
   const reloadAfterDeleteFailure = await page.$(".phone-local-ai-actions .button.primary");

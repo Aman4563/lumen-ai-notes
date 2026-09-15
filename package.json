@@ -35,10 +35,15 @@
     "audit:mermaid": "node scripts/mermaid_ui_audit.mjs",
     "audit:chunks": "node scripts/chunk_recovery_audit.mjs",
     "audit:ai-ui": "node scripts/ai_ui_audit.mjs",
+    "audit:ai-live": "node scripts/live_ai_endpoints.mjs",
+    "audit:ai-live-ui": "node scripts/live_ai_workflows.mjs",
+    "audit:ai-live-smoke": "node scripts/live_ai_smoke.mjs",
+    "audit:ai-live-search": "node scripts/live_ai_search.mjs",
     "audit:controls": "node scripts/control_audit.mjs",
     "check": "npm run audit:notes && npm run audit:unit && npm run audit:scale && npm run audit:storage && npm run audit:backup-memory && npm run audit:ai && npm run audit:ai-eval && npm run audit:app",
-    "check:browser": "npm run audit:workflow && npm run audit:audio && npm run audit:review && npm run audit:annotations && npm run audit:sync && npm run audit:visual && npm run audit:controls && npm run audit:ai-ui && npm run audit:phone-ai-ui && npm run audit:mermaid && npm run audit:chunks",
-    "check:release": "npm run check && npm run check:browser"
+    "check:browser": "node scripts/check_browser.mjs",
+    "check:release": "npm run check && npm run check:browser",
+    "check:live": "npm run audit:ai-live && npm run audit:ai-live-ui && npm run audit:ai-live-smoke"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "0.2.82",

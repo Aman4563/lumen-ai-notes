@@ -154,7 +154,7 @@ test("source-grounded streaming replaces one length-stopped draft without leakin
   assert.equal(calls, 2);
   assert.deepEqual(deltas, ["A concise grounded ", "answer [S1]."]);
   assert.doesNotMatch(deltas.join(""), /LEAKED_UNFINISHED_DRAFT/);
-  assert.match(phases.join("\n"), /Regenerating a shorter complete answer/i);
+  assert.match(phases.join("\n"), /Writing the detailed answer/i);
   assert.equal(result.outputText, deltas.join(""));
 });
 

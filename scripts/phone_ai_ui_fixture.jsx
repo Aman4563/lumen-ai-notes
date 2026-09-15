@@ -70,7 +70,8 @@ class AuditPhoneEngine {
     await this.unload();
     if (this.failNextDelete) {
       this.failNextDelete = false;
-      await wait(120);
+      // Hold verification until the browser has asserted the locked controls.
+      await new Promise((resolve) => { this.finishDeleteVerification = resolve; });
       throw new Error("Simulated cache deletion verification failure.");
     }
     this.cached = false;

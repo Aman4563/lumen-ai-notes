@@ -110,9 +110,19 @@ try {
   await page.select(".annotation-dialog select", "interview");
   await page.type(".annotation-dialog textarea", "Explain the production trade-off without looking.");
   await page.type(".annotation-dialog input", "foundations, interview");
+  // Losing connectivity rerenders the app while the learner is editing.
+  // The unsaved color/comment/tags must survive that unrelated update.
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await delay(100);
+  assert.equal(await page.$eval(".annotation-color-options .coral", (button) => button.getAttribute("aria-pressed")), "true", "a background update reset the chosen highlight color");
+  assert.equal(await page.$eval(".annotation-dialog textarea", (field) => field.value), "Explain the production trade-off without looking.", "a background update erased the unsaved comment");
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await clickByText(page, ".annotation-dialog button", "Create highlight");
   await page.waitForSelector(".annotation-dialog", { hidden: true });
-  await page.waitForFunction(() => CSS.highlights?.get("lumen-coral")?.size === 1);
+  await page.waitForFunction(() => CSS.highlights?.get("lumen-coral")?.size === 1).catch(async (error) => {
+    console.error(JSON.stringify({ highlights: await page.evaluate(() => [...(CSS.highlights?.entries() || [])].map(([name, ranges]) => ({ name, size: ranges.size }))), annotations: (await readStored(page, "profile"))?.annotations, errors }));
+    throw error;
+  });
 
   await page.click('button[aria-label="Table of contents"]');
   await clickByText(page, ".side-panel-tabs button", "Highlights");

@@ -8,6 +8,10 @@ const MAX_OLLAMA_STREAM_LINE_BYTES = 512 * 1024;
 const MAX_AI_OUTPUT_CHARACTERS = 200_000;
 const MAX_PUBLIC_WEB_SOURCES = 8;
 const MIN_SEARCH_SNIPPET_CHARACTERS = 96;
+// Ollama counts private thinking against num_predict. A full Deep budget can
+// be consumed without a single answer token, twice if retried with thinking
+// still on. Bound that first pass and reserve a non-thinking completion turn.
+const DEEP_FIRST_PASS_TOKENS = 768;
 
 const BASE_INSTRUCTIONS = `You are Lumen Tutor, a rigorous and encouraging AI/ML learning assistant.
 
@@ -25,10 +29,10 @@ Safety and grounding rules:
 const TASK_INSTRUCTIONS = Object.freeze({
   tutor: "Answer as an adaptive tutor. Explain, check understanding, and end with one useful next action.",
   explain: "Follow the learner's requested scope and length exactly. Within that bound, explain the concept in layers: intuition, mechanics, example, failure modes, and interview-level takeaways. End when the requested final item is complete.",
-  socratic: "Use the Socratic method. Ask one focused question at a time; do not reveal the full solution unless the learner asks.",
+  socratic: "Use the Socratic method. Ask one focused question at a time; do not reveal the full solution unless the learner asks. When curriculum sources are supplied, cite the source that motivates your question using its exact [S#] label, even when you make no factual claim. Place the label after the question without revealing the answer.",
   quiz: "Create a discriminating quiz that tests recall, application, and misconceptions. Every answer explanation must teach why alternatives fail. Silently remove any question whose keyed answer is not directly supported by the supplied context.",
   flashcards: "Create atomic active-recall cards. Avoid vague prompts, oversized answers, and simple copy-completion cues. Each front must unambiguously ask for a claim supported by the supplied context; silently remove any card whose back contradicts or exceeds that context.",
-  interview: "Act as a senior technical interviewer. Probe assumptions, trade-offs, failure handling, measurement, and production constraints.",
+  interview: "Act as a senior technical interviewer. Follow the learner's requested scope and length. When asked for a question, ask one focused question and wait for the learner's answer; do not supply the answer or a full interview guide. Probe assumptions, trade-offs, failure handling, measurement, and production constraints where relevant.",
   summarize: "Produce a faithful learning summary with core ideas, formulas, assumptions, pitfalls, and a short recall checklist.",
   study_plan: "Create a dependency-aware study plan with realistic activities and observable evidence of mastery.",
   answer_feedback: "Evaluate the learner answer against the question and supplied context. Be precise, constructive, and calibration-aware.",
@@ -59,7 +63,7 @@ const escapeAttribute = (text) => String(text || "")
   .replaceAll("<", "&lt;")
   .replaceAll(">", "&gt;");
 
-export const buildOllamaRequest = (request, config, messagesOverride, { allowSearchTool = true, applyStructuredFormat = true } = {}) => {
+export const buildOllamaRequest = (request, config, messagesOverride, { allowSearchTool = true, applyStructuredFormat = true, allowThinking = true } = {}) => {
   const currentDate = new Date().toISOString().slice(0, 10);
   const contextBlock = request.context
     ? `\n\n<curriculum_context title="${escapeAttribute(request.documentTitle || "Untitled material")}">\n${neutralizeContextDelimiter(request.context)}\n</curriculum_context>`
@@ -78,7 +82,14 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
     ? `Hard completion budget: return one complete, schema-valid result within ${completionTarget} tokens. If the requested breadth cannot fit, include fewer high-quality items; never begin an item you cannot finish.`
     : `Hard completion budget: finish the complete answer within about ${completionTarget} tokens, below the ${request.maxOutputTokens}-token provider ceiling. Prioritize the learner's requested scope, reserve room to finish the final thought and close Markdown fences, and omit lower-priority detail rather than running into the ceiling.`;
   const system = `${BASE_INSTRUCTIONS}\n\nCurrent server date: ${currentDate}.\nTask-specific instruction: ${TASK_INSTRUCTIONS[request.task]}\n${completionInstruction}\n${searchInstruction}${schemaInstruction}`;
-  const learnerRequest = `Learner level: ${request.difficulty}\nTask: ${request.prompt}${conversationMemory}${contextBlock}`;
+  const sourceLabels = (request.contextCitations || []).map((number) => `[S${number}]`);
+  const citationRequirement = sourceLabels.length
+    ? `\n\nRequired citations: use at least one of these exact labels in your final answer: ${sourceLabels.join(", ")}. Cite only source-supported text. A question must cite the source that motivates it, even without a factual claim. In JSON, place citations inside supported string values, never outside the JSON.`
+    : "";
+  const questionFormat = request.task === "socratic" && sourceLabels.length
+    ? `\nRequired response: one question grounded in the context above, followed by its source label. Output pattern: Your question? ${sourceLabels[0]}. Choose the label that actually supports your question. Do not answer the question.`
+    : "";
+  const learnerRequest = `Learner level: ${request.difficulty}\nTask: ${request.prompt}${conversationMemory}${contextBlock}${citationRequirement}${questionFormat}`;
   const responseProfile = ["fast", "balanced", "deep"].includes(request.responseProfile)
     ? request.responseProfile
     : "balanced";
@@ -94,10 +105,12 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
     // Ollama's boolean thinking mode is supported by the configured Qwen
     // family. Any provider `message.thinking` is deliberately discarded and
     // never becomes a browser event, response field, history item, or log.
-    think: responseProfile === "deep",
+    think: responseProfile === "deep" && allowThinking,
     keep_alive: config.keepAlive || "30m",
     options: {
-      num_predict: request.maxOutputTokens,
+      num_predict: responseProfile === "deep" && allowThinking
+        ? Math.min(request.maxOutputTokens, DEEP_FIRST_PASS_TOKENS)
+        : request.maxOutputTokens,
       num_ctx: config.contextWindowTokens || 16_384,
       temperature: request.responseFormat === "structured"
         ? 0
@@ -602,6 +615,7 @@ const addGroundingRecoveryInstruction = (messages, request, errorCode, hasWebEvi
     sourceLabels ? `Use only these supplied library labels where supported: ${sourceLabels}.` : "",
     hasWebEvidence ? "Use at least one exact uppercase [W#] label from the supplied web-result IDs for web-supported claims." : "",
     "Do not invent or lowercase citation labels, and keep citation text outside code spans.",
+    request.task === "socratic" ? "Your question itself must cite the supplied source that motivates it, even without an answer or factual claim." : "",
   ].filter(Boolean).join(" ");
   const structuredPlacement = request.responseFormat === "structured"
     ? "Keep citations inside schema string values (for flashcards, put them in each supported back); emit no text outside the JSON."
@@ -610,6 +624,10 @@ const addGroundingRecoveryInstruction = (messages, request, errorCode, hasWebEvi
   const systemIndex = messages.findIndex((message) => message?.role === "system" && typeof message.content === "string");
   if (systemIndex < 0) return false;
   messages[systemIndex] = { ...messages[systemIndex], content: `${messages[systemIndex].content}\n${instruction}` };
+  // Qwen can repeat the same uncited JSON when only the system prompt is
+  // amended. Give the bounded repair an explicit latest-turn instruction.
+  // The next request still passes the full context budget and grounding checks.
+  messages.push({ role: "user", content: `Regenerate the ${request.task} result now with the required citations. ${requirements} ${structuredPlacement}${request.task === "flashcards" ? ` Every supported card back must end with its source label, for example: "Supported answer ${sourceLabels.split(", ")[0] || "[W1]"}".` : ""}` });
   return true;
 };
 
@@ -796,7 +814,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         || forceStructuredFinal
         || searchRounds >= config.webSearchMaxRounds;
       const boundedBody = assertContextBudget(
-        buildOllamaRequest(request, config, messages, { allowSearchTool, applyStructuredFormat }),
+        buildOllamaRequest(request, config, messages, { allowSearchTool, applyStructuredFormat, allowThinking: !completionRecoveryUsed }),
         request,
         config,
       );
@@ -804,8 +822,10 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
       const body = fittedEvidence.body;
       const payload = await ollamaChat({ body, config, fetchImpl, requestId, signal: overallController.signal });
       payloads.push(payload);
-      if (payload.done !== true || payload.done_reason !== "stop") {
-        if (payload.done === true && payload.done_reason === "length" && !completionRecoveryUsed
+      const thinkingOnly = body.think && payload.done === true && payload.done_reason === "stop"
+        && !payload.message?.content?.trim() && !payload.message?.tool_calls?.length;
+      if (payload.done !== true || payload.done_reason !== "stop" || thinkingOnly) {
+        if (payload.done === true && (payload.done_reason === "length" || thinkingOnly) && !completionRecoveryUsed
           && addCompletionRecoveryInstruction(messages, request)) {
           completionRecoveryUsed = true;
           continue;
@@ -987,7 +1007,7 @@ export const createOllamaStreamingResponse = async ({
         || forceStructuredFinal
         || searchRounds >= config.webSearchMaxRounds;
       const boundedBody = assertContextBudget(
-        buildOllamaRequest(request, config, messages, { allowSearchTool, applyStructuredFormat }),
+        buildOllamaRequest(request, config, messages, { allowSearchTool, applyStructuredFormat, allowThinking: !completionRecoveryUsed }),
         request,
         config,
       );
@@ -1000,6 +1020,7 @@ export const createOllamaStreamingResponse = async ({
       const requiresCurriculumValidation = suppliedCurriculumCitations(request).size > 0;
       const streamImmediately = request.responseFormat === "markdown"
         && !request.webSearch
+        && !body.think
         && !requiresCurriculumValidation;
       const bufferedParts = [];
       const payload = await ollamaChatStream({
@@ -1014,16 +1035,20 @@ export const createOllamaStreamingResponse = async ({
         },
       });
       payloads.push(payload);
-      if (payload.done !== true || payload.done_reason !== "stop") {
+      const thinkingOnly = body.think && payload.done === true && payload.done_reason === "stop"
+        && !payload.message?.content?.trim() && !payload.message?.tool_calls?.length;
+      if (payload.done !== true || payload.done_reason !== "stop" || thinkingOnly) {
         // Grounded/search answers are intentionally buffered until terminal
         // validation, so a single length-stopped draft can be discarded and
         // regenerated more concisely without duplicating partial text in the
         // browser. Ungrounded live prose may already be visible and therefore
         // remains a typed incomplete response instead of being replayed.
-        if (payload.done === true && payload.done_reason === "length" && !streamImmediately
+        if (payload.done === true && (payload.done_reason === "length" || thinkingOnly) && !streamImmediately
           && !completionRecoveryUsed && addCompletionRecoveryInstruction(messages, request)) {
           completionRecoveryUsed = true;
-          await emitPhase("generating", "The first draft reached its limit. Regenerating a shorter complete answer locally.");
+          await emitPhase("generating", body.think
+            ? "Writing the detailed answer…"
+            : "The first draft reached its limit. Regenerating a shorter complete answer locally.");
           continue;
         }
         throw new OllamaProxyError(

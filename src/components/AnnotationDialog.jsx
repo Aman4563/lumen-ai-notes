@@ -21,6 +21,8 @@ export default function AnnotationDialog({ draft, onClose, onSave }) {
   const [comment, setComment] = useState("");
   const [tags, setTags] = useState("");
   const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!draft) return undefined;
@@ -33,7 +35,7 @@ export default function AnnotationDialog({ draft, onClose, onSave }) {
     regions.forEach((region) => { region.inert = true; region.setAttribute("aria-hidden", "true"); });
     requestAnimationFrame(() => dialogRef.current?.querySelector("button, select, textarea, input")?.focus());
     const onKeyDown = (event) => {
-      if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
+      if (event.key === "Escape") { event.preventDefault(); onCloseRef.current(); return; }
       if (event.key !== "Tab") return;
       const focusable = [...(dialogRef.current?.querySelectorAll("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])") || [])];
       if (!focusable.length) return;
@@ -48,7 +50,9 @@ export default function AnnotationDialog({ draft, onClose, onSave }) {
       regions.forEach((region) => { region.inert = false; region.removeAttribute("aria-hidden"); });
       previous?.focus?.();
     };
-  }, [draft, onClose]);
+  // Only a different draft resets form fields. Background app updates often
+  // pass a new onClose callback while the learner is still typing.
+  }, [draft]);
 
   if (!draft) return null;
   const submit = (event) => {

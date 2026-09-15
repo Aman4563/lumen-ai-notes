@@ -4256,6 +4256,15 @@ input[type="range"] {
   padding-bottom: calc(48px + env(safe-area-inset-bottom));
 }
 
+@media (max-width: 980px) {
+  /* Keep focused/scrolled AI controls clear of the fixed mobile navigation. */
+  .ai-page { padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+  .ai-page :is(button, input, select, textarea) {
+    scroll-margin-top: calc(75px + env(safe-area-inset-top));
+    scroll-margin-bottom: calc(90px + env(safe-area-inset-bottom));
+  }
+}
+
 .settings-local-data {
   display: flex;
   gap: 14px;

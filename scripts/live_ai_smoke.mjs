@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import puppeteer from "puppeteer-core";
 
-const baseUrl = new URL(process.env.LUMEN_URL || "http://127.0.0.1:4202/");
+const baseUrl = new URL(process.env.LUMEN_URL || "http://127.0.0.1:4187/");
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-live-ai-smoke-"));
 const focusedQuestion = [
