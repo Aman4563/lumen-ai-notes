@@ -1,0 +1,88 @@
+/* Let content wrap inside the available space, including beside the sidebar. */
+@media screen {
+  .page { overflow-wrap: anywhere; }
+  .page > *, .note-card, .continue-card > *, .board-header > div { min-width: 0; }
+  .reader-view, .board-view, .teach-mode { grid-template-columns: minmax(0, 1fr); }
+  .reader-view > *, .board-view > *, .teach-mode > * { min-width: 0; }
+  .reader-crumb { flex: 1 1 0; }
+  .reader-actions { flex: 0 0 auto; }
+  .reader-layout, .editor-shell, .teach-card, .teach-slide { min-width: 0; max-width: 100%; }
+  .teach-mode { grid-template-rows: auto minmax(0, 1fr) auto; }
+  .teach-stage { grid-template-columns: minmax(0, 1fr); }
+  .teach-card, .teach-slide { overflow-wrap: anywhere; }
+  .teach-header > div:first-child { flex: 1 1 0; }
+  .teach-header > div:last-child { flex: 0 0 auto; }
+  .collection-chips button, .review-card-copy .text-button, .review-source-link {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .review-source-link svg { flex: 0 0 auto; }
+  .board-header > div:first-child { flex: 1 1 0; }
+  .board-header-actions { flex: 0 0 auto; }
+  .board-pagebar { overflow-x: auto; }
+  .board-page-controls, .board-backgrounds { flex: 0 0 auto; }
+  .create-note-dialog, .board-text-dialog, .board-rename-dialog {
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .modal-actions { flex-wrap: wrap; }
+  .reader-popover {
+    max-height: calc(100dvh - 150px - env(safe-area-inset-top));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .display-popover .segmented { flex-wrap: wrap; }
+  .display-popover .segmented button { flex: 1 1 auto; }
+  .library-view-controls, .evidence-verdict { flex-wrap: wrap; }
+  .evidence-checklist, .evidence-check { grid-template-columns: minmax(0, 1fr); }
+  .evidence-check > * { min-width: 0; }
+  .toast { width: max-content; border-radius: 18px; pointer-events: none; }
+  .toast > svg { flex: 0 0 auto; }
+  .toast > span { overflow-wrap: anywhere; }
+  .toast > button { pointer-events: auto; }
+  .app-shell:has(.audio-bar) > .toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
+}
+
+@media screen and (max-width: 980px) {
+  .board-view.advanced-board { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+  .bottom-nav { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  .app-shell:has(.audio-bar) > .toast { bottom: calc(165px + env(safe-area-inset-bottom)); }
+}
+
+@media screen and (min-width: 981px) {
+  .app-topbar .menu-button, .app-sidebar .sidebar-close { display: none; }
+  .app-topbar { grid-template-columns: minmax(0, 520px) auto; justify-content: space-between; }
+  .app-topbar .topbar-actions { position: static; }
+}
+
+@media screen and (max-width: 740px) {
+  .reader-toolbar { gap: 6px; }
+  .reader-crumb { gap: 5px; }
+  .reader-crumb > span { min-width: 0; }
+  .board-header { gap: 8px; padding-inline: 12px; }
+  .board-header-actions { gap: 4px; }
+  .reader-popover, .reader-action-menu, .speech-popover {
+    max-height: calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .create-note-dialog, .board-text-dialog, .board-rename-dialog {
+    max-height: calc(100dvh - 12px - env(safe-area-inset-top));
+  }
+}
+
+/* In landscape, scroll the board page instead of collapsing the drawing surface. */
+@media screen and (max-height: 540px) {
+  .board-view.advanced-board {
+    height: auto;
+    min-height: calc(100dvh - 58px);
+    grid-template-rows: auto auto auto minmax(240px, 1fr) auto;
+    padding-bottom: calc(80px + env(safe-area-inset-bottom));
+    overflow: visible;
+  }
+  .teach-stage { padding: 8px; }
+  .teach-card, .teach-slide { max-height: 100%; padding: 16px; }
+}

@@ -593,6 +593,8 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
     () => renderTutorMarkdown(text, citationSources, webSources),
     [citationSources, text, webSources],
   );
+  // Keep React from replacing renderer-owned diagrams on unrelated updates.
+  const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   // Partial fenced blocks are ordinary during token streaming. Rendering is
   // intentionally deferred until the validated terminal answer is mounted.
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
@@ -623,7 +625,7 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
       className={`ai-tutor__response-text markdown-body ${streaming ? "is-streaming" : ""}`}
       onClick={handleClick}
       // renderTutorMarkdown sanitizes provider output through DOMPurify.
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={htmlMarkup}
     />
   );
 };

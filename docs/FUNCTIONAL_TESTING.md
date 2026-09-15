@@ -14,6 +14,40 @@ recovery, phone model lifecycle, diagrams, and stale application assets.
 Synthetic speech/WebGPU fixtures check application behavior; they do not prove
 audible output or GPU compatibility on a physical iPhone.
 
+## Responsive regression checks
+
+`npm run check:browser -- responsive` starts an isolated server and checks the
+production build. Use `npm run audit:responsive` with `LUMEN_URL` to target a
+running app. The same audit runs in the release gate and CI, which uploads its
+JSON results and screenshots as `responsive-layout-results`.
+
+The matrix covers 320, 360, 390, 430, 568, 768, 1024, 1280, and 1920px widths,
+portrait and landscape, short viewports, and 200% text on phone and tablet.
+Fresh browser profiles contain long document/collection names, unbroken links,
+code, tables, notes, review cards, and AI history. The checks visit every main
+route plus navigation, reader tools, teaching, whiteboard dialogs, annotations,
+assessments, document dialogs, settings, and installation. They detect page
+overflow, offscreen content, dialogs outside the viewport, an undersized
+canvas, unreachable control centers, and uncaught browser errors. Wide code,
+tables, and tool strips may scroll within a container that fits the viewport.
+
+`LUMEN_LAYOUT_CASES=small-phone,phone-landscape` selects cases for diagnosis.
+`LUMEN_LAYOUT_ARTIFACTS` chooses the results directory; by default it is
+`lumen-responsive-results` in the OS temporary directory.
+`LUMEN_LAYOUT_SCREENSHOTS=1` captures every surface, including passing checks.
+An unfiltered run is required for acceptance. Short-viewport emulation checks
+layout resilience; it does not reproduce a physical keyboard, Safari safe-area
+behavior, or a real touch device.
+
+The expanded checks also caught notifications intercepting narration taps and
+dialog scroll locks unnecessarily rebuilding AI diagrams. Notification text
+now lets taps through, narration notifications sit above the transport, and
+diagram theme observers ignore unrelated root-style changes. The audio audit
+checks the resume button's hit target; the AI audit opens settings, verifies
+that the diagram survives, and switches the real theme setting. Both AI
+renderers also keep the same sanitized HTML prop when the answer is unchanged,
+preventing React from replacing completed diagrams during unrelated updates.
+
 ## Real model acceptance
 
 Passing mocks does not prove that an installed model returns usable content.
@@ -105,3 +139,12 @@ Local Chrome and the configured `qwen3.5:4b` passed:
 The domain-qualified search limitation above remains reproducible; a passing
 general search does not imply that every upstream engine is healthy. These
 results also do not replace physical iPhone/WebGPU and audio evidence.
+
+## Responsive checkpoint: 2026-09-15
+
+The final implementation passed 342 AI/data tests, the curriculum, unit,
+scale, storage, backup, retrieval, and production/PWA checks, and all 12
+browser suites. The responsive suite passed 327 layout checks and 342 control
+hit checks across all 11 configurations with no uncaught browser errors.
+The visual audit was corrected to change the real theme setting and passed
+on its focused rerun. CI runs the complete gate for the pull request.

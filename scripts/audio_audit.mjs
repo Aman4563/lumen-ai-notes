@@ -247,6 +247,12 @@ try {
   await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
   await page.waitForSelector('button[aria-label="Resume narration"]');
   assert.equal(await page.evaluate(() => speechSynthesis.current), null, "backgrounding must cancel native autoplay while preserving the queue");
+  const resumeTarget = await page.$eval('button[aria-label="Resume narration"]', (button) => {
+    const box = button.getBoundingClientRect();
+    const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return { reachable: button.contains(target), coveringElement: target?.outerHTML.slice(0, 400) };
+  });
+  assert.ok(resumeTarget.reachable, `Resume narration is covered: ${JSON.stringify(resumeTarget)}`);
   await page.click('button[aria-label="Resume narration"]');
   await page.waitForSelector('button[aria-label="Pause narration"]');
   assert.ok(await page.evaluate(() => speechSynthesis.current?.text.length > 0), "foreground resume must replay only after a tap");

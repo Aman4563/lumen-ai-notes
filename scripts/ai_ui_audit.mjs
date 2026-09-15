@@ -345,17 +345,29 @@ try {
     throw error;
   });
   assert.equal(await page.$('.ai-tutor__message--assistant .diagram-diagnostic'), null, "valid tutor Mermaid displayed a failure diagnostic");
-  const lightDiagramRenderCount = await page.$eval(".ai-tutor__message--assistant .mermaid", (node) => Number(node.dataset.diagramRenderCount));
-  const originalDiagramTheme = await page.evaluate(() => {
-    const root = document.documentElement;
-    const original = root.dataset.theme;
-    root.dataset.theme = original === 'dark' ? 'paper' : 'dark';
-    return original;
-  });
-  await page.waitForFunction((before) => Number(document.querySelector(".ai-tutor__message--assistant .mermaid")?.dataset.diagramRenderCount) > before, { timeout: 15_000 }, lightDiagramRenderCount);
+  await waitForStoredHistory(page, "nonempty");
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.waitForSelector('.ai-tutor__message--assistant .mermaid[data-diagram-status="rendered"] svg');
+  const originalDiagramId = await page.$eval(".ai-tutor__message--assistant .mermaid svg", (node) => node.id);
+  const originalDiagramTheme = await page.evaluate(() => document.documentElement.dataset.theme);
+  const nextDiagramTheme = await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme === "dark" ? "paper" : "dark");
+  await page.click('[aria-label="Open settings"]');
+  await page.waitForSelector(".settings-drawer");
+  assert.equal(await page.$eval(".ai-tutor__message--assistant .mermaid svg", (node) => node.id), originalDiagramId, "opening a dialog unnecessarily cleared the AI diagram");
+  await clickByText(page, ".theme-choices button", nextDiagramTheme === "dark" ? "Night" : "Paper");
+  await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, {}, nextDiagramTheme);
+  await page.$eval(".settings-close", (button) => button.click());
+  // A settings update may replace the response subtree; a per-node counter
+  // then restarts at one. The SVG identity proves a new render either way.
+  await page.waitForFunction((before) => {
+    const svg = document.querySelector('.ai-tutor__message--assistant .mermaid[data-diagram-status="rendered"] svg');
+    return svg && svg.id !== before;
+  }, { timeout: 15_000 }, originalDiagramId);
   assert.match(await page.$eval(".ai-tutor__message--assistant .mermaid svg", (node) => node.textContent), /Development decisions/iu, "theme rerender used SVG text instead of the preserved Mermaid definition");
   assert.equal(await page.$('.ai-tutor__message--assistant .diagram-diagnostic'), null, "theme change corrupted a valid tutor diagram");
-  await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, originalDiagramTheme);
+  await page.click('[aria-label="Open settings"]');
+  await clickByText(page, ".theme-choices button", { system: "System", paper: "Paper", dark: "Night", contrast: "Contrast" }[originalDiagramTheme]);
+  await page.$eval(".settings-close", (button) => button.click());
   assert.match(await page.$eval(".ai-tutor__message--assistant .ai-tutor__web-status.is-used", (node) => node.textContent), /evidence used/i, "completed current-web request did not visibly report that web evidence was used");
   await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Approach");
   assert.match(await page.$eval(".ai-tutor__approach", (node) => node.textContent.replace(/\s+/g, " ")), /Library retrieval attached [1-9]/i, "whole-library retrieval trace was not visible in the Approach panel");

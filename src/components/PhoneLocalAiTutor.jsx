@@ -247,6 +247,7 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
     () => renderPhoneTutorMarkdown(text, sources, citations),
     [citations, sources, text],
   );
+  const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
   const handleClick = async (event) => {
     const codeButton = event.target.closest?.(".code-copy");
@@ -273,7 +274,7 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
       ref={responseRef}
       className="phone-tutor__safe-response"
       // renderPhoneTutorMarkdown sanitizes model-authored HTML with DOMPurify.
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={htmlMarkup}
       onClick={handleClick}
     />
   );

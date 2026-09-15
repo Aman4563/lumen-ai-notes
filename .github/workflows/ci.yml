@@ -48,3 +48,12 @@ jobs:
         run: npm run audit:app
       - name: Browser workflows
         run: npm run check:browser
+        env:
+          LUMEN_LAYOUT_ARTIFACTS: ${{ runner.temp }}/lumen-responsive-results
+      - name: Responsive audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responsive-layout-results
+          path: ${{ runner.temp }}/lumen-responsive-results
+          if-no-files-found: ignore

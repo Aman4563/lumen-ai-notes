@@ -21,6 +21,7 @@
     "audit:unit": "node scripts/unit_audit.mjs",
     "audit:scale": "node --test src/lib/annotations.scale.test.mjs src/lib/review.scale.test.mjs src/lib/search.scale.test.mjs",
     "audit:visual": "node scripts/visual_audit.mjs",
+    "audit:responsive": "node scripts/responsive_audit.mjs",
     "audit:workflow": "node scripts/workflow_audit.mjs",
     "audit:audio": "node scripts/audio_audit.mjs",
     "audit:review": "node scripts/review_audit.mjs",

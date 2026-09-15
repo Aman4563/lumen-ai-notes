@@ -377,10 +377,14 @@
 
 .ai-tutor__messages {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 15px;
 }
 
 .ai-tutor__message {
+  min-width: 0;
+  overflow-wrap: anywhere;
   max-width: min(100%, 760px);
   padding: 15px;
   background: var(--paper-2, #f9f7f1);

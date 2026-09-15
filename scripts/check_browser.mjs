@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { startApplicationServer, silentLogger } from "../server/server.mjs";
 
-const audits = ["workflow", "audio", "review", "annotations", "sync", "visual", "controls", "ai-ui", "phone-ai-ui", "mermaid", "chunks"];
+const audits = ["workflow", "audio", "review", "annotations", "sync", "visual", "controls", "ai-ui", "phone-ai-ui", "mermaid", "chunks", "responsive"];
 const requested = process.argv.slice(2);
 if (requested.some((name) => !audits.includes(name))) throw new Error(`Choose audits from: ${audits.join(", ")}`);
 const chromePath = process.env.CHROME_PATH || [

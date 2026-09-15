@@ -77,7 +77,14 @@ try {
     dark: getComputedStyle(document.documentElement).colorScheme.includes("dark"),
   }));
   const alternateTheme = readerDiagramBeforeTheme.dark ? "paper" : "dark";
-  await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, alternateTheme);
+  const setTheme = async (theme) => {
+    await page.$eval('[aria-label="Open settings"]', (button) => button.click());
+    await page.waitForSelector(".theme-choices");
+    await page.$$eval(".theme-choices button", (buttons, label) => buttons.find((button) => button.textContent.includes(label)).click(), { system: "System", paper: "Paper", dark: "Night", contrast: "Contrast" }[theme]);
+    await page.waitForFunction((value) => document.documentElement.dataset.theme === value, {}, theme);
+    await page.$eval(".settings-close", (button) => button.click());
+  };
+  await setTheme(alternateTheme);
   await page.waitForFunction((count) => Number(document.querySelector(".diagram-shell .mermaid")?.dataset.diagramRenderCount) > count, { timeout: 15_000 }, readerDiagramBeforeTheme.count).catch(() => {});
   const readerDiagramAfterTheme = await page.$eval(".diagram-shell .mermaid", (node) => ({
     count: Number(node.dataset.diagramRenderCount),
@@ -87,10 +94,7 @@ try {
   assert(readerDiagramAfterTheme.count > readerDiagramBeforeTheme.count, "Reader Mermaid did not rerender after a theme change");
   assert(readerDiagramAfterTheme.sourceLabel.includes("Artificial Intelligence"), "Reader theme rerender lost the original Mermaid definition");
   assert(!readerDiagramAfterTheme.failed, "Reader theme rerender converted a valid built-in diagram into an error");
-  await page.evaluate((theme) => {
-    if (theme === null) document.documentElement.removeAttribute("data-theme");
-    else document.documentElement.dataset.theme = theme;
-  }, readerDiagramBeforeTheme.originalTheme);
+  await setTheme(readerDiagramBeforeTheme.originalTheme || "system");
 
   const teachClicked = await page.$$eval(".document-tools .text-button", (buttons) => {
     const button = buttons.find((item) => item.textContent.includes("Teach"));
