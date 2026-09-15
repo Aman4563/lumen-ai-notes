@@ -98,6 +98,14 @@ try {
 
     const inspect = async (surface, rootSelector, { dialog = false, canvas = false } = {}) => {
       await page.waitForSelector(rootSelector);
+      // Even a reduced-motion animation can be between compositor frames on CI.
+      // Measure the settled panel, not its temporary entrance transform.
+      await page.$eval(rootSelector, async (root) => {
+        root.getBoundingClientRect();
+        await Promise.all(root.getAnimations({ subtree: true })
+          .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime))
+          .map((animation) => animation.finished.catch(() => {})));
+      });
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       const finding = await page.evaluate(({ selector, dialog, canvas }) => {
         const root = document.querySelector(selector);

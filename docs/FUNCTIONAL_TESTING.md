@@ -47,6 +47,10 @@ checks the resume button's hit target; the AI audit opens settings, verifies
 that the diagram survives, and switches the real theme setting. Both AI
 renderers also keep the same sanitized HTML prop when the answer is unchanged,
 preventing React from replacing completed diagrams during unrelated updates.
+Review and mistake dialogs likewise initialize only when opening a new draft;
+background app updates retain their text and category. The review audit forces
+an offline/online update while editing to reproduce this previously intermittent
+failure. Layout measurements wait for finite entrance animations to settle.
 
 ## Real model acceptance
 

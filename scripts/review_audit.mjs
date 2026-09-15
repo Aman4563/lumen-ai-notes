@@ -208,6 +208,13 @@ try {
   await manualFields[0].type("Wrote the softmax gradient with the wrong sign");
   await manualFields[1].type("The Jacobian diagonal is p_i(1 - p_i); off-diagonals are -p_i p_j.");
   await page.select(".mistake-dialog select", "formula");
+  // A background app update must not reinitialize the learner's open draft.
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await page.waitForSelector(".offline-dot");
+  assert.equal(await manualFields[0].evaluate((node) => node.value), "Wrote the softmax gradient with the wrong sign", "a background update reset the mistake prompt");
+  assert.equal(await manualFields[1].evaluate((node) => node.value), "The Jacobian diagonal is p_i(1 - p_i); off-diagonals are -p_i p_j.", "a background update reset the expected answer");
+  assert.equal(await page.$eval(".mistake-dialog select", (node) => node.value), "formula", "a background update reset the mistake category");
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await clickByText(page, ".mistake-dialog button", "Log mistake");
   await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("Formula")), { timeout: 5_000 });
   await clickByText(page, ".review-mistakes button", "Log mistake");
