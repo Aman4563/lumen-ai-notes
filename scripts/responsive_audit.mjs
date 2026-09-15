@@ -5,6 +5,7 @@ import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { initialProfile, normalizeProfile } from "../src/lib/db.js";
 import { createReviewItem } from "../src/lib/review.js";
+import { auditViewportScrolling } from "./viewport_scrolling_audit.mjs";
 
 const baseUrl = (process.env.LUMEN_URL || "http://127.0.0.1:4187/").replace(/\/$/, "");
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-responsive-"));
@@ -162,7 +163,15 @@ try {
     await click(page, ".mastery-check");
     await inspect("assessment", ".assessment-dialog", { dialog: true });
     await reach(".assessment-dialog .button.primary");
+    await page.focus(".assessment-dialog .button.primary");
+    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+    await page.waitForSelector(".sidebar-settings .offline-dot");
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.$eval(".assessment-dialog .button.primary", (node) => document.activeElement === node), true, "Background updates moved focus out of the assessment control");
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.waitForSelector(".sidebar-settings .online-dot");
     await page.keyboard.press("Escape");
+    await page.waitForSelector(".assessment-dialog", { hidden: true });
     await navigate("library", ".library-page");
     await inspect("library", ".library-page");
     await navigate(`read/${encodeURIComponent(documentId)}`, ".reader-view");
@@ -250,6 +259,7 @@ try {
     await inspect("device-evidence", ".device-evidence-page");
     await context.close();
   }
+  await auditViewportScrolling({ browser, baseUrl, artifactDirectory, results, runtimeErrors });
   const failed = results.filter((result) => !result.ok);
   const unreachable = controls.filter((control) => !control.reachable);
   console.log(JSON.stringify({ checks: results.length, failed: failed.length, controls: controls.length, unreachable, runtimeErrors, artifacts: artifactDirectory }));

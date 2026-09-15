@@ -94,8 +94,26 @@ try {
     );
   }
 
+  // A background profile commit also rebuilds the document map. Revalidating
+  // that map must not dismiss mobile navigation while the user is choosing.
+  await pageA.setViewport({ width: 390, height: 680 });
+  await pageA.bringToFront();
+  await pageA.locator('[aria-label="Open menu"]').click();
+  await pageA.waitForSelector(".app-sidebar.open");
+  await pageB.bringToFront();
+  await pageB.locator('[aria-label="Open settings"]').click();
+  await pageB.waitForSelector(".theme-choices");
+  const night = (await pageB.$$(".theme-choices button"))[2];
+  assert.ok(await night.evaluate((node) => node.textContent.includes("Night")), "Night theme control moved");
+  await night.asLocator().click();
+  await pageB.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+  await pageA.bringToFront();
+  await pageA.waitForFunction(() => document.documentElement.dataset.theme === "dark", { timeout: 10_000 });
+  await pageA.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await pageA.$eval(".app-sidebar", (node) => node.classList.contains("open") && !node.inert), true, "a background profile update dismissed mobile navigation");
+
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Cross-tab audit passed: simultaneous unique notes were atomically merged, broadcast, and durable after two-tab reload.");
+  console.log("Cross-tab audit passed: simultaneous unique notes were atomically merged, broadcast, and durable after two-tab reload; background settings updates preserve an open mobile menu.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Archive,
@@ -1447,12 +1447,19 @@ export default function App() {
     speech.stop();
     setView(next);
     setSidebarOpen(false);
+    if (next === view) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
     const route = routeFor(next, currentDocumentId);
     if (window.location.hash !== route) window.location.hash = route;
-  }, [currentDocumentId, editorDirty, speech.stop]);
+  }, [currentDocumentId, editorDirty, speech.stop, view]);
+
+  useLayoutEffect(() => {
+    // Sections share the document scroll position. Open each at its heading;
+    // the reader keeps its saved position in its separate scroll container.
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [view]);
 
   useEffect(() => {
-    const handleRoute = () => {
+    const handleRoute = (event) => {
       const route = parseRoute();
       const routeChangesDocument = route.documentId && route.documentId !== currentDocumentId;
       const routeLeavesEditor = route.view !== "reader" || routeChangesDocument;
@@ -1478,7 +1485,9 @@ export default function App() {
           notify("The linked document could not be found.", "error");
         }
       } else setView(route.view);
-      setSidebarOpen(false);
+      // Background profile saves rebuild the document map and revalidate this
+      // effect. Only navigation should dismiss a menu the user just opened.
+      if (event?.type === "hashchange") setSidebarOpen(false);
     };
     handleRoute();
     window.addEventListener("hashchange", handleRoute);

@@ -20,6 +20,8 @@ export default function AssessmentDialog({ assessment, onFinish, onClose, onOpen
   const [revealed, setRevealed] = useState(false);
   const dialogRef = useRef(null);
   const finishedRef = useRef(false);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     const previous = document.activeElement;
@@ -27,7 +29,7 @@ export default function AssessmentDialog({ assessment, onFinish, onClose, onOpen
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        closeRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -46,7 +48,7 @@ export default function AssessmentDialog({ assessment, onFinish, onClose, onOpen
         if (target?.isConnected && !target.closest?.("[inert]")) target.focus?.();
       });
     };
-  }, [onClose]);
+  }, []);
 
   if (!assessment?.ok) return null;
   const { questions, evidence, kind } = assessment;

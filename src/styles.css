@@ -1,7 +1,7 @@
 :root {
   font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   color: #172035;
-  background: #f5f3ed;
+  background: var(--paper-2);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --ink: #172035;
@@ -91,6 +91,8 @@
 html {
   min-height: 100%;
   background: var(--paper-2);
+  /* The document scrolls, including inside an embedded browser preview. */
+  overscroll-behavior-y: none;
   -webkit-text-size-adjust: 100%;
   scroll-behavior: smooth;
 }

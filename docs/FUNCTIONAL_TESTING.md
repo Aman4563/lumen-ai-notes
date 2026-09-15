@@ -21,7 +21,7 @@ production build. Use `npm run audit:responsive` with `LUMEN_URL` to target a
 running app. The same audit runs in the release gate and CI, which uploads its
 JSON results and screenshots as `responsive-layout-results`.
 
-The matrix covers 320, 360, 390, 430, 568, 768, 1024, 1280, and 1920px widths,
+The matrix covers 320, 360, 390, 430, 568, 768, 1024, 1225, 1280, and 1920px widths,
 portrait and landscape, short viewports, and 200% text on phone and tablet.
 Fresh browser profiles contain long document/collection names, unbroken links,
 code, tables, notes, review cards, and AI history. The checks visit every main
@@ -31,7 +31,23 @@ overflow, offscreen content, dialogs outside the viewport, an undersized
 canvas, unreachable control centers, and uncaught browser errors. Wide code,
 tables, and tool strips may scroll within a container that fits the viewport.
 
+The `embedded-preview` and `theme-phone` cases also check the document canvas,
+vertical scroll bounds, and navigation after scrolling a long page. They cover
+Paper, Night, Contrast, and both light/dark System themes, collapse AI request
+details, and resize a scrolled preview or rotate a phone. The preview matches
+the editor screenshot's content dimensions in Chrome; production framing
+protections stay enabled. These 80 checks catch theme gaps and stale scroll
+positions that horizontal overflow checks miss. Native macOS rubber-band
+animation still requires a manual check in the editor browser.
+
+The cross-tab suite also keeps mobile navigation open while a second tab saves
+a theme change. This reproduces the background-save race that previously
+dismissed the menu when the document map was revalidated.
+The responsive suite forces offline/online updates while a readiness control
+has focus, then verifies Escape removes the dialog before testing other routes.
+
 `LUMEN_LAYOUT_CASES=small-phone,phone-landscape` selects cases for diagnosis.
+Use `LUMEN_LAYOUT_CASES=embedded-preview,theme-phone` for the scroll/theme cases.
 `LUMEN_LAYOUT_ARTIFACTS` chooses the results directory; by default it is
 `lumen-responsive-results` in the OS temporary directory.
 `LUMEN_LAYOUT_SCREENSHOTS=1` captures every surface, including passing checks.
@@ -146,9 +162,16 @@ results also do not replace physical iPhone/WebGPU and audio evidence.
 
 ## Responsive checkpoint: 2026-09-15
 
-The final implementation passed 342 AI/data tests, the curriculum, unit,
+The initial implementation passed 342 AI/data tests, the curriculum, unit,
 scale, storage, backup, retrieval, and production/PWA checks, and all 12
 browser suites. The responsive suite passed 327 layout checks and 342 control
 hit checks across all 11 configurations with no uncaught browser errors.
 The visual audit was corrected to change the real theme setting and passed
 on its focused rerun. CI runs the complete gate for the pull request.
+
+The screenshot follow-up passed 407 layout/theme checks and 342 control hit
+checks with no uncaught browser errors, including the new readiness focus
+regression at all 11 screen/text configurations. Workflow and cross-tab suites
+passed with the navigation fixes; visual, controls, and AI UI checks also passed
+during this follow-up. Both the menu-dismissal and readiness-focus regressions
+were first reproduced against the preceding builds.
