@@ -4675,6 +4675,18 @@ input[type="range"] {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Scroll cues: an edge shadow appears only on a side that has more content
+   (the "local" covers travel with the content and hide it at the ends). */
+.reader-main .markdown-body pre,
+.teaching-markdown pre {
+  background:
+    linear-gradient(90deg, #162035 35%, transparent) left / 36px 100% no-repeat local,
+    linear-gradient(270deg, #162035 35%, transparent) right / 36px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(233, 237, 244, 0.3), transparent) left / 14px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(233, 237, 244, 0.3), transparent) right / 14px 100% no-repeat scroll,
+    #162035;
+}
+
 .markdown-body :not(pre) > code {
   padding: 0.15em 0.34em;
   border: 1px solid var(--line);
@@ -4686,17 +4698,30 @@ input[type="range"] {
 }
 
 .diagram-shell {
+  /* The readable diagram width below scrolls inside this frame; containment
+     keeps it from widening chat bubbles and other auto-width ancestors. */
+  contain: inline-size;
   overflow-x: auto;
   padding: 20px;
   color: var(--ink);
-  background: var(--paper-2);
+  background:
+    linear-gradient(90deg, var(--paper-2) 35%, transparent) left / 36px 100% no-repeat local,
+    linear-gradient(270deg, var(--paper-2) 35%, transparent) right / 36px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) left / 14px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) right / 14px 100% no-repeat scroll,
+    var(--paper-2);
   text-align: center;
   -webkit-overflow-scrolling: touch;
 }
 
+/* A wide diagram keeps a readable share of its natural width (set by
+   mermaidDiagrams.js) and scrolls inside the shell instead of shrinking
+   its labels to a few pixels on a phone. */
 .diagram-shell .mermaid svg {
-  min-width: min(100%, 430px);
+  display: block;
+  min-width: max(var(--diagram-readable-width, 0px), min(100%, 430px));
   height: auto;
+  margin-inline: auto;
 }
 
 .diagram-shell [data-diagram-status="pending"],
@@ -4793,6 +4818,52 @@ input[type="range"] {
   vertical-align: top;
 }
 
+/* Rendered tables (reader, tutor, review cards) scroll inside the focusable
+   wrapper markdown.js adds, never inside the table itself. Cells keep whole
+   words: a wide table scrolls instead of splitting "actions" into "acti-ons". */
+.table-scroll {
+  /* Size to the column, not the table: a wide table must scroll here
+     instead of widening every ancestor without min-width: 0. */
+  contain: inline-size;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll > table {
+  display: table;
+  max-width: none;
+  overflow: visible;
+}
+
+.markdown-body .table-scroll {
+  margin: 1.5em 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+}
+
+.markdown-body .table-scroll > table {
+  width: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.markdown-body .table-scroll th,
+.markdown-body .table-scroll td {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.reader-main .markdown-body .table-scroll {
+  background:
+    linear-gradient(90deg, var(--paper-2) 35%, transparent) left / 36px 100% no-repeat local,
+    linear-gradient(270deg, var(--paper-2) 35%, transparent) right / 36px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) left / 14px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) right / 14px 100% no-repeat scroll,
+    var(--paper-2);
+}
+
 .markdown-body th {
   color: var(--ink);
   background: var(--paper-3);
@@ -4827,6 +4898,16 @@ input[type="range"] {
 
 .markdown-body math[display="inline"] {
   font-size: 1.04em;
+}
+
+/* KaTeX keeps a visually hidden MathML copy for assistive technology; it
+   must not take the visible formula box or become an unfocusable scroller. */
+.markdown-body .katex-mathml math[display="block"] {
+  display: inline;
+  margin: 0;
+  overflow: visible;
+  padding: 0;
+  border: 0;
 }
 
 .markdown-body details {
