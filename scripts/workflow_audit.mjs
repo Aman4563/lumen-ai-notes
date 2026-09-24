@@ -1315,8 +1315,9 @@ try {
   await page.waitForSelector(".library-search input");
   await page.click('button[aria-label="List layout"]');
   assert.ok(await page.$(".document-grid.list-layout"), "library list layout did not activate");
+  assert.equal(await page.$eval('button[aria-label="List layout"]', (node) => node.getAttribute("aria-pressed")), "true", "the layout toggle must expose its pressed state");
   await page.type(".library-search input", "Uploaded Persistence Proof");
-  await page.waitForFunction(() => document.querySelector(".library-results-meta")?.textContent.includes("1 results"));
+  await page.waitForFunction(() => /^1 result(?!s)/.test(document.querySelector(".library-results-meta")?.textContent || ""));
   assert.equal(await page.$eval('.library-view-controls select', (select) => select.selectedOptions[0].textContent), "Relevance", "search did not default to relevance sorting");
   await page.select('.library-view-controls select', "title");
   // Library search now resolves asynchronously in a Web Worker after the corpus
@@ -1353,6 +1354,8 @@ try {
     () => document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"),
     { timeout: 10_000 },
   ).catch(() => assert.fail("typo tolerance did not surface the uploaded document"));
+  await page.waitForFunction(() => document.querySelector(".library-correction")?.textContent.includes("persistence"), { timeout: 5_000 })
+    .catch(() => assert.fail("a typo-only result set did not say which corrected word it matched"));
 
   // The -term operator excludes documents containing the term.
   await page.click('button[aria-label="Clear search"]');
@@ -1369,7 +1372,7 @@ try {
   await page.click('button[aria-label="Clear search"]');
   await page.type(".library-search input", "title:uploaded");
   await page.waitForFunction(
-    () => document.querySelector(".library-results-meta")?.textContent.includes("1 results")
+    () => /^1 result(?!s)/.test(document.querySelector(".library-results-meta")?.textContent || "")
       && document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"),
     { timeout: 10_000 },
   ).catch(() => assert.fail("the title: field filter did not restrict to title matches"));
@@ -1393,12 +1396,12 @@ try {
   // is still filling, early queries return partial counts that then grow.
   const settledResultCount = async () => {
     await page.waitForFunction(() => {
-      const match = document.querySelector(".library-results-meta")?.textContent.match(/(\d+) results/);
+      const match = document.querySelector(".library-results-meta")?.textContent.match(/(\d+) results?/);
       return match && Number(match[1]) <= 100;
     }, { timeout: 10_000 });
     let previous = -1;
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      const current = await page.$eval(".library-results-meta", (node) => Number(node.textContent.match(/(\d+) results/)?.[1] || 0));
+      const current = await page.$eval(".library-results-meta", (node) => Number(node.textContent.match(/(\d+) results?/)?.[1] || 0));
       if (current === previous) return current;
       previous = current;
       await delay(500);
@@ -1420,7 +1423,19 @@ try {
   }
   assert.ok(formulaCount > 0 && formulaCount <= plainCount, `has:formula must narrow results (${formulaCount} of ${plainCount})`);
 
+  // Issue #52: built-in lectures show highlighted match context, not only uploads.
   await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "backpropagation");
+  await page.waitForFunction(() => [...document.querySelectorAll(".document-card")].some((card) => /^Part \d/.test(card.querySelector(".document-card-copy > span")?.textContent || "") && card.querySelector("p mark")), { timeout: 10_000 })
+    .catch(() => assert.fail("no built-in lecture showed a highlighted match snippet"));
+
+  // Recents hold committed searches only, never each typed prefix.
+  await page.click('button[aria-label="Clear search"]');
+  await page.waitForSelector(".library-search-shortcuts", { timeout: 5_000 });
+  const typedQueries = ["Uploaded Persistence Proof", "Uploaded Persistance Proof", "uploaded -persistence", "title:uploaded", "gradients", "has:formula attention", "attention", "backpropagation"];
+  const recentLabels = await page.$$eval('.library-search-shortcuts .search-chip button[aria-label^="Repeat recent search"]', (nodes) => nodes.map((node) => node.textContent.trim()));
+  assert.ok(recentLabels.length > 0 && recentLabels.every((label) => typedQueries.includes(label)), `recent searches recorded partial queries: ${recentLabels.join(" | ")}`);
+
   await page.$$eval(".library-search-shortcuts .search-chip button", (nodes) => nodes.find((node) => node.getAttribute("aria-label")?.startsWith("Remove saved search"))?.click());
   await page.waitForFunction(() => !document.querySelector('.library-search-shortcuts .search-chip button[aria-label^="Remove saved search"]'), { timeout: 5_000 });
   await page.type(".library-search input", "Uploaded Persistence Proof");

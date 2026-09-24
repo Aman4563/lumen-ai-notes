@@ -56,7 +56,7 @@ import { deleteData, getAllData, getData, initialProfile, normalizeProfile, repl
 import { isProfileReplacementNewer, mergeProfileVersions, prepareProfileReplacement, profilePayloadEqual, PROFILE_REPLACEMENT_EVENT, PROFILE_SYNC_CHANNEL, PROFILE_SYNC_SIGNAL_KEY } from "./lib/profileSync.js";
 import { useSpeech } from "./hooks/useSpeech";
 import { useWakeLock } from "./hooks/useWakeLock";
-import { searchDocuments } from "./lib/search";
+import { pruneRecentSearches, pushRecentSearch, searchDocuments, SEARCH_RESULT_LIMIT } from "./lib/search";
 import { createId } from "./lib/id.js";
 import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
@@ -342,29 +342,44 @@ function ProgressRing({ value, size = 92 }) {
   );
 }
 
-/** Wraps matched search terms in <mark> for highlighted snippets (SEARCH-001). */
+/**
+ * Wraps matched search terms in <mark> for highlighted snippets (SEARCH-001).
+ * Short terms only mark at a word start, mirroring the search rule, so "rag"
+ * never lights up inside "storage".
+ */
 function HighlightedText({ text, terms }) {
   const value = String(text || "");
-  const cleaned = (terms || []).filter((term) => term && term.length > 1).slice(0, 12);
+  const cleaned = [...new Set((terms || []).filter((term) => term && term.length > 1))].sort((left, right) => right.length - left.length).slice(0, 12);
   if (!cleaned.length) return value;
-  const pattern = new RegExp(`(${cleaned.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "giu");
-  return value.split(pattern).map((part, index) => pattern.test(part) && cleaned.some((term) => part.toLocaleLowerCase() === term.toLocaleLowerCase())
-    ? <mark key={`${index}-${part.slice(0, 8)}`}>{part}</mark>
-    : <span key={`${index}-${part.slice(0, 8)}`}>{part}</span>);
+  const pattern = new RegExp(cleaned.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "giu");
+  const parts = [];
+  let last = 0;
+  for (const match of value.matchAll(pattern)) {
+    if (match[0].length <= 4 && /[\p{L}\p{N}]/u.test(value[match.index - 1] || "")) continue;
+    if (match.index > last) parts.push(value.slice(last, match.index));
+    parts.push(<mark key={match.index}>{match[0]}</mark>);
+    last = match.index + match[0].length;
+  }
+  if (!parts.length) return value;
+  if (last < value.length) parts.push(value.slice(last));
+  return parts;
 }
 
 function DocumentCard({ doc, profile, onOpen, compact = false }) {
   const progress = documentProgress(profile, doc.id);
+  const percent = Math.round(progress * 100);
+  const done = progress >= 0.96;
+  const highlight = doc.matchedTerms?.length ? doc.matchedTerms : null;
   return (
     <button className={compact ? "document-card compact" : "document-card"} onClick={() => onOpen(doc.id)} type="button">
-      <div className="document-card-icon">{progress >= 0.96 ? <Check size={19} /> : doc.isIndex ? <LibraryBig size={19} /> : <BookOpen size={19} />}</div>
+      <div className="document-card-icon" aria-hidden="true">{done ? <Check size={19} /> : doc.isIndex ? <LibraryBig size={19} /> : <BookOpen size={19} />}</div>
       <div className="document-card-copy">
-        <span>{doc.partNumber > 0 ? `Part ${doc.partNumber}` : "Guide"} · {doc.minutes} min</span>
-        <strong>{doc.title}</strong>
-        {!compact && <p>{doc.matchedTerms?.length ? <HighlightedText text={doc.description} terms={doc.matchedTerms} /> : doc.description}</p>}
-        <div className="mini-progress"><span style={{ width: `${progress * 100}%` }} /></div>
+        <span>{doc.source === "custom" ? "My note" : doc.partNumber > 0 ? `Part ${doc.partNumber}` : "Guide"} · {doc.minutes} min{done ? <b className="document-card-state is-done"> · Done</b> : percent > 0 ? <b className="document-card-state"> · {percent}% read</b> : null}</span>
+        <strong>{highlight ? <HighlightedText text={doc.title} terms={highlight} /> : doc.title}</strong>
+        {!compact && <p>{highlight ? <HighlightedText text={doc.description} terms={highlight} /> : doc.description}</p>}
+        {progress > 0 && <div className="mini-progress" aria-hidden="true"><span style={{ width: `${percent}%` }} /></div>}
       </div>
-      <ChevronRight size={19} />
+      <ChevronRight size={19} aria-hidden="true" />
     </button>
   );
 }
@@ -560,12 +575,14 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   const [workerResults, setWorkerResults] = useState(null);
   const [recentSearches, setRecentSearches] = useState(() => {
     try {
-      const stored = JSON.parse(globalThis.localStorage?.getItem("lumen.library.recent-searches") || "[]");
-      return Array.isArray(stored) ? stored.filter((entry) => typeof entry === "string").slice(0, 8) : [];
+      // Pruning on load clears the per-keystroke prefixes older builds stored.
+      return pruneRecentSearches(JSON.parse(globalThis.localStorage?.getItem("lumen.library.recent-searches") || "[]"));
     } catch {
       return [];
     }
   });
+  const [announcement, setAnnouncement] = useState("");
+  const filterRowRef = useRef(null);
   const searchClientRef = useRef(null);
   const corpusSentRef = useRef(false);
   const sentCustomRef = useRef(new Map());
@@ -632,24 +649,31 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
       .then(({ stale, results }) => {
         if (!active || stale) return;
         setWorkerResults(results);
-        if (results.length) {
-          setRecentSearches((current) => {
-            const next = [normalized, ...current.filter((entry) => entry !== normalized)].slice(0, 8);
-            try { globalThis.localStorage?.setItem("lumen.library.recent-searches", JSON.stringify(next)); } catch { /* device-local convenience only */ }
-            return next;
-          });
-        }
       })
       .catch(() => { if (active) setWorkerResults(null); });
     return () => { active = false; };
   }, [candidates, normalized, searchIndex]);
+  const saveRecentSearches = useCallback((update) => setRecentSearches((current) => {
+    const next = update(current);
+    if (next.length === current.length && next.every((entry, index) => entry === current[index])) return current;
+    try { globalThis.localStorage?.setItem("lumen.library.recent-searches", JSON.stringify(next)); } catch { /* device-local convenience only */ }
+    return next;
+  }), []);
+  // Recents record committed searches only — Enter, leaving the field,
+  // opening a result, or a pause — never each keystroke's prefix.
+  const commitSearch = useCallback((value) => saveRecentSearches((current) => pushRecentSearch(current, value)), [saveRecentSearches]);
+  useEffect(() => {
+    if (!normalized || !workerResults?.length) return undefined;
+    const timer = setTimeout(() => commitSearch(normalized), 1_500);
+    return () => clearTimeout(timer);
+  }, [commitSearch, normalized, workerResults]);
   const visible = useMemo(() => {
     let results;
     if (normalized && workerResults) {
       const byId = new Map(workerResults.map((entry) => [entry.id, entry]));
       results = candidates
         .filter((doc) => byId.has(doc.id))
-        .map((doc) => ({ ...doc, description: byId.get(doc.id).snippet || doc.description, searchScore: byId.get(doc.id).searchScore, matchedTerms: byId.get(doc.id).matchedTerms || [] }))
+        .map((doc) => ({ ...doc, description: byId.get(doc.id).snippet || doc.description, searchScore: byId.get(doc.id).searchScore, matchedTerms: byId.get(doc.id).matchedTerms || [], corrections: byId.get(doc.id).corrections || [] }))
         .sort((a, b) => b.searchScore - a.searchScore || a.partNumber - b.partNumber || a.chapterNumber - b.chapterNumber);
     } else if (normalized) {
       // Metadata-only search covers the moments before the corpus/worker is
@@ -671,25 +695,79 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
     return results.sort((a, b) => a.partNumber - b.partNumber || a.chapterNumber - b.chapterNumber || a.title.localeCompare(b.title));
   }, [candidates, normalized, profile.progress, profile.recent, sortBy, workerResults]);
 
+  const capped = Boolean(normalized) && visible.length >= SEARCH_RESULT_LIMIT;
+  const countLabel = capped ? `Top ${SEARCH_RESULT_LIMIT} results` : `${visible.length} ${visible.length === 1 ? "result" : "results"}`;
+  // "Showing matches for …" appears only when every result needed a typo correction.
+  const corrections = normalized && visible.length && visible.every((doc) => doc.corrections?.length) ? visible[0].corrections : null;
+  const resultSummary = `${countLabel}${normalized ? ` for ${normalized}` : ""}`;
+  const announcedRef = useRef(false);
+  useEffect(() => {
+    // Screen readers hear the settled count, not every keystroke's.
+    if (!announcedRef.current) {
+      announcedRef.current = true;
+      return undefined;
+    }
+    const timer = setTimeout(() => setAnnouncement(resultSummary), 700);
+    return () => clearTimeout(timer);
+  }, [resultSummary]);
+  const updateFilterCue = useCallback(() => {
+    const row = filterRowRef.current;
+    if (!row) return;
+    row.dataset.fadeStart = String(row.scrollLeft > 2);
+    row.dataset.fadeEnd = String(row.scrollWidth - row.clientWidth - row.scrollLeft > 2);
+  }, []);
+  const hasUploads = customDocuments.length > 0;
+  useEffect(() => {
+    // Keep the selected chip in view (a sidebar Part jump selects Part 17).
+    const row = filterRowRef.current;
+    const active = row?.querySelector('[aria-pressed="true"]');
+    if (row && active && row.scrollWidth > row.clientWidth) row.scrollLeft = Math.max(0, active.offsetLeft - (row.clientWidth - active.offsetWidth) / 2);
+    updateFilterCue();
+    window.addEventListener("resize", updateFilterCue);
+    return () => window.removeEventListener("resize", updateFilterCue);
+  }, [hasUploads, selectedPart, updateFilterCue]);
+  const openResult = (id) => {
+    if (normalized && visible.length) commitSearch(normalized);
+    onOpen(id);
+  };
+  const chip = (value, label, { key, ...extra } = {}) => {
+    const active = value === null ? !selectedPart : selectedPart === value;
+    return <button key={key} className={active ? "active" : ""} aria-pressed={active} onClick={() => setSelectedPart(value)} type="button" {...extra}>{label}</button>;
+  };
+  const showAll = ["Show all lectures", () => setSelectedPart(null)];
+  const empty = normalized
+    ? {
+      title: `No matches for “${normalized}”`,
+      body: /(^|\s)tag:/i.test(normalized) ? "Tags belong to your own notes; the built-in lectures have none." : selectedPart ? "Nothing in this filter matches. Search every Part, or check the spelling." : "Check the spelling, drop an excluded word or filter, or try a broader concept.",
+      actions: [["Clear search", () => setQuery("")], ...(selectedPart ? [["Search all Parts", () => setSelectedPart(null)]] : [])],
+    }
+    : selectedPart === "bookmarks" ? { title: "No bookmarks yet", body: "Tap the bookmark button while reading to keep a lecture here.", actions: [showAll] }
+      : selectedPart === "progress" ? { title: "Nothing in progress", body: "Lectures you have started but not finished appear here.", actions: [showAll] }
+        : selectedPart === "recent" ? { title: "No lectures opened yet", body: "Lectures you open appear here, most recent first.", actions: [showAll] }
+          : { title: "Nothing to show here", body: "Archived notes stay in the Notebook.", actions: [showAll] };
+
   return (
     <div className="page library-page">
       <header className="page-title">
         <div><span className="eyebrow">Complete curriculum</span><h1>Your library</h1><p>Search every lecture, formula, method, technology, exercise, and interview prompt.</p></div>
         <div className="library-count"><strong>{allDocuments.length}</strong><span>documents</span></div>
       </header>
-      <div className="library-search"><Search size={20} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search… (−term excludes; title: part: tag: has:code has:formula)" aria-label="Search library" />{normalized && !searchIndex && !searchIndexError && <span className="search-index-loading" role="status">Loading full text…</span>}{normalized && <button className={savedSearches.includes(normalized) ? "search-save is-active" : "search-save"} onClick={() => onSettingsChange?.({ savedSearches: savedSearches.includes(normalized) ? savedSearches.filter((entry) => entry !== normalized) : [normalized, ...savedSearches].slice(0, 20) })} aria-label={savedSearches.includes(normalized) ? "Remove this saved search" : "Save this search"} aria-pressed={savedSearches.includes(normalized)} type="button"><Star size={16} /></button>}{query && <button onClick={() => setQuery("")} aria-label="Clear search" type="button"><X size={17} /></button>}</div>
-      {!normalized && (savedSearches.length > 0 || recentSearches.length > 0) && <div className="library-search-shortcuts" aria-label="Saved and recent searches">{savedSearches.map((entry) => <span className="search-chip is-saved" key={`saved-${entry}`}><button onClick={() => setQuery(entry)} aria-label={`Run saved search ${entry}`} type="button"><Star size={12} /> {entry}</button><button onClick={() => onSettingsChange?.({ savedSearches: savedSearches.filter((item) => item !== entry) })} aria-label={`Remove saved search ${entry}`} type="button"><X size={12} /></button></span>)}{recentSearches.filter((entry) => !savedSearches.includes(entry)).map((entry) => <span className="search-chip" key={`recent-${entry}`}><button onClick={() => setQuery(entry)} aria-label={`Repeat recent search ${entry}`} type="button"><History size={12} /> {entry}</button></span>)}</div>}
+      <div className="library-search"><Search size={20} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && normalized && visible.length) commitSearch(normalized); }} onBlur={() => { if (normalized && visible.length) commitSearch(normalized); }} placeholder="Search lectures, formulas, code…" aria-label="Search library" aria-describedby="library-search-tips" enterKeyHint="search" autoCapitalize="none" autoCorrect="off" spellCheck={false} />{normalized && !searchIndex && !searchIndexError && <span className="search-index-loading" role="status"><span className="search-index-spinner" aria-hidden="true" /><span className="visually-hidden">Loading full lecture text…</span></span>}{normalized && <button className={savedSearches.includes(normalized) ? "search-save is-active" : "search-save"} onClick={() => onSettingsChange?.({ savedSearches: savedSearches.includes(normalized) ? savedSearches.filter((entry) => entry !== normalized) : [normalized, ...savedSearches].slice(0, 20) })} aria-label={savedSearches.includes(normalized) ? "Remove this saved search" : "Save this search"} aria-pressed={savedSearches.includes(normalized)} type="button"><Star size={16} /></button>}{query && <button className="search-clear" onClick={() => setQuery("")} aria-label="Clear search" type="button"><X size={17} /></button>}</div>
+      <p className={normalized ? "library-search-tips is-searching" : "library-search-tips"} id="library-search-tips">Try <code>"exact phrase"</code> <code>-word</code> to exclude, <code>title:</code> <code>part:5</code> <code>has:code</code> <code>has:formula</code>, or <code>tag:</code> for your own notes.</p>
+      {!normalized && (savedSearches.length > 0 || recentSearches.length > 0) && <div className="library-search-shortcuts" aria-label="Saved and recent searches">{savedSearches.map((entry) => <span className="search-chip is-saved" key={`saved-${entry}`}><button onClick={() => setQuery(entry)} aria-label={`Run saved search ${entry}`} type="button"><Star size={12} aria-hidden="true" /> <span className="search-chip-label">{entry}</span></button><button onClick={() => onSettingsChange?.({ savedSearches: savedSearches.filter((item) => item !== entry) })} aria-label={`Remove saved search ${entry}`} type="button"><X size={12} /></button></span>)}{recentSearches.filter((entry) => !savedSearches.includes(entry)).map((entry) => <span className="search-chip" key={`recent-${entry}`}><button onClick={() => setQuery(entry)} aria-label={`Repeat recent search ${entry}`} type="button"><History size={12} aria-hidden="true" /> <span className="search-chip-label">{entry}</span></button><button onClick={() => saveRecentSearches((current) => current.filter((item) => item !== entry))} aria-label={`Remove recent search ${entry}`} type="button"><X size={12} /></button></span>)}</div>}
       {searchIndexError && <p className="inline-warning">{searchIndexError}</p>}
-      <div className="filter-row">
-        <button className={!selectedPart ? "active" : ""} onClick={() => setSelectedPart(null)} type="button">All</button>
-        <button className={selectedPart === "guides" ? "active" : ""} onClick={() => setSelectedPart("guides")} type="button">Guides</button>
-        <button className={selectedPart === "bookmarks" ? "active" : ""} onClick={() => setSelectedPart("bookmarks")} type="button">Bookmarks</button>
-        <button className={selectedPart === "progress" ? "active" : ""} onClick={() => setSelectedPart("progress")} type="button">In progress</button>
-        <button className={selectedPart === "recent" ? "active" : ""} onClick={() => setSelectedPart("recent")} type="button">Recent</button>
-        {customDocuments.length > 0 && <button className={selectedPart === "uploads" ? "active" : ""} onClick={() => setSelectedPart("uploads")} type="button">My uploads</button>}
-        {parts.map((part) => <button className={selectedPart === String(part.number) ? "active" : ""} onClick={() => setSelectedPart(String(part.number))} aria-label={`Part ${part.number}: ${part.title}`} title={part.title} key={part.number} type="button">{part.number}</button>)}
+      <div className="filter-row" ref={filterRowRef} onScroll={updateFilterCue} role="group" aria-label="Filter lectures">
+        {chip(null, "All")}
+        {chip("guides", "Guides")}
+        {chip("bookmarks", "Bookmarks")}
+        {chip("progress", "In progress")}
+        {chip("recent", "Recent")}
+        {hasUploads && chip("uploads", "My uploads")}
+        {parts.map((part) => chip(String(part.number), `Part ${part.number}`, { key: part.number, "aria-label": `Part ${part.number}: ${part.title.replace(/^Part \d+\s+[—-]\s+/, "")}`, title: part.title }))}
       </div>
-      <div className="library-results-toolbar"><div className="library-results-meta"><span>{visible.length} results</span>{normalized && <span>for “{query}”</span>}</div><div className="library-view-controls"><label><span>Sort</span><select value={sortBy} onChange={(event) => setSortBy(event.target.value)} aria-label="Sort library results"><option value="smart">{normalized ? "Relevance" : "Curriculum order"}</option><option value="curriculum">Curriculum order</option><option value="recent">Recently opened</option><option value="progress">Most progress</option><option value="shortest">Shortest first</option><option value="title">Title A–Z</option></select></label><div role="group" aria-label="Library layout"><button className={layout === "grid" ? "active" : ""} onClick={() => setLayout("grid")} aria-label="Grid layout" type="button"><LayoutGrid size={17} /></button><button className={layout === "list" ? "active" : ""} onClick={() => setLayout("list")} aria-label="List layout" type="button"><List size={18} /></button></div></div></div>
+      <div className="library-results-toolbar"><div className="library-results-meta"><span>{countLabel}</span>{normalized && <span>for “{query}”</span>}{capped && <span className="library-results-cap">· add a word or a Part filter to narrow</span>}</div><div className="library-view-controls"><label><span>Sort</span><select value={sortBy} onChange={(event) => setSortBy(event.target.value)} aria-label="Sort library results"><option value="smart">{normalized ? "Relevance" : "Curriculum order"}</option><option value="curriculum">Curriculum order</option><option value="recent">Recently opened</option><option value="progress">Most progress</option><option value="shortest">Shortest first</option><option value="title">Title A–Z</option></select></label><div role="group" aria-label="Library layout"><button className={layout === "grid" ? "active" : ""} aria-pressed={layout === "grid"} onClick={() => setLayout("grid")} aria-label="Grid layout" type="button"><LayoutGrid size={17} /></button><button className={layout === "list" ? "active" : ""} aria-pressed={layout === "list"} onClick={() => setLayout("list")} aria-label="List layout" type="button"><List size={18} /></button></div></div></div>
+      <p className="visually-hidden" role="status" aria-live="polite">{announcement}</p>
+      {corrections && <p className="library-correction">Showing matches for {corrections.map(({ word }, index) => <span key={word}>{index ? ", " : ""}“<mark>{word}</mark>”</span>)} — nothing matched “{corrections.map(({ term }) => term).join(" ")}” exactly.</p>}
       {normalized && visible.length > 0 && !selectedPart && (() => {
         const counts = new Map();
         for (const doc of visible) {
@@ -697,12 +775,12 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
           if (key) counts.set(key, (counts.get(key) || 0) + 1);
         }
         if (counts.size < 2) return null;
-        return <div className="library-facets" aria-label="Results by Part">{[...counts.entries()].sort((left, right) => (left[0] === "uploads") - (right[0] === "uploads") || Number(left[0]) - Number(right[0])).map(([key, count]) => <button key={key} onClick={() => setSelectedPart(key)} type="button">{key === "uploads" ? "My uploads" : `Part ${key}`} <strong>{count}</strong></button>)}</div>;
+        return <div className="library-facets" aria-label="Results by Part">{[...counts.entries()].sort((left, right) => (left[0] === "uploads") - (right[0] === "uploads") || Number(left[0]) - Number(right[0])).map(([key, count]) => <button key={key} onClick={() => setSelectedPart(key)} aria-label={`${key === "uploads" ? "My uploads" : `Part ${key}`}: ${count} ${count === 1 ? "result" : "results"}`} type="button">{key === "uploads" ? "My uploads" : `Part ${key}`} <strong>{count}</strong></button>)}</div>;
       })()}
       <div className={layout === "list" ? "document-grid list-layout" : "document-grid"}>
-        {visible.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={onOpen} compact={layout === "list"} />)}
+        {visible.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={openResult} compact={layout === "list"} />)}
       </div>
-      {!visible.length && <div className="empty-state"><Search size={30} /><h2>No matching lecture</h2><p>Try a broader concept or choose another Part.</p></div>}
+      {!visible.length && <div className="empty-state"><Search size={30} aria-hidden="true" /><h2>{empty.title}</h2><p>{empty.body}</p><div className="empty-state-actions">{empty.actions.map(([label, action], index) => <button className={index ? "button ghost" : "button secondary"} key={label} onClick={action} type="button">{label}</button>)}</div></div>}
     </div>
   );
 }
