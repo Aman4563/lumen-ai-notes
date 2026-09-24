@@ -261,6 +261,9 @@ try {
     containerSelector: ".reader-side-panel.open",
     whileOpen: async () => {
       inspected += await inspectControls(page, "reader outline sheet");
+      // The reader marks the current section after the scroll settles; wait for it
+      // instead of racing the observer (the assertion below still requires it).
+      await page.waitForSelector('.reader-side-panel .outline-list [aria-current="location"]', { timeout: 5_000 }).catch(() => {});
       const sheet = await page.$eval(".reader-side-panel", (panel) => ({ role: panel.getAttribute("role"), modal: panel.getAttribute("aria-modal"), current: panel.querySelector('.outline-list [aria-current="location"]')?.textContent || "" }));
       if (sheet.role !== "dialog" || sheet.modal !== "true") findings.push(`reader outline sheet: open phone sheet is not a modal dialog (${JSON.stringify(sheet)})`);
       if (!sheet.current) findings.push("reader outline sheet: the section being read is not marked aria-current in the outline");
