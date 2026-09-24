@@ -69,12 +69,12 @@ import { mergeBoardVersions } from "./lib/boardSync.js";
 import { adoptVaultConfig, checkSyncHeader, clearSyncBaseline, clearVaultConfig, createVaultConfig, foldPeerSnapshots, getDeviceId, loadSyncBaseline, readVaultConfig, recordVaultSync, saveSyncBaseline, syncFileNameFor } from "./lib/syncVault.js";
 import { buildConceptMap } from "./lib/conceptMap.js";
 import { migrateItemsToFsrs } from "./lib/fsrs.js";
-import { MAX_ASSESSMENTS, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
+import { MAX_ASSESSMENTS, MIN_ASSESSMENT_POOL, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
 import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
-import { actionableDueCount, buildDailySession, planPace, SESSION_LENGTHS } from "./lib/plan.js";
+import { actionableDueCount, buildDailySession, planPace, resumeTarget, SESSION_LENGTHS } from "./lib/plan.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
@@ -384,13 +384,50 @@ function DocumentCard({ doc, profile, onOpen, compact = false }) {
   );
 }
 
+/**
+ * Goal target Parts: after editing, the field shows exactly the list that was
+ * saved and names every value it ignored, instead of silently dropping them.
+ */
+function GoalPartsField({ saved, onSave }) {
+  const savedText = saved.join(", ");
+  const [draft, setDraft] = useState(savedText);
+  const [note, setNote] = useState("");
+  const editingRef = useRef(false);
+  useEffect(() => {
+    if (!editingRef.current) setDraft(savedText);
+  }, [savedText]);
+  const commit = () => {
+    editingRef.current = false;
+    const valid = new Set();
+    const ignored = [];
+    for (const token of draft.split(/[\s,;]+/).filter(Boolean)) {
+      const part = /^\d+$/.test(token) ? Number(token) : NaN;
+      if (part >= 1 && part <= 23) valid.add(part);
+      else ignored.push(token);
+    }
+    const targetParts = [...valid].sort((left, right) => left - right);
+    setDraft(targetParts.join(", "));
+    setNote(ignored.length ? `${ignored.map((value) => `“${value.slice(0, 12)}”`).join(", ")} ${ignored.length === 1 ? "isn’t a Part" : "aren’t Parts"} (1–23), so ${ignored.length === 1 ? "it was" : "they were"} left out.` : "");
+    onSave(targetParts);
+  };
+  return <label><span>Target Parts <small>numbers 1–23, separated by commas</small></span><input className="text-input" value={draft} onFocus={() => { editingRef.current = true; }} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} placeholder="e.g. 5, 6, 9" aria-label="Goal target Parts" aria-describedby="goal-parts-note" /><small className="goal-parts-note" id="goal-parts-note" role="status">{note}</small></label>;
+}
+
+// Shape cues that pair with each mastery color on the curriculum map and legend.
+const CONCEPT_STATE_ICONS = { reading: BookOpen, read: Check, practicing: RefreshCw, mastered: Star };
+
 function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onReview, onStartAssessment, onGoalsChange }) {
   const [sessionMinutes, setSessionMinutes] = useState(30);
+  const [mapFocus, setMapFocus] = useState(null);
   const dailySession = useMemo(() => buildDailySession(sessionMinutes, { profile, documents: allDocuments }), [allDocuments, profile, sessionMinutes]);
   const mastery = useMemo(() => masteryByPart(allDocuments, profile), [allDocuments, profile]);
   const masteryLabel = (state) => PART_MASTERY_STATES.find((entry) => entry.id === state)?.label || state;
   const recent = profile.recent.map((id) => allDocuments.find((doc) => doc.id === id)).filter(Boolean);
-  const continueDoc = recent[0] || documentMap.get(initialDocumentId) || allDocuments[0];
+  // One Continue target for the hero, the Continue card, the Today tile, and the plan.
+  const resume = resumeTarget({ profile, documents: allDocuments });
+  const resuming = resume?.action === "continue";
+  const continueDoc = resume?.document || documentMap.get(initialDocumentId) || allDocuments[0];
+  const history = recent.filter((doc) => doc.id !== continueDoc.id).slice(0, 4);
   const learningDocs = allDocuments.filter((doc) => doc.partNumber > 0 && !doc.isIndex);
   const completed = learningDocs.filter((doc) => documentProgress(profile, doc.id) >= 0.96).length;
   const overall = learningDocs.length ? completed / learningDocs.length : 0;
@@ -403,8 +440,8 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
           <span className="eyebrow">Your private learning studio</span>
           <h1>Learn deeply.<br /><em>At your pace.</em></h1>
           <p>Read, listen, annotate, explain, and sketch through the complete AI/ML curriculum.</p>
-          <button className="button primary large" onClick={() => onOpen(continueDoc.id)} type="button">
-            <BookOpen size={19} /> Continue learning <ArrowRight size={18} />
+          <button className="button primary large" onClick={() => (resume ? onOpen(resume.document.id) : onLibrary())} type="button">
+            <BookOpen size={19} /> {resuming ? "Continue learning" : resume ? "Start learning" : "Browse the library"} <ArrowRight size={18} />
           </button>
         </div>
         <div className="welcome-orbit" aria-hidden="true">
@@ -419,15 +456,15 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
 
       <section className="dashboard-grid">
         <article className="continue-card">
-          <div className="section-heading"><div><span className="eyebrow">Continue</span><h2>{continueDoc.title}</h2></div><ProgressRing value={documentProgress(profile, continueDoc.id)} /></div>
+          <div className="section-heading"><div><span className="eyebrow">{resuming ? "Continue" : "Up next"}</span><h2>{continueDoc.title}</h2></div><ProgressRing value={documentProgress(profile, continueDoc.id)} /></div>
           <p>{continueDoc.description}</p>
           <div className="continue-meta"><span><Clock3 size={16} /> {continueDoc.minutes} min</span><span>{continueDoc.partTitle}</span></div>
-          <button className="button secondary" onClick={() => onOpen(continueDoc.id)} type="button">Open lecture <ArrowRight size={17} /></button>
+          <button className="button secondary" onClick={() => onOpen(continueDoc.id)} type="button">{resuming ? "Resume lecture" : "Start lecture"} <ArrowRight size={17} /></button>
         </article>
 
         <article className="stats-card">
           <span className="eyebrow">Study pulse</span>
-          <div className="big-stat"><strong>{completed}</strong><span>lectures<br />completed</span></div>
+          <div className="big-stat"><strong>{completed}</strong><span>{completed === 1 ? "lecture" : "lectures"}<br />completed</span></div>
           <div className="stat-row"><span>Overall progress</span><strong>{Math.round(overall * 100)}%</strong></div>
           <div className="stat-row"><span>Personal notes</span><strong>{annotated}</strong></div>
           <div className="stat-row"><span>Bookmarks</span><strong>{profile.bookmarks.length}</strong></div>
@@ -438,19 +475,26 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
         {(() => {
           const dueCount = profile.reviewItems.filter((item) => !item.suspended && !item.archived && Date.parse(item.dueAt) <= Date.now()).length;
           const openMistakes = (profile.mistakes || []).filter((mistake) => !mistake.correctedAt).length;
-          const continueDoc = recent[0];
           return (
             <>
               <button className="today-widget" onClick={onReview} type="button"><Brain size={19} /><strong>{dueCount}</strong><span>due card{dueCount === 1 ? "" : "s"}</span></button>
               <button className="today-widget" onClick={onReview} type="button"><Flame size={19} /><strong>{openMistakes}</strong><span>open mistake{openMistakes === 1 ? "" : "s"}</span></button>
-              <button className="today-widget today-widget--wide" onClick={() => continueDoc && onOpen(continueDoc.id)} disabled={!continueDoc} type="button"><BookOpen size={19} /><strong>{continueDoc ? "Continue" : "Start reading"}</strong><span>{continueDoc ? continueDoc.title : "Open the library"}</span></button>
+              <button className="today-widget today-widget--wide" onClick={() => (resuming ? onOpen(resume.document.id) : onLibrary())} type="button"><BookOpen size={19} /><strong>{resuming ? "Continue" : "Start reading"}</strong><span>{resuming ? resume.document.title : "Browse the library"}</span></button>
             </>
           );
         })()}
       </section>
 
       <section className="page-section daily-plan" aria-label="Today’s study plan">
-        <div className="section-heading"><div><span className="eyebrow">Deterministic session</span><h2>Today’s plan</h2></div><div className="daily-plan-lengths" role="radiogroup" aria-label="Session length">{SESSION_LENGTHS.map((length) => <button key={length} role="radio" aria-checked={sessionMinutes === length} className={sessionMinutes === length ? "active" : ""} onClick={() => setSessionMinutes(length)} type="button">{length} min</button>)}</div></div>
+        <div className="section-heading"><div><span className="eyebrow">Daily session</span><h2>Today’s plan</h2></div><div className="daily-plan-lengths" role="radiogroup" aria-label="Session length" onKeyDown={(event) => {
+          // Radio-group keys: arrows move and select; one Tab stop for the group.
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+          if (!step) return;
+          event.preventDefault();
+          const next = SESSION_LENGTHS[(SESSION_LENGTHS.indexOf(sessionMinutes) + step + SESSION_LENGTHS.length) % SESSION_LENGTHS.length];
+          setSessionMinutes(next);
+          event.currentTarget.querySelector(`[data-minutes="${next}"]`)?.focus();
+        }}>{SESSION_LENGTHS.map((length) => <button key={length} role="radio" aria-checked={sessionMinutes === length} tabIndex={sessionMinutes === length ? 0 : -1} data-minutes={length} className={sessionMinutes === length ? "active" : ""} onClick={() => setSessionMinutes(length)} type="button">{length} min</button>)}</div></div>
         {dailySession.empty
           ? <p className="microcopy">Nothing is due and nothing is open — read ahead in the library or add review cards from your highlights.</p>
           : <div className="daily-plan-blocks">
@@ -459,8 +503,8 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
               else if (block.documentId) onOpen(block.documentId);
             }} type="button">
               <span className="daily-plan-minutes">{block.minutes} min</span>
-              <span className="daily-plan-label">{block.label}{block.partial ? " (as far as you get)" : ""}</span>
-              <ArrowRight size={15} />
+              <span className="daily-plan-label">{block.label}{block.partial ? " (as far as you get)" : ""}{block.reason && <small className="daily-plan-reason">{block.reason}</small>}</span>
+              <ArrowRight size={15} aria-hidden="true" />
             </button>)}
             <p className="microcopy">{dailySession.plannedMinutes} of {dailySession.budgetMinutes} minutes planned · reviews first, then your most-repeated open mistakes, then reading.</p>
           </div>}
@@ -469,10 +513,7 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
       <section className="page-section goal-section" aria-label="Study goal">
         <div className="section-heading"><div><span className="eyebrow">Direction</span><h2>Study goal</h2></div></div>
         <div className="goal-editor">
-          <label><span>Target Parts <small>comma-separated numbers 1–23</small></span><input className="text-input" defaultValue={(profile.goals?.targetParts || []).join(", ")} onBlur={(event) => {
-            const targetParts = [...new Set(event.target.value.split(",").map((value) => Number(value.trim())).filter((part) => Number.isInteger(part) && part >= 1 && part <= 23))].slice(0, 23);
-            onGoalsChange({ targetParts });
-          }} placeholder="e.g. 5, 6, 9" aria-label="Goal target Parts" /></label>
+          <GoalPartsField saved={profile.goals?.targetParts || []} onSave={(targetParts) => onGoalsChange({ targetParts })} />
           <label><span>Target date</span><input className="text-input" type="date" defaultValue={profile.goals?.targetDate || ""} onBlur={(event) => onGoalsChange({ targetDate: /^\d{4}-\d{2}-\d{2}$/.test(event.target.value) ? event.target.value : "" })} aria-label="Goal target date" /></label>
         </div>
         {(() => {
@@ -486,21 +527,48 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
         <div className="section-heading"><div><span className="eyebrow">Prerequisite path</span><h2>Curriculum map</h2></div></div>
         {(() => {
           const map = buildConceptMap(mastery, { columns: 4 });
-          const height = map.rows * 16;
+          // Row pitch leaves room between 44px nodes even at 320px wide.
+          const height = map.rows * 18;
+          const order = map.nodes.map((node) => node.partNumber).sort((left, right) => left - right);
+          // One Tab stop for the map; arrow keys walk the path in curriculum order.
+          const tabbable = order.includes(mapFocus) ? mapFocus : (map.nodes.find((node) => node.state === "reading")?.partNumber ?? order[0]);
+          const moveFocus = (event) => {
+            const current = Number(event.target.closest("[data-part]")?.dataset.part);
+            const index = order.indexOf(current);
+            const next = { ArrowRight: order[index + 1], ArrowDown: order[index + 1], ArrowLeft: order[index - 1], ArrowUp: order[index - 1], Home: order[0], End: order.at(-1) }[event.key];
+            if (index < 0 || next === undefined) return;
+            event.preventDefault();
+            setMapFocus(next);
+            event.currentTarget.querySelector(`[data-part="${next}"]`)?.focus();
+          };
           return (
-            <svg className="concept-map" viewBox={`0 0 100 ${height}`} role="img" aria-label={`Curriculum map: ${map.nodes.length} Parts in prerequisite order, colored by mastery state`}>
-              {map.edges.map((edge) => <line key={`${edge.from}-${edge.to}`} x1={edge.x1 * 100} y1={edge.y1 * height} x2={edge.x2 * 100} y2={edge.y2 * height} className="concept-edge" />)}
-              {map.nodes.map((node) => {
-                const startId = parts.find((part) => part.number === node.partNumber)?.startId;
-                return (
-                  <g key={node.partNumber} className={`concept-node state-${node.state}`} onClick={() => startId && onOpen(startId)} role="button" tabIndex={-1} aria-label={`Part ${node.partNumber}: ${node.partTitle} — ${node.state.replace("-", " ")}`}>
-                    <title>{`Part ${node.partNumber} · ${node.partTitle} — ${node.state.replace("-", " ")}, ${node.readPercent}% read`}</title>
-                    <circle cx={node.x * 100} cy={node.y * height} r={4.6} />
-                    <text x={node.x * 100} y={node.y * height + 1.6}>{node.partNumber}</text>
-                  </g>
-                );
-              })}
-            </svg>
+            <>
+              <div className="concept-map" style={{ aspectRatio: `100 / ${height}` }}>
+                <svg className="concept-map-edges" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                  {map.edges.map((edge) => <line key={`${edge.from}-${edge.to}`} x1={edge.x1 * 100} y1={edge.y1 * height} x2={edge.x2 * 100} y2={edge.y2 * height} className="concept-edge" />)}
+                </svg>
+                <div className="concept-map-nodes" role="toolbar" aria-label="Curriculum map" aria-describedby="concept-map-help" onKeyDown={moveFocus}>
+                  {map.nodes.map((node) => {
+                    const startId = parts.find((part) => part.number === node.partNumber)?.startId;
+                    const StateIcon = CONCEPT_STATE_ICONS[node.state];
+                    const name = String(node.partTitle || "").replace(/^Part \d+\s+[—-]\s+/, "");
+                    return (
+                      <button key={node.partNumber} className={`concept-node state-${node.state}`} style={{ left: `${node.x * 100}%`, top: `${node.y * 100}%` }} data-part={node.partNumber} tabIndex={node.partNumber === tabbable ? 0 : -1} onFocus={() => setMapFocus(node.partNumber)} onClick={() => startId && onOpen(startId)} aria-label={`Part ${node.partNumber}: ${name} — ${masteryLabel(node.state)}, ${node.readPercent}% read`} title={`Part ${node.partNumber} · ${name} — ${masteryLabel(node.state)}, ${node.readPercent}% read`} type="button">
+                        <span aria-hidden="true">{node.partNumber}</span>
+                        {StateIcon && <StateIcon className="concept-node-badge" size={12} aria-hidden="true" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <p className="concept-map-help" id="concept-map-help">Tap a Part to open it; with a keyboard, arrow keys move along the path.</p>
+              <ul className="concept-map-legend" aria-label="Map legend">
+                {PART_MASTERY_STATES.map((state) => {
+                  const StateIcon = CONCEPT_STATE_ICONS[state.id];
+                  return <li key={state.id}><span className={`concept-legend-swatch state-${state.id}`} aria-hidden="true">{StateIcon && <StateIcon size={10} />}</span>{state.label}</li>;
+                })}
+              </ul>
+            </>
           );
         })()}
       </section>
@@ -510,10 +578,15 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
         <div className="mastery-grid">
           {mastery.map((part) => {
             const lastCheck = (profile.assessments || []).find((record) => record.partNumber === part.partNumber);
+            // A readiness check builds from the learner's own cards; below the
+            // minimum, say so instead of offering a button that always fails.
+            const checkable = part.activeCards >= MIN_ASSESSMENT_POOL;
             return <article className={`mastery-row state-${part.state}`} key={part.partNumber} title={`${part.reason} Next: ${part.nextAction}`}>
               <span className="mastery-part">{String(part.partNumber).padStart(2, "0")}</span>
-              <div className="mastery-copy"><strong>{part.partTitle}</strong><span>{part.completedChapters}/{part.chapters} chapters · {part.masteredCards}/{part.activeCards || 0} cards mastered{part.overdueCards ? ` · ${part.overdueCards} overdue` : ""}{lastCheck ? ` · last check ${lastCheck.percent}%` : ""}</span><small className="mastery-next">{part.nextAction}</small></div>
-              <div className="mastery-row-actions"><button className="text-button mastery-check" onClick={() => onStartAssessment(part.partNumber)} type="button">Check readiness</button><span className={`mastery-state state-${part.state}`}>{masteryLabel(part.state)}</span></div>
+              <div className="mastery-copy"><strong>{part.partTitle}</strong><span>{part.completedChapters}/{part.chapters} chapters{part.activeCards ? ` · ${part.masteredCards}/${part.activeCards} cards mastered` : ""}{part.overdueCards ? ` · ${part.overdueCards} overdue` : ""}{lastCheck ? ` · last check ${lastCheck.percent}%` : ""}</span><small className="mastery-next">{part.nextAction}</small></div>
+              <div className="mastery-row-actions">{checkable
+                ? <button className="text-button mastery-check" onClick={() => onStartAssessment(part.partNumber)} aria-label={`Check Part ${part.partNumber} readiness`} type="button">Check readiness</button>
+                : <small className="mastery-check-hint">Check unlocks at {MIN_ASSESSMENT_POOL} cards · {part.activeCards}/{MIN_ASSESSMENT_POOL}</small>}<span className={`mastery-state state-${part.state}`}>{masteryLabel(part.state)}</span></div>
             </article>;
           })}
         </div>
@@ -529,18 +602,18 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
               <button className="part-tile" key={part.number} onClick={() => onOpen(part.startId)} type="button">
                 <div className="part-number">{String(part.number).padStart(2, "0")}</div>
                 <strong>{part.title.replace(/^Part \d+\s+[—-]\s+/, "")}</strong>
-                <span>{part.documents.length - 1} lectures · {part.minutes} min</span>
-                <div className="mini-progress"><span style={{ width: `${partValue * 100}%` }} /></div>
+                <span>{part.documents.length - 1} {part.documents.length - 1 === 1 ? "lecture" : "lectures"} · {part.minutes} min</span>
+                {partValue > 0 && <div className="mini-progress" aria-hidden="true"><span style={{ width: `${partValue * 100}%` }} /></div>}
               </button>
             );
           })}
         </div>
       </section>
 
-      {recent.length > 1 && (
+      {history.length > 0 && (
         <section className="page-section">
           <div className="section-heading"><div><span className="eyebrow">History</span><h2>Recently opened</h2></div></div>
-          <div className="document-list">{recent.slice(1, 5).map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={onOpen} compact />)}</div>
+          <div className="document-list">{history.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={onOpen} compact />)}</div>
         </section>
       )}
 
@@ -561,7 +634,10 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
       <section className="study-method-card">
         <div className="method-icon"><GraduationCap size={26} /></div>
         <div><span className="eyebrow">Better than passive reading</span><h2>Read → recall → explain → implement</h2><p>Use narration during review, personal notes for retrieval practice, teaching mode to explain aloud, and the whiteboard for derivations.</p></div>
-        <div className="dashboard-method-actions"><button className="button ghost" onClick={onNotebook} type="button">Open notebook</button><button className="button primary" onClick={onReview} type="button"><Brain size={17} /> Review {profile.reviewItems.filter((item) => !item.suspended && Date.parse(item.dueAt) <= Date.now()).length} due</button></div>
+        <div className="dashboard-method-actions"><button className="button ghost" onClick={onNotebook} type="button">Open notebook</button><button className="button primary" onClick={onReview} type="button"><Brain size={17} /> {(() => {
+          const due = profile.reviewItems.filter((item) => !item.suspended && Date.parse(item.dueAt) <= Date.now()).length;
+          return due ? `Review ${due} due` : "Open reviews";
+        })()}</button></div>
       </section>
     </div>
   );
@@ -1627,6 +1703,17 @@ export default function App() {
     }));
     notify(next >= 1 ? "Lecture marked complete." : "Lecture progress reset.");
   }, [currentDocumentId, notify]);
+
+  // Every way into a lecture counts as opening it: cards, deep and shared
+  // links, a restored PWA route, and Back/Forward (issue #52). Waiting for
+  // hydration keeps the stored profile from being overwritten, and a no-op
+  // update when it is already first avoids a write per background save.
+  useEffect(() => {
+    if (!hydrated || view !== "reader" || !allDocumentMap.has(currentDocumentId)) return;
+    setProfile((current) => (current.recent[0] === currentDocumentId && current.lastDocumentId === currentDocumentId
+      ? current
+      : { ...current, lastDocumentId: currentDocumentId, recent: [currentDocumentId, ...current.recent.filter((item) => item !== currentDocumentId)].slice(0, 20) }));
+  }, [allDocumentMap, currentDocumentId, hydrated, view]);
 
   const currentSource = profile.edits[currentDocument.id] ?? currentOriginalSource;
   const aiSources = useMemo(() => {

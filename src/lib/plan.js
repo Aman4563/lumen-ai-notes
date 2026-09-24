@@ -2,16 +2,58 @@ import { buildReviewQueue } from "./review.js";
 
 /**
  * Daily session builder v1 (PLAN-001 slice): a deterministic 15/30/60-minute
- * mix of due reviews, open-mistake corrections, and the next reading step.
- * Estimates are explicit constants so the plan is predictable, not adaptive:
- * ~30 seconds per due card, ~3 minutes per mistake correction, and the
- * chapter's own reading-minutes metadata. Goal capture, reschedule/catch-up,
- * and prerequisite awareness remain open acceptance work.
+ * mix of due reviews, open-mistake corrections, and reading that fills the
+ * remaining minutes (up to four blocks). Estimates are explicit constants so
+ * the plan is predictable, not adaptive: ~30 seconds per due card, ~3
+ * minutes per mistake correction, and the chapter's own reading-minutes
+ * metadata (the unread share for a started lecture). Reschedule/catch-up and
+ * prerequisite awareness remain open acceptance work.
  */
 const MINUTES_PER_CARD = 0.5;
 const MINUTES_PER_MISTAKE = 3;
+const COMPLETED = 0.96;
+const MIN_READING_BLOCK = 5;
+const MAX_READING_BLOCKS = 4;
 
 export const SESSION_LENGTHS = Object.freeze([15, 30, 60]);
+
+/**
+ * Reading order shared by every Home surface: started-but-unfinished
+ * lectures, most recently opened first (built-in chapters that fell out of
+ * the bounded recent list follow in curriculum order), then unread built-in
+ * chapters with the learner's goal Parts first and curriculum order after.
+ */
+const readingOrder = ({ profile, documents }) => {
+  const progressOf = (id) => Number(profile.progress?.[id]) || 0;
+  const recent = profile.recent || [];
+  const recency = (id) => {
+    const index = recent.indexOf(id);
+    return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+  };
+  const isChapter = (document) => document.source === "builtin" && !document.isIndex && Number.isInteger(document.partNumber) && document.partNumber >= 1;
+  const curriculum = (left, right) => left.partNumber - right.partNumber || left.chapterNumber - right.chapterNumber;
+  const goalParts = new Set(profile.goals?.targetParts || []);
+  const inProgress = documents
+    .filter((document) => !document.archived && progressOf(document.id) > 0 && progressOf(document.id) < COMPLETED && (isChapter(document) || recency(document.id) < Number.MAX_SAFE_INTEGER))
+    .sort((left, right) => recency(left.id) - recency(right.id) || curriculum(left, right));
+  const unread = documents
+    .filter((document) => isChapter(document) && progressOf(document.id) === 0)
+    .sort((left, right) => Number(goalParts.has(right.partNumber)) - Number(goalParts.has(left.partNumber)) || curriculum(left, right));
+  return { inProgress, unread, progressOf, goalParts };
+};
+
+/**
+ * The single "Continue" rule (issue #52): the most recently opened lecture
+ * that is started but not finished; otherwise the next unread chapter. A
+ * completed lecture is never offered as "Continue". Null when everything
+ * is read.
+ */
+export const resumeTarget = ({ profile, documents }) => {
+  const { inProgress, unread, progressOf } = readingOrder({ profile, documents });
+  if (inProgress.length) return { document: inProgress[0], action: "continue", progress: progressOf(inProgress[0].id) };
+  if (unread.length) return { document: unread[0], action: "start", progress: 0 };
+  return null;
+};
 
 export const buildDailySession = (minutes, { profile, documents }, now = new Date()) => {
   const budget = SESSION_LENGTHS.includes(minutes) ? minutes : 30;
@@ -45,34 +87,31 @@ export const buildDailySession = (minutes, { profile, documents }, now = new Dat
     remaining -= affordableMistakes * MINUTES_PER_MISTAKE;
   }
 
-  // 3. Reading: resume the most recent in-progress chapter, else the first
-  //    unread built-in chapter in curriculum order.
-  const builtin = documents.filter((document) => document.source === "builtin" && !document.isIndex && Number.isInteger(document.partNumber) && document.partNumber >= 1);
-  const progressOf = (id) => Number(profile.progress?.[id]) || 0;
-  const inProgress = builtin
-    .filter((document) => progressOf(document.id) > 0 && progressOf(document.id) < 0.96)
-    .sort((left, right) => (profile.recent || []).indexOf(left.id) - (profile.recent || []).indexOf(right.id));
-  const unread = builtin
-    .filter((document) => progressOf(document.id) === 0)
-    .sort((left, right) => left.partNumber - right.partNumber || left.chapterNumber - right.chapterNumber);
-  // Goal bias (PLAN-001): chapters inside the learner's target Parts come
-  // first within each tier; ties keep curriculum order.
-  const goalParts = new Set((profile.goals?.targetParts || []));
-  const goalFirst = (list) => (goalParts.size
-    ? [...list].sort((left, right) => Number(goalParts.has(right.partNumber)) - Number(goalParts.has(left.partNumber)))
-    : list);
-  const readingTarget = goalFirst(inProgress)[0] || goalFirst(unread)[0] || null;
-  if (readingTarget && remaining >= 5) {
-    const chapterMinutes = Math.max(5, Number(readingTarget.minutes) || 10);
+  // 3. Reading fills the rest of the chosen length: first the Continue
+  //    target every Home surface shares, then other started lectures, then
+  //    unread chapters (goal Parts first, curriculum order after), until
+  //    less than a useful block remains.
+  const { inProgress, unread, progressOf, goalParts } = readingOrder({ profile, documents });
+  let readingBlocks = 0;
+  for (const target of [...inProgress, ...unread]) {
+    if (remaining < MIN_READING_BLOCK || readingBlocks >= MAX_READING_BLOCKS) break;
+    const progress = progressOf(target.id);
+    const fullMinutes = Math.max(MIN_READING_BLOCK, Number(target.minutes) || 10);
+    // A started lecture only needs its unread share.
+    const chapterMinutes = progress > 0 ? Math.max(3, Math.ceil(fullMinutes * (1 - progress))) : fullMinutes;
     const readingMinutes = Math.min(remaining, chapterMinutes);
     blocks.push({
       kind: "reading",
-      label: `${progressOf(readingTarget.id) > 0 ? "Continue" : "Start"} “${readingTarget.title}”`,
+      label: `${progress > 0 ? "Continue" : "Start"} “${target.title}”`,
+      reason: progress > 0
+        ? `${Math.round(progress * 100)}% read so far`
+        : goalParts.has(target.partNumber) ? `Next in your goal Part ${target.partNumber}` : "Next in curriculum order",
       minutes: readingMinutes,
-      documentId: readingTarget.id,
+      documentId: target.id,
       partial: readingMinutes < chapterMinutes,
     });
     remaining -= readingMinutes;
+    readingBlocks += 1;
   }
 
   return {

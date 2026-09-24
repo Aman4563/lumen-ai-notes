@@ -2672,7 +2672,8 @@ input[type="range"] {
 
 @media (max-width: 740px) {
   .dashboard-method-actions { width: 100%; justify-content: stretch; }
-  .dashboard-method-actions .button { flex: 1; }
+  /* Two buttons share a row only when both labels fit on one line. */
+  .dashboard-method-actions .button { flex: 1 1 9.5rem; white-space: nowrap; }
   .review-title { align-items: stretch; }
   .review-title > .button { width: 100%; justify-content: center; }
   .review-overview { margin-top: 18px; }
@@ -3238,7 +3239,8 @@ input[type="range"] {
   margin: 0;
   font-size: clamp(2.65rem, 5vw, 5rem);
   line-height: 0.97;
-  letter-spacing: -0.06em;
+  /* Tighter tracking fused "rn" into "m" in the fallback system font. */
+  letter-spacing: -0.035em;
 }
 
 .welcome-block h1 em {
@@ -3674,7 +3676,11 @@ input[type="range"] {
   border: 1px solid var(--line);
   border-radius: 20px;
   background: var(--teal-soft);
+  /* Break only overlong words; "anywhere" let the text track shrink to one glyph. */
+  overflow-wrap: break-word;
 }
+
+.study-method-card > div { min-width: 0; }
 
 .method-icon {
   display: grid;
@@ -5832,18 +5838,19 @@ input[type="range"] {
 
   .view-container { min-height: calc(100vh - 58px - env(safe-area-inset-top)); }
 
+  /* A compact phone hero: no fixed decorative band before the first action. */
   .welcome-block {
     width: 100%;
     min-width: 0;
-    min-height: 440px;
+    min-height: 0;
     grid-template-columns: 1fr;
-    padding: 31px 24px;
-    border-radius: 24px;
+    padding: 22px 20px;
+    border-radius: 22px;
   }
 
   .welcome-block > div:first-child { min-width: 0; }
-  .welcome-block h1 { font-size: clamp(2.55rem, 12vw, 3.5rem); }
-  .welcome-block p { font-size: 0.9rem; }
+  .welcome-block h1 { font-size: clamp(2.05rem, 10vw, 2.8rem); }
+  .welcome-block p { margin: 12px 0 18px; font-size: 0.86rem; line-height: 1.55; }
   .welcome-orbit { display: none; }
 
   .dashboard-grid { grid-template-columns: 1fr; }
@@ -5852,8 +5859,9 @@ input[type="range"] {
   .continue-card .section-heading > div { min-width: 0; max-width: calc(100% - 108px); }
 
   .part-carousel { margin-right: -16px; }
-  .study-method-card { grid-template-columns: auto 1fr; }
-  .study-method-card > .button { grid-column: 1 / -1; }
+  /* Icon beside the copy; the action pair takes its own full-width row. */
+  .study-method-card { grid-template-columns: auto minmax(0, 1fr); }
+  .study-method-card > .dashboard-method-actions { grid-column: 1 / -1; }
 
   .page-title { align-items: flex-start; flex-direction: column; }
   .page-title h1 { font-size: 2.35rem; }
@@ -6135,9 +6143,15 @@ input[type="range"] {
   min-height: 40px;
   padding: 7px 13px;
   color: var(--ink-soft, #566078);
+  background: transparent;
   font-size: 0.78rem;
   font-weight: 720;
   cursor: pointer;
+}
+
+/* The group clips its corners, so draw the focus ring inside each segment. */
+.daily-plan-lengths button:focus-visible {
+  outline-offset: -4px;
 }
 
 .daily-plan-lengths button + button {
@@ -6181,11 +6195,19 @@ input[type="range"] {
 }
 
 .daily-plan-label {
+  display: grid;
   flex: 1 1 auto;
+  gap: 2px;
   min-width: 0;
   color: var(--ink, #172035);
   font-size: 0.86rem;
   font-weight: 640;
+}
+
+.daily-plan-reason {
+  color: var(--ink-soft, #566078);
+  font-size: 0.7rem;
+  font-weight: 600;
 }
 
 .mastery-grid {
@@ -6204,6 +6226,8 @@ input[type="range"] {
   border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
   border-radius: 13px;
   background: var(--paper-2, #f9f7f1);
+  /* Labels never split mid-word ("readines/s"); only overlong words break. */
+  overflow-wrap: break-word;
 }
 
 .mastery-part {
@@ -6247,14 +6271,16 @@ input[type="range"] {
   font-weight: 780;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  white-space: nowrap;
   color: var(--ink-soft, #566078);
   background: color-mix(in srgb, var(--ink-soft, #566078) 10%, transparent);
 }
 
-.mastery-state.state-reading { color: var(--gold, #9c7500); background: color-mix(in srgb, var(--gold, #d9a400) 16%, transparent); }
-.mastery-state.state-read { color: var(--accent, #4759c7); background: color-mix(in srgb, var(--accent, #4759c7) 12%, transparent); }
-.mastery-state.state-practicing { color: var(--coral, #b3502f); background: color-mix(in srgb, var(--coral, #e36f4a) 14%, transparent); }
-.mastery-state.state-mastered { color: var(--teal, #1f8a70); background: color-mix(in srgb, var(--teal, #1f8a70) 14%, transparent); }
+/* State hues are mixed toward the ink so the small pill text stays readable in every theme. */
+.mastery-state.state-reading { color: color-mix(in srgb, var(--gold, #9c7500) 45%, var(--ink, #172035)); background: color-mix(in srgb, var(--gold, #d9a400) 16%, transparent); }
+.mastery-state.state-read { color: color-mix(in srgb, var(--accent, #4759c7) 70%, var(--ink, #172035)); background: color-mix(in srgb, var(--accent, #4759c7) 12%, transparent); }
+.mastery-state.state-practicing { color: color-mix(in srgb, var(--coral, #b3502f) 60%, var(--ink, #172035)); background: color-mix(in srgb, var(--coral, #e36f4a) 14%, transparent); }
+.mastery-state.state-mastered { color: color-mix(in srgb, var(--teal, #1f8a70) 60%, var(--ink, #172035)); background: color-mix(in srgb, var(--teal, #1f8a70) 14%, transparent); }
 
 .mistake-summary {
   display: flex;
@@ -7707,17 +7733,22 @@ input[type="range"] {
 .notebook-mistake-copy small { display: block; overflow: hidden; color: var(--ink-faint); font-size: 0.66rem; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Wave 8: curriculum concept map */
-.concept-map { display: block; width: 100%; height: auto; padding: 6px 0; }
-.concept-edge { stroke: var(--line-strong); stroke-width: 0.55; }
-.concept-node { cursor: pointer; }
-.concept-node circle { fill: var(--paper-3); stroke: var(--line-strong); stroke-width: 0.5; transition: transform 120ms ease; }
-.concept-node text { fill: var(--ink-soft); font-size: 4px; font-weight: 800; text-anchor: middle; pointer-events: none; }
-.concept-node.state-reading circle { fill: #f6dfae; stroke: #c9a24d; }
-.concept-node.state-read circle { fill: #cfe3d9; stroke: #5f9481; }
-.concept-node.state-practicing circle { fill: #bcd9f2; stroke: #4c82b4; }
-.concept-node.state-mastered circle { fill: #2e8b76; stroke: #1f6a59; }
-.concept-node.state-mastered text { fill: #ffffff; }
-.concept-node:hover circle { stroke-width: 1; }
+/* Issue 52: Part nodes are real 44px buttons over a decorative edge layer. */
+.concept-map { position: relative; width: 100%; max-width: 540px; margin: 10px auto 0; }
+.concept-map-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.concept-edge { stroke: var(--line-strong); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.concept-map-nodes { position: absolute; inset: 0; }
+.concept-node { position: absolute; display: grid; width: 44px; height: 44px; place-items: center; padding: 0; border: 2px solid var(--line-strong); border-radius: 50%; color: var(--ink-soft); background: var(--paper-3); cursor: pointer; font-size: 0.86rem; font-weight: 800; transform: translate(-50%, -50%); transition: border-color 120ms ease; }
+.concept-node:hover { border-color: var(--ink-soft); }
+.concept-node.state-reading, .concept-legend-swatch.state-reading { border-color: #c9a24d; color: #172035; background: #f6dfae; }
+.concept-node.state-read, .concept-legend-swatch.state-read { border-color: #5f9481; color: #172035; background: #cfe3d9; }
+.concept-node.state-practicing, .concept-legend-swatch.state-practicing { border-color: #4c82b4; color: #172035; background: #bcd9f2; }
+.concept-node.state-mastered, .concept-legend-swatch.state-mastered { border-color: #1f6a59; color: #ffffff; background: #2e8b76; }
+.concept-node-badge { position: absolute; top: -5px; right: -5px; box-sizing: content-box; padding: 2px; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--ink); background: var(--paper); }
+.concept-map-help { margin: 12px 0 8px; color: var(--ink-soft); font-size: 0.72rem; text-align: center; }
+.concept-map-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 14px; margin: 0; padding: 0; color: var(--ink-soft); font-size: 0.72rem; font-weight: 700; list-style: none; }
+.concept-map-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.concept-legend-swatch { display: grid; width: 18px; height: 18px; place-items: center; border: 2px solid var(--line-strong); border-radius: 50%; color: var(--ink); background: var(--paper-3); }
 
 /* Wave 9: narration sleep timer */
 .speech-sleep-row { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
@@ -7810,11 +7841,26 @@ input[type="range"] {
 .backup-password-field small { color: var(--ink-faint); font-weight: 600; }
 
 /* Issue 9: readiness checks, goals, pacing */
-.mastery-row-actions { display: grid; justify-items: end; gap: 5px; }
-.mastery-check { font-size: 0.66rem; }
+/* The action column keeps its natural width so labels never wrap mid-word. */
+.mastery-row-actions { display: grid; flex: 0 0 auto; justify-items: end; gap: 5px; }
+.mastery-check { font-size: 0.66rem; white-space: nowrap; }
+.mastery-check-hint { max-width: 12em; color: var(--ink-soft); font-size: 0.64rem; font-weight: 650; line-height: 1.35; text-align: right; }
 .goal-editor { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
 .goal-editor label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 750; }
 .goal-editor small { color: var(--ink-faint); font-weight: 600; }
+.goal-editor .goal-parts-note { color: var(--ink-soft); font-weight: 650; line-height: 1.45; }
+@media (max-width: 740px) {
+  /* Phone rows: the Part copy gets the full width and the actions a line of their own. */
+  .mastery-row { flex-wrap: wrap; row-gap: 8px; }
+  .mastery-copy { flex-basis: calc(100% - 40px); }
+  .mastery-row-actions { display: flex; flex: 1 0 100%; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; padding-left: 32px; }
+  .mastery-check-hint { max-width: none; text-align: left; }
+  .mastery-check,
+  .dashboard-page .section-heading .text-button,
+  .continue-card .button,
+  .goal-editor .text-input { min-height: 44px; }
+  .daily-plan-lengths button { min-width: 52px; min-height: 44px; }
+}
 .goal-pace { margin: 11px 0 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink-soft); font-size: 0.76rem; }
 .goal-pace.pace-behind, .goal-pace.pace-past-due { border-color: rgba(226, 106, 78, 0.4); }
 .goal-pace.pace-on-track, .goal-pace.pace-done { border-color: rgba(46, 139, 118, 0.4); }

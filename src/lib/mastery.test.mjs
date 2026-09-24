@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { masteryByPart } from "./mastery.js";
-import { buildDailySession } from "./plan.js";
+import { buildDailySession, resumeTarget } from "./plan.js";
 import { createReviewItem } from "./review.js";
 
 const now = new Date("2026-09-01T12:00:00.000Z");
@@ -107,4 +107,39 @@ test("the daily session builder fills 15/30/60 minutes deterministically", () =>
 
   const empty = buildDailySession(30, { profile: { progress: { p1c1: 1, p1c2: 1, p2c1: 1 }, reviewItems: [], reviewSettings: {}, reviewSessions: [], mistakes: [], recent: [] }, documents: docs.slice(0, 3) }, now);
   assert.equal(empty.empty, true, "nothing due, nothing open, everything read → an honest empty plan");
+});
+
+test("one Continue rule: the most recent unfinished lecture, else the next unread chapter (issue #52)", () => {
+  const base = { reviewItems: [], reviewSettings: {}, reviewSessions: [], mistakes: [] };
+  // Chapter 1 is 46% read; Chapter 2 was opened afterwards but never scrolled.
+  const opened = { ...base, progress: { p1c1: 0.46 }, recent: ["p1c2", "p1c1"] };
+  assert.equal(resumeTarget({ profile: opened, documents: docs }).document.id, "p1c1", "a 0% open never displaces the lecture actually in progress");
+  assert.equal(resumeTarget({ profile: opened, documents: docs }).action, "continue");
+  const plan = buildDailySession(30, { profile: opened, documents: docs }, now);
+  assert.equal(plan.blocks.find((block) => block.kind === "reading").documentId, "p1c1", "the plan's first reading block is the same Continue target");
+
+  const finished = { ...base, progress: { p1c1: 1 }, recent: ["p1c1"] };
+  const next = resumeTarget({ profile: finished, documents: docs });
+  assert.deepEqual([next.document.id, next.action], ["p1c2", "start"], "a completed lecture is never offered as Continue");
+
+  const goal = { ...base, progress: {}, recent: [], goals: { targetParts: [2] } };
+  assert.equal(resumeTarget({ profile: goal, documents: docs }).document.id, "p2c1", "a fresh start honors the goal Parts");
+  assert.equal(resumeTarget({ profile: { ...base, progress: { p1c1: 1, p1c2: 1, p2c1: 1 }, recent: [] }, documents: docs }), null);
+
+  const upload = { ...base, progress: { "custom/x.md": 0.3, p1c1: 0.5 }, recent: ["custom/x.md", "p1c1"] };
+  assert.equal(resumeTarget({ profile: upload, documents: docs }).document.id, "custom/x.md", "an opened note in progress is resumable too");
+});
+
+test("the daily plan fills longer sessions with more reading (issue #52)", () => {
+  const fresh = { progress: {}, recent: [], reviewItems: [], reviewSettings: {}, reviewSessions: [], mistakes: [] };
+  const lengths = [15, 30, 60].map((minutes) => buildDailySession(minutes, { profile: fresh, documents: docs }, now));
+  const readingCounts = lengths.map((session) => session.blocks.filter((block) => block.kind === "reading").length);
+  assert.deepEqual(readingCounts, [2, 3, 3], "longer sessions add reading blocks (the last one partial) until the chapters run out");
+  assert.deepEqual(lengths.map((session) => session.plannedMinutes), [15, 30, 36], "a longer session plans more minutes, never more than the chapters hold");
+  assert.equal(lengths[0].blocks[1].partial, true, "a block cut short by the session length is marked partial");
+  assert.ok(lengths.every((session) => session.plannedMinutes <= session.budgetMinutes));
+  assert.ok(lengths[2].blocks.every((block) => block.reason), "every reading block says why it was chosen");
+  const partlyRead = buildDailySession(15, { profile: { ...fresh, progress: { p1c1: 0.5 }, recent: ["p1c1"] }, documents: docs }, now);
+  assert.equal(partlyRead.blocks[0].minutes, 5, "a half-read 10-minute chapter needs only its unread share");
+  assert.equal(partlyRead.blocks[0].reason, "50% read so far");
 });
