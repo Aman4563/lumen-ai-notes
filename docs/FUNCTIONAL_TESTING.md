@@ -629,3 +629,33 @@ confirmed against the preceding build:
   and focus lands on its `h1`. `audit:chunks` now asserts the single landmark
   and the return-visit focus; it fails when route focus is mutated to skip the
   panel's heading.
+
+## Bugs reproduced on 2026-09-24: review center and notebook
+
+Review center, readiness check, and notebook (issue #54):
+
+- Importing a `lumen.cards.v1` deck threw `ReferenceError: onImportCards is
+  not defined`; nothing was imported and no message appeared. Import is now a
+  keyboard-operable button wired to the handler. The review audit imports a
+  deck by keyboard, then re-imports it and a malformed file to check the
+  duplicate and error messages.
+- After "Show answer", all four grade buttons sat under the bottom navigation
+  at 375×667 and 320×640. The grading panel now sticks above the navigation;
+  the audit checks each button is visible and hit-testable at 375×667.
+- Home showed three due counts for one deck because archived and buried cards
+  were counted. Home, the sidebar badge, and the app badge now use the review
+  queue's count.
+- Focus fell to `<body>` after starting, revealing, grading, archiving, and
+  deleting, and after each readiness answer; grades were not announced; the
+  progress bar showed 1/remaining. Focus now follows the prompt, answer,
+  question, or result, grades are announced, and the bar reports graded/total.
+- Deleting a mistake or clipping was instant and final, and a scrim tap or
+  Escape discarded a readiness check's answers. Deletions offer Undo, and a
+  check in progress asks before closing.
+- Burst typing into a clipping note with two clippings dropped a character and
+  raised React error #185. The note now buffers keystrokes and commits after a
+  pause, on blur, or when the page is hidden.
+- Review and dialog fields were 10–12.5px, so iOS zoomed on focus; notebook
+  rows cut titles to four characters at 320px; the FSRS Daily limits strip
+  collapsed to one letter per line at 768–1100px. Fields are 16px on phones,
+  row actions sit under the title, and the strip wraps.
