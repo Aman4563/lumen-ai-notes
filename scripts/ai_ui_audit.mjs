@@ -734,6 +734,68 @@ try {
   assert.equal(disabled.calls.respond.length, 0, "disabled configuration reached the AI response endpoint");
   await disabled.page.close();
 
+  // One tab must save each Library-first turn exactly once. Retrieval updates
+  // the pending user turn; with IndexedDB commits slowed, a save that captured
+  // its merge base before the previous commit cloned that turn as a
+  // sync-conflict record and raised a false "concurrent tab change" warning.
+  const singleTabContext = await browser.createBrowserContext();
+  try {
+    const page = await singleTabContext.newPage();
+    await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    attachDiagnostics(page, "single-tab-history");
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+      const delayMs = 400;
+      const descriptor = Object.getOwnPropertyDescriptor(IDBTransaction.prototype, "oncomplete");
+      Object.defineProperty(IDBTransaction.prototype, "oncomplete", {
+        configurable: true,
+        get() { return descriptor.get.call(this); },
+        set(listener) { descriptor.set.call(this, typeof listener === "function" ? (event) => setTimeout(() => listener.call(this, event), delayMs) : listener); },
+      });
+      const addEventListener = EventTarget.prototype.addEventListener;
+      IDBTransaction.prototype.addEventListener = function delayedComplete(type, listener, options) {
+        if (type === "complete" && typeof listener === "function") return addEventListener.call(this, type, (event) => setTimeout(() => listener.call(this, event), delayMs), options);
+        return addEventListener.call(this, type, listener, options);
+      };
+      window.__lumenAuditToasts = [];
+      document.addEventListener("DOMContentLoaded", () => new MutationObserver(() => {
+        document.querySelectorAll(".toast").forEach((node) => {
+          const text = node.textContent.replace(/\s+/g, " ").trim();
+          if (text && !window.__lumenAuditToasts.includes(text)) window.__lumenAuditToasts.push(text);
+        });
+      }).observe(document.body, { subtree: true, childList: true, characterData: true }));
+    });
+    const calls = await installAiMocks(page, () => secureConfig);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    const turns = 3;
+    for (let turn = 1; turn <= turns; turn += 1) {
+      await page.$eval(".ai-tutor__composer textarea", (field, value) => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      }, `Single-tab turn ${turn}: why does repeated holdout inspection leak evaluation information?`);
+      await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, { timeout: 8_000 }, sendSelector);
+      await page.$eval(sendSelector, (button) => button.click());
+      await page.waitForFunction((count) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= count
+        && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 }, turn);
+    }
+    assert.equal(calls.respond.length, turns, "single-tab history scenario did not send one request per turn");
+    await waitForStoredHistory(page, turns * 2);
+    // Let every queued save and its slowed commit drain before counting.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    const storedSingleTab = await readProfile(page);
+    const storedRoles = storedSingleTab.aiTutorHistory.map((message) => message.role);
+    assert.equal(storedRoles.filter((role) => role === "user").length, turns, `single-tab Library-first turns stored duplicate user messages: ${JSON.stringify(storedSingleTab.aiTutorHistory.map((message) => `${message.role}:${message.id}`))}`);
+    assert.equal(storedRoles.filter((role) => role === "assistant").length, turns, "single-tab Library-first turns did not store exactly one answer each");
+    assert.equal(storedSingleTab.aiTutorHistory.some((message) => String(message.id).startsWith("sync-conflict-")), false, "a single tab cloned its own tutor turn as a sync conflict");
+    assert.deepEqual(storedSingleTab.syncMeta?.conflicts || [], [], "a single tab recorded a concurrent-tab conflict against itself");
+    assert.equal(await page.$$eval(".ai-tutor__message--user", (nodes) => nodes.length), turns, "the conversation showed a duplicated user turn");
+    const conflictToasts = await page.evaluate(() => window.__lumenAuditToasts.filter((text) => /concurrent tab/i.test(text)));
+    assert.deepEqual(conflictToasts, [], "a single tab showed a false concurrent-tab warning");
+  } finally {
+    await singleTabContext.close();
+  }
+
   let modelOnline = false;
   const recovery = await newAuditPage("service-recovers", () => modelOnline ? secureConfig : {
     ...secureConfig, service: { ...secureConfig.service, reachable: false },

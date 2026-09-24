@@ -1484,13 +1484,25 @@ export default function App() {
     setSaveStatus("saving");
     saveTimer.current = setTimeout(() => {
       if (profileReplacementRef.current) return;
-      const localSnapshot = profile;
-      const baseSnapshot = profileBaseRef.current;
+      let localSnapshot = null;
       let mergeConflicts = [];
       saveQueue.current = saveQueue.current
         .catch(() => {})
         .then(() => {
           if (profileReplacementRef.current) return null;
+          // Capture the merge base only once the previous queued save has
+          // committed. A base read when the timer fired predates that commit,
+          // so this tab's own rapid follow-up edit (for example a tutor turn
+          // updated after retrieval) looked like a concurrent create and was
+          // cloned as a sync conflict. Every commit and remote merge advances
+          // both refs together, so the pair is always consistent here.
+          localSnapshot = profileRef.current;
+          const baseSnapshot = profileBaseRef.current;
+          if (localSnapshot === baseSnapshot) {
+            // An earlier queued save already committed this state.
+            if (sequence === saveSequence.current) setSaveStatus("saved");
+            return null;
+          }
           return updateData("profile", (stored) => {
           const result = mergeProfileVersions(baseSnapshot, localSnapshot, stored, {
             writerId: profileWriterIdRef.current,
@@ -1535,23 +1547,38 @@ export default function App() {
 
   useEffect(() => {
     const flush = () => {
-      const localSnapshot = profileRef.current;
-      const baseSnapshot = profileBaseRef.current;
-      if (!hydrated || profileReplacementRef.current || localSnapshot === baseSnapshot) return;
+      if (!hydrated || profileReplacementRef.current || profileRef.current === profileBaseRef.current) return;
+      let localSnapshot = null;
       saveQueue.current = saveQueue.current
         .catch(() => {})
-        .then(() => profileReplacementRef.current ? null : updateData("profile", (stored) => mergeProfileVersions(baseSnapshot, localSnapshot, stored, {
-          writerId: profileWriterIdRef.current,
-        }).profile))
+        .then(() => {
+          if (profileReplacementRef.current) return null;
+          // Same rule as the debounced save: read the base after any queued
+          // save has committed, never before.
+          localSnapshot = profileRef.current;
+          const baseSnapshot = profileBaseRef.current;
+          if (localSnapshot === baseSnapshot) return null;
+          return updateData("profile", (stored) => mergeProfileVersions(baseSnapshot, localSnapshot, stored, {
+            writerId: profileWriterIdRef.current,
+          }).profile);
+        })
         .then((committedValue) => {
           if (!committedValue) return;
           const committed = normalizeProfile(committedValue);
+          const current = profileRef.current;
           profileBaseRef.current = committed;
           signalProfileSyncRef.current(committed);
-          if (profileRef.current === localSnapshot) {
+          if (current === localSnapshot) {
             profileRef.current = committed;
             setProfile(committed);
+            return;
           }
+          const rebased = mergeProfileVersions(localSnapshot, current, committed, {
+            advanceRevision: false,
+            writerId: profileWriterIdRef.current,
+          });
+          profileRef.current = rebased.profile;
+          setProfile(rebased.profile);
         })
         .catch(() => {});
     };
