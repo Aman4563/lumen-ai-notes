@@ -237,6 +237,9 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   assert.ok(!snippet.startsWith("Linear Regression"), "the snippet skips the repeated title line");
   assert.equal(searchDocuments(corpus, "linear")[0].description, "Stock description.", "a title-only match keeps the stock description");
   assert.equal(searchDocuments(corpus, "zzzz").length, 0);
+  const accentedRaw = "# Cafe notes\n\nOther text first. The naïve Bayes café example shows priors.";
+  const accented = { id: "custom/cafe.md", title: "Cafe notes", partTitle: "My uploads", description: "Stock.", searchText: accentedRaw, raw: accentedRaw, partNumber: 99, chapterNumber: 1, source: "custom", tags: [] };
+  assert.match(searchDocuments([accented], "naive")[0].description, /The naïve Bayes café/, "an accent-folded term still cuts a snippet from an uploaded note");
 
   const typed = ["d", "dr", "dro", "drop", "dropo", "dropou", "dropout"].reduce((list, entry) => pushRecentSearch(list, entry), ["attention"]);
   assert.deepEqual(typed, ["dropout", "attention"], "unfinished prefixes are replaced by the committed query");

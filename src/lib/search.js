@@ -201,10 +201,17 @@ export const plainSnippetText = (raw) => String(raw || "")
 
 const SNIPPET_BEFORE = 70;
 const SNIPPET_AFTER = 130;
-// Case-preserved text plus a lowercase copy for documents whose snippet text
+// Case-preserved text plus a folded copy for documents whose snippet text
 // is not offset-aligned with the normalized search body (custom Markdown and
 // lectures with NFKD-expanding characters). Filled only for returned results.
 const snippetSources = new WeakMap();
+
+// Accent-folded when that keeps every offset ("café" → "cafe"), so a folded
+// query term still finds its context; otherwise only lowercased.
+const offsetSafeFold = (plain) => {
+  const folded = normalize(plain);
+  return folded.length === plain.length ? folded : plain.toLocaleLowerCase();
+};
 
 const snippetSource = (doc) => {
   const cached = snippetSources.get(doc);
@@ -215,10 +222,10 @@ const snippetSource = (doc) => {
     // Built-in lectures: the worker's normalized body lines up with the
     // case-preserved text whenever normalization kept every length.
     const aligned = typeof doc.normalizedSearchText === "string" && doc.normalizedSearchText.length === plain.length;
-    source = { plain, lower: aligned ? doc.normalizedSearchText : plain.toLocaleLowerCase() };
+    source = { plain, lower: aligned ? doc.normalizedSearchText : offsetSafeFold(plain) };
   } else if (doc.raw) {
     const plain = plainSnippetText(doc.raw);
-    source = { plain, lower: plain.toLocaleLowerCase() };
+    source = { plain, lower: offsetSafeFold(plain) };
   }
   if (!source || source.lower.length !== source.plain.length) return null;
   if (source.lower !== doc.normalizedSearchText) snippetSources.set(doc, source);
