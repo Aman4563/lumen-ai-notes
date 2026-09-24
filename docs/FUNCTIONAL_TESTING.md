@@ -332,3 +332,38 @@ Review follow-up on the same day:
   with no prefix, and streamed text equal to `outputText` (13.3 s). A
   grounded follow-up after a library-only answer did not repeat the notice
   (7.9 s).
+
+## Bugs reproduced on 2026-09-24: Library and Home
+
+Browser audits at 320–1280px against `main` at 36026b2 (issue #52):
+
+- Typing a query stored every prefix (`d`, `dr`, `dro`…) as a recent search.
+  Recents now record committed searches only: Enter, leaving the field,
+  opening a result, or a 1.5-second pause. Stored prefixes are pruned on load,
+  and each chip can be removed.
+- `-regression` returned all 143 lectures; an exclusion alone now excludes
+  (91 remain). `part:5` also matched Part 15 and `part:1` matched 12 Parts;
+  numeric Part filters now compare the number exactly. The typographic minus
+  shown in the old placeholder is folded to a hyphen.
+- `RAG` matched "storage" and "average" (100 capped results). Terms of four
+  letters or fewer must start a word and all-caps acronyms must be whole
+  words: `RAG` now returns 14 results, while `tran` still finds "transformer".
+- `regresion` listed Part 1 in curriculum order with no highlight. Corrected
+  words now score by field, the Regression chapters rank first, and the page
+  says "Showing matches for “regression”".
+- Built-in lectures never showed match context because the search index was
+  lowercased and the worker kept no body text. The index keeps case, and
+  snippets are cut only for returned results; the scale budget still holds.
+- The phone study-method card collapsed to a 17px column (2,272px tall), and
+  mastery rows split "readines/s". The responsive audit now fails when a
+  Home or Library word splits across lines at normal text size; it flags the
+  previous build.
+- The search bar wrapped Clear onto a second row; Continue targets disagreed
+  across Home; lectures opened by link or Back never reached Recent; the
+  fresh "Start reading" tile was disabled; Today's plan ignored the session
+  length; and the curriculum map could not be reached by keyboard.
+
+New regression checks: the workflow audit waits for a link-opened lecture to
+reach Recent, and the control audit requires an enabled fresh-profile reading
+tile and a curriculum map with one Tab stop that ArrowRight advances. Both
+fail against the 36026b2 build.
