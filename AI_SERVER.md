@@ -430,12 +430,17 @@ partial provider JSON as Markdown.
 ## Verification
 
 ```bash
-npm run audit:ai
-npm run audit:ai-ui
-npm run audit:phone-ai-ui
-npm run audit:mermaid
-npm run build
+npm run check:release
+# With Ollama and the integrated loopback server running:
+npm run check:live
+# With SearXNG also running:
+npm run audit:ai-live-search
 ```
+
+See [functional testing](docs/FUNCTIONAL_TESTING.md) for the real-model matrix,
+browser workflow coverage, service setup, and device/upstream limits. The
+browser gate starts its own isolated application server when `LUMEN_URL` is
+unset; it requires Chrome or `CHROME_PATH`.
 
 The automated AI tests cover whole-library retrieval at 143 built-ins and the
 500-custom-document supported limit, edits/personal notes, provenance, confidence,

@@ -928,10 +928,20 @@ try {
     [...check.querySelectorAll(".evidence-verdict button")].find((button) => button.textContent.includes("Pass"))?.click();
   });
   await page.type(".evidence-checklist .evidence-check .text-input", "desktop-audit smoke entry");
-  // Off the LAN serve, sending must degrade honestly, never silently claim.
+  // Simulate a failed endpoint explicitly: the same audit also runs against
+  // the integrated server, where a real report upload should succeed.
+  await page.setRequestInterception(true);
+  const failEvidenceUpload = (request) => {
+    if (new URL(request.url()).pathname === "/api/evidence") {
+      void request.respond({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false }) });
+    } else void request.continue();
+  };
+  page.on("request", failEvidenceUpload);
   await clickByText(page, ".evidence-actions button", "Send report to the Mac");
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Could not reach the Mac"), { timeout: 5_000 })
     .catch(() => assert.fail("the send action did not report its failure honestly"));
+  await page.setRequestInterception(false);
+  page.off("request", failEvidenceUpload);
   await clickByText(page, ".evidence-actions button", "Download JSON");
   {
     let evidencePath = "";

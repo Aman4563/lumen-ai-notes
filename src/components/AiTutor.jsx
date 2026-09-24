@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { scrollBehavior } from "../lib/motion.js";
 import "katex/dist/katex.min.css";
 import {
@@ -43,7 +43,7 @@ const MODE_OPTIONS = Object.freeze([
     id: "explain",
     label: "Explain",
     task: "explain",
-    prompt: "Explain the three most important ideas clearly, from intuition to mechanics. Use well-structured Markdown, include only the most useful formula or pseudocode and one concrete example, then finish with concise failure modes and interview takeaways. Prioritize a complete answer over exhaustive coverage and stay within the selected response profile.",
+    prompt: "Explain the key ideas in this lesson with a short example and one common mistake.",
     description: "A grounded explanation with intuition, mechanics, examples, and production judgment.",
     contextLimit: 12_000,
   },
@@ -58,7 +58,7 @@ const MODE_OPTIONS = Object.freeze([
     id: "quiz",
     label: "Quiz",
     task: "quiz",
-    prompt: "Create a source-grounded quiz that tests recall, application, misconceptions, and production reasoning.",
+    prompt: "Create 3 questions to test my understanding of this lesson. Explain each answer.",
     description: "Generate a validated interactive quiz with teaching explanations.",
     structured: true,
   },
@@ -66,7 +66,7 @@ const MODE_OPTIONS = Object.freeze([
     id: "flashcards",
     label: "Flashcards",
     task: "flashcards",
-    prompt: "Create atomic active-recall flashcards from the selected material. Prefer reasoning and application over copied definitions.",
+    prompt: "Create 4 short flashcards for the key ideas in this lesson.",
     description: "Generate validated drafts and choose which cards enter your review deck.",
     structured: true,
   },
@@ -74,7 +74,7 @@ const MODE_OPTIONS = Object.freeze([
     id: "code-review",
     label: "Code review",
     task: "code_review",
-    prompt: "Review my code like a rigorous senior engineer: correctness first, then complexity, edge cases, idiom, and missing tests. Quote the lines each finding concerns and propose concrete fixes.\n\n```\n(paste your code here)\n```",
+    prompt: "Review this code for bugs and suggest fixes.\n\n```\n(paste your code here)\n```",
     description: "Prioritized senior-engineer review of pasted code with concrete fixes.",
     contextLimit: 8_000,
   },
@@ -96,7 +96,7 @@ const MODE_OPTIONS = Object.freeze([
     id: "study-plan",
     label: "Study plan",
     task: "study_plan",
-    prompt: "Create a dependency-aware study plan for mastering the selected material, with realistic activities and observable evidence of mastery.",
+    prompt: "Create a study plan with 3 milestones for this lesson, including practice and checks for understanding.",
     description: "Generate milestones, time estimates, activities, and mastery evidence.",
     structured: true,
   },
@@ -593,6 +593,8 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
     () => renderTutorMarkdown(text, citationSources, webSources),
     [citationSources, text, webSources],
   );
+  // Keep React from replacing renderer-owned diagrams on unrelated updates.
+  const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   // Partial fenced blocks are ordinary during token streaming. Rendering is
   // intentionally deferred until the validated terminal answer is mounted.
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
@@ -623,7 +625,7 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
       className={`ai-tutor__response-text markdown-body ${streaming ? "is-streaming" : ""}`}
       onClick={handleClick}
       // renderTutorMarkdown sanitizes provider output through DOMPurify.
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={htmlMarkup}
     />
   );
 };
@@ -922,6 +924,7 @@ export default function AiTutor({
   onNavigateSource,
   onCreateFlashcardDrafts,
   onSaveAnswerNote,
+  onInteractionChange,
   retrieveLibrary,
   onClose,
   className = "",
@@ -965,7 +968,7 @@ export default function AiTutor({
   const [sourceQuery, setSourceQuery] = useState("");
   const [webSearch, setWebSearch] = useState(false);
   const [localDisclosureAcknowledged, setLocalDisclosureAcknowledged] = useState(readLocalDisclosureAcknowledgement);
-  const [privacyOpen, setPrivacyOpen] = useState(true);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [configState, setConfigState] = useState({ status: "checking", config: null, message: "Checking secure AI configuration…" });
   const [configAttempt, setConfigAttempt] = useState(0);
   const [requestState, setRequestState] = useState({ status: "idle", error: null });
@@ -974,6 +977,10 @@ export default function AiTutor({
   const [composerNotice, setComposerNotice] = useState("");
   const [sourceWarning, setSourceWarning] = useState("");
   const currentMode = modeById(modeId);
+  useLayoutEffect(() => {
+    onInteractionChange?.(requestState.status === "loading");
+    return () => onInteractionChange?.(false);
+  }, [requestState.status, onInteractionChange]);
   const tombstoneSignature = useMemo(() => JSON.stringify((Array.isArray(historyTombstones) ? historyTombstones : []).filter((id) => typeof id === "string").slice(-1_000).sort()), [historyTombstones]);
   const tombstoneIds = useMemo(() => new Set(JSON.parse(tombstoneSignature)), [tombstoneSignature]);
   const normalizedExternalHistory = useMemo(() => normalizeHistory(initialHistory).filter((message) => !tombstoneIds.has(message.id)), [initialHistory, tombstoneIds]);
@@ -1072,6 +1079,16 @@ export default function AiTutor({
       document.removeEventListener("visibilitychange", refreshWhenStale);
     };
   }, [configState.config?.service?.checkedAt]);
+
+  // Recover while the page stays open when the host starts Ollama later.
+  // A failed startup probe previously left Generate disabled indefinitely.
+  useEffect(() => {
+    if (configState.status !== "error" || requestState.status === "loading") return undefined;
+    const timer = setTimeout(() => {
+      if (document.visibilityState !== "hidden") setConfigAttempt((attempt) => attempt + 1);
+    }, 10_000);
+    return () => clearTimeout(timer);
+  }, [configState.status, configState.config, configAttempt, requestState.status]);
 
   useEffect(() => {
     if (configState.config?.webSearch?.macToolAvailable !== true) setWebSearch(false);
@@ -1316,7 +1333,7 @@ export default function AiTutor({
     && requestState.status !== "loading";
 
   const runRequest = useCallback(async (requestSpec, { appendUser = true } = {}) => {
-    if (requestState.status === "loading") return;
+    if (requestControllerRef.current || requestState.status === "loading") return;
     const controller = new AbortController();
     const requestStartedAt = globalThis.performance?.now?.() ?? Date.now();
     requestControllerRef.current = controller;
@@ -1827,7 +1844,7 @@ export default function AiTutor({
 
       <div className={`ai-tutor__connection ai-tutor__connection--${configState.status}`} role="status">
         {configIcon}<span>{configState.message}</span>
-        {(configState.status === "error" || configState.status === "disabled") && <button className="ai-tutor__text-button" type="button" onClick={() => setConfigAttempt((attempt) => attempt + 1)}><RefreshCw size={14} aria-hidden="true" /> Check again</button>}
+        {["ready", "error", "disabled"].includes(configState.status) && <button className="ai-tutor__text-button" type="button" disabled={requestState.status === "loading"} aria-label="Check AI connection" onClick={() => setConfigAttempt((attempt) => attempt + 1)}><RefreshCw size={14} aria-hidden="true" /> {configState.status === "ready" ? "Refresh" : "Check again"}</button>}
       </div>
 
       {configState.status === "pairing" && (
@@ -1865,7 +1882,7 @@ export default function AiTutor({
             </button>
           </div>
           {pairingError && <p className="ai-tutor__pairing-error" role="alert">{pairingError}</p>}
-          <p className="ai-tutor__pairing-note">Pairing stores a session cookie only in this browser. The operator can revoke every session by rotating the pairing code or restarting the server.</p>
+          <p className="ai-tutor__pairing-note">This browser remembers your pairing.</p>
         </form>
       )}
 
@@ -1885,7 +1902,6 @@ export default function AiTutor({
             <div className="ai-tutor__source-modes" role="radiogroup" aria-label="Library grounding scope">
               {SOURCE_MODES.map((item) => <button type="button" role="radio" aria-checked={sourceMode === item.id} className={sourceMode === item.id ? "is-active" : ""} disabled={requestState.status === "loading"} onClick={() => chooseSourceMode(item.id)} key={item.id}><strong>{item.label}</strong><small>{item.short}</small></button>)}
             </div>
-            {sourceMode === "library-first" && <p className="ai-tutor__library-first-note"><Search size={16} aria-hidden="true" /><span><strong>Local library before web</strong>{typeof retrieveLibrary === "function" ? "Relevant passages are selected on this device before the request reaches the local model." : "Library retrieval will use the attached lesson until the local index is available."}</span></p>}
             {sourceMode !== "none" && normalizedSources.length ? (
               <>
                 {sourceMode === "choose" && <div className="ai-tutor__source-tools"><label><Search size={15} aria-hidden="true" /><span className="sr-only">Filter learning sources</span><input type="search" value={sourceQuery} onChange={(event) => setSourceQuery(event.target.value)} placeholder="Filter library…" /></label><button className="ai-tutor__text-button" type="button" onClick={toggleVisibleSources}>{filteredSources.slice(0, MAX_SELECTED_SOURCES).every((source) => selectedSourceIds.has(source.id)) ? "Clear shown" : "Select shown"}</button></div>}
@@ -1909,7 +1925,7 @@ export default function AiTutor({
               <div className="ai-tutor__empty-source"><BookOpen size={20} aria-hidden="true" /><p>No lesson is attached. You can still ask a free question; claims will be labeled as general knowledge unless web fallback is enabled.</p></div>
             ) : <div className="ai-tutor__empty-source"><ShieldCheck size={20} aria-hidden="true" /><p>No library text will be included. The question and bounded recent conversation are still sent to your local model.</p></div>}
             {sourceWarning && <p className="ai-tutor__field-error" role="alert">{sourceWarning}</p>}
-            <p className="ai-tutor__grounding-note">{sourceMode === "library-first" ? "Lumen searches local notes first and attaches only relevant passages. Web fallback runs only when separately enabled and needed." : selectedSources.length ? `Responses can cite ${selectedSources.map((source) => `[S${source.citationNumber}]`).join(", ")}.` : "No source text will be sent."}</p>
+            <p className="ai-tutor__grounding-note">{sourceMode === "library-first" ? "Relevant passages are selected from your library when you send." : selectedSources.length ? `Sources: ${selectedSources.map((source) => `[S${source.citationNumber}]`).join(", ")}.` : "No source text will be sent."}</p>
           </div>
         </aside>
 
@@ -1918,7 +1934,7 @@ export default function AiTutor({
           followStreamRef.current = surface.scrollHeight - surface.scrollTop - surface.clientHeight < 140;
         }}>
           {history.length === 0 && !activeResponse ? (
-            <div className="ai-tutor__welcome"><MessageCircleQuestion size={28} aria-hidden="true" /><h3>Ask across your whole learning library</h3><p>Ask a free question or choose a teaching mode. Lumen checks your local notes first, shows its evidence, and uses the current web only with your per-request consent.</p></div>
+            <div className="ai-tutor__welcome"><MessageCircleQuestion size={28} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a question or choose a study mode.</p></div>
           ) : (
             <div className="ai-tutor__messages" aria-label="AI tutor conversation">
               {history.map((message) => (
@@ -1941,7 +1957,7 @@ export default function AiTutor({
                     ? `${activeResponse.content.length.toLocaleString()} characters received`
                     : activeResponse.sourceMode === "no-library" && !["searching", "used"].includes(activeResponse.webFallbackStatus)
                       ? "Waiting for the first token…"
-                      : "Grounded text appears after completion and citation validation…"}</span><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => requestControllerRef.current?.abort()}><CircleStop size={16} aria-hidden="true" /> Stop generating</button></div>
+                      : "Preparing your answer and checking sources…"}</span><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => requestControllerRef.current?.abort()}><CircleStop size={16} aria-hidden="true" /> Stop generating</button></div>
                 </article>
               )}
             </div>
@@ -1963,15 +1979,15 @@ export default function AiTutor({
             return <label className={`${responseProfile === item.id ? "is-active" : ""}${unavailable ? " is-unavailable" : ""}`} key={item.id}><input type="radio" name={`${headingId}-response-profile`} value={item.id} checked={responseProfile === item.id} disabled={unavailable} onChange={() => { setResponseProfile(item.id); outboundChanged(); }} /><span><strong>{item.label}</strong><small>{unavailable ? "Requires a local model that attests thinking support" : item.detail}</small></span></label>;
           })}</div>
         </fieldset>
-        <label className={`ai-tutor__web-search ${effectiveWebSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={effectiveWebSearch} disabled={!webSearchAvailable || !libraryWebEligible || requestState.status === "loading"} onChange={(event) => changeWebSearch(event.target.checked)} /><span><strong>Allow current-web fallback for this request</strong><small>{!libraryWebEligible ? "Choose Library first so Lumen can check all local notes before any web fallback is allowed." : webSearchAvailable ? "One-request authorization: Lumen checks your full local library first, searches through self-hosted SearXNG only when local evidence is insufficient or the question is time-sensitive, and asks again for every future request or retry." : configState.config?.service?.toolCallingCapable === false ? "The installed Ollama model does not attest tool-calling support. Choose the supported Qwen model or use On-device Lite exact-query search." : configState.config?.webSearch?.configured ? "SearXNG is configured but unreachable. Start it on the host Mac, then check again." : "Unavailable until self-hosted SearXNG is enabled on the host Mac."}</small></span></label>
+        <label className={`ai-tutor__web-search ${effectiveWebSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={effectiveWebSearch} disabled={!webSearchAvailable || !libraryWebEligible || requestState.status === "loading"} onChange={(event) => changeWebSearch(event.target.checked)} /><span><strong>Allow current-web fallback for this request</strong><small>{!libraryWebEligible ? "Select Library first to use web fallback." : webSearchAvailable ? "Searches only when needed. Queries go to public search engines." : configState.config?.service?.toolCallingCapable === false ? "This model does not support web search." : configState.config?.webSearch?.configured ? "Search is offline. Start SearXNG on your Mac, then refresh." : "Web search is not configured."}</small></span></label>
         {effectiveWebSearch && <WebFallbackBadge status="armed" />}
-        <label className="ai-tutor__prompt-label" htmlFor={promptId}>What should the tutor help you learn?</label>
+        <label className="ai-tutor__prompt-label" htmlFor={promptId}>Your question</label>
         <textarea ref={promptRef} id={promptId} value={prompt} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} maxLength={promptLimit} rows={4} placeholder="Ask anything about AI/ML, your library, or the current lesson…" />
         {composerNotice && <p className="ai-tutor__composer-notice" role="status">{composerNotice}</p>}
         <div className="ai-tutor__character-count"><span>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}</span>{contextPreview.length > 0 && <span>{contextPreview.length.toLocaleString()} source characters prepared</span>}{conversationWindow.compactedMessages > 0 && <span>{conversationWindow.compactedMessages} older messages will be visibly compacted</span>}</div>
 
         <div className="ai-tutor__privacy" id={privacyId}>
-          <button className="ai-tutor__privacy-toggle" type="button" aria-expanded={privacyOpen} onClick={() => setPrivacyOpen((open) => !open)}><span><LockKeyhole size={18} aria-hidden="true" /><strong>Review data categories and limits before sending</strong></span><ChevronDown size={18} aria-hidden="true" /></button>
+          <button className="ai-tutor__privacy-toggle" type="button" aria-expanded={privacyOpen} onClick={() => setPrivacyOpen((open) => !open)}><span><LockKeyhole size={18} aria-hidden="true" /><strong>Privacy and request details</strong></span><ChevronDown size={18} aria-hidden="true" /></button>
           {privacyOpen && <div className="ai-tutor__privacy-body">
             <p><strong>Model destination:</strong> {AI_DATA_DISCLOSURE.destination}. The browser calls only Lumen’s same-origin server; no paid-provider key is accepted or exposed here.</p>
             {effectiveWebSearch && <p><strong>Consented web fallback:</strong> {AI_DATA_DISCLOSURE.webSearch.destination} Local-library retrieval runs first. Only when it recommends fallback may Lumen send up to {configState.config?.webSearch?.maxRounds || 1} focused queries derived from this prompt, selected context, and bounded history. If the local model skips its required tool call, the server uses a bounded form of your question so the authorized fallback still runs. Query text is sent without a separate preview in Mac-local mode. Use On-device Lite when you need to approve the exact query first.</p>}
@@ -1986,11 +2002,11 @@ export default function AiTutor({
         </div>
 
         <div className="ai-tutor__submit-row">
-          {!localDisclosureAcknowledged ? <label className="ai-tutor__consent"><input type="checkbox" checked={false} onChange={(event) => { const acknowledged = event.target.checked; setLocalDisclosureAcknowledged(acknowledged); rememberLocalDisclosureAcknowledgement(acknowledged); }} /><span>I understand the local-model disclosure. Remember this acknowledgement on this browser; web fallback still requires separate authorization for every request.</span></label> : <div className="ai-tutor__consent ai-tutor__consent--acknowledged"><ShieldCheck size={18} aria-hidden="true" /><span>Local-model disclosure acknowledged on this browser. Current-web access remains off unless you authorize it above for one request.</span><button type="button" className="ai-tutor__text-button" onClick={() => { rememberLocalDisclosureAcknowledgement(false); setLocalDisclosureAcknowledged(false); setPrivacyOpen(true); }}>Review again</button></div>}
+          {!localDisclosureAcknowledged ? <label className="ai-tutor__consent"><input type="checkbox" checked={false} onChange={(event) => { const acknowledged = event.target.checked; setLocalDisclosureAcknowledged(acknowledged); rememberLocalDisclosureAcknowledgement(acknowledged); }} /><span>Allow prompts and attached notes to use the local model on your Mac. Remember on this browser.</span></label> : <div className="ai-tutor__consent ai-tutor__consent--acknowledged"><ShieldCheck size={18} aria-hidden="true" /><span>Local model enabled</span><button type="button" className="ai-tutor__text-button" onClick={() => { rememberLocalDisclosureAcknowledgement(false); setLocalDisclosureAcknowledged(false); setPrivacyOpen(true); }}>Review again</button></div>}
           <button className="ai-tutor__button ai-tutor__button--primary ai-tutor__send" type="submit" disabled={!requestReady} aria-describedby={`${privacyId} ${sendReasonId}`}>{requestState.status === "loading" ? <LoaderCircle className="ai-tutor__spin" size={18} aria-hidden="true" /> : <Send size={18} aria-hidden="true" />} {requestState.status === "loading" ? "Working…" : `Generate ${currentMode.label}`}</button>
         </div>
         <p className="ai-tutor__disabled-reason" id={sendReasonId}>{configState.status !== "ready"
-          ? "Generation stays disabled until the secure server configuration is ready."
+          ? ""
           : !prompt.trim()
             ? "Enter a learning request to enable generation."
             : promptTooLong
@@ -2001,7 +2017,7 @@ export default function AiTutor({
                 ? `This request is ${requestPayloadBytes.toLocaleString()} UTF-8 bytes; reduce it below the server's ${configuredRequestByteLimit.toLocaleString()}-byte local-model budget.`
               : !localDisclosureAcknowledged
                   ? "Review and acknowledge the local-model disclosure once on this browser to enable generation."
-                  : "Ready to send this request securely."}</p>
+                  : ""}</p>
       </form>
     </section>
   );

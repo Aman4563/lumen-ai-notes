@@ -59,6 +59,8 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
   const [type, setType] = useState("basic");
   const [preview, setPreview] = useState(false);
   const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!draft) return undefined;
@@ -72,7 +74,7 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -95,7 +97,7 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
         else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected) target.focus?.(); });
       });
     };
-  }, [draft, onClose]);
+  }, [draft]);
 
   if (!draft) return null;
   const submit = (event) => {
@@ -152,6 +154,8 @@ export function MistakeDialog({ open, onClose, onLog }) {
   const [hints, setHints] = useState("");
   const [tags, setTags] = useState("");
   const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -166,7 +170,7 @@ export function MistakeDialog({ open, onClose, onLog }) {
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -186,7 +190,7 @@ export function MistakeDialog({ open, onClose, onLog }) {
         else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected) target.focus?.(); });
       });
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   const submit = (event) => {

@@ -4,6 +4,7 @@ import {
   MERMAID_RENDER_LIMITS,
   mermaidDefinitionForFence,
   mermaidErrorLocation,
+  subscribeToMermaidTheme,
 } from "./mermaidDiagrams.js";
 
 test("explicit Mermaid fences and common aliases produce normalized definitions", () => {
@@ -46,4 +47,50 @@ test("parser locations are reduced to bounded learner-safe coordinates", () => {
 test("diagram rendering has explicit mobile safety bounds", () => {
   assert.equal(MERMAID_RENDER_LIMITS.diagramsPerSurface, 16);
   assert.equal(MERMAID_RENDER_LIMITS.definitionCharacters, 30_000);
+});
+
+test("dialog scroll locks preserve diagrams while actual theme changes notify all surfaces", () => {
+  const names = ["document", "getComputedStyle", "MutationObserver", "matchMedia"];
+  const originals = names.map((name) => Object.getOwnPropertyDescriptor(globalThis, name));
+  let scheme = "light";
+  let mutation;
+  let mediaChange;
+  let disconnected = false;
+  const notifications = [0, 0];
+  let unsubscribeFirst;
+  let unsubscribeSecond;
+  try {
+    globalThis.document = { documentElement: { style: { overflow: "" } } };
+    globalThis.getComputedStyle = () => ({ colorScheme: scheme });
+    globalThis.MutationObserver = class {
+      constructor(callback) { mutation = callback; }
+      observe() {}
+      disconnect() { disconnected = true; }
+    };
+    globalThis.matchMedia = () => ({ addEventListener: (_, callback) => { mediaChange = callback; }, removeEventListener() {} });
+    unsubscribeFirst = subscribeToMermaidTheme(() => notifications[0]++);
+    unsubscribeSecond = subscribeToMermaidTheme(() => notifications[1]++);
+    document.documentElement.style.overflow = "hidden";
+    mutation();
+    document.documentElement.style.overflow = "";
+    mutation();
+    assert.deepEqual(notifications, [0, 0]);
+    scheme = "dark";
+    mutation();
+    mediaChange();
+    assert.deepEqual(notifications, [1, 1], "one actual theme change renders each surface once");
+    unsubscribeFirst();
+    unsubscribeFirst = null;
+    scheme = "light";
+    mediaChange();
+    assert.deepEqual(notifications, [1, 2]);
+  } finally {
+    unsubscribeFirst?.();
+    unsubscribeSecond?.();
+    names.forEach((name, index) => {
+      if (originals[index]) Object.defineProperty(globalThis, name, originals[index]);
+      else delete globalThis[name];
+    });
+  }
+  assert.ok(disconnected);
 });

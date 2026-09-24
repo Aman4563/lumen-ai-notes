@@ -3,9 +3,8 @@
 # This intentionally mirrors `npm run check` (minus nothing): notes audit,
 # unit/scale/storage/backup-memory gates, the AI/data test suites, the
 # versioned retrieval evaluation, and the production build + static PWA audit.
-# The browser audits (`npm run check:browser`) need a pinned local Chrome and
-# a serving profile that this repository treats as release evidence rather
-# than CI; they stay operator-run per ENGINEERING_HANDOFF.md §16.7.
+# Browser workflows run against an isolated app server; real-model checks
+# remain a separate local acceptance gate (`npm run check:live`).
 name: CI
 
 on:
@@ -47,3 +46,14 @@ jobs:
         run: npm run audit:ai-eval
       - name: Production build and app/PWA audit
         run: npm run audit:app
+      - name: Browser workflows
+        run: npm run check:browser
+        env:
+          LUMEN_LAYOUT_ARTIFACTS: ${{ runner.temp }}/lumen-responsive-results
+      - name: Responsive audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responsive-layout-results
+          path: ${{ runner.temp }}/lumen-responsive-results
+          if-no-files-found: ignore

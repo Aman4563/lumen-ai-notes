@@ -157,7 +157,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0 } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -178,6 +178,10 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
       return;
     }
     if (url.pathname === "/api/ai/respond" || url.pathname === "/api/ai/respond/stream") {
+      const reply = (response) => {
+        if (responseDelayMs) setTimeout(() => { void request.respond(response); }, responseDelayMs);
+        else void request.respond(response);
+      };
       let body = {};
       try { body = JSON.parse(request.postData() || "{}"); } catch { body = {}; }
       calls.respond.push({ method: request.method(), url: request.url(), headers: request.headers(), body });
@@ -186,7 +190,7 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         return;
       }
       if (failFirstResponse && calls.respond.length === 1) {
-        void request.respond(jsonResponse({
+        reply(jsonResponse({
           ok: false,
           requestId: "audit-retry-failure",
           error: { code: failFirstResponseCode, message: "Temporary local-model failure." },
@@ -194,7 +198,7 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         return;
       }
       if (body.task === "quiz") {
-        void request.respond(jsonResponse({
+        reply(jsonResponse({
           ok: true,
           requestId: "audit-quiz-request",
           outputText: JSON.stringify(quizData),
@@ -232,8 +236,8 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
             { type: "delta", requestId: response.requestId, sequence: 1, text: outputText.slice(Math.floor(outputText.length / 2)) },
             { type: "complete", requestId: response.requestId, response },
           ];
-          void request.respond({ status: 200, contentType: "application/x-ndjson", headers: { "Cache-Control": "no-store", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` });
-        } else void request.respond(jsonResponse(response));
+          reply({ status: 200, contentType: "application/x-ndjson", headers: { "Cache-Control": "no-store", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` });
+        } else reply(jsonResponse(response));
       }
       return;
     }
@@ -274,6 +278,8 @@ try {
   );
 
   await page.waitForSelector(".ai-tutor__source.is-selected", { timeout: 10_000 });
+  assert.equal(await page.$(".ai-tutor__privacy-body"), null, "request details should be collapsed by default");
+  await page.click(".ai-tutor__privacy-toggle");
   const disclosure = await page.$eval(".ai-tutor__privacy-body", (node) => node.textContent.replace(/\s+/g, " "));
   assert.match(disclosure, /local Ollama model running on the Lumen server/i);
   assert.match(disclosure, /no paid remote-model API/i);
@@ -284,7 +290,7 @@ try {
 
   // Web egress is available only after the complete-library sufficiency
   // check. Moving to any narrower source scope must clear and disable it.
-  await page.click(".ai-tutor__web-search input");
+  await page.locator(".ai-tutor__web-search input").click();
   await page.click(".ai-tutor__source-panel-toggle");
   await clickByText(page, ".ai-tutor__source-modes button", "No library");
   assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "leaving Library first did not clear web fallback");
@@ -302,7 +308,7 @@ try {
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), true, "send was enabled before explicit consent");
   await page.click(".ai-tutor__consent input");
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "one-time local disclosure acknowledgement did not enable a valid grounded request");
-  await page.click(".ai-tutor__web-search input");
+  await page.locator(".ai-tutor__web-search input").click();
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "the web-fallback checkbox did not act as its own one-request authorization");
   assert.match(await page.$eval(".ai-tutor__web-status.is-armed", (node) => node.textContent), /armed for this request/i);
   await page.$eval(sendSelector, (button) => button.click());
@@ -339,12 +345,29 @@ try {
     throw error;
   });
   assert.equal(await page.$('.ai-tutor__message--assistant .diagram-diagnostic'), null, "valid tutor Mermaid displayed a failure diagnostic");
-  const lightDiagramRenderCount = await page.$eval(".ai-tutor__message--assistant .mermaid", (node) => Number(node.dataset.diagramRenderCount));
-  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
-  await page.waitForFunction((before) => Number(document.querySelector(".ai-tutor__message--assistant .mermaid")?.dataset.diagramRenderCount) > before, { timeout: 15_000 }, lightDiagramRenderCount);
+  await waitForStoredHistory(page, "nonempty");
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.waitForSelector('.ai-tutor__message--assistant .mermaid[data-diagram-status="rendered"] svg');
+  const originalDiagramId = await page.$eval(".ai-tutor__message--assistant .mermaid svg", (node) => node.id);
+  const originalDiagramTheme = await page.evaluate(() => document.documentElement.dataset.theme);
+  const nextDiagramTheme = await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme === "dark" ? "paper" : "dark");
+  await page.click('[aria-label="Open settings"]');
+  await page.waitForSelector(".settings-drawer");
+  assert.equal(await page.$eval(".ai-tutor__message--assistant .mermaid svg", (node) => node.id), originalDiagramId, "opening a dialog unnecessarily cleared the AI diagram");
+  await clickByText(page, ".theme-choices button", nextDiagramTheme === "dark" ? "Night" : "Paper");
+  await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, {}, nextDiagramTheme);
+  await page.$eval(".settings-close", (button) => button.click());
+  // A settings update may replace the response subtree; a per-node counter
+  // then restarts at one. The SVG identity proves a new render either way.
+  await page.waitForFunction((before) => {
+    const svg = document.querySelector('.ai-tutor__message--assistant .mermaid[data-diagram-status="rendered"] svg');
+    return svg && svg.id !== before;
+  }, { timeout: 15_000 }, originalDiagramId);
   assert.match(await page.$eval(".ai-tutor__message--assistant .mermaid svg", (node) => node.textContent), /Development decisions/iu, "theme rerender used SVG text instead of the preserved Mermaid definition");
   assert.equal(await page.$('.ai-tutor__message--assistant .diagram-diagnostic'), null, "theme change corrupted a valid tutor diagram");
-  await page.evaluate(() => { document.documentElement.dataset.theme = "paper"; });
+  await page.click('[aria-label="Open settings"]');
+  await clickByText(page, ".theme-choices button", { system: "System", paper: "Paper", dark: "Night", contrast: "Contrast" }[originalDiagramTheme]);
+  await page.$eval(".settings-close", (button) => button.click());
   assert.match(await page.$eval(".ai-tutor__message--assistant .ai-tutor__web-status.is-used", (node) => node.textContent), /evidence used/i, "completed current-web request did not visibly report that web evidence was used");
   await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Approach");
   assert.match(await page.$eval(".ai-tutor__approach", (node) => node.textContent.replace(/\s+/g, " ")), /Library retrieval attached [1-9]/i, "whole-library retrieval trace was not visible in the Approach panel");
@@ -460,13 +483,21 @@ try {
     setter.call(field, "What is the latest current guidance on evaluation leakage?");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await retryConsent.page.click(".ai-tutor__web-search input");
-  await retryConsent.page.click(sendSelector);
-  await retryConsent.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
+  await retryConsent.page.locator(".ai-tutor__web-search input").click();
+  await retryConsent.page.$eval(sendSelector, (button) => button.scrollIntoView({ block: "nearest", behavior: "instant" }));
+  assert.equal(await retryConsent.page.$eval(sendSelector, (button) => {
+    const box = button.getBoundingClientRect();
+    return button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+  }), true, "Generate is covered by another control");
+  await retryConsent.page.locator(sendSelector).click();
+  await retryConsent.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 }).catch(async (error) => {
+    console.error(JSON.stringify({ scenario: "retry-consent", calls: retryConsent.calls.respond.length, page: await retryConsent.page.evaluate(() => ({ route: location.hash, text: document.body.innerText.slice(0, 1_500) })), runtimeErrors }));
+    throw error;
+  });
   assert.equal(retryConsent.calls.respond.length, 1, "initial retry fixture request count was wrong");
   assert.match(await retryConsent.page.$eval(".ai-tutor__request-error .ai-tutor__web-status.is-failed", (node) => node.textContent), /fallback failed/i, "failed current-web request did not visibly identify the failed fallback");
   assert.equal(await retryConsent.page.$eval(".ai-tutor__request-error button", (button) => button.disabled), true, "web-search retry did not require renewed one-request authorization");
-  await retryConsent.page.click(".ai-tutor__web-search input");
+  await retryConsent.page.locator(".ai-tutor__web-search input").click();
   assert.equal(await retryConsent.page.$eval(".ai-tutor__request-error button", (button) => button.disabled), false, "renewed web authorization did not enable retry");
   await retryConsent.page.click(".ai-tutor__request-error button");
   await retryConsent.page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
@@ -486,7 +517,7 @@ try {
     setter.call(field, "Explain validation drift briefly.");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await staleConfig.page.click(sendSelector);
+  await staleConfig.page.locator(sendSelector).click();
   await staleConfig.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
   for (let attempt = 0; attempt < 20 && staleConfig.calls.config.length < 2; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -504,7 +535,7 @@ try {
     setter.call(field, "Explain server recovery briefly.");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await lostServer.page.click(sendSelector);
+  await lostServer.page.locator(sendSelector).click();
   await lostServer.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
   for (let attempt = 0; attempt < 20 && lostServer.calls.config.length < 2; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -582,6 +613,9 @@ try {
   await noteScenario.page.evaluate(() => { window.location.hash = "#/ai"; });
   await noteScenario.page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
   await noteScenario.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  // Earlier scenarios share this browser's history. Wait for a new answer,
+  // otherwise an old citation can satisfy the selector before this one arrives.
+  const previousNoteAnswers = await noteScenario.page.$$eval('.ai-tutor__message--assistant', (nodes) => nodes.length);
   await noteScenario.page.$eval(".ai-tutor__composer textarea", (field) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
     setter.call(field, "Explain the zephyrine-quorum trick from my notes.");
@@ -589,6 +623,7 @@ try {
   });
   if (await noteScenario.page.$(".ai-tutor__consent input")) await noteScenario.page.click(".ai-tutor__consent input");
   await noteScenario.page.$eval(sendSelector, (button) => button.click());
+  await noteScenario.page.waitForFunction((count) => document.querySelectorAll('.ai-tutor__message--assistant').length > count && !document.querySelector('.ai-tutor__message--streaming'), { timeout: 15_000 }, previousNoteAnswers);
   await noteScenario.page.waitForSelector(".ai-tutor__message--assistant button.ai-tutor__citation[data-ai-citation]", { timeout: 15_000 });
   // The interception callback records the call asynchronously; the rendered
   // citation can beat it by a tick. Poll briefly instead of flaking.
@@ -679,6 +714,31 @@ try {
   assert.ok(disabled.calls.config.length >= 2, "disabled-state configuration retry did not recheck the server");
   assert.equal(disabled.calls.respond.length, 0, "disabled configuration reached the AI response endpoint");
   await disabled.page.close();
+
+  let modelOnline = false;
+  const recovery = await newAuditPage("service-recovers", () => modelOnline ? secureConfig : {
+    ...secureConfig, service: { ...secureConfig.service, reachable: false },
+  }, { responseDelayMs: 1_500 });
+  await recovery.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2" });
+  await recovery.page.waitForSelector(".ai-tutor__connection--error");
+  modelOnline = true;
+  await recovery.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 16_000 });
+  assert.ok(recovery.calls.config.length >= 2, "Ollama recovery did not automatically refresh the stale configuration");
+  assert.equal(await recovery.page.$(".ai-tutor__privacy-body"), null, "a returning learner sees repeated disclosure text");
+  await recovery.page.$eval(".ai-tutor__composer textarea", (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Explain test leakage briefly.");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  if (await recovery.page.$(".ai-tutor__consent input")) await recovery.page.click(".ai-tutor__consent input");
+  await recovery.page.locator(sendSelector).click();
+  await recovery.page.waitForSelector(".ai-tutor__message--streaming");
+  assert.equal(await recovery.page.$$eval("[data-ai-engine-option]", (nodes) => nodes.every((node) => node.disabled)), true, "Mac generation did not lock the engine picker");
+  await recovery.page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
+  assert.equal(await recovery.page.$eval(".ai-learning-studio", (node) => node.dataset.aiEngine), "mac-local");
+  await recovery.page.waitForSelector(".ai-tutor__message--streaming", { hidden: true });
+  assert.equal(recovery.calls.respond.length, 1, "engine controls interrupted or duplicated the request");
+  assert.equal(await recovery.page.$$eval("[data-ai-engine-option]", (nodes) => nodes.every((node) => !node.disabled)), true);
+  await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
   console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, validated quiz, answer-to-note clipping, bounded persistence/clear, and fail-closed states verified without a real model or search call.");

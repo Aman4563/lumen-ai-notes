@@ -11,6 +11,7 @@ let renderQueue = Promise.resolve();
 let renderSequence = 0;
 let themeObserver = null;
 let themeMediaQuery = null;
+let observedTheme = null;
 const themeSubscribers = new Set();
 
 const normalizeLineEndings = (value) => String(value ?? "").replace(/\r\n?/g, "\n");
@@ -75,13 +76,21 @@ const currentMermaidTheme = () => {
   return /\bdark\b/iu.test(scheme) ? "dark" : "neutral";
 };
 
-const notifyThemeSubscribers = () => themeSubscribers.forEach((listener) => listener());
+const notifyThemeSubscribers = () => {
+  const nextTheme = currentMermaidTheme();
+  // Dialog scroll locks also change root.style. Rebuilding every diagram for
+  // those changes clears visible SVGs and can interrupt an active theme render.
+  if (nextTheme === observedTheme) return;
+  observedTheme = nextTheme;
+  themeSubscribers.forEach((listener) => listener());
+};
 
 /** One document-level observer serves every rendered answer and reader view. */
 export const subscribeToMermaidTheme = (listener) => {
   if (typeof listener !== "function" || typeof document === "undefined") return () => {};
   themeSubscribers.add(listener);
   if (!themeObserver) {
+    observedTheme = currentMermaidTheme();
     themeObserver = new MutationObserver(notifyThemeSubscribers);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style", "class"] });
     themeMediaQuery = globalThis.matchMedia?.("(prefers-color-scheme: dark)") || null;
@@ -94,6 +103,7 @@ export const subscribeToMermaidTheme = (listener) => {
     themeObserver = null;
     themeMediaQuery?.removeEventListener?.("change", notifyThemeSubscribers);
     themeMediaQuery = null;
+    observedTheme = null;
   };
 };
 

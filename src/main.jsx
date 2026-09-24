@@ -4,6 +4,7 @@ import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { chunkRecovery } from "./lib/chunkRecovery.js";
 import "./styles.css";
+import "./responsive.css";
 
 const announcePwaIssue = (message) => window.dispatchEvent(new CustomEvent("lumen:pwa-error", { detail: message }));
 

@@ -247,6 +247,7 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
     () => renderPhoneTutorMarkdown(text, sources, citations),
     [citations, sources, text],
   );
+  const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
   const handleClick = async (event) => {
     const codeButton = event.target.closest?.(".code-copy");
@@ -273,7 +274,7 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
       ref={responseRef}
       className="phone-tutor__safe-response"
       // renderPhoneTutorMarkdown sanitizes model-authored HTML with DOMPurify.
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={htmlMarkup}
       onClick={handleClick}
     />
   );
@@ -873,7 +874,7 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
         {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => { activeUserMessageIdRef.current = null; setHistory([]); lastRequestRef.current = null; setRequestState({ status: "idle", message: "" }); }}><Trash2 size={18} /></button>}
       </header>
 
-      <div className="phone-tutor__disclosure"><ShieldCheck size={18} aria-hidden="true" /><p><strong>Session-only conversation; no per-answer consent.</strong> Prompts and model answers are not added to the saved Mac-local tutor history or backups. Reloading this page clears them. {PHONE_LOCAL_AI_DISCLOSURE.inference} Only an exact web query requires a separate one-use approval. <a href="./licenses/LLAMA_3_2_COMMUNITY_LICENSE.txt" target="_blank" rel="noopener noreferrer">Llama 3.2 license</a>.</p></div>
+      <details className="phone-tutor__disclosure"><summary>Privacy and session details</summary><p>Answers run on this device. This conversation clears on reload and is excluded from backups. {PHONE_LOCAL_AI_DISCLOSURE.inference} Web searches require approval of the exact query. <a href="./licenses/LLAMA_3_2_COMMUNITY_LICENSE.txt" target="_blank" rel="noopener noreferrer">Llama 3.2 license</a>.</p></details>
 
       <PhoneLocalAiSettings engine={engine} onNotify={onNotify} onStatusChange={setEngineStatus} interactionBusy={interactionLocked} />
 
@@ -889,17 +890,17 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
             <div className="phone-tutor__source-modes" role="radiogroup" aria-label="Grounding scope">
               {PHONE_SOURCE_MODES.map((mode) => <button type="button" role="radio" aria-checked={sourceMode === mode.id} className={sourceMode === mode.id ? "is-selected" : ""} disabled={interactionLocked || (mode.id === "library-first" && typeof retrieveLibrary !== "function")} onClick={() => selectSourceMode(mode.id)} key={mode.id}><strong>{mode.label}</strong><small>{mode.short}</small></button>)}
             </div>
-            {sourceMode === "library-first" && <p className="phone-tutor__library-first"><Search size={16} aria-hidden="true" /><span><strong>All local notes are eligible.</strong> The app retrieves at most two passages and about 4.4 KB before the model's stricter 4K fit. No library text leaves the device.</span></p>}
+            {sourceMode === "library-first" && <p className="phone-tutor__library-first"><Search size={16} aria-hidden="true" /><span>Relevant passages are selected from your library on this device.</span></p>}
             {sourceMode === "current" && currentSources.length > 0 && <div className="phone-tutor__source-list">{currentSources.map((source) => <article className="is-selected" key={source.id}><span><strong>{source.title}</strong>{source.section && <small>{source.section}</small>}<small>{source.text.length.toLocaleString()} characters available</small></span>{onNavigateSource && <button type="button" aria-label={`Open ${source.title}`} onClick={() => onNavigateSource(source.original, { sourceId: source.id })}><ExternalLink size={16} /></button>}</article>)}</div>}
             {sourceMode === "choose" && (normalizedSources.length ? <div className="phone-tutor__source-list">{normalizedSources.map((source) => <article className={selectedIds.includes(source.id) ? "is-selected" : ""} key={source.id}><label><input type="checkbox" checked={selectedIds.includes(source.id)} disabled={interactionLocked} onChange={() => toggleSource(source.id)} /><span><strong>{source.title}</strong>{source.section && <small>{source.section}</small>}<small>{source.text.length.toLocaleString()} characters available</small></span></label>{onNavigateSource && <button type="button" aria-label={`Open ${source.title}`} onClick={() => onNavigateSource(source.original, { sourceId: source.id })}><ExternalLink size={16} /></button>}</article>)}</div> : <p className="phone-tutor__empty"><WifiOff size={18} /> No loaded lesson source is available. Choose Library first to search the complete local index.</p>)}
             {sourceMode === "none" && <p className="phone-tutor__empty"><WifiOff size={18} /> No lesson text will be supplied. The 1B model may be incomplete or wrong; use this only for general questions.</p>}
             {sourceWarning && <p className="phone-tutor__error" role="alert">{sourceWarning}</p>}
-            <p className="phone-tutor__source-budget">The app first clips prepared text to {MAX_CONTEXT_CHARS.toLocaleString()} characters, then applies a stricter UTF-8 byte fit after reserving output and evidence. Long or non-Latin excerpts may be trimmed further. Original notes are never modified.</p>
+            <p className="phone-tutor__source-budget">Long excerpts may be shortened to fit the model.</p>
           </details>
         </aside>
 
         <main className="phone-tutor__conversation">
-          {history.length === 0 && !streamingText ? <div className="phone-tutor__welcome"><Cpu size={27} aria-hidden="true" /><h3>Small, private, and useful for focused study</h3><p>Load the model, choose a source and mode, then ask one bounded question. Use Mac local for long context or high-stakes accuracy.</p></div> : (
+          {history.length === 0 && !streamingText ? <div className="phone-tutor__welcome"><Cpu size={27} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a short question or choose a study mode.</p></div> : (
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
               {history.map((message) => (
                 <article className={`phone-tutor__message is-${message.role}`} key={message.id}>
@@ -927,12 +928,12 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
 
       <form className="phone-tutor__composer" onSubmit={submit}>
         <div className="phone-tutor__composer-head"><div><label><span>Depth</span><select value={depth} disabled={interactionLocked} onChange={(event) => setDepth(event.target.value)}>{DEPTHS.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label><span>Answer length</span><select value={responseLength} disabled={interactionLocked || currentMode.structured} onChange={(event) => setResponseLength(event.target.value)}>{RESPONSE_LENGTHS.map((item) => <option value={item.id} key={item.id}>{item.label} · {item.tokens} tokens</option>)}</select></label></div><span>{PHONE_LOCAL_MODEL.label}</span></div>
-        <label className={`phone-tutor__search-toggle ${allowSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={allowSearch} disabled={interactionLocked || sourceMode !== "library-first" || typeof retrieveLibrary !== "function"} onChange={(event) => setAllowSearch(event.target.checked)} /><span><strong>Allow current-web fallback after a weak library match</strong><small>{sourceMode === "library-first" && typeof retrieveLibrary === "function" ? allowSearch ? "Proposal enabled. Lumen still checks all local notes first. If evidence is weak or time-sensitive, it shows one exact query for your separate approval; nothing is sent automatically." : "Off. Turn this on to let Lumen propose one exact query when local evidence is weak or time-sensitive. You will still approve that query separately." : "Choose Library first to make a local evidence check before any exact-query web proposal."}</small></span></label>
+        <label className={`phone-tutor__search-toggle ${allowSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={allowSearch} disabled={interactionLocked || sourceMode !== "library-first" || typeof retrieveLibrary !== "function"} onChange={(event) => setAllowSearch(event.target.checked)} /><span><strong>Allow current-web fallback</strong><small>{sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "You approve the exact query before it is sent." : "Select Library first to use web fallback."}</small></span></label>
         <label className="phone-tutor__prompt-label" htmlFor={promptId}>What should the on-device tutor help you learn?</label>
         <textarea id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} />
         <div className="phone-tutor__composer-foot"><span>{prompt.trim().length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}</span><span>{sourceMode === "library-first" ? "Up to 2 passages retrieved at send time" : `${buildPhoneContext(selectedSources).length.toLocaleString()} pre-fit source characters`}</span></div>
         <div className="phone-tutor__send-row"><div><strong>Runs locally after the model is loaded.</strong><small>{currentMode.structured ? "Structured output is validated before it is shown; it does not stream partial JSON." : "The answer streams from the phone model as tokens arrive."}</small></div><button className="phone-tutor__primary" type="submit" disabled={!ready}><Send size={17} aria-hidden="true" /> Generate {currentMode.label}</button></div>
-        {!engineStatus.loaded && <p className="phone-tutor__disabled-reason">Use the download consent and “Download & load” controls above before generating. Selecting On-device Lite alone never downloads the model.</p>}
+        {!engineStatus.loaded && <p className="phone-tutor__disabled-reason">Load the model above to start.</p>}
         {engineStatus.loaded && Boolean(prompt.trim()) && !requestFit.fits && <p className="phone-tutor__disabled-reason" role="alert">{requestFit.message}</p>}
       </form>
     </section>
