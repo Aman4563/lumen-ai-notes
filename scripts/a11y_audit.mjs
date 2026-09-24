@@ -253,6 +253,22 @@ try {
       check(sidebar.inert && sidebar.hidden === "true", `${viewportName}: the closed mobile drawer became reachable after the reader actions menu closed (${JSON.stringify(sidebar)})`);
     }
 
+    // Clicking lecture text must not park focus on <main>: the reader scrolls
+    // its own container, so PageDown only works while focus stays on the body.
+    if (viewportName === "desktop") {
+      await navigate(page, ROUTES[2]);
+      const paragraph = await page.evaluate(() => {
+        const node = [...document.querySelectorAll(".markdown-body p")].find((item) => { const box = item.getBoundingClientRect(); return box.top > 150 && box.bottom < innerHeight - 150; });
+        const box = node?.getBoundingClientRect();
+        return box && { x: box.left + 20, y: box.top + box.height / 2 };
+      });
+      await page.mouse.click(paragraph.x, paragraph.y);
+      const clicked = await page.evaluate(() => ({ active: document.activeElement?.tagName, top: document.querySelector(".reader-scroll").scrollTop }));
+      await page.keyboard.press("PageDown");
+      const scrolled = await page.waitForFunction((top) => document.querySelector(".reader-scroll").scrollTop > top + 100, { timeout: 5_000 }, clicked.top).then(() => true).catch(() => false);
+      check(clicked.active === "BODY" && scrolled, `${viewportName}: clicking lecture text moved focus to ${clicked.active} or stopped PageDown from scrolling the reader`);
+    }
+
     // Toasts announce through persistent live regions, pick the icon by kind,
     // and dismiss on schedule even while the app keeps re-rendering (HL-22).
     await navigate(page, ROUTES[0]);

@@ -446,3 +446,12 @@ and Contrast. It also fails on any `var(--token)` that no stylesheet defines.
   headings, a theme radio group, and meter semantics. The responsive suite
   checks the drawer's paint order with background hit testing enabled and the
   close button after scrolling.
+- Review of the foundation branch found two regressions it had introduced. A
+  permanent `tabindex="-1"` on `<main>` meant any click on lecture text parked
+  focus there. PageDown and the arrow keys then stopped scrolling the reader,
+  and teaching mode's Space shortcut stopped working. The landmark is now
+  focusable only while the skip link or a lazy route holds focus there. The
+  curriculum list's new bottom fade also dimmed the keyboard-focused Part; the
+  fade now lifts while a Part has keyboard focus. `audit:a11y` clicks lecture
+  text and asserts that focus stays on the body and PageDown scrolls. It also
+  tabs through the Parts and asserts that no focused row sits under the fade.

@@ -223,6 +223,23 @@ function ToastAnnouncer({ toast }) {
   </>;
 }
 
+/**
+ * Focuses the main landmark for the skip link and the lazy-route fallback.
+ * It is focusable only while it holds that focus (main drops the tabindex on
+ * blur or pointerdown): a permanent tabindex would park focus on <main> after
+ * any click on page text, which stops keyboard scrolling in nested scrollers
+ * such as the reader and breaks body-targeted shortcuts like teaching Space.
+ */
+const focusMainContent = (options) => {
+  const main = document.getElementById("main-content");
+  if (!main) return;
+  main.setAttribute("tabindex", "-1");
+  main.focus(options);
+};
+const releaseMainContent = (event) => {
+  if (event.type === "pointerdown" || event.target === event.currentTarget) event.currentTarget.removeAttribute("tabindex");
+};
+
 function useModalKeyboard(active, dialogRef, onClose) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -1733,7 +1750,7 @@ export default function App() {
     const heading = routeFocusRequest.target === "h1" ? main.querySelector("h1") : null;
     const target = routeFocusRequest.target === "h1" ? heading : main.querySelector(routeFocusRequest.target);
     if (heading && !heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
-    const focusTarget = () => (target || main).focus({ preventScroll: true });
+    const focusTarget = () => (target ? target.focus({ preventScroll: true }) : focusMainContent({ preventScroll: true }));
     // Navigating from the mobile drawer: the page is still inert until the
     // drawer's cleanup runs, and focus() inside an inert region is a no-op.
     if (main.closest("[inert]")) requestAnimationFrame(focusTarget);
@@ -3183,7 +3200,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <a className="skip-link" href="#main-content" inert={appModalOpen} onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to content</a>
+      <a className="skip-link" href="#main-content" inert={appModalOpen} onClick={(event) => { event.preventDefault(); focusMainContent(); }}>Skip to content</a>
       <div ref={sidebarRef} id="application-sidebar" className={sidebarOpen ? "app-sidebar open" : "app-sidebar"} role={drawerDialog ? "dialog" : undefined} aria-modal={drawerDialog ? "true" : undefined} aria-label={drawerDialog ? "Menu" : undefined} aria-hidden={sidebarHidden ? "true" : undefined} inert={sidebarHidden}>
         <nav className="sidebar-nav" aria-label="Main navigation">
           <div className="brand-lockup"><div className="brand-mark" aria-hidden="true">L</div><div><strong>Lumen</strong><span>AI Notes</span></div><button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Close menu" type="button"><X size={19} /></button></div>
@@ -3215,7 +3232,7 @@ export default function App() {
 
         {(!window.isSecureContext || pwaIssue) && <div className="secure-context-banner" role="status"><AlertTriangle size={17} /><div><strong>{window.isSecureContext ? "Offline mode needs attention" : "Limited LAN mode"}</strong><span>{pwaIssue || "Reading, editing, reviews, and local notes work here. Use an HTTPS address for iPhone installation, offline caching, secure clipboard, wake lock, persistent storage, and AI."}</span></div><button className="text-button" onClick={() => setSettingsOpen(true)} type="button">Details</button>{pwaIssue && window.isSecureContext && <button className="icon-button small" onClick={() => setPwaIssue("")} aria-label="Dismiss offline-mode notice" type="button"><X size={15} /></button>}</div>}
 
-        <main id="main-content" tabIndex={-1} className="view-container" inert={appModalOpen} aria-hidden={hiddenBehindModal}>
+        <main id="main-content" className="view-container" inert={appModalOpen} aria-hidden={hiddenBehindModal} onBlur={releaseMainContent} onPointerDownCapture={releaseMainContent}>
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} onStartAssessment={startAssessment} onGoalsChange={(goals) => setProfile((current) => ({ ...current, goals: { ...current.goals, ...goals } }))} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
           {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} autoNarrate={autoNarrateDocId === currentDocument.id} onAutoNarrateHandled={() => setAutoNarrateDocId("")} onOpenBoard={() => changeView("board")} onAskAi={profile.settings.aiFeaturesEnabled !== false ? askAiAboutSelection : undefined} onNotify={notify} /></Suspense>)}
