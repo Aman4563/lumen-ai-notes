@@ -260,3 +260,75 @@ these defects before the fix (issue #55):
 - The eraser cut holes in the grid, wrapped text could only be selected by
   its first line, sticky notes hid overflow silently, placed text could not
   be edited, and SVG export scaled text and strokes differently from PNG.
+
+## Bugs reproduced on 2026-09-24: tutor answer quality (#58)
+
+The audit's real `qwen3.5:4b` runs found these problems in the server's task
+instructions and recovery paths. The "after" runs used this branch's server,
+the same model, and the local SearXNG. They were streamed through the real
+browser client (13 generations plus one tutor UI run).
+
+- Socratic copied the literal `Output pattern: Your question? [S1]` example.
+  In 4 of 4 audit replies the answer began with "Your question?", and none
+  assessed the learner's correct answer. The instruction now describes the
+  format instead of giving a template. After a tutor question, it asks for a
+  one- or two-sentence assessment and then one cited question. After: the
+  follow-up opened with "Your understanding is correct: …" and asked exactly
+  one question ending in `[S1]` (Fast, 72 tokens, 14.0 s). Both Balanced
+  endpoint Socratic cases passed the new no-prefix assertion.
+- Fast only lowered the token ceiling. For the same no-library L2 prompt,
+  Fast gave 3,318 and 3,611 characters (810 and 849 tokens, 28–33 s), and
+  Deep gave 3,569 and 3,506. Fast prose now has a target of about 150 words.
+  After: Fast gave 1,589 characters, 231 words, 390 tokens in 14.1 s.
+  Balanced gave 6,998 characters, 1,082 words, 1,642 tokens in 59.0 s.
+- A web fallback whose search returned nothing usable ended with
+  `WEB_SEARCH_NO_RESULTS` after 23.5 s, which discarded 8 attached library
+  passages. A Markdown request with library evidence now gets a library-only
+  answer that must cite `[S#]` and cannot contain `[W#]`. The answer opens
+  with a "Current-web evidence unavailable" notice and reports
+  `webSearch.used: false`. Without library evidence, and for structured
+  tasks, the request still fails closed. After: 4 of 4 nonsense-release
+  queries completed in 25.8–35.8 s with the notice and `[S#]` citations.
+  The model sometimes still describes the search or overstates absence
+  ("no public evidence exists"). The tutor badge still reads "not needed"
+  until the client maps `requested && !used && rounds > 0` to a failed
+  fallback.
+- Code review called population variance a defect and said scikit-learn
+  defaults to N−1. A later run recommended the unstable one-pass
+  E[x²]−E[x]² variance. Findings are now labeled Defect (traced to a failing
+  input) or Convention/alternative. Uncertain library defaults and that
+  shortcut are named explicitly. After: the off-by-one was traced
+  (`[10, 20, 30]` returns 16.67), and N versus N−1 was labeled "not a
+  defect". The model still made a hedged, partly wrong NumPy-default remark,
+  so treat code review as advisory.
+- Grounded prose sometimes needed a citation regeneration: 2 of 4 audit
+  runs, 0 of 4 on re-check. Grounded prose now ends each source-backed
+  paragraph with its label. Grouped or spaced labels the model wrote
+  (`[S1, S2]`, `[S 1]`) are normalized. The server never adds a label to
+  uncited text. After: 0 of 8 streamed grounded runs needed a regeneration.
+- One grounded Explain answer arrived as a raw JSON object and passed
+  because it contained `[S1]`. Prose tasks now reject bare JSON. They
+  regenerate once as Markdown, then fail with `AI_CONTRACT_ERROR`.
+  Source-free live prose holds back an opening `{` (an opening `[` usually
+  starts a Markdown link, so it still streams). This could not be
+  reproduced on demand (0 of 14 after-runs), so `server/ai/quality.test.mjs`
+  covers it deterministically.
+
+The filtered endpoint matrix (`LUMEN_AI_TASKS=socratic,explain`,
+`LUMEN_AI_PROFILES=balanced,fast`) passed 5/5. It also recorded
+per-case output length and streamed regeneration counts. This filtered run
+does not replace the full acceptance run.
+
+Review follow-up on the same day:
+
+- The JSON guard first held any source-free answer that opened with `{` or
+  `[`. A Markdown link opener therefore stopped streaming, and a length stop
+  lost the partial the learner would otherwise keep. Only `{` is held now.
+- A library-only draft that began with four spaces became an indented code
+  block under the notice (checked with the tutor's `marked` renderer), so its
+  first paragraph and `[S#]` rendered as code. The draft is trimmed first.
+- Live: a Socratic follow-up whose history still carried the old
+  `Your question?` template assessed the answer, asked one `[S1]` question
+  with no prefix, and streamed text equal to `outputText` (13.3 s). A
+  grounded follow-up after a library-only answer did not repeat the notice
+  (7.9 s).
