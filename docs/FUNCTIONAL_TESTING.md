@@ -247,8 +247,10 @@ these defects before the fix (issue #55):
   a phone became a 2.4:1 rectangle on a Mac. Pages now keep their authoring
   size and are letterboxed with one uniform scale. Legacy boards adopt the
   canvas they are first shown on without rewriting any point.
-- Edge moves, nudges, and duplicates clamped each point and squashed shapes.
-  The whole selection now moves by one clamped delta.
+- Edge moves, nudges, and duplicates clamped each point and squashed shapes,
+  rotated ones included, whose stored points clamped even when the turned
+  shape still fit. The whole selection now moves by one delta, limited by
+  both its rotated footprint and its stored points.
 - The phone toolbar was a 1,228–1,480px strip with Undo, Redo, and Zoom off
   screen; landscape showed 13–73px of canvas above the bottom navigation.
   The responsive audit now measures the visible canvas, not the element box.

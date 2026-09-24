@@ -783,8 +783,10 @@ carries a sparse authoring `size` in CSS pixels. The editor draws it with one un
 letterboxed inside the canvas, so shapes keep their proportions on every screen. Fonts, stroke
 widths, the 24px grid, rotation, and wrapped-text bounds use those authoring pixels. A legacy
 page without `size` renders in the live canvas box as before. It adopts that box the first time it
-is shown in portrait or on a desktop, and never while a phone is in landscape. An empty page
-adopts on its first edit. Points are never rewritten. The size merges like a page name,
+is shown in portrait or on a desktop, and never while a phone is in landscape, not even when it is
+edited there. An empty page adopts on its first edit. Points are never rewritten. Moves, nudges,
+duplicates, and pastes are limited by both the rotated footprint and the stored points, so a
+rotated object at an edge is never clamped into a narrower shape. The size merges like a page name,
 travels in `lumen.board.v1`, and is the SVG viewBox. The background is a separate canvas
 under the ink, so the eraser's `destination-out` affects ink only.
 
@@ -1445,8 +1447,9 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 
 - IndexedDB/profile/board generation fencing, tombstones, and atomic updater semantics.
 - Reset/restore cannot be undone by a stale tab or delayed board save.
-- Board points are fractions of the page's authoring `size`, never of the live canvas; migrate
-  by adopting a size, not by rewriting points, and scale x and y uniformly.
+- Board points are fractions of the page's authoring `size` (a legacy page without one renders
+  in the live canvas until it adopts one); migrate by adopting a size, never by rewriting points,
+  and scale x and y uniformly.
 - Backup preflight and recovery snapshot precede destructive replacement.
 - Failures remain visible; never claim data/cache deletion before post-check succeeds.
 
