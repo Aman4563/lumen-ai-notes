@@ -8209,7 +8209,9 @@ input[type="range"] {
 .sidebar-settings .connection-icon { flex: 0 0 auto; margin-left: auto; color: var(--sidebar-accent); }
 .sidebar-settings .connection-icon + .offline-dot { margin-left: 6px; }
 
-.sidebar-parts.has-more {
+/* The fade lifts while a Part holds keyboard focus, so the focused row at the
+   list's lower edge is never dimmed (the list can be only a row tall). */
+.sidebar-parts.has-more:not(:has(:focus-visible)) {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 42px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 42px), transparent);
 }

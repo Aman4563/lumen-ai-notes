@@ -203,6 +203,27 @@ try {
       }
     }
 
+    // The curriculum list's bottom fade never dims the keyboard-focused Part.
+    if (viewportName === "desktop") {
+      await navigate(page, ROUTES[0]);
+      await page.$eval(".sidebar-section-title button", (button) => button.focus());
+      const faded = [];
+      for (let step = 0; step < 12; step += 1) {
+        await page.keyboard.press("Tab");
+        await settle(page);
+        const row = await page.evaluate(() => {
+          const list = document.querySelector(".sidebar-parts");
+          const active = document.activeElement;
+          const style = getComputedStyle(list);
+          if (!list.contains(active) || (style.maskImage || style.webkitMaskImage || "none") === "none") return null;
+          const gap = list.getBoundingClientRect().bottom - active.getBoundingClientRect().bottom;
+          return gap < 42 ? `${active.textContent.slice(0, 2)} ${Math.round(gap)}px` : null;
+        });
+        if (row) faded.push(row);
+      }
+      check(faded.length === 0, `${viewportName}: keyboard-focused curriculum Parts sit inside the list's fade (${faded.join(", ")})`);
+    }
+
     // A user-initiated route change moves focus to the new page heading.
     await navigate(page, ROUTES[0]);
     const navButton = viewportName === "phone" ? ".bottom-nav button" : ".sidebar-primary button";
