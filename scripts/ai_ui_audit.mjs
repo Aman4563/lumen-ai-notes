@@ -775,7 +775,7 @@ try {
     describedByError: document.getElementById(input.getAttribute("aria-describedby") || "")?.classList.contains("ai-tutor__pairing-error") === true,
   })), { invalid: "true", describedByError: true }, "the rejected pairing code was not linked to its error");
   await pairing.page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__pairing input"), { timeout: 3_000 }).catch(() => assert.fail("a rejected pairing code did not return focus to the code field"));
-  assert.equal(await pairing.page.$(".ai-tutor__composer textarea"), null, "the pairing state still showed the full composer");
+  assert.equal(await pairing.page.$$eval(".ai-tutor__composer :is(.ai-tutor__response-profiles, .ai-tutor__web-search, .ai-tutor__difficulty, .ai-tutor__consent)", (nodes) => nodes.length), 0, "the pairing state still showed the full composer");
   await pairing.page.$eval(".ai-tutor__pairing input", (input) => { input.value = ""; });
   await pairing.page.type(".ai-tutor__pairing input", "correct-horse-battery");
   await pairing.page.$eval(".ai-tutor__pairing button[type='submit']", (button) => button.click());
@@ -809,7 +809,7 @@ try {
   // A server without AI shows one focused card and a reason next to the
   // disabled Generate button instead of the whole composer.
   assert.match(await disabled.page.$eval(".ai-tutor__setup-card", (node) => node.textContent), /not set up on this server/i, "the AI-disabled state did not explain itself");
-  assert.equal(await disabled.page.$(".ai-tutor__composer textarea"), null, "the AI-disabled state still showed the full composer");
+  assert.deepEqual(await disabled.page.$$eval(".ai-tutor__composer :is(.ai-tutor__response-profiles, .ai-tutor__web-search, .ai-tutor__difficulty, .ai-tutor__consent)", (nodes) => nodes.length), 0, "the AI-disabled state still showed the full composer");
   assert.equal(await disabled.page.$(".ai-tutor__mode-tabs"), null, "the AI-disabled state still offered study modes");
   assert.match(await disabled.page.$eval(".ai-tutor__disabled-reason", (node) => node.textContent), /not set up on this server/i, "the disabled Generate button had no reason");
   await clickByText(disabled.page, ".ai-tutor__connection button", "Check again");
