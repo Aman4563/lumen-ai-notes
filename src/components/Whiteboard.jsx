@@ -1,40 +1,70 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowDownToLine,
+  ArrowUpToLine,
+  BrushCleaning,
+  ChevronDown,
   Circle,
   Copy,
   Download,
+  Ellipsis,
   Eraser,
+  FileJson,
   Files,
   Grid2X2,
+  Grid3x3,
   Grip,
   Highlighter,
+  Image as ImageIcon,
+  Import,
+  Lock,
+  LockOpen,
   Minus,
   MousePointer2,
   MoveUpRight,
   Pencil,
+  PencilLine,
   PenLine,
   Plus,
   Redo2,
   RotateCcw,
+  Shapes,
   Square,
   StickyNote,
   Trash2,
-  ZoomIn,
-  ZoomOut,
   Type,
   Undo2,
   X,
-  ArrowDownToLine,
-  ArrowUpToLine,
-  Grid3x3,
-  Import,
-  Lock,
-  LockOpen,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { getData, normalizeBoardDocument, updateDataGuarded } from "../lib/db";
 import { createId } from "../lib/id.js";
 import { boardPageToSvg } from "../lib/boardSvg.js";
 import { exportBoardDocument, mergeImportedPages, parseBoardInterchange } from "../lib/boardInterchange.js";
+import {
+  approximateMeasure,
+  boundsCenter,
+  clampTranslation,
+  fitPage,
+  GRID_STEP,
+  normalizePageSize,
+  objectBounds,
+  PAGE_FILL,
+  pageSizeOf,
+  placeBlock,
+  placementOffset,
+  rotatedBounds,
+  rotatePoint,
+  STICKY_PADDING_TOP,
+  STICKY_PADDING_X,
+  stickyHeightForText,
+  stickyLayout,
+  textLayout,
+  translatePoints,
+  unionBounds,
+} from "../lib/boardGeometry.js";
+import { BOARD_SHORTCUTS } from "../lib/boardShortcuts.js";
 import {
   BOARD_SYNC_CHANNEL,
   BOARD_SYNC_SIGNAL_KEY,
@@ -44,8 +74,51 @@ import {
 import { PROFILE_REPLACEMENT_EVENT } from "../lib/profileSync.js";
 import { StorageBudgetError } from "../lib/storageBudget.js";
 
-const colors = ["#17283e", "#e36f4a", "#d8a326", "#2c8b76", "#5574c7", "#7a5aa6"];
+const inks = [
+  { value: "#17283e", name: "Navy" },
+  { value: "#e36f4a", name: "Coral" },
+  { value: "#d8a326", name: "Amber" },
+  { value: "#2c8b76", name: "Teal" },
+  { value: "#5574c7", name: "Blue" },
+  { value: "#7a5aa6", name: "Purple" },
+];
 const shapeTools = new Set(["line", "rectangle", "ellipse", "arrow"]);
+const TOOL_DEFS = {
+  select: { label: "Select and move objects", name: "Select and move", key: "v", icon: MousePointer2 },
+  pen: { label: "Pen", name: "Pen", key: "p", icon: PenLine },
+  marker: { label: "Highlighter", name: "Highlighter", key: "h", icon: Highlighter },
+  eraser: { label: "Eraser", name: "Eraser", key: "e", icon: Eraser },
+  line: { label: "Straight line", name: "Straight line", key: "l", icon: Minus },
+  rectangle: { label: "Rectangle", name: "Rectangle", key: "r", icon: Square },
+  ellipse: { label: "Ellipse", name: "Ellipse", key: "o", icon: Circle },
+  arrow: { label: "Arrow", name: "Arrow", key: "a", icon: MoveUpRight },
+  text: { label: "Text", name: "Text", key: "t", icon: Type },
+  sticky: { label: "Sticky note", name: "Sticky note", key: "n", icon: StickyNote },
+};
+const TOOL_BY_KEY = Object.fromEntries(Object.entries(TOOL_DEFS).map(([id, definition]) => [definition.key, id]));
+const toolTitle = (id) => `${TOOL_DEFS[id].name} (${TOOL_DEFS[id].key.toUpperCase()})`;
+const OBJECT_NAMES = { pen: "Pen stroke", marker: "Highlighter stroke", line: "Straight line", rectangle: "Rectangle", ellipse: "Ellipse", arrow: "Arrow", text: "Text", sticky: "Sticky note" };
+const describeObject = (object) => {
+  const name = OBJECT_NAMES[object.tool] || "Object";
+  const text = String(object.text || "").replace(/\s+/g, " ").trim();
+  return text ? `${name} “${text.length > 48 ? `${text.slice(0, 47)}…` : text}”` : name;
+};
+// Phone portrait and landscape share the compact toolbar (BOARD-4/LAND).
+const COMPACT_QUERY = "(max-width: 740px), (max-height: 540px)";
+
+const useMediaQuery = (query) => {
+  const read = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(query).matches;
+  const [matches, setMatches] = useState(read);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return undefined;
+    const list = window.matchMedia(query);
+    const update = () => setMatches(list.matches);
+    update();
+    list.addEventListener?.("change", update);
+    return () => list.removeEventListener?.("change", update);
+  }, [query]);
+  return matches;
+};
 
 const createBoard = () => {
   const id = createId();
@@ -56,6 +129,16 @@ const createBoard = () => {
     pages: [{ id, name: "Page 1", objects: [] }],
     syncMeta: { revision: 0, updatedAt: "", writerId: "", conflicts: [] },
   };
+};
+
+// One shared measuring context keeps canvas drawing, hit-testing, and the
+// SVG export on identical line breaks.
+let measureContext = null;
+const measureText = (text, font) => {
+  if (!measureContext && typeof document !== "undefined") measureContext = document.createElement("canvas").getContext("2d");
+  if (!measureContext) return approximateMeasure(text, font);
+  measureContext.font = font;
+  return measureContext.measureText(text).width;
 };
 
 const roundedRect = (context, x, y, width, height, radius) => {
@@ -75,9 +158,12 @@ const roundedRect = (context, x, y, width, height, radius) => {
   context.quadraticCurveTo(x, y, x + r, y);
 };
 
-const drawBackground = (context, width, height, background) => {
+// Page background, drawn on its own layer so the eraser (which removes ink
+// with destination-out) can never punch through it (BOARD-7).
+const drawBackground = (context, size, background) => {
+  const { width, height } = size;
   context.save();
-  context.fillStyle = "#fbf8f1";
+  context.fillStyle = PAGE_FILL;
   context.fillRect(0, 0, width, height);
   if (background === "plain") {
     context.restore();
@@ -86,9 +172,9 @@ const drawBackground = (context, width, height, background) => {
   context.fillStyle = "rgba(20,34,52,.13)";
   context.strokeStyle = "rgba(20,34,52,.075)";
   context.lineWidth = 1;
-  for (let x = 24; x < width; x += 24) {
+  for (let x = GRID_STEP; x < width; x += GRID_STEP) {
     if (background === "dots") {
-      for (let y = 24; y < height; y += 24) {
+      for (let y = GRID_STEP; y < height; y += GRID_STEP) {
         context.beginPath();
         context.arc(x, y, 1.15, 0, Math.PI * 2);
         context.fill();
@@ -101,7 +187,7 @@ const drawBackground = (context, width, height, background) => {
     }
   }
   if (background === "grid") {
-    for (let y = 24; y < height; y += 24) {
+    for (let y = GRID_STEP; y < height; y += GRID_STEP) {
       context.beginPath();
       context.moveTo(0, y);
       context.lineTo(width, y);
@@ -111,94 +197,24 @@ const drawBackground = (context, width, height, background) => {
   context.restore();
 };
 
-const wrapText = (context, text, x, y, maximumWidth, lineHeight, maximumLines = 20) => {
-  const lines = [];
-  String(text || "").split("\n").forEach((paragraph) => {
-    let line = "";
-    paragraph.split(/\s+/).filter(Boolean).forEach((word) => {
-      const candidate = `${line} ${word}`.trim();
-      if (line && context.measureText(candidate).width > maximumWidth) {
-        lines.push(line);
-        line = word;
-      } else line = candidate;
-    });
-    if (line) lines.push(line);
-    else if (!paragraph) lines.push("");
-  });
-  lines.slice(0, maximumLines).forEach((line, index) => context.fillText(line, x, y + index * lineHeight));
-  return Math.min(lines.length, maximumLines);
-};
-
 /**
  * Rotation (BOARD-001, issue #11) is a per-object angle in radians about the
- * bounds center, applied in PIXEL space — the canvas aspect is non-uniform
- * in normalized coordinates, so a normalized-space rotation would shear.
- * Points stay stored unrotated; every pointer interaction maps through the
- * object's local (unrotated) frame via these helpers.
+ * bounds center, applied in authoring-pixel space. Points stay stored
+ * unrotated; every pointer interaction maps through the object's local
+ * (unrotated) frame.
  */
-const toLocalPoint = (point, object, rect) => {
-  const rotation = object.rotation || 0;
-  if (!rotation) return point;
-  const bounds = objectBounds(object);
-  const center = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
-  const px = (point.x - center.x) * rect.width;
-  const py = (point.y - center.y) * rect.height;
-  const cos = Math.cos(-rotation);
-  const sin = Math.sin(-rotation);
-  return { x: center.x + (px * cos - py * sin) / rect.width, y: center.y + (px * sin + py * cos) / rect.height };
-};
-
-/** Screen-space bounding box of a possibly-rotated object. */
-const rotatedAabb = (object, rect) => {
-  const rotation = object.rotation || 0;
-  const bounds = objectBounds(object);
-  if (!rotation) return bounds;
-  const center = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
-  const corners = [[bounds.minX, bounds.minY], [bounds.maxX, bounds.minY], [bounds.minX, bounds.maxY], [bounds.maxX, bounds.maxY]].map(([x, y]) => {
-    const px = (x - center.x) * rect.width;
-    const py = (y - center.y) * rect.height;
-    return { x: center.x + (px * cos - py * sin) / rect.width, y: center.y + (px * sin + py * cos) / rect.height };
-  });
-  return {
-    minX: Math.min(...corners.map((corner) => corner.x)),
-    maxX: Math.max(...corners.map((corner) => corner.x)),
-    minY: Math.min(...corners.map((corner) => corner.y)),
-    maxY: Math.max(...corners.map((corner) => corner.y)),
-  };
-};
-
-const applyObjectRotation = (context, object, width, height) => {
+const applyObjectRotation = (context, object, size) => {
   if (!object.rotation) return;
-  const bounds = objectBounds(object);
-  const centerX = ((bounds.minX + bounds.maxX) / 2) * width;
-  const centerY = ((bounds.minY + bounds.maxY) / 2) * height;
-  context.translate(centerX, centerY);
+  const center = boundsCenter(objectBounds(object, size, measureText));
+  context.translate(center.x * size.width, center.y * size.height);
   context.rotate(object.rotation);
-  context.translate(-centerX, -centerY);
+  context.translate(-center.x * size.width, -center.y * size.height);
 };
 
-const objectBounds = (object) => {
-  const xs = object.points.map((point) => point.x);
-  const ys = object.points.map((point) => point.y);
-  let minX = Math.min(...xs);
-  let maxX = Math.max(...xs);
-  let minY = Math.min(...ys);
-  let maxY = Math.max(...ys);
-  if (object.tool === "text") {
-    maxX = Math.min(1, minX + 0.42);
-    maxY = Math.min(1, minY + Math.max(0.07, (object.text.split("\n").length * object.fontSize) / 500));
-  }
-  if (object.tool === "sticky" && object.points.length === 1) {
-    maxX = Math.min(1, minX + 0.36);
-    maxY = Math.min(1, minY + 0.22);
-  }
-  return { minX, minY, maxX, maxY };
-};
-
-function drawObject(context, object, width, height) {
+/** Draws one object in authoring pixels (issue #55). */
+function drawObject(context, object, size) {
   if (!object.points?.length) return;
+  const { width, height } = size;
   const start = object.points[0];
   const end = object.points.at(-1);
   const startX = start.x * width;
@@ -206,7 +222,7 @@ function drawObject(context, object, width, height) {
   const endX = end.x * width;
   const endY = end.y * height;
   context.save();
-  applyObjectRotation(context, object, width, height);
+  applyObjectRotation(context, object, size);
   context.lineCap = "round";
   context.lineJoin = "round";
   context.lineWidth = object.width;
@@ -218,9 +234,10 @@ function drawObject(context, object, width, height) {
   if (object.tool === "text") {
     context.globalCompositeOperation = "source-over";
     context.globalAlpha = 1;
-    context.font = `700 ${object.fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
+    const layout = textLayout(object, size, measureText);
+    context.font = layout.font;
     context.textBaseline = "top";
-    wrapText(context, object.text, startX, startY, Math.max(120, width * 0.42), object.fontSize * 1.25);
+    layout.lines.forEach((line, index) => context.fillText(line, layout.x, layout.y + index * layout.lineHeight));
     context.restore();
     return;
   }
@@ -228,19 +245,18 @@ function drawObject(context, object, width, height) {
   if (object.tool === "sticky") {
     context.globalCompositeOperation = "source-over";
     context.globalAlpha = 1;
-    const boxWidth = Math.max(130, endX - startX || width * 0.36);
-    const boxHeight = Math.max(105, endY - startY || height * 0.22);
+    const card = stickyLayout(object, size, measureText);
     context.fillStyle = object.fill || "#fff1a8";
     context.strokeStyle = "rgba(70,55,18,.2)";
     context.lineWidth = 1.5;
     context.beginPath();
-    roundedRect(context, startX, startY, boxWidth, boxHeight, 12);
+    roundedRect(context, card.x, card.y, card.width, card.height, 12);
     context.fill();
     context.stroke();
     context.fillStyle = object.color || "#17283e";
-    context.font = `650 ${object.fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
+    context.font = card.font;
     context.textBaseline = "top";
-    wrapText(context, object.text, startX + 14, startY + 15, boxWidth - 28, object.fontSize * 1.3, Math.max(2, Math.floor((boxHeight - 28) / (object.fontSize * 1.3))));
+    card.lines.forEach((line, index) => context.fillText(line, card.x + STICKY_PADDING_X, card.y + STICKY_PADDING_TOP + index * card.lineHeight));
     context.restore();
     return;
   }
@@ -272,36 +288,67 @@ function drawObject(context, object, width, height) {
   context.restore();
 }
 
-const drawSelection = (context, object, width, height, withRotateHandle = false) => {
+// screen = view · fit · page: the zoom/pan view in canvas units, then the
+// uniform fit of the page's authoring pixels into the canvas (issue #55).
+const applyViewTransform = (context, { rect, fit }, view) => {
+  context.translate(view.x * rect.width, view.y * rect.height);
+  context.scale(view.scale, view.scale);
+  context.translate(fit.left, fit.top);
+  context.scale(fit.scale, fit.scale);
+};
+const clipToPage = (context, size) => {
+  context.beginPath();
+  context.rect(0, 0, size.width, size.height);
+  context.clip();
+};
+
+// Selection chrome is sized in screen pixels: `chrome` is authoring pixels
+// per screen pixel, so handles stay usable on a letterboxed or zoomed page.
+const SELECTION_PADDING = 7;
+const ROTATE_HANDLE_OFFSET = 26;
+const resizeCorners = (bounds, size, chrome) => {
+  const pad = SELECTION_PADDING * chrome;
+  const left = bounds.minX * size.width - pad;
+  const right = bounds.maxX * size.width + pad;
+  const top = bounds.minY * size.height - pad;
+  const bottom = bounds.maxY * size.height + pad;
+  return [["tl", left, top], ["tr", right, top], ["bl", left, bottom], ["br", right, bottom]];
+};
+
+const drawSelection = (context, object, size, chrome, withRotateHandle = false) => {
   if (!object) return;
-  const bounds = objectBounds(object);
-  const x = bounds.minX * width - 7;
-  const y = bounds.minY * height - 7;
-  const boxWidth = Math.max(18, (bounds.maxX - bounds.minX) * width + 14);
-  const boxHeight = Math.max(18, (bounds.maxY - bounds.minY) * height + 14);
+  const bounds = objectBounds(object, size, measureText);
+  const pad = SELECTION_PADDING * chrome;
+  const x = bounds.minX * size.width - pad;
+  const y = bounds.minY * size.height - pad;
+  const boxWidth = Math.max(18 * chrome, (bounds.maxX - bounds.minX) * size.width + pad * 2);
+  const boxHeight = Math.max(18 * chrome, (bounds.maxY - bounds.minY) * size.height + pad * 2);
   context.save();
-  applyObjectRotation(context, object, width, height);
-  context.strokeStyle = "#e36f4a";
-  context.lineWidth = 1.5;
-  context.setLineDash([6, 4]);
+  applyObjectRotation(context, object, size);
+  context.strokeStyle = "#c2452a";
+  context.lineWidth = 1.5 * chrome;
+  context.setLineDash([6 * chrome, 4 * chrome]);
   context.strokeRect(x, y, boxWidth, boxHeight);
   context.fillStyle = "#ffffff";
   context.setLineDash([]);
-  [[x, y], [x + boxWidth, y], [x, y + boxHeight], [x + boxWidth, y + boxHeight]].forEach(([cx, cy]) => {
-    context.beginPath();
-    context.arc(cx, cy, 4, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
-  });
+  // Text reflows instead of resizing, so it gets no corner handles (BOARD-19).
+  if (object.tool !== "text" && !object.locked) {
+    resizeCorners(bounds, size, chrome).forEach(([, cx, cy]) => {
+      context.beginPath();
+      context.arc(cx, cy, 5.5 * chrome, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    });
+  }
   if (withRotateHandle && !object.locked) {
     const handleX = x + boxWidth / 2;
-    const handleY = y - 26;
+    const handleY = y - ROTATE_HANDLE_OFFSET * chrome;
     context.beginPath();
     context.moveTo(handleX, y);
-    context.lineTo(handleX, handleY + 6);
+    context.lineTo(handleX, handleY + 6 * chrome);
     context.stroke();
     context.beginPath();
-    context.arc(handleX, handleY, 6, 0, Math.PI * 2);
+    context.arc(handleX, handleY, 6.5 * chrome, 0, Math.PI * 2);
     context.fill();
     context.stroke();
   }
@@ -346,18 +393,25 @@ const useDialogKeyboard = (open, dialogRef, onClose) => {
 };
 
 function TextEntryDialog({ pending, onClose, onSubmit }) {
-  const [text, setText] = useState("");
-  const [fontSize, setFontSize] = useState(pending?.tool === "sticky" ? 18 : 24);
+  const [text, setText] = useState(pending?.text || "");
+  const [fontSize, setFontSize] = useState(pending?.fontSize || (pending?.tool === "sticky" ? 18 : 24));
   const inputRef = useRef(null);
   const dialogRef = useRef(null);
   useDialogKeyboard(Boolean(pending), dialogRef, onClose);
   useEffect(() => {
-    setText("");
-    setFontSize(pending?.tool === "sticky" ? 18 : 24);
-    requestAnimationFrame(() => inputRef.current?.focus());
+    setText(pending?.text || "");
+    setFontSize(pending?.fontSize || (pending?.tool === "sticky" ? 18 : 24));
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      input?.focus();
+      // Editing continues where the text ends.
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    });
   }, [pending]);
   if (!pending) return null;
-  return <div className="modal-layer board-text-layer"><button className="modal-scrim" onClick={onClose} aria-label="Cancel text entry" type="button" /><form ref={dialogRef} className="board-text-dialog" onSubmit={(event) => { event.preventDefault(); if (text.trim()) onSubmit(text.trim(), fontSize); }} role="dialog" aria-modal="true" aria-labelledby="board-text-title"><div className="popover-heading"><div><span className="eyebrow">Whiteboard object</span><strong id="board-text-title">Add {pending.tool === "sticky" ? "a sticky note" : "text"}</strong></div><button className="icon-button small" onClick={onClose} aria-label="Cancel text entry" type="button"><X size={17} /></button></div><textarea ref={inputRef} value={text} maxLength={10_000} onChange={(event) => setText(event.target.value)} placeholder={pending.tool === "sticky" ? "Question, reminder, assumption, or interview insight…" : "Type a label or explanation…"} aria-label="Whiteboard text" /><label><span>Text size</span><input type="range" min="14" max="48" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /><strong>{fontSize}px</strong></label><div className="modal-actions"><button className="button ghost" onClick={onClose} type="button">Cancel</button><button className="button primary" disabled={!text.trim()} type="submit">Add to board</button></div></form></div>;
+  const editing = pending.mode === "edit";
+  const heading = editing ? `Edit ${pending.tool === "sticky" ? "sticky note" : "text"}` : `Add ${pending.tool === "sticky" ? "a sticky note" : "text"}`;
+  return <div className="modal-layer board-text-layer"><button className="modal-scrim" onClick={onClose} aria-label="Cancel text entry" type="button" /><form ref={dialogRef} className="board-text-dialog" onSubmit={(event) => { event.preventDefault(); if (text.trim()) onSubmit(text.trim(), fontSize); }} role="dialog" aria-modal="true" aria-labelledby="board-text-title"><div className="popover-heading"><div><span className="eyebrow">Whiteboard object</span><strong id="board-text-title">{heading}</strong></div><button className="icon-button small" onClick={onClose} aria-label="Cancel text entry" type="button"><X size={17} /></button></div><textarea ref={inputRef} value={text} maxLength={10_000} onChange={(event) => setText(event.target.value)} placeholder={pending.tool === "sticky" ? "Question, reminder, assumption, or interview insight…" : "Type a label or explanation…"} aria-label="Whiteboard text" /><label><span>Text size</span><input type="range" min="14" max="48" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /><strong>{fontSize}px</strong></label><div className="modal-actions"><button className="button ghost" onClick={onClose} type="button">Cancel</button><button className="button primary" disabled={!text.trim()} type="submit">{editing ? "Save changes" : "Add to board"}</button></div></form></div>;
 }
 
 function RenamePageDialog({ page, onClose, onRename }) {
@@ -376,7 +430,10 @@ function RenamePageDialog({ page, onClose, onRename }) {
 }
 
 export default function Whiteboard({ documentId, documentTitle, notify }) {
+  const rootRef = useRef(null);
+  const toolbarRef = useRef(null);
   const canvasRef = useRef(null);
+  const backdropRef = useRef(null);
   const containerRef = useRef(null);
   const drawingRef = useRef(null);
   const movingRef = useRef(null);
@@ -396,19 +453,35 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   const [board, setBoard] = useState(boardRef.current);
   const [historyCounts, setHistoryCounts] = useState({ past: 0, future: 0 });
   const [tool, setTool] = useState("pen");
-  const [color, setColor] = useState(colors[0]);
+  const [color, setColor] = useState(inks[0].value);
   const [lineWidth, setLineWidth] = useState(3);
   const [selectedIds, setSelectedIds] = useState([]);
-  // Single-selection compatibility: most tools (recolor, resize slider) act on
-  // exactly one object; group operations read selectedIds directly.
   const setSelectedId = useCallback((id) => setSelectedIds(id ? [id] : []), []);
   const marqueeRef = useRef(null);
   const resizingRef = useRef(null);
   const rotatingRef = useRef(null);
+  const panRef = useRef(null);
+  // A tap/click gesture on the canvas: text and sticky placement and
+  // double-tap editing run on the click that ends it (BOARD-1), never on
+  // pointerdown, so a touch's follow-up click cannot land on a new scrim.
+  const tapRef = useRef(null);
+  const lastTapRef = useRef(null);
+  const spaceHeldRef = useRef(false);
+  const canvasSizeRef = useRef(null);
   // Zoom/pan (BOARD-003): screen = world · scale + offset, in normalized
-  // units. Identity view keeps every legacy interaction byte-identical.
+  // canvas units. The page itself is fitted inside the canvas (issue #55).
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const [snapEnabled, setSnapEnabled] = useState(false);
+  const [spacePanning, setSpacePanning] = useState(false);
+  const [openPanel, setOpenPanel] = useState(null);
+  const [announcement, setAnnouncement] = useState("");
+  const compact = useMediaQuery(COMPACT_QUERY);
+  const coarsePointer = useMediaQuery("(pointer: coarse)");
+  // A landscape phone keeps undo/redo in its sticky tool row (BOARD-LAND).
+  const shortViewport = useMediaQuery("(max-height: 540px)");
+  const helpId = useId();
   const pinchRef = useRef(new Map());
   const pinchStateRef = useRef(null);
   const clampView = (candidate) => {
@@ -434,10 +507,22 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   boardRef.current = board;
   const activePage = useMemo(() => board.pages.find((page) => page.id === board.activePageId) || board.pages[0], [board]);
   const objects = activePage?.objects || [];
+  const activePageSize = activePage?.size;
   const selectedId = selectedIds.length === 1 ? selectedIds[0] : "";
   const selectedObject = objects.find((object) => object.id === selectedId);
   const selectedObjects = objects.filter((object) => selectedIds.includes(object.id));
   const activePageIndex = board.pages.findIndex((page) => page.id === activePage?.id);
+
+  // The current canvas box, rounded, is the size a legacy or new page adopts.
+  const measuredCanvasSize = () => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    return rect && rect.width >= 100 && rect.height >= 100 ? normalizePageSize(rect) : null;
+  };
+  const withAdoptedSize = (page) => {
+    if (page.size) return page;
+    const size = measuredCanvasSize();
+    return size ? { ...page, size } : page;
+  };
 
   const syncHistoryCounts = () => setHistoryCounts({ past: historyRef.current.past.length, future: historyRef.current.future.length });
   const setWithHistory = useCallback((updater) => {
@@ -450,11 +535,13 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       return next;
     });
   }, []);
+  // Every object edit funnels through here, so a page adopts its authoring
+  // size the moment it first receives content (issue #55).
   const updateActiveObjects = useCallback((updater, record = true) => {
-    const apply = (current) => ({ ...current, pages: current.pages.map((page) => page.id === current.activePageId ? { ...page, objects: (typeof updater === "function" ? updater(page.objects) : updater).slice(-5_000) } : page) });
+    const apply = (current) => ({ ...current, pages: current.pages.map((page) => page.id === current.activePageId ? withAdoptedSize({ ...page, objects: (typeof updater === "function" ? updater(page.objects) : updater).slice(-5_000) }) : page) });
     if (record) setWithHistory(apply);
     else setBoard(apply);
-  }, [setWithHistory]);
+  }, [setWithHistory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reportBoardConflicts = useCallback((conflicts) => {
     const unseen = (conflicts || []).filter((conflict) => conflict?.id && !knownConflictIdsRef.current.has(conflict.id));
@@ -703,34 +790,101 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     return () => { window.removeEventListener("pagehide", flush); document.removeEventListener("visibilitychange", onVisibility); flush(); };
   }, [documentId, loaded, persistBoard]);
 
+  // Legacy and imported pages without a size adopt the canvas they are first
+  // shown on (issue #55), which is exactly how they already look there. A
+  // phone rotated to landscape is skipped: its short canvas would freeze a
+  // portrait drawing's aspect. Empty pages adopt on their first edit instead,
+  // so merely opening a lecture's board never creates a stored record.
+  useEffect(() => {
+    if (!loaded || loadedDocumentRef.current !== documentId || replacementBlockedRef.current) return;
+    if (!board.pages.some((page) => !page.size && page.objects.length)) return;
+    if (window.matchMedia?.("(max-height: 540px)").matches) return;
+    const size = measuredCanvasSize();
+    if (!size) return;
+    setBoard((current) => ({ ...current, pages: current.pages.map((page) => page.size || !page.objects.length ? page : { ...page, size }) }));
+  }, [board.pages, documentId, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const readGeometry = () => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    const size = pageSizeOf(activePage, rect);
+    const fit = fitPage(rect, size);
+    return { rect, size, fit, chrome: 1 / (fit.scale * view.scale) };
+  };
+
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    canvasSizeRef.current = { width: rect.width, height: rect.height };
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const targetWidth = Math.max(1, Math.round(rect.width * dpr));
     const targetHeight = Math.max(1, Math.round(rect.height * dpr));
-    if (canvas.width !== targetWidth || canvas.height !== targetHeight) { canvas.width = targetWidth; canvas.height = targetHeight; }
+    const backdrop = backdropRef.current;
+    [canvas, backdrop].forEach((layer) => {
+      if (layer && (layer.width !== targetWidth || layer.height !== targetHeight)) { layer.width = targetWidth; layer.height = targetHeight; }
+    });
+    const size = pageSizeOf({ size: activePageSize }, rect);
+    const fit = fitPage(rect, size);
+    const geometry = { rect, size, fit };
+    // The fitted page in canvas CSS pixels, for audits and tooling.
+    Object.assign(canvas.dataset, {
+      pageLeft: (view.x * rect.width + fit.left * view.scale).toFixed(2),
+      pageTop: (view.y * rect.height + fit.top * view.scale).toFixed(2),
+      pageWidth: (fit.width * view.scale).toFixed(2),
+      pageHeight: (fit.height * view.scale).toFixed(2),
+    });
+    if (backdrop) {
+      const context = backdrop.getContext("2d");
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, rect.width, rect.height);
+      context.save();
+      applyViewTransform(context, geometry, view);
+      if (fit.left > 0.5 || fit.top > 0.5) {
+        // A letterboxed page reads as a sheet on the desk.
+        context.shadowColor = "rgba(20, 30, 50, 0.2)";
+        context.shadowBlur = 14 * dpr;
+        context.fillStyle = PAGE_FILL;
+        context.fillRect(0, 0, size.width, size.height);
+        context.shadowColor = "transparent";
+      }
+      drawBackground(context, size, board.background);
+      context.restore();
+    }
     const context = canvas.getContext("2d");
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, rect.width, rect.height);
     context.save();
-    context.translate(view.x * rect.width, view.y * rect.height);
-    context.scale(view.scale, view.scale);
-    drawBackground(context, rect.width, rect.height, board.background);
-    objects.forEach((object) => drawObject(context, object, rect.width, rect.height));
-    objects.filter((object) => selectedIds.includes(object.id)).forEach((object) => drawSelection(context, object, rect.width, rect.height, selectedIds.length === 1));
+    applyViewTransform(context, geometry, view);
+    clipToPage(context, size);
+    objects.forEach((object) => drawObject(context, object, size));
     context.restore();
-  }, [board.background, objects, selectedIds, view]);
+    context.save();
+    applyViewTransform(context, geometry, view);
+    const chrome = 1 / (fit.scale * view.scale);
+    objects.filter((object) => selectedIds.includes(object.id)).forEach((object) => drawSelection(context, object, size, chrome, selectedIds.length === 1));
+    context.restore();
+  }, [activePageSize, board.background, objects, selectedIds, view]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
     const onWheel = (event) => {
-      if (!event.ctrlKey) return;
-      event.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      zoomAround(Math.exp(-event.deltaY * 0.01), (event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+      if (event.ctrlKey) {
+        event.preventDefault();
+        zoomAround(Math.exp(-event.deltaY * 0.01), (event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+        return;
+      }
+      // Plain and Shift+wheel pan a zoomed board (BOARD-11). At 100% the
+      // wheel is left alone so the page itself can scroll (landscape phones).
+      if (viewRef.current.scale <= 1) return;
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1;
+      let deltaX = event.deltaX * unit;
+      let deltaY = event.deltaY * unit;
+      if (event.shiftKey && !deltaX) { deltaX = deltaY; deltaY = 0; }
+      setView((current) => clampView({ ...current, x: current.x - deltaX / rect.width, y: current.y - deltaY / rect.height }));
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
@@ -744,57 +898,183 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     return () => observer.disconnect();
   }, [redraw]);
 
-  const pointFromEvent = (event) => {
-    const rect = canvasRef.current.getBoundingClientRect();
-    const screenX = (event.clientX - rect.left) / rect.width;
-    const screenY = (event.clientY - rect.top) / rect.height;
-    return {
-      x: Math.max(0, Math.min(1, (screenX - view.x) / view.scale)),
-      y: Math.max(0, Math.min(1, (screenY - view.y) / view.scale)),
+  // Landscape phones scroll the board under a sticky toolbar; the canvas
+  // height there is derived from these measured offsets (BOARD-LAND).
+  useEffect(() => {
+    const root = rootRef.current;
+    const toolbar = toolbarRef.current;
+    if (!root || !toolbar) return undefined;
+    const update = () => {
+      const topbar = document.querySelector(".app-topbar");
+      root.style.setProperty("--board-offset-top", `${Math.round(topbar?.getBoundingClientRect().height || 0)}px`);
+      root.style.setProperty("--board-toolbar-height", `${Math.round(toolbar.getBoundingClientRect().height)}px`);
     };
-  };
-  // Snap-to-grid (BOARD-001): quantize world coordinates to the same 24
-  // CSS-px grid drawBackground renders, after the inverse view transform so
-  // zoom never changes the grid. Freehand strokes and keyboard nudges are
-  // deliberately never snapped.
-  const GRID_STEP = 24;
-  const snapWorld = (point) => {
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(toolbar);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+    };
+    // The compact and desktop layouts mount different toolbar elements.
+  }, [compact]);
+
+  useEffect(() => { setOpenPanel(null); }, [compact]);
+
+  // Snap-to-grid (BOARD-001): quantize to the 24px grid in authoring pixels,
+  // after the inverse view transform, so zoom and device never change it.
+  // Freehand strokes and keyboard nudges are deliberately never snapped.
+  const snapWorld = (point, size) => {
     if (!snapEnabled) return point;
-    const rect = canvasRef.current.getBoundingClientRect();
     return {
-      x: Math.max(0, Math.min(1, Math.round((point.x * rect.width) / GRID_STEP) * GRID_STEP / rect.width)),
-      y: Math.max(0, Math.min(1, Math.round((point.y * rect.height) / GRID_STEP) * GRID_STEP / rect.height)),
+      x: Math.max(0, Math.min(1, Math.round((point.x * size.width) / GRID_STEP) * GRID_STEP / size.width)),
+      y: Math.max(0, Math.min(1, Math.round((point.y * size.height) / GRID_STEP) * GRID_STEP / size.height)),
     };
   };
 
-  const hitTest = (point) => {
-    const rect = canvasRef.current.getBoundingClientRect();
+  const pointFromEvent = (event, geometry = readGeometry()) => {
+    const { rect, size, fit } = geometry;
+    const canvasX = (((event.clientX - rect.left) / rect.width - view.x) / view.scale) * rect.width;
+    const canvasY = (((event.clientY - rect.top) / rect.height - view.y) / view.scale) * rect.height;
+    return {
+      x: Math.max(0, Math.min(1, (canvasX - fit.left) / fit.scale / size.width)),
+      y: Math.max(0, Math.min(1, (canvasY - fit.top) / fit.scale / size.height)),
+    };
+  };
+  const pageCenterPoint = (geometry = readGeometry()) => pointFromEvent({ clientX: geometry.rect.left + geometry.rect.width / 2, clientY: geometry.rect.top + geometry.rect.height / 2 }, geometry);
+
+  const hitTest = (point, geometry, pointerType = "mouse") => {
+    const { size, chrome } = geometry;
+    const slop = (pointerType === "mouse" ? 6 : 12) * chrome;
     return [...objects].reverse().find((object) => {
       if (object.tool === "eraser") return false;
       // Rotated objects hit-test in their local frame: inverse-rotate the
       // pointer around the bounds center, then the box compare is exact.
-      const local = toLocalPoint(point, object, rect);
-      const bounds = objectBounds(object);
-      const margin = Math.max(0.018, object.width / 800);
-      return local.x >= bounds.minX - margin && local.x <= bounds.maxX + margin && local.y >= bounds.minY - margin && local.y <= bounds.maxY + margin;
+      const bounds = objectBounds(object, size, measureText);
+      const local = object.rotation ? rotatePoint(point, boundsCenter(bounds), -object.rotation, size) : point;
+      const reach = slop + (object.tool === "text" || object.tool === "sticky" ? 0 : object.width / 2);
+      const marginX = reach / size.width;
+      const marginY = reach / size.height;
+      return local.x >= bounds.minX - marginX && local.x <= bounds.maxX + marginX && local.y >= bounds.minY - marginY && local.y <= bounds.maxY + marginY;
     });
   };
 
+  const announce = (message) => setAnnouncement((current) => current === message ? `${message} ` : message);
+  const chooseTool = (next) => {
+    setTool(next);
+    setOpenPanel(null);
+    // A selection must never linger invisibly behind a drawing tool (BOARD-6).
+    if (next !== "select") setSelectedIds([]);
+  };
+  const togglePanel = (name) => setOpenPanel((current) => current === name ? null : name);
+  const openEditor = (object) => {
+    if (!object || object.locked || !["text", "sticky"].includes(object.tool)) return;
+    setPendingText({ mode: "edit", tool: object.tool, id: object.id, text: object.text, fontSize: object.fontSize });
+  };
+
+  const selectPointerDown = (event, point, geometry) => {
+    const { size, chrome } = geometry;
+    // Rotate (BOARD-001, issue #11) and resize (all four corners, BOARD-19)
+    // handles of a single selection; hit zones grow for touch and pen.
+    if (selectedObjects.length === 1 && !selectedObjects[0].locked) {
+      const target = selectedObjects[0];
+      const bounds = objectBounds(target, size, measureText);
+      const center = boundsCenter(bounds);
+      const local = target.rotation ? rotatePoint(point, center, -target.rotation, size) : point;
+      const localX = local.x * size.width;
+      const localY = local.y * size.height;
+      const reach = (event.pointerType === "mouse" ? 14 : 22) * chrome;
+      const rotateHandleY = bounds.minY * size.height - (SELECTION_PADDING + ROTATE_HANDLE_OFFSET) * chrome;
+      if (Math.abs(localX - center.x * size.width) < reach && Math.abs(localY - rotateHandleY) < reach) {
+        rotatingRef.current = {
+          id: target.id,
+          center,
+          startPointerAngle: Math.atan2((point.y - center.y) * size.height, (point.x - center.x) * size.width),
+          startRotation: target.rotation || 0,
+          before: boardRef.current,
+          rotated: false,
+        };
+        return;
+      }
+      if (target.tool !== "text") {
+        const inside = local.x >= bounds.minX && local.x <= bounds.maxX && local.y >= bounds.minY && local.y <= bounds.maxY;
+        const [nearest] = resizeCorners(bounds, size, chrome)
+          .map(([name, cornerX, cornerY]) => ({ name, distance: Math.max(Math.abs(localX - cornerX), Math.abs(localY - cornerY)) }))
+          .sort((left, right) => left.distance - right.distance);
+        // Inside a small object the body wins, so it can still be dragged.
+        if (nearest.distance < reach && (!inside || nearest.distance < 10 * chrome)) {
+          resizingRef.current = {
+            id: target.id,
+            corner: nearest.name,
+            bounds,
+            rotation: target.rotation || 0,
+            center,
+            originalPoints: target.points.map((item) => ({ ...item })),
+            before: boardRef.current,
+            resized: false,
+          };
+          return;
+        }
+      }
+    }
+    const hit = hitTest(point, geometry, event.pointerType);
+    if (hit && event.shiftKey) {
+      setSelectedIds((current) => current.includes(hit.id) ? current.filter((id) => id !== hit.id) : [...current, hit.id]);
+      return;
+    }
+    if (hit) {
+      const group = selectedIds.includes(hit.id) ? selectedIds : [hit.id];
+      setSelectedIds(group);
+      const movable = objects.filter((object) => group.includes(object.id) && !object.locked);
+      if (movable.length) {
+        const anchorBounds = objectBounds(objects.find((object) => object.id === hit.id) || movable[0], size, measureText);
+        movingRef.current = {
+          ids: movable.map((object) => object.id),
+          start: point,
+          anchorMin: { x: anchorBounds.minX, y: anchorBounds.minY },
+          // The whole group's rendered extent limits the move (BOARD-5).
+          limits: unionBounds(movable.map((object) => rotatedBounds(object, size, measureText))),
+          originals: new Map(movable.map((object) => [object.id, object.points])),
+          before: boardRef.current,
+          moved: false,
+        };
+      }
+      return;
+    }
+    // Empty space starts a marquee: release selects every contained object.
+    setSelectedIds([]);
+    marqueeRef.current = { start: point, end: point };
+  };
+
   const startDrawing = (event) => {
+    const canvas = canvasRef.current;
+    const geometry = readGeometry();
+    // Middle-button or Space+drag pans a zoomed board (BOARD-11).
+    if ((event.pointerType === "mouse" && event.button === 1) || (spaceHeldRef.current && event.button === 0)) {
+      event.preventDefault();
+      try { canvas.setPointerCapture?.(event.pointerId); } catch { /* Capture is optional for panning. */ }
+      panRef.current = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, startView: view };
+      return;
+    }
     if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
-    const point = pointFromEvent(event);
-    try { canvasRef.current.setPointerCapture?.(event.pointerId); } catch { /* Some iOS pointer streams do not expose capture. */ }
+    // Pointer work on the board moves keyboard focus to it, so board keys
+    // act on the board and never on a control that was focused before.
+    canvas.focus({ preventScroll: true });
+    const point = pointFromEvent(event, geometry);
+    try { canvas.setPointerCapture?.(event.pointerId); } catch { /* Some iOS pointer streams do not expose capture. */ }
     pinchRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
     if (pinchRef.current.size === 2) {
       // Two fingers switch to pinch zoom/pan; abandon any started stroke.
+      if (tapRef.current) tapRef.current.cancelled = true;
       drawingRef.current = null;
       movingRef.current = null;
       marqueeRef.current = null;
       resizingRef.current = null;
       rotatingRef.current = null;
       const [first, second] = [...pinchRef.current.values()];
-      const rect = canvasRef.current.getBoundingClientRect();
+      const { rect } = geometry;
       pinchStateRef.current = {
         startDistance: Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY),
         startView: view,
@@ -803,87 +1083,27 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       redraw();
       return;
     }
+    tapRef.current = { pointerId: event.pointerId, pointerType: event.pointerType, clientX: event.clientX, clientY: event.clientY, moved: false, cancelled: false };
     if (tool === "select") {
-      // Rotate (BOARD-001, issue #11): with exactly one object selected, the
-      // handle floating above the box spins it about its bounds center.
-      if (selectedObjects.length === 1 && !selectedObjects[0].locked) {
-        const target = selectedObjects[0];
-        const bounds = objectBounds(target);
-        const rect = canvasRef.current.getBoundingClientRect();
-        const center = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
-        const local = toLocalPoint(point, target, rect);
-        const rotateHandleY = bounds.minY - 33 / rect.height;
-        if (Math.abs(local.x - center.x) < 14 / rect.width && Math.abs(local.y - rotateHandleY) < 14 / rect.height) {
-          rotatingRef.current = {
-            id: target.id,
-            center,
-            startPointerAngle: Math.atan2((point.y - center.y) * rect.height, (point.x - center.x) * rect.width),
-            startRotation: target.rotation || 0,
-            before: boardRef.current,
-            rotated: false,
-          };
-          return;
-        }
-      }
-      // Resize (BOARD-001): with exactly one object selected, grabbing its
-      // bottom-right handle scales the object around its top-left corner.
-      // On a rotated object the handle lives in the local frame.
-      if (selectedObjects.length === 1 && selectedObjects[0].tool !== "text" && !selectedObjects[0].locked) {
-        const target = selectedObjects[0];
-        const bounds = objectBounds(target);
-        const rect = canvasRef.current.getBoundingClientRect();
-        const local = toLocalPoint(point, target, rect);
-        const handleX = bounds.maxX + 7 / rect.width;
-        const handleY = bounds.maxY + 7 / rect.height;
-        if (Math.abs(local.x - handleX) < 14 / rect.width && Math.abs(local.y - handleY) < 14 / rect.height) {
-          resizingRef.current = {
-            id: target.id,
-            bounds,
-            rotation: target.rotation || 0,
-            center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 },
-            originalPoints: target.points.map((item) => ({ ...item })),
-            before: boardRef.current,
-            resized: false,
-          };
-          return;
-        }
-      }
-      const hit = hitTest(point);
-      if (hit && event.shiftKey) {
-        setSelectedIds((current) => current.includes(hit.id) ? current.filter((id) => id !== hit.id) : [...current, hit.id]);
-        return;
-      }
-      if (hit) {
-        const group = selectedIds.includes(hit.id) ? selectedIds : [hit.id];
-        setSelectedIds(group);
-        const movable = objects.filter((object) => group.includes(object.id) && !object.locked);
-        if (movable.length) {
-          const anchorBounds = objectBounds(objects.find((object) => object.id === hit.id) || movable[0]);
-          movingRef.current = {
-            ids: movable.map((object) => object.id),
-            start: point,
-            anchorMin: { x: anchorBounds.minX, y: anchorBounds.minY },
-            originals: new Map(movable.map((object) => [object.id, object.points])),
-            before: boardRef.current,
-            moved: false,
-          };
-        }
-        return;
-      }
-      // Empty space starts a marquee: release selects every contained object.
-      setSelectedIds([]);
-      marqueeRef.current = { start: point, end: point };
+      selectPointerDown(event, point, geometry);
       return;
     }
-    if (tool === "text" || tool === "sticky") {
-      setPendingText({ tool, point: snapWorld(point) });
-      return;
-    }
-    setSelectedId("");
-    drawingRef.current = { id: createId(), tool, color, fill: "#fff1a8", fontSize: 24, text: "", width: (tool === "eraser" ? lineWidth * 5 : tool === "marker" ? lineWidth * 4 : lineWidth) * (event.pointerType === "pen" ? 0.72 + Math.max(event.pressure, 0.1) * 0.7 : 1), points: [shapeTools.has(tool) ? snapWorld(point) : point] };
+    // Text and sticky notes are placed by the click that ends this tap.
+    if (tool === "text" || tool === "sticky") return;
+    if (selectedIds.length) setSelectedIds([]);
+    drawingRef.current = { id: createId(), tool, color, fill: "#fff1a8", fontSize: 24, text: "", width: (tool === "eraser" ? lineWidth * 5 : tool === "marker" ? lineWidth * 4 : lineWidth) * (event.pointerType === "pen" ? 0.72 + Math.max(event.pressure, 0.1) * 0.7 : 1), points: [shapeTools.has(tool) ? snapWorld(point, geometry.size) : point] };
   };
 
   const continueDrawing = (event) => {
+    const tap = tapRef.current;
+    if (tap && tap.pointerId === event.pointerId && Math.hypot(event.clientX - tap.clientX, event.clientY - tap.clientY) > 8) tap.moved = true;
+    const pan = panRef.current;
+    if (pan && pan.pointerId === event.pointerId) {
+      event.preventDefault();
+      const rect = canvasRef.current.getBoundingClientRect();
+      setView(clampView({ ...pan.startView, x: pan.startView.x + (event.clientX - pan.clientX) / rect.width, y: pan.startView.y + (event.clientY - pan.clientY) / rect.height }));
+      return;
+    }
     if (pinchRef.current.has(event.pointerId)) pinchRef.current.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
     if (pinchStateRef.current && pinchRef.current.size === 2) {
       event.preventDefault();
@@ -901,10 +1121,11 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     }
     if (rotatingRef.current) {
       event.preventDefault();
-      const point = pointFromEvent(event);
+      const geometry = readGeometry();
+      const { size } = geometry;
+      const point = pointFromEvent(event, geometry);
       const rotating = rotatingRef.current;
-      const rect = canvasRef.current.getBoundingClientRect();
-      const pointerAngle = Math.atan2((point.y - rotating.center.y) * rect.height, (point.x - rotating.center.x) * rect.width);
+      const pointerAngle = Math.atan2((point.y - rotating.center.y) * size.height, (point.x - rotating.center.x) * size.width);
       let rotation = rotating.startRotation + pointerAngle - rotating.startPointerAngle;
       rotation = Math.atan2(Math.sin(rotation), Math.cos(rotation));
       // Snap mode quantizes to 15° so square alignments are reachable.
@@ -916,93 +1137,101 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     }
     if (resizingRef.current) {
       event.preventDefault();
-      const rawPoint = pointFromEvent(event);
+      const geometry = readGeometry();
+      const { size } = geometry;
       const resize = resizingRef.current;
-      const { minX, minY, maxX, maxY } = resize.bounds;
       // A rotated object resizes in its local frame: inverse-rotate the
       // pointer around the ORIGINAL center so the corner math stays exact.
-      let point = rawPoint;
-      if (resize.rotation) {
-        const rect = canvasRef.current.getBoundingClientRect();
-        const px = (rawPoint.x - resize.center.x) * rect.width;
-        const py = (rawPoint.y - resize.center.y) * rect.height;
-        const cos = Math.cos(-resize.rotation);
-        const sin = Math.sin(-resize.rotation);
-        point = { x: resize.center.x + (px * cos - py * sin) / rect.width, y: resize.center.y + (px * sin + py * cos) / rect.height };
-      }
-      const corner = snapWorld(point);
-      const scaleX = Math.max(0.05, (corner.x - minX) / Math.max(0.01, maxX - minX));
-      const scaleY = Math.max(0.05, (corner.y - minY) / Math.max(0.01, maxY - minY));
+      const rawPoint = pointFromEvent(event, geometry);
+      const cornerPoint = snapWorld(resize.rotation ? rotatePoint(rawPoint, resize.center, -resize.rotation, size) : rawPoint, size);
+      const { minX, minY, maxX, maxY } = resize.bounds;
+      // The dragged corner scales the object about the opposite corner.
+      const fromLeft = resize.corner[1] === "l";
+      const fromTop = resize.corner[0] === "t";
+      const anchorX = fromLeft ? maxX : minX;
+      const anchorY = fromTop ? maxY : minY;
+      const spanX = (fromLeft ? minX : maxX) - anchorX;
+      const spanY = (fromTop ? minY : maxY) - anchorY;
+      const scaleX = Math.abs(spanX) < 1e-6 ? 1 : Math.max(0.05, (cornerPoint.x - anchorX) / spanX);
+      const scaleY = Math.abs(spanY) < 1e-6 ? 1 : Math.max(0.05, (cornerPoint.y - anchorY) / spanY);
+      const scalePoint = (item) => ({ ...item, x: Math.max(0, Math.min(1, anchorX + (item.x - anchorX) * scaleX)), y: Math.max(0, Math.min(1, anchorY + (item.y - anchorY) * scaleY)) });
       resize.resized = true;
-      updateActiveObjects((current) => current.map((object) => object.id === resize.id
-        ? {
-          ...object,
-          points: resize.originalPoints.length === 1 && object.tool === "sticky"
-            ? [resize.originalPoints[0], { x: Math.min(1, minX + 0.36 * scaleX), y: Math.min(1, minY + 0.22 * scaleY) }]
-            : resize.originalPoints.map((item) => ({ ...item, x: Math.max(0, Math.min(1, minX + (item.x - minX) * scaleX)), y: Math.max(0, Math.min(1, minY + (item.y - minY) * scaleY)) })),
-        }
-        : object), false);
+      updateActiveObjects((current) => current.map((object) => {
+        if (object.id !== resize.id) return object;
+        if (object.tool !== "sticky") return { ...object, points: resize.originalPoints.map(scalePoint) };
+        const first = scalePoint({ x: minX, y: minY });
+        const second = scalePoint({ x: maxX, y: maxY });
+        return { ...object, points: [{ x: Math.min(first.x, second.x), y: Math.min(first.y, second.y) }, { x: Math.max(first.x, second.x), y: Math.max(first.y, second.y) }] };
+      }), false);
       return;
     }
     if (movingRef.current) {
       event.preventDefault();
-      const point = pointFromEvent(event);
+      const geometry = readGeometry();
+      const point = pointFromEvent(event, geometry);
       const move = movingRef.current;
       let deltaX = point.x - move.start.x;
       let deltaY = point.y - move.start.y;
       if (snapEnabled && move.anchorMin) {
-        const snapped = snapWorld({ x: move.anchorMin.x + deltaX, y: move.anchorMin.y + deltaY });
+        const snapped = snapWorld({ x: move.anchorMin.x + deltaX, y: move.anchorMin.y + deltaY }, geometry.size);
         deltaX = snapped.x - move.anchorMin.x;
         deltaY = snapped.y - move.anchorMin.y;
       }
-      move.moved = move.moved || Math.abs(deltaX) + Math.abs(deltaY) > 0.002;
+      const delta = clampTranslation(move.limits, deltaX, deltaY);
+      move.moved = move.moved || Math.abs(delta.x) + Math.abs(delta.y) > 0.002;
       updateActiveObjects((current) => current.map((object) => move.originals.has(object.id)
-        ? { ...object, points: move.originals.get(object.id).map((item) => ({ x: Math.max(0, Math.min(1, item.x + deltaX)), y: Math.max(0, Math.min(1, item.y + deltaY)) })) }
+        ? { ...object, points: translatePoints(move.originals.get(object.id), delta) }
         : object), false);
       return;
     }
     if (marqueeRef.current) {
       event.preventDefault();
-      marqueeRef.current.end = pointFromEvent(event);
-      const canvas = canvasRef.current;
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 3);
-      const context = canvas.getContext("2d");
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const geometry = readGeometry();
+      marqueeRef.current.end = pointFromEvent(event, geometry);
       redraw();
       const { start, end } = marqueeRef.current;
+      const { size, chrome } = geometry;
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const context = canvasRef.current.getContext("2d");
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.save();
-      context.translate(view.x * rect.width, view.y * rect.height);
-      context.scale(view.scale, view.scale);
-      context.strokeStyle = "#e36f4a";
-      context.setLineDash([5, 4]);
-      context.lineWidth = 1.2;
-      context.strokeRect(Math.min(start.x, end.x) * rect.width, Math.min(start.y, end.y) * rect.height, Math.abs(end.x - start.x) * rect.width, Math.abs(end.y - start.y) * rect.height);
+      applyViewTransform(context, geometry, view);
+      context.strokeStyle = "#c2452a";
+      context.setLineDash([5 * chrome, 4 * chrome]);
+      context.lineWidth = 1.2 * chrome;
+      context.strokeRect(Math.min(start.x, end.x) * size.width, Math.min(start.y, end.y) * size.height, Math.abs(end.x - start.x) * size.width, Math.abs(end.y - start.y) * size.height);
       context.restore();
       return;
     }
     if (!drawingRef.current) return;
     event.preventDefault();
-    const events = event.getCoalescedEvents?.() || [event];
-    const nextPoints = events.map(pointFromEvent);
+    const geometry = readGeometry();
+    const coalesced = event.getCoalescedEvents?.();
+    const nextPoints = (coalesced?.length ? coalesced : [event]).map((item) => pointFromEvent(item, geometry));
     const isShape = shapeTools.has(drawingRef.current.tool);
     const previous = drawingRef.current.points.at(-1);
-    if (isShape) drawingRef.current.points = [drawingRef.current.points[0], snapWorld(nextPoints.at(-1))];
+    if (isShape) drawingRef.current.points = [drawingRef.current.points[0], snapWorld(nextPoints.at(-1), geometry.size)];
     else drawingRef.current.points.push(...nextPoints);
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
+    if (isShape) redraw();
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const context = canvas.getContext("2d");
+    const context = canvasRef.current.getContext("2d");
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.save();
-    context.translate(view.x * rect.width, view.y * rect.height);
-    context.scale(view.scale, view.scale);
-    if (isShape) { redraw(); drawObject(context, drawingRef.current, rect.width, rect.height); }
-    else drawObject(context, { ...drawingRef.current, points: [previous, ...nextPoints] }, rect.width, rect.height);
+    applyViewTransform(context, geometry, view);
+    clipToPage(context, geometry.size);
+    // Freehand ink (eraser included) is drawn incrementally on the ink layer;
+    // the background lives on its own canvas underneath (BOARD-7).
+    drawObject(context, isShape ? drawingRef.current : { ...drawingRef.current, points: [previous, ...nextPoints] }, geometry.size);
     context.restore();
   };
 
   const finishDrawing = (event) => {
+    if (event.type === "pointercancel" && tapRef.current?.pointerId === event.pointerId) tapRef.current = null;
+    if (panRef.current?.pointerId === event.pointerId) {
+      panRef.current = null;
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      return;
+    }
     pinchRef.current.delete(event.pointerId);
     if (pinchStateRef.current) {
       if (pinchRef.current.size < 2) pinchStateRef.current = null;
@@ -1036,10 +1265,10 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       marqueeRef.current = null;
       const box = { minX: Math.min(start.x, end.x), maxX: Math.max(start.x, end.x), minY: Math.min(start.y, end.y), maxY: Math.max(start.y, end.y) };
       if ((box.maxX - box.minX) + (box.maxY - box.minY) > 0.01) {
-        const marqueeRect = canvasRef.current.getBoundingClientRect();
+        const { size } = readGeometry();
         const contained = objects.filter((object) => {
           if (object.tool === "eraser" || object.locked) return false;
-          const bounds = rotatedAabb(object, marqueeRect);
+          const bounds = rotatedBounds(object, size, measureText);
           return bounds.minX >= box.minX && bounds.maxX <= box.maxX && bounds.minY >= box.minY && bounds.maxY <= box.maxY;
         }).map((object) => object.id);
         setSelectedIds(contained);
@@ -1068,16 +1297,16 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       return;
     }
     const draft = drawingRef.current;
-    const endpoint = pointFromEvent(event);
-    if (shapeTools.has(draft.tool)) draft.points = [draft.points[0], snapWorld(endpoint)];
+    const geometry = readGeometry();
+    const endpoint = pointFromEvent(event, geometry);
+    if (shapeTools.has(draft.tool)) draft.points = [draft.points[0], snapWorld(endpoint, geometry.size)];
     else {
       const previous = draft.points.at(-1);
       if (!previous || Math.abs(previous.x - endpoint.x) + Math.abs(previous.y - endpoint.y) > 0.0005) draft.points.push(endpoint);
     }
-    const rect = canvasRef.current.getBoundingClientRect();
     const start = draft.points[0];
     const end = draft.points.at(-1);
-    const distance = Math.hypot((end.x - start.x) * rect.width, (end.y - start.y) * rect.height);
+    const distance = Math.hypot((end.x - start.x) * geometry.size.width, (end.y - start.y) * geometry.size.height) * geometry.fit.scale;
     if (shapeTools.has(draft.tool) && distance < 3) {
       drawingRef.current = null;
       redraw();
@@ -1089,6 +1318,35 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     drawingRef.current = null;
     updateActiveObjects((current) => [...current, finalObject]);
     try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+  };
+
+  // The click that ends a tap places text/sticky notes (BOARD-1) and counts
+  // double-taps for editing (BOARD-EDIT). Click is the tap's last event, so
+  // the dialog it opens can never receive a stray compatibility click.
+  const handleCanvasClick = (event) => {
+    const gesture = tapRef.current;
+    tapRef.current = null;
+    if (!gesture || gesture.moved || gesture.cancelled) return;
+    const geometry = readGeometry();
+    const point = pointFromEvent(event, geometry);
+    if (tool === "text" || tool === "sticky") {
+      setSelectedIds([]);
+      setPendingText({ mode: "create", tool, point: snapWorld(point, geometry.size) });
+      return;
+    }
+    if (tool !== "select") return;
+    const hit = hitTest(point, geometry, gesture.pointerType);
+    if (!hit || hit.locked || !["text", "sticky"].includes(hit.tool)) {
+      lastTapRef.current = null;
+      return;
+    }
+    const previous = lastTapRef.current;
+    if (event.detail >= 2 || (previous && previous.id === hit.id && event.timeStamp - previous.time < 450)) {
+      lastTapRef.current = null;
+      openEditor(hit);
+      return;
+    }
+    lastTapRef.current = { id: hit.id, time: event.timeStamp };
   };
 
   const undo = useCallback(() => {
@@ -1114,7 +1372,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     });
   }, []);
 
-  const deleteSelected = useCallback(() => {
+  const deleteSelected = () => {
     if (!selectedIds.length) return;
     const removing = new Set(selectedObjects.filter((object) => !object.locked).map((object) => object.id));
     if (!removing.size) {
@@ -1124,16 +1382,20 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     updateActiveObjects((current) => current.filter((object) => !removing.has(object.id)));
     setSelectedIds([]);
     notify?.(`${removing.size === 1 ? "Selected object" : `${removing.size} objects`} deleted. Undo is available.`);
-  }, [notify, selectedIds, selectedObjects, updateActiveObjects]);
-  const cloneWithOffset = (object, offset) => ({
+  };
+  const groupBounds = (list, size) => unionBounds(list.map((object) => rotatedBounds(object, size, measureText)));
+  // Duplicates and pastes shift as one group and flip direction at an edge
+  // instead of clamping point by point (BOARD-5).
+  const cloneWithDelta = (object, delta) => ({
     ...object,
     locked: false,
     id: createId(),
-    points: object.points.map((point) => ({ ...point, x: Math.min(1, point.x + offset), y: Math.min(1, point.y + offset) })),
+    points: translatePoints(object.points, delta),
   });
   const duplicateSelected = () => {
     if (!selectedObjects.length) return;
-    const duplicates = selectedObjects.map((object) => cloneWithOffset(object, 0.025));
+    const delta = placementOffset(groupBounds(selectedObjects, readGeometry().size), 0.025);
+    const duplicates = selectedObjects.map((object) => cloneWithDelta(object, delta));
     updateActiveObjects((current) => [...current, ...duplicates]);
     setSelectedIds(duplicates.map((object) => object.id));
   };
@@ -1169,63 +1431,200 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   const bringForward = () => reorderSelected(1);
   const sendBackward = () => reorderSelected(-1);
 
-  const copySelected = useCallback(() => {
+  const copySelected = () => {
     if (!selectedObjects.length) return;
     clipboardRef.current = selectedObjects.map((object) => ({ ...object, points: object.points.map((point) => ({ ...point })) }));
     notify?.(`${selectedObjects.length} object${selectedObjects.length === 1 ? "" : "s"} copied. Paste with ⌘/Ctrl + V.`);
-  }, [notify, selectedObjects]);
-  const pasteClipboard = useCallback(() => {
+  };
+  const pasteClipboard = () => {
     if (!clipboardRef.current.length) return;
-    const pasted = clipboardRef.current.map((object) => cloneWithOffset(object, 0.03));
+    const delta = placementOffset(groupBounds(clipboardRef.current, readGeometry().size), 0.03);
+    const pasted = clipboardRef.current.map((object) => cloneWithDelta(object, delta));
     updateActiveObjects((current) => [...current, ...pasted]);
     setSelectedIds(pasted.map((object) => object.id));
     notify?.(`${pasted.length} object${pasted.length === 1 ? "" : "s"} pasted.`);
-  }, [notify, updateActiveObjects]);
+  };
+  const selectAll = () => {
+    const ids = objects.filter((object) => object.tool !== "eraser").map((object) => object.id);
+    setSelectedIds(ids);
+    if (tool !== "select") setTool("select");
+    announce(`${ids.length} object${ids.length === 1 ? "" : "s"} selected.`);
+  };
 
-  // Keyboard nudging (A11Y-001): arrow keys move the selected object by 1% of
-  // the canvas (Shift: 5%) — a non-drag alternative to pointer moves that goes
-  // through the same history path as any other edit.
-  const nudgeSelected = useCallback((deltaX, deltaY) => {
-    if (!selectedIds.length) return;
-    const moving = new Set(selectedObjects.filter((object) => !object.locked).map((object) => object.id));
-    if (!moving.size) return;
-    updateActiveObjects((current) => current.map((object) => moving.has(object.id)
-      ? { ...object, points: object.points.map((point) => ({ ...point, x: Math.max(0, Math.min(1, point.x + deltaX)), y: Math.max(0, Math.min(1, point.y + deltaY)) })) }
-      : object));
-  }, [selectedIds, selectedObjects, updateActiveObjects]);
+  // Keyboard nudging (A11Y-001): arrow keys move the selection by 1% of the
+  // page (Shift: 5%) through the normal history path. The whole group moves
+  // by one delta, limited at the page edge (BOARD-5).
+  const nudgeSelected = (deltaX, deltaY) => {
+    const moving = selectedObjects.filter((object) => !object.locked);
+    if (!moving.length) return;
+    const delta = clampTranslation(groupBounds(moving, readGeometry().size), deltaX, deltaY);
+    if (!delta.x && !delta.y) return;
+    const ids = new Set(moving.map((object) => object.id));
+    updateActiveObjects((current) => current.map((object) => ids.has(object.id) ? { ...object, points: translatePoints(object.points, delta) } : object));
+  };
 
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target?.isContentEditable;
-      if (typing) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
-      else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "c" && selectedIds.length) { event.preventDefault(); copySelected(); }
-      else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "v" && clipboardRef.current.length) { event.preventDefault(); pasteClipboard(); }
-      else if ((event.key === "Delete" || event.key === "Backspace") && selectedIds.length) { event.preventDefault(); deleteSelected(); }
-      else if (event.key === "Escape") { setSelectedId(""); setPendingText(null); }
-      else if (event.key.startsWith("Arrow") && selectedIds.length) {
+  // Keyboard selection (BOARD-13): with the drawing surface focused, Tab and
+  // Shift+Tab step through objects in z-order and announce each one; past
+  // either end, focus leaves the board as usual.
+  const cycleSelection = (event) => {
+    const selectable = objects.filter((object) => object.tool !== "eraser");
+    if (!selectable.length) return;
+    const index = selectedIds.length ? selectable.findIndex((object) => object.id === selectedIds.at(-1)) : -1;
+    const next = index === -1 ? (event.shiftKey ? selectable.length - 1 : 0) : index + (event.shiftKey ? -1 : 1);
+    if (next < 0 || next >= selectable.length) {
+      setSelectedIds([]);
+      return;
+    }
+    event.preventDefault();
+    const object = selectable[next];
+    setSelectedIds([object.id]);
+    if (tool !== "select") setTool("select");
+    announce(`${describeObject(object)}, ${next + 1} of ${selectable.length}${object.locked ? ", locked" : ""}.`);
+  };
+
+  const keyHandlerRef = useRef(null);
+  keyHandlerRef.current = (event) => {
+    if (event.defaultPrevented) return;
+    const target = event.target;
+    // Native controls and every open dialog or menu keep their own keys, and
+    // nothing may edit the board behind a modal (BOARD-6).
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target?.isContentEditable) return;
+    if (pendingText || renamingPage || target?.closest?.('[role="dialog"], [aria-modal="true"], [role="menu"]') || document.querySelector('[aria-modal="true"]')) return;
+    const canvas = canvasRef.current;
+    const onCanvas = target === canvas;
+    if (!onCanvas && target !== document.body && target !== document.documentElement && !rootRef.current?.contains(target)) return;
+    const { key } = event;
+    const lower = key.length === 1 ? key.toLocaleLowerCase() : key;
+    const command = event.metaKey || event.ctrlKey;
+    if (command && lower === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if (key === "Escape") {
+      if (openPanel) {
+        const toggle = rootRef.current?.querySelector(`[data-board-toggle="${openPanel}"]`);
+        setOpenPanel(null);
+        toggle?.focus();
+      } else if (selectedIds.length) {
+        setSelectedIds([]);
+        announce("Selection cleared.");
+      }
+      return;
+    }
+    // Single-letter tool keys act only while focus is inside the board
+    // (WCAG 2.1.4), never from the bare page.
+    if (!command && !event.altKey && !event.shiftKey && TOOL_BY_KEY[lower] && (onCanvas || rootRef.current?.contains(target))) {
+      chooseTool(TOOL_BY_KEY[lower]);
+      announce(`${TOOL_DEFS[TOOL_BY_KEY[lower]].name} tool.`);
+      return;
+    }
+    // Space, Tab, and Enter keep their native meaning everywhere but the
+    // drawing surface itself.
+    if (key === " " && onCanvas) {
+      event.preventDefault();
+      if (!spaceHeldRef.current) {
+        spaceHeldRef.current = true;
+        setSpacePanning(true);
+      }
+    } else if (command && lower === "c" && selectedIds.length) { event.preventDefault(); copySelected(); }
+    else if (command && lower === "v" && clipboardRef.current.length) { event.preventDefault(); pasteClipboard(); }
+    else if (command && lower === "a") { event.preventDefault(); selectAll(); }
+    else if ((key === "Delete" || key === "Backspace") && selectedIds.length) { event.preventDefault(); deleteSelected(); }
+    else if (key.startsWith("Arrow")) {
+      const step = event.shiftKey ? 0.05 : 0.01;
+      const deltaX = key === "ArrowLeft" ? -step : key === "ArrowRight" ? step : 0;
+      const deltaY = key === "ArrowUp" ? -step : key === "ArrowDown" ? step : 0;
+      if (selectedIds.length) {
         event.preventDefault();
-        const step = event.shiftKey ? 0.05 : 0.01;
-        nudgeSelected(
-          event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0,
-          event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0,
-        );
+        nudgeSelected(deltaX, deltaY);
+      } else if (onCanvas && view.scale > 1) {
+        event.preventDefault();
+        setView((current) => clampView({ ...current, x: current.x - deltaX * 2, y: current.y - deltaY * 2 }));
+      }
+    } else if (onCanvas && key === "Tab" && !command && !event.altKey) cycleSelection(event);
+    else if (onCanvas && key === "Enter") {
+      if (selectedObject && ["text", "sticky"].includes(selectedObject.tool) && !selectedObject.locked) {
+        event.preventDefault();
+        openEditor(selectedObject);
+      } else if (tool === "text" || tool === "sticky") {
+        event.preventDefault();
+        const geometry = readGeometry();
+        setPendingText({ mode: "create", tool, point: snapWorld(pageCenterPoint(geometry), geometry.size) });
+      }
+    }
+  };
+  useEffect(() => {
+    const onKeyDown = (event) => keyHandlerRef.current?.(event);
+    const releaseSpace = () => {
+      spaceHeldRef.current = false;
+      setSpacePanning(false);
+    };
+    const onKeyUp = (event) => { if (event.key === " ") releaseSpace(); };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", releaseSpace);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", releaseSpace);
+    };
+  }, []);
+
+  // Tapping anywhere outside an open toolbar panel or menu closes it; a tap
+  // on the drawing surface only dismisses and never draws.
+  useEffect(() => {
+    if (!openPanel) return undefined;
+    const onPointerDown = (event) => {
+      const root = rootRef.current;
+      const panel = root?.querySelector(`[data-board-panel="${openPanel}"]`);
+      const toggle = root?.querySelector(`[data-board-toggle="${openPanel}"]`);
+      if (panel?.contains(event.target) || toggle?.contains(event.target)) return;
+      setOpenPanel(null);
+      if (event.target === canvasRef.current) {
+        event.stopPropagation();
+        event.preventDefault();
+        tapRef.current = null;
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [copySelected, deleteSelected, nudgeSelected, pasteClipboard, redo, selectedIds, setSelectedId, undo]);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [openPanel]);
+  useEffect(() => {
+    if (openPanel !== "export") return;
+    requestAnimationFrame(() => rootRef.current?.querySelector('#board-export-menu [role="menuitem"]')?.focus());
+  }, [openPanel]);
+  // An open panel or menu ends above the fixed bottom navigation and scrolls
+  // inside itself on short screens, so every option stays reachable.
+  useLayoutEffect(() => {
+    const panel = openPanel && rootRef.current?.querySelector(`[data-board-panel="${openPanel}"]`);
+    if (!panel) return undefined;
+    const fit = () => {
+      const nav = document.querySelector(".bottom-nav");
+      const limit = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : window.innerHeight;
+      panel.style.maxHeight = `${Math.max(140, Math.floor(limit - panel.getBoundingClientRect().top - 8))}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => {
+      window.removeEventListener("resize", fit);
+      panel.style.maxHeight = "";
+    };
+  }, [openPanel]);
 
   const clear = () => {
     if (!objects.length || !window.confirm("Clear every object on this page? You can undo this action.")) return;
     updateActiveObjects([]);
     setSelectedId("");
+    setOpenPanel(null);
     notify?.("Page cleared. Undo is available.");
   };
   const addPage = () => {
     if (board.pages.length >= 20) { notify?.("A board can contain up to 20 pages.", "error"); return; }
     const id = createId();
-    setWithHistory((current) => ({ ...current, activePageId: id, pages: [...current.pages, { id, name: `Page ${current.pages.length + 1}`, objects: [] }] }));
+    const size = measuredCanvasSize();
+    setWithHistory((current) => ({ ...current, activePageId: id, pages: [...current.pages, { id, name: `Page ${current.pages.length + 1}`, ...(size ? { size } : {}), objects: [] }] }));
     setSelectedId("");
   };
   const duplicatePage = () => {
@@ -1233,7 +1632,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const id = createId();
     setWithHistory((current) => {
       const page = current.pages.find((item) => item.id === current.activePageId);
-      return { ...current, activePageId: id, pages: [...current.pages, { id, name: `${page.name} copy`.slice(0, 60), objects: page.objects.map((object) => ({ ...object, id: createId(), points: object.points.map((point) => ({ ...point })) })) }] };
+      return { ...current, activePageId: id, pages: [...current.pages, { id, name: `${page.name} copy`.slice(0, 60), ...(page.size ? { size: { ...page.size } } : {}), objects: page.objects.map((object) => ({ ...object, id: createId(), points: object.points.map((point) => ({ ...point })) })) }] };
     });
     setSelectedId("");
   };
@@ -1255,46 +1654,80 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
   const changeBackground = (background) => setWithHistory((current) => current.background === background ? current : { ...current, background });
 
-  const addTextObject = (text, fontSize) => {
+  const submitText = (text, fontSize) => {
     const pending = pendingText;
-    const end = pending.tool === "sticky" ? { x: Math.min(0.98, pending.point.x + 0.36), y: Math.min(0.98, pending.point.y + 0.22) } : pending.point;
-    const object = { id: createId(), tool: pending.tool, color, fill: "#fff1a8", width: lineWidth, fontSize, text, points: pending.tool === "sticky" ? [pending.point, end] : [pending.point] };
+    if (!pending) return;
+    const { size } = readGeometry();
+    if (pending.mode === "edit") {
+      // BOARD-EDIT: edits go through history; a sticky grows to fit.
+      updateActiveObjects((current) => current.map((object) => {
+        if (object.id !== pending.id || object.locked) return object;
+        if (object.tool !== "sticky") return { ...object, text, fontSize };
+        const card = stickyLayout(object, size, measureText);
+        const height = stickyHeightForText(text, fontSize, card.width, size, measureText);
+        if (height <= card.height + 0.5) return { ...object, text, fontSize };
+        const origin = placeBlock(object.points[0], card.width, height, size);
+        return { ...object, text, fontSize, points: [origin, { x: Math.min(1, origin.x + card.width / size.width), y: Math.min(1, origin.y + height / size.height) }] };
+      }));
+      setPendingText(null);
+      announce(`${pending.tool === "sticky" ? "Sticky note" : "Text"} updated.`);
+      return;
+    }
+    let points;
+    if (pending.tool === "sticky") {
+      // BOARD-STICKY: the card is created tall enough for its text.
+      const width = Math.max(130, size.width * 0.36);
+      const height = stickyHeightForText(text, fontSize, width, size, measureText);
+      const origin = placeBlock(pending.point, width, height, size);
+      points = [origin, { x: Math.min(1, origin.x + width / size.width), y: Math.min(1, origin.y + height / size.height) }];
+    } else {
+      // BOARD-8: the wrapped block is kept on the page when it is placed.
+      const layout = textLayout({ tool: "text", text, fontSize, points: [pending.point] }, size, measureText);
+      points = [placeBlock(pending.point, layout.width, layout.height, size)];
+    }
+    const object = { id: createId(), tool: pending.tool, color, fill: "#fff1a8", width: lineWidth, fontSize, text, points };
     updateActiveObjects((current) => [...current, object]);
     setPendingText(null);
     setTool("select");
     setSelectedId(object.id);
   };
 
+  // Recolor and restroke apply to every unlocked object in the selection as
+  // one history step (BOARD-18).
   const changeColor = (ink) => {
     setColor(ink);
-    if (selectedObject && !selectedObject.locked) updateActiveObjects((current) => current.map((object) => object.id === selectedId ? { ...object, color: ink } : object));
+    const targets = new Set(selectedObjects.filter((object) => !object.locked).map((object) => object.id));
+    if (targets.size) updateActiveObjects((current) => current.map((object) => targets.has(object.id) ? { ...object, color: ink } : object));
     if (tool === "eraser") setTool("pen");
   };
   const changeWidth = (value) => {
     setLineWidth(value);
-    if (selectedObject && !selectedObject.locked && !["text", "sticky"].includes(selectedObject.tool)) updateActiveObjects((current) => current.map((object) => object.id === selectedId ? { ...object, width: value } : object));
+    const targets = new Set(selectedObjects.filter((object) => !object.locked && !["text", "sticky"].includes(object.tool)).map((object) => object.id));
+    if (targets.size) updateActiveObjects((current) => current.map((object) => targets.has(object.id) ? { ...object, width: value } : object));
   };
 
+  const fileStem = (suffix) => `${documentTitle.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${suffix.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`;
   const exportBoard = () => {
-    const source = canvasRef.current;
-    const rect = source.getBoundingClientRect();
+    // The PNG is the page at twice its authoring size, background and ink
+    // composited separately exactly like the screen.
+    const { size } = readGeometry();
     const scale = 2;
     const output = document.createElement("canvas");
-    output.width = Math.round(rect.width * scale);
-    output.height = Math.round(rect.height * scale);
+    output.width = Math.round(size.width * scale);
+    output.height = Math.round(size.height * scale);
     const context = output.getContext("2d");
     context.scale(scale, scale);
-    drawBackground(context, rect.width, rect.height, board.background);
+    drawBackground(context, size, board.background);
     const ink = document.createElement("canvas");
     ink.width = output.width;
     ink.height = output.height;
     const inkContext = ink.getContext("2d");
     inkContext.scale(scale, scale);
-    objects.forEach((object) => drawObject(inkContext, object, rect.width, rect.height));
+    objects.forEach((object) => drawObject(inkContext, object, size));
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.drawImage(ink, 0, 0);
     const link = document.createElement("a");
-    link.download = `${documentTitle.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${activePage.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`;
+    link.download = `${fileStem(activePage.name)}.png`;
     link.href = output.toDataURL("image/png");
     document.body.appendChild(link);
     link.click();
@@ -1303,6 +1736,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   const boardFileRef = useRef(null);
+  const exportToggleRef = useRef(null);
   const exportBoardJson = () => {
     const envelope = exportBoardDocument(boardRef.current, { title: documentTitle });
     const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: "application/json" });
@@ -1338,17 +1772,22 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
 
   const exportSvg = () => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    const aspect = rect && rect.width ? rect.height / rect.width : 0.625;
+    // BOARD-SVG: the viewBox is the page's authoring size, so text, strokes,
+    // and sticky cards keep the proportions the canvas and PNG show.
+    const { size } = readGeometry();
     const svg = boardPageToSvg(activePage, {
-      width: 1600,
-      height: Math.round(1600 * aspect),
-      background: board.background === "dark" ? "#10192a" : "#ffffff",
+      width: Math.round(size.width * 100) / 100,
+      height: Math.round(size.height * 100) / 100,
+      outputWidth: 1600,
+      outputHeight: Math.round((1600 * size.height) / size.width),
+      background: PAGE_FILL,
+      pattern: board.background,
+      measure: measureText,
     });
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.download = `${documentTitle.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${activePage.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.svg`;
+    link.download = `${fileStem(activePage.name)}.svg`;
     link.href = url;
     document.body.appendChild(link);
     link.click();
@@ -1359,28 +1798,128 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     notify?.(`${activePage.name} exported as a scalable SVG.`);
   };
 
-  return <section className="board-view advanced-board" aria-label={`Whiteboard for ${documentTitle}`}>
-    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><div className="board-header-actions"><input ref={boardFileRef} type="file" accept="application/json,.json" hidden onChange={importBoardJson} /><button className="button ghost" onClick={() => boardFileRef.current?.click()} aria-label="Import a board JSON file" type="button"><Import size={16} /> Import</button><button className="button ghost" onClick={exportBoardJson} aria-label="Export the whole board as JSON" type="button"><Download size={16} /> JSON</button><button className="button ghost" onClick={exportSvg} aria-label="Export current whiteboard page as SVG" type="button"><Download size={16} /> SVG</button><button className="button secondary" onClick={exportBoard} aria-label="Export current whiteboard page as PNG" type="button"><Download size={18} /> Export PNG</button></div></header>
+  const runMenuAction = (action) => {
+    setOpenPanel(null);
+    exportToggleRef.current?.focus();
+    action();
+  };
+  const onMenuKeyDown = (event) => {
+    const items = [...event.currentTarget.querySelectorAll('[role="menuitem"]')];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      items[(index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      (event.key === "Home" ? items[0] : items.at(-1))?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setOpenPanel(null);
+      exportToggleRef.current?.focus();
+    } else if (event.key === "Tab") setOpenPanel(null);
+  };
+
+  const visibleObjectCount = objects.filter((object) => object.tool !== "eraser").length;
+  const allLocked = selectedObjects.length > 0 && selectedObjects.every((object) => object.locked);
+  const editableSelection = selectedObject && ["text", "sticky"].includes(selectedObject.tool) && !selectedObject.locked;
+  const selectionColors = [...new Set(selectedObjects.map((object) => object.color))];
+  const activeInk = selectedObjects.length ? (selectionColors.length === 1 ? selectionColors[0] : "") : color;
+  const strokeWidths = [...new Set(selectedObjects.filter((object) => !["text", "sticky"].includes(object.tool)).map((object) => Math.min(12, object.width)))];
+  const sizeValue = strokeWidths.length === 1 ? strokeWidths[0] : lineWidth;
+  const shapeActive = shapeTools.has(tool);
+  const ShapeToggleIcon = shapeActive ? TOOL_DEFS[tool].icon : Shapes;
+  // The floating selection bar sits at the top of the canvas unless that
+  // would cover the selection (or its rotate handle); then at the bottom,
+  // or on whichever side leaves more of a tall selection visible.
+  const selectionPlacement = (() => {
+    const canvasSize = canvasSizeRef.current;
+    if (!selectedObjects.length || !canvasSize) return "top";
+    const size = pageSizeOf(activePage, canvasSize);
+    const fit = fitPage(canvasSize, size);
+    const bounds = groupBounds(selectedObjects, size);
+    const toScreenY = (y) => view.y * canvasSize.height + view.scale * (fit.top + y * size.height * fit.scale);
+    const top = toScreenY(bounds.minY) - 40;
+    const bottom = toScreenY(bounds.maxY) + 10;
+    if (top >= 64) return "top";
+    if (bottom <= canvasSize.height - 64) return "bottom";
+    return top >= canvasSize.height - bottom ? "top" : "bottom";
+  })();
+  const hintText = tool === "select"
+    ? selectedObjects.length > 1
+      ? `${selectedObjects.length} objects selected — drag, nudge, duplicate, copy, or delete them together.`
+      : selectedObject
+        ? coarsePointer ? "Drag to move. Double-tap text to edit; the selection bar copies, locks, or deletes." : "Drag to move; Shift-click adds more; double-click text to edit."
+        : coarsePointer ? "Tap an object to select it, or drag across empty space to box-select." : "Click an object to select it, Shift-click to add, or drag empty space to box-select."
+    : tool === "text" || tool === "sticky"
+      ? `${coarsePointer ? "Tap" : "Click"} the board to place ${tool === "sticky" ? "a sticky note" : "text"}.`
+      : "Draw directly with touch, mouse, or Apple Pencil.";
+
+  const toolButton = (id, withLabel = false) => {
+    const definition = TOOL_DEFS[id];
+    const Icon = definition.icon;
+    return <button key={id} className={tool === id ? "active" : ""} onClick={() => chooseTool(id)} aria-pressed={tool === id} aria-label={definition.label} title={toolTitle(id)} type="button"><Icon size={19} />{withLabel && <span>{definition.name}</span>}</button>;
+  };
+  const panelToggle = (name, label, content, { active = false, title = label } = {}) => <button className={`board-panel-toggle${active ? " active" : ""}`} data-board-toggle={name} onClick={() => togglePanel(name)} aria-expanded={openPanel === name} aria-controls={`board-${name}-panel`} aria-label={label} title={title} type="button">{content}</button>;
+  const inkControls = <>
+    <div className="color-row" role="group" aria-label="Ink color">{inks.map((ink) => <button key={ink.value} className={activeInk === ink.value ? "color-dot active" : "color-dot"} style={{ "--swatch": ink.value }} onClick={() => changeColor(ink.value)} aria-pressed={activeInk === ink.value} aria-label={`${ink.name} ink`} title={`${ink.name} ink`} type="button" />)}</div>
+    <label className="stroke-size"><span>Size</span><input type="range" min="1" max="12" value={sizeValue} onChange={(event) => changeWidth(Number(event.target.value))} aria-label="Stroke size" /></label>
+  </>;
+  const historyButtons = <><button onClick={undo} disabled={!historyCounts.past} aria-label="Undo" title="Undo (⌘/Ctrl+Z)" type="button"><Undo2 size={19} /></button><button onClick={redo} disabled={!historyCounts.future} aria-label="Redo" title="Redo (⌘/Ctrl+Shift+Z)" type="button"><Redo2 size={19} /></button></>;
+  const snapButton = (withLabel) => <button className={snapEnabled ? "active" : ""} onClick={() => setSnapEnabled((value) => !value)} aria-pressed={snapEnabled} aria-label="Snap to grid" title="Snap shape endpoints, placement, moves, and resizes to the 24px grid" type="button"><Grid3x3 size={18} />{withLabel && <span>Snap to grid</span>}</button>;
+  const zoomGroup = <div className="tool-segment board-zoom" role="group" aria-label="Zoom"><button onClick={() => zoomAround(1 / 1.25)} disabled={view.scale <= 1} aria-label="Zoom out" title="Zoom out (⌘/Ctrl+scroll)" type="button"><ZoomOut size={18} /></button><button className="board-zoom-level" onClick={() => setView({ scale: 1, x: 0, y: 0 })} disabled={view.scale === 1} aria-label="Reset zoom" title="Reset zoom and position" type="button">{Math.round(view.scale * 100)}%</button><button onClick={() => zoomAround(1.25)} disabled={view.scale >= 4} aria-label="Zoom in" title="Zoom in (⌘/Ctrl+scroll or pinch)" type="button"><ZoomIn size={18} /></button></div>;
+  const backgroundsGroup = (withLabel) => <div className="board-backgrounds" role="group" aria-label="Board background">{[["grid", "Grid background", "Grid", Grid2X2], ["dots", "Dot background", "Dot", Grip], ["plain", "Plain background", "Plain", Square]].map(([value, label, short, Icon]) => <button key={value} className={board.background === value ? "active" : ""} onClick={() => changeBackground(value)} aria-pressed={board.background === value} aria-label={label} title={label} type="button"><Icon size={17} />{withLabel && <span>{short}</span>}</button>)}</div>;
+  // Actions launched from a panel return focus to its toggle first, so a
+  // dialog they open restores focus somewhere visible when it closes.
+  const fromPanel = (action) => () => {
+    if (openPanel) {
+      rootRef.current?.querySelector(`[data-board-toggle="${openPanel}"]`)?.focus();
+      setOpenPanel(null);
+    }
+    action();
+  };
+  const clearButton = (withLabel) => <button className="board-clear" onClick={fromPanel(clear)} disabled={!objects.length} aria-label="Clear current page" title="Clear every object on this page" type="button"><BrushCleaning size={17} />{withLabel && <span>Clear current page</span>}</button>;
+  const pageActionButtons = (withLabel) => [
+    ["rename", "Rename whiteboard page", "Rename page", Pencil, () => setRenamingPage(true)],
+    ["add", "Add whiteboard page", "New page", Plus, addPage],
+    ["duplicate", "Duplicate whiteboard page", "Duplicate page", Copy, duplicatePage],
+    ["delete", "Delete whiteboard page", "Delete page", Trash2, deletePage],
+  ].map(([key, label, title, Icon, action]) => <button key={key} onClick={fromPanel(action)} aria-label={label} title={title} type="button"><Icon size={17} />{withLabel && <span>{label}</span>}</button>);
+
+  return <section ref={rootRef} className={`board-view advanced-board${compact ? " board-compact" : ""}`} aria-label={`Whiteboard for ${documentTitle}`}>
+    <header className="board-header"><div><span className="eyebrow">Linked whiteboard · {activePage.name}</span><h1>{documentTitle}</h1></div><div className="board-header-actions"><input ref={boardFileRef} type="file" accept="application/json,.json" hidden onChange={importBoardJson} /><button className="button ghost board-import" onClick={() => boardFileRef.current?.click()} aria-label="Import a board JSON file" title="Import a board JSON file" type="button"><Import size={16} /><span>Import</span></button><div className="board-menu"><button ref={exportToggleRef} className="button secondary board-export-toggle" data-board-toggle="export" onClick={() => togglePanel("export")} aria-haspopup="menu" aria-expanded={openPanel === "export"} aria-controls="board-export-menu" title="Export this page or the whole board" type="button"><Download size={17} /><span>Export</span><ChevronDown size={15} /></button><div id="board-export-menu" className="board-menu-list" data-board-panel="export" role="menu" aria-label="Export" hidden={openPanel !== "export"} onKeyDown={onMenuKeyDown}><button role="menuitem" tabIndex={-1} onClick={() => runMenuAction(exportBoard)} type="button"><ImageIcon size={18} /><span><strong>PNG image</strong><small>This page, high resolution</small></span></button><button role="menuitem" tabIndex={-1} onClick={() => runMenuAction(exportSvg)} type="button"><Shapes size={18} /><span><strong>SVG image</strong><small>This page, scalable vector</small></span></button><button role="menuitem" tabIndex={-1} onClick={() => runMenuAction(exportBoardJson)} type="button"><FileJson size={18} /><span><strong>Board JSON</strong><small>Every page, re-importable</small></span></button></div></div></div></header>
 
     <div className="board-pagebar">
-      <div className="board-page-controls"><Files size={17} /><select value={activePage.id} onChange={(event) => switchPage(event.target.value)} aria-label="Current whiteboard page">{board.pages.map((page, index) => <option value={page.id} key={page.id}>{index + 1}. {page.name}</option>)}</select><span>{activePageIndex + 1}/{board.pages.length}</span><button onClick={() => setRenamingPage(true)} aria-label="Rename whiteboard page" title="Rename page" type="button"><Pencil size={17} /></button><button onClick={addPage} aria-label="Add whiteboard page" title="New page" type="button"><Plus size={18} /></button><button onClick={duplicatePage} aria-label="Duplicate whiteboard page" title="Duplicate page" type="button"><Copy size={17} /></button><button onClick={deletePage} aria-label="Delete whiteboard page" title="Delete page" type="button"><Trash2 size={17} /></button></div>
-      <div className="board-backgrounds" role="group" aria-label="Board background"><button className={board.background === "grid" ? "active" : ""} onClick={() => changeBackground("grid")} aria-label="Grid background" type="button"><Grid2X2 size={17} /></button><button className={board.background === "dots" ? "active" : ""} onClick={() => changeBackground("dots")} aria-label="Dot background" type="button"><Grip size={17} /></button><button className={board.background === "plain" ? "active" : ""} onClick={() => changeBackground("plain")} aria-label="Plain background" type="button"><Square size={16} /></button></div>
+      <div className="board-page-controls"><Files size={17} aria-hidden="true" /><select value={activePage.id} onChange={(event) => switchPage(event.target.value)} aria-label="Current whiteboard page">{board.pages.map((page, index) => <option value={page.id} key={page.id}>{index + 1}. {page.name}</option>)}</select><span>{activePageIndex + 1}/{board.pages.length}</span>{compact ? panelToggle("page", "Page and view options", <Ellipsis size={19} />, { title: "Rename, add, duplicate, delete, or clear pages; snap, zoom, and background" }) : <>{pageActionButtons(false)}{clearButton(false)}</>}</div>
+      {compact ? !shortViewport && <div className="tool-segment board-history">{historyButtons}</div> : <div className="board-pagebar-end">{zoomGroup}{backgroundsGroup(false)}</div>}
+      {compact && <div id="board-page-panel" className="board-popover board-page-panel" data-board-panel="page" role="group" aria-label="Page and view options" hidden={openPanel !== "page"}><div className="board-popover-tools board-popover-list">{pageActionButtons(true)}{clearButton(true)}</div><div className="board-popover-tools">{snapButton(true)}</div>{zoomGroup}{backgroundsGroup(true)}</div>}
     </div>
 
-    <div className="board-toolbar" role="toolbar" aria-label="Whiteboard tools"><div className="board-toolbar-scroll">
-      <div className="tool-segment"><button className={tool === "select" ? "active" : ""} onClick={() => setTool("select")} aria-label="Select and move objects" title="Select" type="button"><MousePointer2 size={19} /></button><button className={tool === "pen" ? "active" : ""} onClick={() => setTool("pen")} aria-label="Pen" type="button"><PenLine size={19} /></button><button className={tool === "marker" ? "active" : ""} onClick={() => setTool("marker")} aria-label="Highlighter" type="button"><Highlighter size={19} /></button><button className={tool === "eraser" ? "active" : ""} onClick={() => setTool("eraser")} aria-label="Eraser" type="button"><Eraser size={19} /></button></div>
-      <div className="tool-segment shape-tools"><button className={tool === "line" ? "active" : ""} onClick={() => setTool("line")} aria-label="Straight line" type="button"><Minus size={19} /></button><button className={tool === "rectangle" ? "active" : ""} onClick={() => setTool("rectangle")} aria-label="Rectangle" type="button"><Square size={18} /></button><button className={tool === "ellipse" ? "active" : ""} onClick={() => setTool("ellipse")} aria-label="Ellipse" type="button"><Circle size={18} /></button><button className={tool === "arrow" ? "active" : ""} onClick={() => setTool("arrow")} aria-label="Arrow" type="button"><MoveUpRight size={19} /></button><button className={tool === "text" ? "active" : ""} onClick={() => setTool("text")} aria-label="Text" type="button"><Type size={19} /></button><button className={tool === "sticky" ? "active" : ""} onClick={() => setTool("sticky")} aria-label="Sticky note" type="button"><StickyNote size={19} /></button></div>
-      <div className="color-row" aria-label="Ink color">{colors.map((ink) => <button key={ink} className={(selectedObject?.color || color) === ink ? "color-dot active" : "color-dot"} style={{ "--ink": ink }} onClick={() => changeColor(ink)} aria-label={`Use color ${ink}`} type="button" />)}</div>
-      <label className="stroke-size"><span>Size</span><input type="range" min="1" max="12" value={selectedObject && !["text", "sticky"].includes(selectedObject.tool) ? Math.min(12, selectedObject.width) : lineWidth} onChange={(event) => changeWidth(Number(event.target.value))} aria-label="Stroke size" /></label>
-      {selectedObjects.length > 0 && <div className="tool-segment board-selection-actions"><button onClick={bringForward} disabled={selectedObjects.every((object) => object.locked)} aria-label="Bring selection forward" title="Bring forward" type="button"><ArrowUpToLine size={18} /></button><button onClick={sendBackward} disabled={selectedObjects.every((object) => object.locked)} aria-label="Send selection backward" title="Send backward" type="button"><ArrowDownToLine size={18} /></button><button className={selectedObjects.every((object) => object.locked) ? "active" : ""} onClick={toggleLockSelected} aria-label={selectedObjects.every((object) => object.locked) ? "Unlock selection" : "Lock selection"} title={selectedObjects.every((object) => object.locked) ? "Unlock (allow edits again)" : "Lock (prevent accidental edits)"} type="button">{selectedObjects.every((object) => object.locked) ? <Lock size={18} /> : <LockOpen size={18} />}</button><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection" type="button"><Trash2 size={18} /></button></div>}
-      <div className="tool-segment board-history"><button onClick={undo} disabled={!historyCounts.past} aria-label="Undo" type="button"><Undo2 size={19} /></button><button onClick={redo} disabled={!historyCounts.future} aria-label="Redo" type="button"><Redo2 size={19} /></button><button onClick={clear} disabled={!objects.length} aria-label="Clear current page" type="button"><Trash2 size={19} /></button></div>
-      <div className="tool-segment"><button className={snapEnabled ? "active" : ""} onClick={() => setSnapEnabled((value) => !value)} aria-pressed={snapEnabled} aria-label="Snap to grid" title="Snap shape endpoints, placement, moves, and resizes to the 24px grid" type="button"><Grid3x3 size={18} /></button></div>
-      <div className="tool-segment board-zoom" role="group" aria-label="Zoom"><button onClick={() => zoomAround(1 / 1.25)} disabled={view.scale <= 1} aria-label="Zoom out" type="button"><ZoomOut size={18} /></button><button className="board-zoom-level" onClick={() => setView({ scale: 1, x: 0, y: 0 })} disabled={view.scale === 1} aria-label="Reset zoom" title="Reset zoom and position" type="button">{Math.round(view.scale * 100)}%</button><button onClick={() => zoomAround(1.25)} disabled={view.scale >= 4} aria-label="Zoom in" type="button"><ZoomIn size={18} /></button></div>
-    </div></div>
+    {compact
+      ? <div ref={toolbarRef} className="board-toolbar" role="toolbar" aria-label="Whiteboard tools"><div className="board-toolbar-scroll">
+        <div className="tool-segment board-primary-tools">{["select", "pen", "marker", "eraser"].map((id) => toolButton(id))}{panelToggle("shapes", shapeActive ? `Shapes, ${TOOL_DEFS[tool].name} selected` : "Shapes", <><ShapeToggleIcon size={19} /><ChevronDown className="board-toggle-caret" size={11} /></>, { active: shapeActive, title: "Line, rectangle, ellipse, arrow" })}{toolButton("text")}{toolButton("sticky")}{panelToggle("style", "Ink color and size", <span className={`board-ink-preview${activeInk ? "" : " mixed"}`} style={{ "--swatch": activeInk || color }} />)}</div>{shortViewport && <div className="tool-segment board-history">{historyButtons}</div>}
+      </div>
+        <div id="board-shapes-panel" className="board-popover" data-board-panel="shapes" role="group" aria-label="Shapes" hidden={openPanel !== "shapes"}><div className="board-popover-tools">{["line", "rectangle", "ellipse", "arrow"].map((id) => toolButton(id, true))}</div></div>
+        <div id="board-style-panel" className="board-popover" data-board-panel="style" role="group" aria-label="Ink color and size" hidden={openPanel !== "style"}>{inkControls}</div>
+      </div>
+      : <div ref={toolbarRef} className="board-toolbar" role="toolbar" aria-label="Whiteboard tools"><div className="board-toolbar-scroll">
+        <div className="tool-segment">{["select", "pen", "marker", "eraser"].map((id) => toolButton(id))}</div>
+        <div className="tool-segment shape-tools">{["line", "rectangle", "ellipse", "arrow", "text", "sticky"].map((id) => toolButton(id))}</div>
+        {inkControls}
+        <div className="tool-segment board-history">{historyButtons}</div>
+        <div className="tool-segment">{snapButton(false)}</div>
+      </div></div>}
 
-    <div className={`board-canvas-wrap background-${board.background}`} ref={containerRef}>{!loaded && <div className="board-loading"><RotateCcw className="spin" size={22} /> Restoring every page…</div>}<canvas ref={canvasRef} className="board-canvas" tabIndex="0" aria-label={`${activePage.name} drawing surface. Active tool: ${tool}`} onPointerDown={startDrawing} onPointerMove={continueDrawing} onPointerUp={finishDrawing} onPointerCancel={finishDrawing} /></div>
-    <p className="board-hint"><strong>{tool === "select" ? selectedObjects.length > 1 ? `${selectedObjects.length} objects selected — drag, nudge, duplicate, copy, or delete them together.` : selectedObject ? "Drag the selected object; Shift-tap adds more; use the toolbar to recolor, duplicate, or delete." : "Tap an object to select it, Shift-tap to add, or drag empty space to box-select." : tool === "text" || tool === "sticky" ? "Tap the board to place it." : "Draw directly with touch, mouse, or Apple Pencil."}</strong><span>{objects.length} object{objects.length === 1 ? "" : "s"} · {board.pages.length} page{board.pages.length === 1 ? "" : "s"} · {saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save failed" : "Saved"}</span></p>
-    <TextEntryDialog pending={pendingText} onClose={() => setPendingText(null)} onSubmit={addTextObject} />
+    <div className={`board-canvas-wrap background-${board.background}`} ref={containerRef}>
+      {!loaded && <div className="board-loading"><RotateCcw className="spin" size={22} /> Restoring every page…</div>}
+      <canvas ref={backdropRef} className="board-canvas-backdrop" aria-hidden="true" />
+      <canvas ref={canvasRef} className={`board-canvas tool-${tool}${spacePanning ? " panning" : ""}`} tabIndex="0" aria-label={`${activePage.name} drawing surface. Active tool: ${TOOL_DEFS[tool].name}`} aria-describedby={helpId} onPointerDown={startDrawing} onPointerMove={continueDrawing} onPointerUp={finishDrawing} onPointerCancel={finishDrawing} onClick={handleCanvasClick} />
+      {selectedObjects.length > 0 && <div className={`board-selection-actions placement-${selectionPlacement}`} role="toolbar" aria-label="Selection actions">{editableSelection && <button onClick={() => openEditor(selectedObject)} aria-label={selectedObject.tool === "sticky" ? "Edit sticky note" : "Edit text"} title="Edit (Enter or double-click)" type="button"><PencilLine size={18} /></button>}<button onClick={bringForward} disabled={allLocked} aria-label="Bring selection forward" title="Bring forward" type="button"><ArrowUpToLine size={18} /></button><button onClick={sendBackward} disabled={allLocked} aria-label="Send selection backward" title="Send backward" type="button"><ArrowDownToLine size={18} /></button><button className={allLocked ? "active" : ""} onClick={toggleLockSelected} aria-label={allLocked ? "Unlock selection" : "Lock selection"} title={allLocked ? "Unlock (allow edits again)" : "Lock (prevent accidental edits)"} type="button">{allLocked ? <Lock size={18} /> : <LockOpen size={18} />}</button><button onClick={duplicateSelected} aria-label="Duplicate selected object" title="Duplicate selection" type="button"><Copy size={18} /></button><button onClick={deleteSelected} aria-label="Delete selected object" title="Delete selection (Delete)" type="button"><Trash2 size={18} /></button></div>}
+      <p id={helpId} className="visually-hidden">Tab and Shift+Tab select objects; arrow keys move the selection, Enter edits text, Delete removes it, and Escape deselects.</p>
+    </div>
+    <p className="board-hint"><strong>{hintText}</strong><span>{visibleObjectCount} object{visibleObjectCount === 1 ? "" : "s"} · {board.pages.length} page{board.pages.length === 1 ? "" : "s"} · <span role="status">{saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Save failed" : "Saved"}</span></span></p>
+    <p className="visually-hidden" role="status">{announcement}</p>
+    <section className="visually-hidden" aria-label="Whiteboard keyboard shortcuts"><dl>{BOARD_SHORTCUTS.map(([keys, action]) => <div key={keys}><dt>{keys}</dt><dd>{action}</dd></div>)}</dl></section>
+    <TextEntryDialog key={pendingText ? `${pendingText.mode}-${pendingText.id || "new"}` : "closed"} pending={pendingText} onClose={() => setPendingText(null)} onSubmit={submitText} />
     <RenamePageDialog page={renamingPage ? activePage : null} onClose={() => setRenamingPage(false)} onRename={renamePage} />
   </section>;
 }

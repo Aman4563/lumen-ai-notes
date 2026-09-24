@@ -74,15 +74,40 @@
   }
 }
 
-/* In landscape, scroll the board page instead of collapsing the drawing surface. */
+/* In landscape the drawing surface comes first: the tool row (with undo and
+   redo) sticks under the top bar and the canvas fills exactly what remains
+   above the bottom navigation, so its height never follows the canvas
+   bitmap. Status, pages, and the header follow below and are reached by
+   scrolling the page from any non-canvas area. */
 @media screen and (max-height: 540px) {
   .board-view.advanced-board {
     height: auto;
     min-height: calc(100dvh - 58px);
-    grid-template-rows: auto auto auto minmax(240px, 1fr) auto;
+    grid-template-rows: none;
     padding-bottom: calc(80px + env(safe-area-inset-bottom));
     overflow: visible;
   }
+  .board-view.advanced-board > .board-toolbar { position: sticky; top: var(--board-offset-top, 58px); order: 1; }
+  .board-view.advanced-board > .board-canvas-wrap {
+    order: 2;
+    height: max(120px, calc(100dvh - var(--board-offset-top, 58px) - var(--board-toolbar-height, 52px) - 80px - env(safe-area-inset-bottom)));
+  }
+  .board-view.advanced-board > .board-hint { order: 3; min-height: 0; padding-block: 5px; }
+  .board-view.advanced-board > .board-pagebar { order: 4; }
+  .board-view.advanced-board > .board-header { order: 5; }
+  /* Menus opened from below the canvas become sheets between the top bar and
+     the bottom navigation, scrolling when a short screen cannot fit them. */
+  .board-view.advanced-board .board-menu-list,
+  .board-view.advanced-board .board-pagebar .board-popover {
+    position: fixed;
+    top: calc(var(--board-offset-top, 58px) + 8px);
+    bottom: auto;
+    max-height: calc(100dvh - var(--board-offset-top, 58px) - 96px - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .board-view.advanced-board .board-menu-list { right: 8px; }
+  .board-view.advanced-board .board-popover-list { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
   .teach-stage { padding: 8px; }
   .teach-card, .teach-slide { max-height: 100%; padding: 16px; }
 }
