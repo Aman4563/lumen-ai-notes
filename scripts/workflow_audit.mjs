@@ -1431,12 +1431,18 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll(".document-card")].some((card) => /^Part \d/.test(card.querySelector(".document-card-copy > span")?.textContent || "") && card.querySelector("p mark")), { timeout: 10_000 })
     .catch(() => assert.fail("no built-in lecture showed a highlighted match snippet"));
 
-  // Recents hold committed searches only, never each typed prefix.
+  // Recents hold committed searches only (Enter commits), never each typed
+  // prefix, and a query abandoned with Clear is not recorded.
+  await page.keyboard.press("Enter");
+  await page.click('button[aria-label="Clear search"]');
+  await page.type(".library-search input", "attenti");
   await page.click('button[aria-label="Clear search"]');
   await page.waitForSelector(".library-search-shortcuts", { timeout: 5_000 });
+  assert.equal(await page.$('.library-search-shortcuts button[aria-label="Repeat recent search attenti"]'), null, "a query abandoned with Clear was recorded as a recent search");
   const typedQueries = ["Uploaded Persistence Proof", "Uploaded Persistance Proof", "uploaded -persistence", "title:uploaded", "gradients", "has:formula attention", "attention", "backpropagation"];
   const recentLabels = await page.$$eval('.library-search-shortcuts .search-chip button[aria-label^="Repeat recent search"]', (nodes) => nodes.map((node) => node.textContent.trim()));
-  assert.ok(recentLabels.length > 0 && recentLabels.every((label) => typedQueries.includes(label)), `recent searches recorded partial queries: ${recentLabels.join(" | ")}`);
+  assert.ok(recentLabels.includes("backpropagation"), `Enter did not record the search as recent: ${recentLabels.join(" | ")}`);
+  assert.ok(recentLabels.every((label) => typedQueries.includes(label)), `recent searches recorded partial queries: ${recentLabels.join(" | ")}`);
 
   await page.$$eval(".library-search-shortcuts .search-chip button", (nodes) => nodes.find((node) => node.getAttribute("aria-label")?.startsWith("Remove saved search"))?.click());
   await page.waitForFunction(() => !document.querySelector('.library-search-shortcuts .search-chip button[aria-label^="Remove saved search"]'), { timeout: 5_000 });
