@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { exportReviewCards } from "../lib/cardInterchange.js";
 import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound } from "../lib/interview.js";
 import { ROUND_TYPES, buildTrackRound, normalizeTrackBank } from "../lib/interviewTracks.js";
@@ -283,6 +283,24 @@ export function UndoStrip({ message, onUndo, onExpire, timeout = 10_000 }) {
 }
 
 /**
+ * Buffered text fields commit before the page is hidden or unloaded. The
+ * app's pagehide/visibilitychange flush saves the last rendered profile, so
+ * this capture-phase listener commits and renders synchronously first.
+ */
+export function useCommitOnHide(commitRef) {
+  useEffect(() => {
+    const commit = () => flushSync(() => commitRef.current?.());
+    const onVisibility = () => { if (document.visibilityState === "hidden") commit(); };
+    window.addEventListener("pagehide", commit, true);
+    document.addEventListener("visibilitychange", onVisibility, true);
+    return () => {
+      window.removeEventListener("pagehide", commit, true);
+      document.removeEventListener("visibilitychange", onVisibility, true);
+    };
+  }, [commitRef]);
+}
+
+/**
  * The correction field keeps keystrokes local and commits on blur: writing
  * through the profile on every keypress re-renders the whole center and can
  * drop characters typed between commits.
@@ -290,6 +308,11 @@ export function UndoStrip({ message, onUndo, onExpire, timeout = 10_000 }) {
 function MistakeCorrectionField({ mistake, onEditMistake }) {
   const [value, setValue] = useState(mistake.correction);
   const focusedRef = useRef(false);
+  const commitRef = useRef(null);
+  commitRef.current = () => {
+    if (value !== mistake.correction) onEditMistake?.(mistake.id, { correction: value });
+  };
+  useCommitOnHide(commitRef);
   useEffect(() => {
     if (!focusedRef.current) setValue(mistake.correction);
   }, [mistake.correction]);

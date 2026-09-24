@@ -85,6 +85,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
 import { downloadBlob } from "./lib/download.js";
 import { UndoStrip } from "./components/ReviewCenter";
+import { UndoStrip } from "./components/ReviewCenter";
 import {
   actionableReviewCount,
   createReviewItem,
@@ -916,8 +917,9 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
 
 /**
  * Clipping comments keep keystrokes local and commit after a short pause, on
- * blur, and on unmount (REV-19): a profile write per keystroke re-rendered the
- * whole app and could drop keys or hit React's update-depth limit.
+ * blur, on unmount, and before the page hides (REV-19): a profile write per
+ * keystroke re-rendered the whole app and could drop keys or hit React's
+ * update-depth limit.
  */
 function ClippingNoteField({ clip, onCommit }) {
   const [value, setValue] = useState(clip.note || "");
@@ -932,6 +934,7 @@ function ClippingNoteField({ clip, onCommit }) {
     draftRef.current = null;
     if (next !== (clip.note || "")) onCommit(clip.id, next);
   };
+  useCommitOnHide(commitRef);
   useEffect(() => {
     if (!focusedRef.current && draftRef.current === null) setValue(clip.note || "");
   }, [clip.note]);

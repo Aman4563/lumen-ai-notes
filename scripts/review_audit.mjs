@@ -192,6 +192,21 @@ try {
   assert.equal(withMistake.mistakes.length, 1);
   assert.equal(withMistake.mistakes[0].occurrences, 1);
   assert.ok(withMistake.mistakes[0].correction.includes("stays untouched"), "the correction was not persisted");
+  // Issue #54 (REV-19): a correction still being typed is committed when the
+  // page is hidden, before the app's pagehide flush saves the profile.
+  await page.focus(".mistake-card textarea");
+  await page.keyboard.type("Test data is for the final report only. ");
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  {
+    const deadline = Date.now() + 5_000;
+    let saved = "";
+    while (Date.now() < deadline && !saved.includes("final report only")) {
+      saved = (await readProfile(page)).mistakes[0]?.correction || "";
+      if (!saved.includes("final report only")) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(saved.includes("final report only"), "an unblurred correction must be saved when the page is hidden");
+  }
+  await page.$eval(".mistake-card textarea", (node) => node.blur());
   assert.equal(withMistake.mistakes[0].reviewItemId, withMistake.reviewItems.find((item) => item.front.startsWith("Which split")).id, "the mistake lost its card link");
 
   // The lapsed card sits in a short relearning delay; corrective scheduling
@@ -532,7 +547,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, inert mistake dialog, mistake and clipping undo, burst-typed clipping notes, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, inert mistake dialog, mistake and clipping undo, burst-typed clipping notes, corrections saved on page hide, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
