@@ -8198,7 +8198,10 @@ input[type="range"] {
   .review-mistakes .section-heading,
   .notebook-section .section-heading { align-items: stretch; flex-direction: column; gap: 10px; }
   .notebook-heading-actions { flex-wrap: wrap; }
-  .review-settings-strip label { min-width: 0; max-width: 100%; white-space: normal; }
+  /* Limit pickers pair up where they fit and never wrap their one-word
+     labels; a capped label shrinks its select instead (large text). */
+  .review-settings-strip label { flex: 1 1 140px; max-width: 100%; }
+  .review-settings-strip > .review-calibrate { flex-basis: 100%; }
   /* Row actions move under the card so titles keep the full row (REV-20). */
   .notebook-document-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .notebook-document-row:has(> .batch-check) { grid-template-columns: auto minmax(0, 1fr); }

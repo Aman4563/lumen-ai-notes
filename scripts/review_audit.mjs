@@ -395,6 +395,19 @@ try {
   assert.equal(imported.length, 2, "both imported cards must persist");
   assert.ok(imported.every((item) => item.reviewCount === 0 && item.tags.includes("imported")), "imported cards start fresh and keep their tags");
 
+  // Issue #54 (REV-22): at phone width every Daily limits picker keeps its
+  // one-word label on one line and a usable select, in both schedulers.
+  const assertLimitsStripReadable = async (mode) => {
+    const pickers = await page.$$eval(".review-settings-strip label", (labels) => labels.map((label) => {
+      const text = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      return { name: text.textContent.trim(), lines: new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size, select: Math.round(label.querySelector("select").getBoundingClientRect().width) };
+    }));
+    assert.ok(pickers.length >= 3 && pickers.every((picker) => picker.lines === 1 && picker.select >= 60), `the ${mode} Daily limits strip collapsed at phone width: ${JSON.stringify(pickers)}`);
+  };
+  await assertLimitsStripReadable("classic");
+
   // Issue #16: enabling the Adaptive (FSRS) scheduler migrates existing
   // cards once (history replay or SM-2 seed) and grades store FSRS state.
   await page.select('select[aria-label="Scheduling algorithm"]', "fsrs");
@@ -402,6 +415,7 @@ try {
     .catch(() => assert.fail("enabling FSRS did not confirm the calibration"));
   await page.waitForSelector('select[aria-label="Target retention"]', { timeout: 5_000 });
   await new Promise((resolve) => setTimeout(resolve, 700));
+  await assertLimitsStripReadable("FSRS");
   const fsrsProfile = await readProfile(page);
   assert.equal(fsrsProfile.reviewSettings.scheduler, "fsrs");
   const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
