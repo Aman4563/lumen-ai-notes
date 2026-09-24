@@ -136,6 +136,21 @@ try {
         if (canvas) {
           const drawing = root.querySelector(".board-canvas")?.getBoundingClientRect();
           if (!drawing || drawing.width < 180 || drawing.height < 120) problems.push(`Drawing area is ${Math.round(drawing?.width || 0)}×${Math.round(drawing?.height || 0)}`);
+          // The element box alone hid a landscape board with 13–73px of canvas
+          // showing above the fixed bottom navigation (issue #55): measure the
+          // part a learner can actually draw on, with undo on screen too.
+          const nav = document.querySelector(".bottom-nav");
+          const navTop = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+          const topbarBottom = document.querySelector(".app-topbar")?.getBoundingClientRect().bottom || 0;
+          const toolbar = root.querySelector(".board-toolbar")?.getBoundingClientRect();
+          if (drawing) {
+            const visibleTop = Math.max(drawing.top, topbarBottom, toolbar && toolbar.top < drawing.top ? toolbar.bottom : 0);
+            const visibleHeight = Math.min(drawing.bottom, navTop, innerHeight) - visibleTop;
+            const visibleWidth = Math.min(drawing.right, innerWidth) - Math.max(drawing.left, 0);
+            if (visibleHeight < 120 || visibleWidth < 180) problems.push(`Visible drawing area is ${Math.round(visibleWidth)}×${Math.round(visibleHeight)} above the navigation`);
+          }
+          const undo = root.querySelector('[aria-label="Undo"]')?.getBoundingClientRect();
+          if (!undo?.width || undo.top < topbarBottom - 1 || undo.bottom > navTop + 1) problems.push("Undo is not on screen with the drawing area");
         }
         return { problems, overflow, bounds: { width: Math.round(rect.width), height: Math.round(rect.height), top: Math.round(rect.top), bottom: Math.round(rect.bottom) } };
       }, { selector: rootSelector, dialog, canvas });
@@ -245,7 +260,17 @@ try {
     await reach('[aria-label="Exit teaching mode"]', true);
     await navigate(`board/${encodeURIComponent(documentId)}`, ".board-view");
     await inspect("whiteboard", ".board-view", { canvas: true });
+    // Compact boards keep page and view options in a panel: open it first.
+    const revealBoardPanel = async (selector) => {
+      const panel = await page.$eval(selector, (node) => {
+        const container = node.closest("[data-board-panel]");
+        return container?.hidden ? container.getAttribute("data-board-panel") : "";
+      });
+      if (panel) await reach(`[data-board-toggle="${panel}"]`, true);
+    };
+    await revealBoardPanel('[aria-label="Plain background"]');
     await reach('[aria-label="Plain background"]', true);
+    await revealBoardPanel('[aria-label="Rename whiteboard page"]');
     await reach('[aria-label="Rename whiteboard page"]', true);
     await inspect("board-rename", ".board-rename-dialog", { dialog: true });
     await reach(".board-rename-dialog .button.primary");

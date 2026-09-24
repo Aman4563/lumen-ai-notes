@@ -1,4 +1,5 @@
 import { createId } from "./id.js";
+import { normalizePageSize } from "./boardGeometry.js";
 import { normalizeMistakes } from "./mistakes.js";
 import { normalizeAssessments } from "./assessment.js";
 import {
@@ -1092,9 +1093,13 @@ export const normalizeBoardDocument = (value) => {
     let id = typeof page.id === "string" && page.id && !seen.has(page.id) ? page.id.slice(0, 200) : createId();
     if (seen.has(id)) id = createId();
     seen.add(id);
+    // Authoring size is sparse like rotation: legacy pages stay byte-identical
+    // until the editor adopts the canvas they were drawn on (issue #55).
+    const size = normalizePageSize(page.size);
     return {
       id,
       name: typeof page.name === "string" && page.name.trim() ? page.name.trim().slice(0, 60) : `Page ${index + 1}`,
+      ...(size ? { size } : {}),
       objects: normalizeBoardStrokes(page.objects || page.strokes),
     };
   });

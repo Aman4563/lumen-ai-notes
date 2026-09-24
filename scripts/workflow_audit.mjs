@@ -83,6 +83,61 @@ const readStored = (page, key) => page.evaluate((storageKey) => new Promise((res
   };
 }), key);
 
+const writeStored = (page, key, value) => page.evaluate(([storageKey, record]) => new Promise((resolve, reject) => {
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const transaction = request.result.transaction("study-data", "readwrite");
+    transaction.objectStore("study-data").put(record, storageKey);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  };
+}), [key, value]);
+
+// The whiteboard page is fitted inside the canvas (issue #55); coordinates are
+// fractions of the fitted page, which the canvas exposes as data attributes.
+const boardPageBox = async (page) => {
+  await page.waitForFunction(() => Number(document.querySelector(".board-canvas")?.dataset.pageWidth) > 0);
+  return page.$eval(".board-canvas", (canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    return { left: rect.left + Number(canvas.dataset.pageLeft), top: rect.top + Number(canvas.dataset.pageTop), width: Number(canvas.dataset.pageWidth), height: Number(canvas.dataset.pageHeight) };
+  });
+};
+// On phones, shapes, ink, and page tools live in toolbar panels; open the
+// panel that holds a control before clicking it like a user would.
+const revealBoardControl = async (page, selector) => {
+  const panel = await page.$eval(selector, (node) => {
+    const container = node.closest("[data-board-panel]");
+    return container?.hidden ? container.getAttribute("data-board-panel") : "";
+  });
+  if (!panel) return;
+  await page.click(`[data-board-toggle="${panel}"]`);
+  await page.waitForSelector(`[data-board-panel="${panel}"]:not([hidden])`);
+};
+const clickBoardControl = async (page, selector) => {
+  await revealBoardControl(page, selector);
+  await page.click(selector);
+};
+// Exports live in one labelled Export menu (issue #55).
+const exportBoardAs = async (page, label) => {
+  await page.click('[data-board-toggle="export"]');
+  await page.waitForSelector("#board-export-menu:not([hidden])");
+  await clickByText(page, '#board-export-menu [role="menuitem"]', label);
+};
+const boardCompositePixel = (page, fx, fy) => page.evaluate(([x, y]) => {
+  const ink = document.querySelector(".board-canvas");
+  const composite = document.createElement("canvas");
+  composite.width = ink.width;
+  composite.height = ink.height;
+  const context = composite.getContext("2d");
+  context.drawImage(document.querySelector(".board-canvas-backdrop"), 0, 0);
+  context.drawImage(ink, 0, 0);
+  const scale = ink.width / ink.getBoundingClientRect().width;
+  const px = Math.round((Number(ink.dataset.pageLeft) + Number(ink.dataset.pageWidth) * x) * scale);
+  const py = Math.round((Number(ink.dataset.pageTop) + Number(ink.dataset.pageHeight) * y) * scale);
+  return [...context.getImageData(px, py, 1, 1).data];
+}, [fx, fy]);
+
 // Polls the persisted record until the predicate holds, so assertions target the
 // durable IndexedDB state rather than racing the debounced whiteboard save.
 const waitForStored = async (page, key, predicate, message, timeout = 10_000) => {
@@ -393,42 +448,84 @@ try {
 
   await clickByText(page, ".document-tools button", "Whiteboard");
   await page.waitForSelector(".board-canvas");
-  const canvasBox = await page.$eval(".board-canvas", (canvas) => {
-    const rect = canvas.getBoundingClientRect();
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-  });
-  await page.click('button[aria-label="Straight line"]');
+  const boardKey = `board:${documentId}`;
+  const canvasBox = await boardPageBox(page);
+  const touchTap = async (x, y) => {
+    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
+  await clickBoardControl(page, 'button[aria-label="Straight line"]');
   await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: canvasBox.left + canvasBox.width * 0.14, y: canvasBox.top + canvasBox.height * 0.14 }] });
   await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: canvasBox.left + canvasBox.width * 0.72, y: canvasBox.top + canvasBox.height * 0.2 }] });
   await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"));
 
-  await page.click('button[aria-label="Arrow"]');
+  await clickBoardControl(page, 'button[aria-label="Arrow"]');
   await page.mouse.move(canvasBox.left + canvasBox.width * 0.2, canvasBox.top + canvasBox.height * 0.3);
   await page.mouse.down();
   await page.mouse.move(canvasBox.left + canvasBox.width * 0.78, canvasBox.top + canvasBox.height * 0.68, { steps: 8 });
   await page.mouse.up();
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"));
-  await page.click('button[aria-label="Clear current page"]');
+  // Issue #55: a page records its authoring size on its first edit, so its
+  // drawings keep their proportions on any other screen shape.
+  await waitForStored(page, boardKey, (stored) => stored.pages?.[0]?.size?.width > 0 && stored.pages[0].objects.length === 2, "the first edit did not record the page's authoring size");
+  await clickBoardControl(page, 'button[aria-label="Clear current page"]');
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("0 objects"));
   await page.click('button[aria-label="Undo"]');
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"));
 
+  // BOARD-1: text and sticky placement must survive a real touch tap in the
+  // upper half of the board, where the tap's follow-up click used to land on
+  // the new dialog's scrim and close it immediately.
   await page.click('button[aria-label="Text"]');
-  await page.mouse.click(canvasBox.left + canvasBox.width * 0.28, canvasBox.top + canvasBox.height * 0.2);
+  await touchTap(canvasBox.left + canvasBox.width * 0.28, canvasBox.top + canvasBox.height * 0.2);
   await page.waitForSelector(".board-text-dialog");
+  await delay(450);
+  assert.ok(await page.$(".board-text-dialog"), "a touch tap for Text opened the dialog and closed it again");
   await page.type('.board-text-dialog textarea', "Gradient flow");
   await clickByText(page, ".board-text-dialog button", "Add to board");
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 objects"));
 
   await page.click('button[aria-label="Sticky note"]');
-  await page.mouse.click(canvasBox.left + canvasBox.width * 0.12, canvasBox.top + canvasBox.height * 0.58);
+  await touchTap(canvasBox.left + canvasBox.width * 0.7, canvasBox.top + canvasBox.height * 0.2);
+  await page.waitForSelector(".board-text-dialog");
+  await delay(450);
+  assert.ok(await page.$(".board-text-dialog"), "a touch tap for Sticky note opened the dialog and closed it again");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".board-text-dialog", { hidden: true });
+  await touchTap(canvasBox.left + canvasBox.width * 0.12, canvasBox.top + canvasBox.height * 0.58);
   await page.waitForSelector(".board-text-dialog");
   await page.type('.board-text-dialog textarea', "Explain the optimization trade-off");
   await clickByText(page, ".board-text-dialog button", "Add to board");
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("4 objects"));
 
-  await page.click('button[aria-label="Ellipse"]');
+  // BOARD-EDIT: double-clicking placed text reopens it for editing, prefilled.
+  await page.mouse.click(canvasBox.left + canvasBox.width * 0.28 + 12, canvasBox.top + canvasBox.height * 0.2 + 10);
+  await page.mouse.click(canvasBox.left + canvasBox.width * 0.28 + 12, canvasBox.top + canvasBox.height * 0.2 + 10, { clickCount: 2 });
+  await page.waitForFunction(() => document.querySelector(".board-text-dialog textarea")?.value === "Gradient flow", { timeout: 5_000 })
+    .catch(() => assert.fail("double-clicking placed text did not open it for editing"));
+  // The editor focuses the text with the caret at its end, so typing appends.
+  await page.waitForFunction(() => {
+    const field = document.querySelector(".board-text-dialog textarea");
+    return document.activeElement === field && field.selectionStart === field.value.length;
+  }, { timeout: 5_000 }).catch(() => assert.fail("the text editor did not focus the text with the caret at its end"));
+  await page.keyboard.type(" field");
+  await clickByText(page, ".board-text-dialog button", "Save changes");
+  await page.waitForSelector(".board-text-dialog", { hidden: true });
+  await waitForStored(page, boardKey, (stored) => stored.pages[0].objects.some((item) => item.tool === "text" && item.text === "Gradient flow field"), "editing placed text was not persisted");
+
+  // BOARD-13: with the drawing surface focused, Tab selects objects in z-order
+  // and announces each one; focus stays on the surface while it does.
+  await page.keyboard.press("Escape");
+  await page.focus(".board-canvas");
+  await page.keyboard.press("Tab");
+  await page.waitForFunction(() => /1 of 4/.test(document.querySelector('.board-view > p[role="status"]')?.textContent || ""), { timeout: 5_000 })
+    .catch(() => assert.fail("Tab on the drawing surface did not select and announce the first object"));
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("board-canvas")), true, "keyboard selection moved focus off the drawing surface");
+  assert.ok(await page.$(".board-selection-actions"), "keyboard selection did not show the selection actions");
+  await page.keyboard.press("Escape");
+
+  await clickBoardControl(page, 'button[aria-label="Ellipse"]');
   await page.mouse.move(canvasBox.left + canvasBox.width * 0.42, canvasBox.top + canvasBox.height * 0.24);
   await page.mouse.down();
   await page.mouse.move(canvasBox.left + canvasBox.width * 0.72, canvasBox.top + canvasBox.height * 0.5, { steps: 6 });
@@ -443,14 +540,14 @@ try {
   await page.click('button[aria-label="Delete selected object"]');
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("5 objects"));
 
-  await page.click('button[aria-label="Dot background"]');
-  await page.click('button[aria-label="Add whiteboard page"]');
+  await clickBoardControl(page, 'button[aria-label="Dot background"]');
+  await clickBoardControl(page, 'button[aria-label="Add whiteboard page"]');
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 pages"));
-  await page.click('button[aria-label="Duplicate whiteboard page"]');
+  await clickBoardControl(page, 'button[aria-label="Duplicate whiteboard page"]');
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 pages"));
   await page.$eval('.board-page-controls select', (select) => { select.value = select.options[0].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("5 objects"));
-  await page.click('button[aria-label="Rename whiteboard page"]');
+  await clickBoardControl(page, 'button[aria-label="Rename whiteboard page"]');
   await page.waitForSelector(".board-rename-dialog input");
   await page.$eval(".board-rename-dialog input", (input) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
@@ -463,10 +560,9 @@ try {
   // BUG-002 line matrix on the empty page 2: mouse line, pen-pressure line,
   // rejected tap, undo/redo, move/recolor/resize, page-switch + reload
   // persistence, and PNG export.
-  const boardKey = `board:${documentId}`;
   await page.$eval(".board-page-controls select", (select) => { select.value = select.options[1].value; select.dispatchEvent(new Event("change", { bubbles: true })); });
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("0 objects"));
-  await page.click('button[aria-label="Straight line"]');
+  await clickBoardControl(page, 'button[aria-label="Straight line"]');
 
   await page.mouse.move(canvasBox.left + canvasBox.width * 0.15, canvasBox.top + canvasBox.height * 0.3);
   await page.mouse.down();
@@ -518,7 +614,8 @@ try {
     const object = stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id);
     return Boolean(object) && (object.points[0].x !== mouseLine.points[0].x || object.points[0].y !== mouseLine.points[0].y);
   }, "dragging the selected line did not persist moved points");
-  await page.click('button[aria-label="Use color #e36f4a"]');
+  await clickBoardControl(page, 'button[aria-label="Coral ink"]');
+  assert.equal(await page.$eval('button[aria-label="Coral ink"]', (button) => button.getAttribute("aria-pressed")), "true", "the chosen ink is not exposed as pressed");
   await waitForStored(page, boardKey, (stored) => stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id)?.color === "#e36f4a", "recoloring the selected line was not persisted");
   await page.$eval('input[aria-label="Stroke size"]', (input) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
@@ -526,6 +623,10 @@ try {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await waitForStored(page, boardKey, (stored) => stored.pages?.[1]?.objects?.find((item) => item.id === mouseLine.id)?.width === 8, "resizing the selected line stroke was not persisted");
+  if (await page.$("[data-board-panel]:not([hidden])")) {
+    await page.keyboard.press("Escape");
+    await page.waitForSelector("[data-board-panel]:not([hidden])", { hidden: true });
+  }
 
   // BOARD-001 multi-select: a marquee over both lines selects them, arrows
   // nudge the group, and copy/paste round-trips through the keyboard.
@@ -556,8 +657,82 @@ try {
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"), { timeout: 5_000 })
     .catch(() => assert.fail("deleting the pasted group did not restore the two-line page"));
 
+  // Issue #55 regressions on the same page: edge nudges translate the whole
+  // object instead of squashing it (BOARD-5); board keys never act from a
+  // focused native control or behind a modal (BOARD-6); and the eraser removes
+  // ink only, never the page background (BOARD-7).
+  {
+    await clickBoardControl(page, 'button[aria-label="Rectangle"]');
+    await page.mouse.move(canvasBox.left + canvasBox.width * 0.8, canvasBox.top + canvasBox.height * 0.76);
+    await page.mouse.down();
+    await page.mouse.move(canvasBox.left + canvasBox.width * 0.95, canvasBox.top + canvasBox.height * 0.86, { steps: 4 });
+    await page.mouse.up();
+    const drawn = await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.length === 3, "the edge rectangle was not persisted");
+    const edge = drawn.pages[1].objects[2];
+    const edgeWidth = edge.points[1].x - edge.points[0].x;
+    await page.$eval('button[aria-label="Select and move objects"]', (button) => button.click());
+    await page.mouse.click(canvasBox.left + canvasBox.width * 0.875, canvasBox.top + canvasBox.height * 0.81);
+    await page.waitForSelector(".board-selection-actions");
+    for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowLeft", "ArrowLeft", "ArrowLeft"]) {
+      await page.keyboard.down("Shift");
+      await page.keyboard.press(key);
+      await page.keyboard.up("Shift");
+    }
+    const nudged = await waitForStored(page, boardKey, (stored) => {
+      const item = stored.pages[1].objects.find((object) => object.id === edge.id);
+      return Boolean(item) && item.points[0].x < edge.points[0].x - 0.05;
+    }, "nudging the edge rectangle out and back did not persist");
+    const nudgedEdge = nudged.pages[1].objects.find((object) => object.id === edge.id);
+    assert.ok(Math.abs((nudgedEdge.points[1].x - nudgedEdge.points[0].x) - edgeWidth) < 1e-6, `edge nudges squashed the rectangle from ${edgeWidth} to ${nudgedEdge.points[1].x - nudgedEdge.points[0].x}`);
+
+    await page.focus(".board-page-controls select");
+    await page.keyboard.press("Delete");
+    await page.focus(".board-canvas");
+    await page.keyboard.press("?");
+    await page.waitForSelector('[role="dialog"][aria-modal="true"]');
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("ArrowUp");
+    await delay(600);
+    const guarded = await readStored(page, boardKey);
+    const guardedEdge = guarded.pages[1].objects.find((object) => object.id === edge.id);
+    assert.ok(guardedEdge, "Delete on the page select or Backspace behind the shortcuts sheet removed the selected object");
+    assert.deepEqual(guardedEdge.points, nudgedEdge.points, "an arrow key behind the shortcuts sheet moved the selected object");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector('[role="dialog"][aria-modal="true"]', { hidden: true });
+    await page.focus(".board-canvas");
+    await page.keyboard.press("Delete");
+    await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("2 objects"), { timeout: 5_000 })
+      .catch(() => assert.fail("deleting the edge rectangle from the drawing surface failed"));
+
+    await page.click('button[aria-label="Pen"]');
+    await page.mouse.move(canvasBox.left + canvasBox.width * 0.1, canvasBox.top + canvasBox.height * 0.9);
+    await page.mouse.down();
+    await page.mouse.move(canvasBox.left + canvasBox.width * 0.45, canvasBox.top + canvasBox.height * 0.9, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 objects"));
+    await page.click('button[aria-label="Eraser"]');
+    const pageSize = (await readStored(page, boardKey)).pages[1].size;
+    // A dot of the 24px dot grid inside the eraser's path, clear of the stroke.
+    const dotX = (24 * Math.round((0.25 * pageSize.width) / 24)) / pageSize.width;
+    const dotY = (24 * Math.round((0.9 * pageSize.height) / 24) - 24) / pageSize.height;
+    const referenceDot = await boardCompositePixel(page, dotX + 72 / pageSize.width, dotY);
+    await page.mouse.move(canvasBox.left + canvasBox.width * dotX, canvasBox.top + canvasBox.height * 0.8);
+    await page.mouse.down();
+    await page.mouse.move(canvasBox.left + canvasBox.width * dotX, canvasBox.top + canvasBox.height * 0.98, { steps: 6 });
+    await page.mouse.up();
+    await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.some((object) => object.tool === "eraser"), "the eraser stroke was not persisted");
+    const erasedDot = await boardCompositePixel(page, dotX, dotY);
+    assert.equal(erasedDot[3], 255, `the eraser punched a transparent hole through the page (${erasedDot})`);
+    assert.ok(erasedDot.slice(0, 3).every((channel, index) => Math.abs(channel - referenceDot[index]) <= 8), `the eraser removed the dot grid: ${erasedDot} vs ${referenceDot}`);
+    assert.ok((await page.$eval(".board-hint", (node) => node.textContent)).includes("3 objects"), "eraser marks must not count as objects");
+    await page.click('button[aria-label="Undo"]');
+    await page.click('button[aria-label="Undo"]');
+    await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.length === 2, "undoing the eraser test did not restore the two-line page");
+    await page.$eval('button[aria-label="Select and move objects"]', (button) => button.click());
+  }
+
   // BOARD-003: the SVG export is a valid standalone image of the page.
-  await page.click('button[aria-label="Export current whiteboard page as SVG"]');
+  await exportBoardAs(page, "SVG image");
   {
     let svgPath = "";
     const deadline = Date.now() + 10_000;
@@ -607,12 +782,9 @@ try {
   await page.waitForFunction(() => document.querySelector('button[aria-label="Snap to grid"]')?.getAttribute("aria-pressed") === "true", { timeout: 5_000 })
     .catch(() => assert.fail("the snap toggle did not arm"));
   await page.$eval('button[aria-label="Straight line"]', (button) => button.click());
-  // The canvas rect can differ from the line-matrix measurement (toolbar rows
-  // appear and disappear) — measure fresh for both drawing and assertion.
-  const snapBox = await page.$eval(".board-canvas", (canvas) => {
-    const rect = canvas.getBoundingClientRect();
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-  });
+  // Measure the fitted page fresh for drawing; the grid lives in the page's
+  // stored authoring pixels (issue #55), so the assertion uses that size.
+  const snapBox = await boardPageBox(page);
   await page.mouse.move(snapBox.left + snapBox.width * 0.31, snapBox.top + snapBox.height * 0.11);
   await page.mouse.down();
   await page.mouse.move(snapBox.left + snapBox.width * 0.52, snapBox.top + snapBox.height * 0.23, { steps: 4 });
@@ -621,9 +793,11 @@ try {
   {
     const stored = await readStored(page, boardKey);
     const snapped = stored.pages[1].objects[2];
+    const pageSize = stored.pages[1].size;
+    assert.ok(pageSize?.width > 0 && pageSize?.height > 0, "the drawn page has no authoring size");
     for (const point of snapped.points) {
-      const pixelX = point.x * snapBox.width;
-      const pixelY = point.y * snapBox.height;
+      const pixelX = point.x * pageSize.width;
+      const pixelY = point.y * pageSize.height;
       assert.ok(Math.abs(pixelX - Math.round(pixelX / 24) * 24) < 0.6, `snapped x ${pixelX} is off-grid`);
       assert.ok(Math.abs(pixelY - Math.round(pixelY / 24) * 24) < 0.6, `snapped y ${pixelY} is off-grid`);
     }
@@ -645,10 +819,7 @@ try {
       await page.$eval(".board-zoom-level", (button) => button.click());
       await delay(150);
     }
-    const rotateBox = await page.$eval(".board-canvas", (canvas) => {
-      const rect = canvas.getBoundingClientRect();
-      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-    });
+    const rotateBox = await boardPageBox(page);
     await page.$eval('button[aria-label="Rectangle"]', (button) => button.click());
     await page.mouse.move(rotateBox.left + rotateBox.width * 0.6, rotateBox.top + rotateBox.height * 0.6);
     await page.mouse.down();
@@ -658,12 +829,9 @@ try {
     await page.$eval('button[aria-label="Select and move objects"]', (button) => button.click());
     await page.mouse.click(rotateBox.left + rotateBox.width * 0.7, rotateBox.top + rotateBox.height * 0.65);
     await page.waitForSelector(".board-selection-actions", { timeout: 5_000 });
-    // Selecting grows the toolbar and RESIZES the canvas — measure fresh, or
-    // every client coordinate below maps to the wrong world point.
-    const selectedBox = await page.$eval(".board-canvas", (canvas) => {
-      const rect = canvas.getBoundingClientRect();
-      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-    });
+    // The selection bar floats over the canvas, so selecting no longer
+    // resizes it; measure the fitted page fresh anyway.
+    const selectedBox = await boardPageBox(page);
     const centerX = selectedBox.left + selectedBox.width * 0.7;
     const centerY = selectedBox.top + selectedBox.height * 0.65;
     // Grab the rotate handle (top-center, 33px above the box) and swing the
@@ -678,20 +846,16 @@ try {
     const rotation = rotatedBoard.pages[1].objects[2].rotation;
     // Hit-test in the rotated frame: a point below center at ~45% of the
     // object's pixel WIDTH is inside the rotated rectangle (its long side is
-    // now vertical) but outside the unrotated bounds plus margin. Deselecting
-    // resizes the canvas again, so measure a third time.
+    // now vertical) but outside the unrotated bounds plus margin.
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector(".board-selection-actions"), { timeout: 5_000 });
-    const deselectedBox = await page.$eval(".board-canvas", (canvas) => {
-      const rect = canvas.getBoundingClientRect();
-      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-    });
+    const deselectedBox = await boardPageBox(page);
     await page.mouse.click(deselectedBox.left + deselectedBox.width * 0.7, deselectedBox.top + deselectedBox.height * 0.65 + Math.round(deselectedBox.width * 0.09));
     await page.waitForSelector(".board-selection-actions", { timeout: 5_000 })
       .catch(() => assert.fail(`clicking inside the rotated footprint (rotation ${rotation}) did not select the object`));
     // SVG export carries the center-anchored transform.
     const svgExportStarted = Date.now();
-    await page.$eval('button[aria-label="Export current whiteboard page as SVG"]', (button) => button.click());
+    await exportBoardAs(page, "SVG image");
     let rotatedSvg = "";
     const svgDeadline = Date.now() + 10_000;
     while (Date.now() < svgDeadline && !rotatedSvg) {
@@ -704,12 +868,31 @@ try {
     }
     assert.ok(rotatedSvg, `no exported SVG carried the rotation transform within ${Date.now() - svgExportStarted}ms`);
     assert.match(rotatedSvg, /transform="rotate\((8[5-9]|9[0-5])\./, "the exported rotation must be near 90 degrees");
+    // BOARD-5 for rotated objects: the upright footprint would let the bar
+    // travel past the edge, but its stored points must never be clamped into
+    // a narrower shape. Nudge right into the edge, then back past the start.
+    {
+      const [start, end] = rotatedBoard.pages[1].objects[2].points;
+      const storedWidth = end.x - start.x;
+      await page.focus(".board-canvas");
+      for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft"]) {
+        await page.keyboard.down("Shift");
+        await page.keyboard.press(key);
+        await page.keyboard.up("Shift");
+      }
+      const nudged = await waitForStored(page, boardKey, (stored) => {
+        const [first, last] = stored.pages[1].objects[2].points;
+        return Math.abs(first.x - (start.x - (0.25 - Math.min(0.25, 1 - end.x)))) < 0.004 || last.x - first.x < storedWidth - 1e-6;
+      }, "nudging the rotated rectangle out and back did not persist");
+      const [first, last] = nudged.pages[1].objects[2].points;
+      assert.ok(Math.abs((last.x - first.x) - storedWidth) < 1e-6, `edge nudges squashed the rotated rectangle's stored width from ${storedWidth} to ${last.x - first.x}`);
+    }
     // Clean up: delete the test rectangle so later object-count pins hold.
     await page.keyboard.press("Delete");
     await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.length === 2, "deleting the rotation-test rectangle did not persist");
   }
 
-  await page.$eval('button[aria-label="Export the whole board as JSON"]', (button) => button.click());
+  await exportBoardAs(page, "Board JSON");
   {
     let boardJsonPath = "";
     const deadline = Date.now() + 10_000;
@@ -757,7 +940,7 @@ try {
     return hint.includes("2 objects") && hint.includes("3 pages");
   }, { timeout: 15_000 });
 
-  await page.click('button[aria-label="Export current whiteboard page as PNG"]');
+  await exportBoardAs(page, "PNG image");
   let boardPngPath;
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const files = await readdir(downloadDirectory);
@@ -773,6 +956,41 @@ try {
   const pngBytes = await readFile(boardPngPath);
   assert.ok(pngBytes.length > 0, "exported whiteboard PNG is empty");
   assert.deepEqual([...pngBytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], "exported whiteboard file does not start with the PNG signature");
+
+  // Issue #55 migration: a legacy page (no stored size) that has content keeps
+  // every point, and a phone in landscape never freezes its short canvas onto
+  // it, not even on the first edit there; shown in portrait, it adopts that
+  // canvas without rewriting a point.
+  {
+    const legacyDocument = "notes/part-01-foundations/02-problem-framing-and-objectives.md";
+    const legacyKey = `board:${legacyDocument}`;
+    const legacyLine = { id: "legacy-line", tool: "line", color: "#17283e", fill: "#fff1a8", width: 3, fontSize: 24, text: "", locked: false, points: [{ x: 0.2, y: 0.3 }, { x: 0.6, y: 0.5 }] };
+    await writeStored(page, legacyKey, { version: 2, activePageId: "legacy-page", background: "grid", pages: [{ id: "legacy-page", name: "Page 1", objects: [legacyLine] }], syncMeta: { revision: 1, updatedAt: "", writerId: "", conflicts: [] } });
+    await page.setViewport({ width: 852, height: 393, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    await page.goto(`${baseUrl}#/board/${encodeURIComponent(legacyDocument)}`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"), { timeout: 15_000 });
+    await page.$eval('button[aria-label="Pen"]', (button) => button.click());
+    const landscapeBox = await boardPageBox(page);
+    await page.mouse.move(landscapeBox.left + landscapeBox.width * 0.3, landscapeBox.top + landscapeBox.height * 0.5);
+    await page.mouse.down();
+    await page.mouse.move(landscapeBox.left + landscapeBox.width * 0.5, landscapeBox.top + landscapeBox.height * 0.6, { steps: 5 });
+    await page.mouse.up();
+    const edited = await waitForStored(page, legacyKey, (stored) => stored.pages[0].objects.length === 2, "a pen stroke on a legacy page in landscape was not persisted");
+    assert.equal("size" in edited.pages[0], false, `a landscape phone froze its short canvas ${JSON.stringify(edited.pages[0].size)} onto a legacy page with content`);
+    assert.deepEqual(edited.pages[0].objects[0].points, legacyLine.points, "editing a legacy page rewrote its stored points");
+    await page.setViewport({ width: 402, height: 874, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector(".board-canvas", { timeout: 15_000 });
+    const adopted = await waitForStored(page, legacyKey, (stored) => Boolean(stored.pages[0].size), "the legacy page did not adopt the portrait canvas it is shown on");
+    const portraitCanvas = await page.$eval(".board-canvas", (canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      return { width: Math.round(rect.width), height: Math.round(rect.height) };
+    });
+    assert.deepEqual(adopted.pages[0].size, portraitCanvas, "the legacy page adopted a size other than the canvas it is shown on");
+    assert.deepEqual(adopted.pages[0].objects[0].points, legacyLine.points, "adopting a size rewrote the legacy page's points");
+    await page.goto(`${baseUrl}#/board/${encodeURIComponent(documentId)}`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 pages"), { timeout: 15_000 });
+  }
 
   await clickByText(page, ".bottom-nav button", "Notebook");
   await page.waitForSelector(".notebook-page");
@@ -1431,7 +1649,7 @@ try {
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 
   console.log("Workflow audit passed.");
-  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, handle rotation with rotated-frame hit-testing and SVG transform export, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, the self-recording assisted speech check, honest send-failure off the LAN serve, recorded human verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with choice/numeric auto-grading, missed-question source links, an in-place retry, and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
+  console.log("Verified narration, bookmark, note, clipping, progress, edit, teaching, whiteboard history, touch-tap text and sticky placement, in-place text editing, keyboard object selection, edge-safe nudging, modal-safe board keys, background-safe erasing, the complete straight-line matrix (mouse, pen pressure, tap rejection, undo/redo, move/recolor/resize, marquee multi-select with group nudge, copy/paste, lock refusal, persisted z-order, grid snapping, handle rotation with rotated-frame hit-testing and SVG transform export, undoable JSON interchange, page-switch and reload persistence, PNG and SVG export), create, upload, duplicate-upload rejection, organize (rename, pin-first ordering, collection chips, archive round-trip), 30-day trash (restore under a fresh id, delete forever), HTML-to-Markdown import with script stripping, EPUB chapter fan-out with its lossy report, the print/PDF action, the broken-link audit, batch select/assign/archive/trash, the Home activity ledger, the device-evidence capture page (probed capabilities, the self-recording assisted speech check, honest send-failure off the LAN serve, recorded human verdict, exported dated report with unanswered checks left honestly empty), per-Part readiness checks with choice/numeric auto-grading, missed-question source links, an in-place retry, and mistake capture, the sync vault (v2 container identity, peer fold with tombstone-safe merge, idempotent re-import), advanced search (saved-search chips, typo tolerance, -term exclusion, title:/has:formula field filters, plural folding, facet counts, highlighted snippets), routing, reload persistence, and backup.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
