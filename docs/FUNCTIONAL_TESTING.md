@@ -659,3 +659,10 @@ Review center, readiness check, and notebook (issue #54):
   rows cut titles to four characters at 320px; the FSRS Daily limits strip
   collapsed to one letter per line at 768–1100px. Fields are 16px on phones,
   row actions sit under the title, and the strip wraps.
+
+Review of the fix branch caught two regressions of its own, each first
+reproduced against the preceding build and now covered by the review audit:
+the Daily limits labels broke one letter per line on every phone width (in the
+default scheduler too), and a focused Undo strip expired once the pointer had
+passed over it, dropping focus to `<body>`. At 200% text the grade buttons now
+fall back to two columns and stay clear of the taller bottom navigation.
