@@ -175,3 +175,51 @@ regression at all 11 screen/text configurations. Workflow and cross-tab suites
 passed with the navigation fixes; visual, controls, and AI UI checks also passed
 during this follow-up. Both the menu-dismissal and readiness-focus regressions
 were first reproduced against the preceding builds.
+
+## Bugs reproduced on 2026-09-24
+
+Reader audit (issue #53) on 320–430 px phones, a 768 px tablet, and 1024–1920 px
+desktops in Paper, Night, and Contrast:
+
+- On a phone, Clip, Highlight, and Ask AI existed only in the tool row at the
+  top of the lecture, about 7,400 px above a mid-lecture selection, and the row
+  scrolled Whiteboard and Actions off-screen with no cue. A selection now shows
+  a toolbar (Highlight, Clip, Ask AI, Listen) pinned above the bottom
+  navigation, and the tool row wraps.
+- The closed phone outline/notes/highlights sheet kept 26+ off-screen controls
+  in the Tab order and accessibility tree. Closed, it is now inert and hidden;
+  open, it is a modal sheet (focus moves in, Tab wraps, Escape closes, focus
+  returns). The same modal contract now covers revision history.
+- A tutor citation opened the right lesson, but restoring the saved reading
+  position cancelled the scroll to the cited section. A pending navigation
+  target now owns the first scroll and stays pinned while diagrams render.
+- Night theme drew the browser's button face under narration targets and
+  highlight cards; the selected target measured 1.13:1. Those controls now
+  draw their own theme colors.
+- Phone Mermaid labels shrank to 4.8 px, and every diagram was announced only
+  as "Rendered Mermaid diagram". Wide diagrams now keep 72% of their natural
+  size and scroll inside their frame with an edge cue. Each accessible name
+  lists nodes and edges from the preserved source.
+- The minutes-left chip sat under the sticky toolbar; it now sits beside the
+  progress percentage. Line length changed nothing below 1440 px; it now sets
+  the text measure and explains when the window caps it. Below 1240 px the
+  outline starts hidden, and Table of contents shows or hides it.
+- Teaching Mode's focus trap counted controls hidden on phones, so Tab stuck on
+  Next section and Shift+Tab left the dialog. The trap now uses rendered
+  controls; the section picker and timer are back on phones.
+- Editor Reset discarded unsaved typing without asking. It now confirms in the
+  app and keeps the unsaved draft as its own revision. History markers now
+  match what Load into editor restores or removes.
+- Narration's Read button was below the fold; on a 320 px phone it sat 246 px
+  below the sheet. It now follows the target picker, the sheet takes focus, and
+  the mini player gives the sentence its own row.
+- Wide code and tables could not be focused for keyboard scrolling, and cells
+  split words at 135% text. They are now focusable named groups with edge cues,
+  and cells keep whole words. Lecture text follows the browser text size, and a
+  text-size change keeps the current passage in place.
+- TeX in edited copies and uploads stayed raw. The reader now lazily loads the
+  sanitized KaTeX path only for sources with TeX outside code.
+
+Each fix has a regression check in the workflow, annotation, audio, control,
+responsive, AI UI, or unit suites. The citation check fails on the previous
+build: the cited heading was focused but 4,507 px below the viewport.
