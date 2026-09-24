@@ -136,8 +136,10 @@ content/tool calls to be accumulated before a follow-up tool turn:
 Tool-capable intermediate turns are buffered because they may contain
 provisional prose before a search call. Source-free tool-free prose streams as
 it is generated, except that its opening is held until the first non-whitespace
-character: an answer that opens with `{` or `[` stays buffered so a bare JSON
-document can be discarded instead of shown. Prose backed by library or web
+character: an answer that opens with `{` stays buffered so a bare JSON
+object can be discarded instead of shown. An opening `[` (usually a Markdown
+link) streams normally; a bare JSON array that streamed live still fails with
+`AI_CONTRACT_ERROR` and is not kept. Prose backed by library or web
 evidence remains buffered until
 terminal completion and citation validation, while phase/heartbeat events keep
 the request observable and cancellable. Buffered text is normally released in

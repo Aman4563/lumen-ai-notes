@@ -309,7 +309,8 @@ browser client (13 generations plus one tutor UI run).
 - One grounded Explain answer arrived as a raw JSON object and passed
   because it contained `[S1]`. Prose tasks now reject bare JSON. They
   regenerate once as Markdown, then fail with `AI_CONTRACT_ERROR`.
-  Source-free live prose holds back an opening `{` or `[`. This could not be
+  Source-free live prose holds back an opening `{` (an opening `[` usually
+  starts a Markdown link, so it still streams). This could not be
   reproduced on demand (0 of 14 after-runs), so `server/ai/quality.test.mjs`
   covers it deterministically.
 
@@ -317,3 +318,17 @@ The filtered endpoint matrix (`LUMEN_AI_TASKS=socratic,explain`,
 `LUMEN_AI_PROFILES=balanced,fast`) passed 5/5. It also recorded
 per-case output length and streamed regeneration counts. This filtered run
 does not replace the full acceptance run.
+
+Review follow-up on the same day:
+
+- The JSON guard first held any source-free answer that opened with `{` or
+  `[`. A Markdown link opener therefore stopped streaming, and a length stop
+  lost the partial the learner would otherwise keep. Only `{` is held now.
+- A library-only draft that began with four spaces became an indented code
+  block under the notice (checked with the tutor's `marked` renderer), so its
+  first paragraph and `[S#]` rendered as code. The draft is trimmed first.
+- Live: a Socratic follow-up whose history still carried the old
+  `Your question?` template assessed the answer, asked one `[S1]` question
+  with no prefix, and streamed text equal to `outputText` (13.3 s). A
+  grounded follow-up after a library-only answer did not repeat the notice
+  (7.9 s).
