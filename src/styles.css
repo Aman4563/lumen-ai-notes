@@ -2673,7 +2673,7 @@ input[type="range"] {
 @media (max-width: 740px) {
   .dashboard-method-actions { width: 100%; justify-content: stretch; }
   /* Two buttons share a row only when both labels fit on one line. */
-  .dashboard-method-actions .button { flex: 1 1 9.5rem; white-space: nowrap; }
+  .dashboard-method-actions .button { flex: 1 1 9.5rem; min-height: 44px; white-space: nowrap; }
   .review-title { align-items: stretch; }
   .review-title > .button { width: 100%; justify-content: center; }
   .review-overview { margin-top: 18px; }
@@ -3781,8 +3781,8 @@ input[type="range"] {
 .library-search-tips {
   margin: 0 2px 10px;
   color: var(--ink-soft);
-  font-size: 0.7rem;
-  line-height: 1.7;
+  font-size: 0.75rem;
+  line-height: 1.75;
 }
 
 .library-search-tips code {
@@ -3792,7 +3792,7 @@ input[type="range"] {
   color: var(--ink);
   background: var(--paper);
   font-family: ui-monospace, Menlo, monospace;
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   white-space: nowrap;
 }
 
@@ -6206,7 +6206,7 @@ input[type="range"] {
 
 .daily-plan-reason {
   color: var(--ink-soft, #566078);
-  font-size: 0.7rem;
+  font-size: 0.74rem;
   font-weight: 600;
 }
 
@@ -7745,8 +7745,8 @@ input[type="range"] {
 .concept-node.state-practicing, .concept-legend-swatch.state-practicing { border-color: #4c82b4; color: #172035; background: #bcd9f2; }
 .concept-node.state-mastered, .concept-legend-swatch.state-mastered { border-color: #1f6a59; color: #ffffff; background: #2e8b76; }
 .concept-node-badge { position: absolute; top: -5px; right: -5px; box-sizing: content-box; padding: 2px; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--ink); background: var(--paper); }
-.concept-map-help { margin: 12px 0 8px; color: var(--ink-soft); font-size: 0.72rem; text-align: center; }
-.concept-map-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 14px; margin: 0; padding: 0; color: var(--ink-soft); font-size: 0.72rem; font-weight: 700; list-style: none; }
+.concept-map-help { margin: 12px 0 8px; color: var(--ink-soft); font-size: 0.75rem; text-align: center; }
+.concept-map-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 14px; margin: 0; padding: 0; color: var(--ink-soft); font-size: 0.75rem; font-weight: 700; list-style: none; }
 .concept-map-legend li { display: inline-flex; align-items: center; gap: 6px; }
 .concept-legend-swatch { display: grid; width: 18px; height: 18px; place-items: center; border: 2px solid var(--line-strong); border-radius: 50%; color: var(--ink); background: var(--paper-3); }
 
@@ -7843,11 +7843,11 @@ input[type="range"] {
 /* Issue 9: readiness checks, goals, pacing */
 /* The action column keeps its natural width so labels never wrap mid-word. */
 .mastery-row-actions { display: grid; flex: 0 0 auto; justify-items: end; gap: 5px; }
-.mastery-check { font-size: 0.66rem; white-space: nowrap; }
-.mastery-check-hint { max-width: 12em; color: var(--ink-soft); font-size: 0.64rem; font-weight: 650; line-height: 1.35; text-align: right; }
+.mastery-check { font-size: 0.72rem; white-space: nowrap; }
+.mastery-check-hint { max-width: 12em; color: var(--ink-soft); font-size: 0.72rem; font-weight: 650; line-height: 1.35; text-align: right; }
 .goal-editor { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
 .goal-editor label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 750; }
-.goal-editor small { color: var(--ink-faint); font-weight: 600; }
+.goal-editor small { color: var(--ink-faint); font-size: 0.72rem; font-weight: 600; }
 .goal-editor .goal-parts-note { color: var(--ink-soft); font-weight: 650; line-height: 1.45; }
 @media (max-width: 740px) {
   /* Phone rows: the Part copy gets the full width and the actions a line of their own. */
