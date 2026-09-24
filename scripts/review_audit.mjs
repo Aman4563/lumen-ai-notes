@@ -312,6 +312,18 @@ try {
   // the same merged entry.
   await page.waitForFunction(() => document.activeElement?.closest(".undo-strip") && document.activeElement.textContent.includes("Undo"), { timeout: 5_000 })
     .catch(() => assert.fail("deleting a mistake must focus an Undo control"));
+  // The strip must not expire while Undo holds focus, even after the pointer
+  // passes over it and leaves (hover and focus pause it independently).
+  await page.$eval(".undo-strip", (node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  const stripCenter = await page.$eval(".undo-strip > span", (node) => {
+    const box = node.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2, hit: Boolean(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest(".undo-strip")) };
+  });
+  assert.ok(stripCenter.hit, "the Undo strip must be uncovered for the hover check");
+  await page.mouse.move(stripCenter.x, stripCenter.y, { steps: 4 });
+  await page.mouse.move(2, 2, { steps: 4 });
+  await new Promise((resolve) => setTimeout(resolve, 10_600));
+  assert.ok(await page.evaluate(() => Boolean(document.activeElement?.closest(".undo-strip"))), "a focused Undo strip expired after the pointer left it, dropping focus");
   await clickByText(page, ".undo-strip button", "Undo");
   await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("×2")), { timeout: 5_000 })
     .catch(() => assert.fail("Undo did not restore the deleted mistake"));
@@ -561,7 +573,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, inert mistake dialog, mistake and clipping undo, burst-typed clipping notes, corrections saved on page hide, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

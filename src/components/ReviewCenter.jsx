@@ -266,7 +266,11 @@ export function UndoStrip({ message, onUndo, onExpire, timeout = 10_000 }) {
   const undoRef = useRef(null);
   const expireRef = useRef(onExpire);
   expireRef.current = onExpire;
-  const [paused, setPaused] = useState(false);
+  // Focus and hover pause the timer independently: leaving with the pointer
+  // must not expire a strip whose Undo still has focus.
+  const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const paused = focused || hovered;
   const messageId = useId();
   useEffect(() => { undoRef.current?.focus({ preventScroll: true }); }, []);
   useEffect(() => {
@@ -275,7 +279,7 @@ export function UndoStrip({ message, onUndo, onExpire, timeout = 10_000 }) {
     return () => clearTimeout(timer);
   }, [paused, timeout]);
   return (
-    <div className="undo-strip" role="status" onFocus={() => setPaused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(false); }} onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}>
+    <div className="undo-strip" role="status" onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
       <span id={messageId}>{message}</span>
       <button ref={undoRef} className="button secondary" onClick={onUndo} aria-describedby={messageId} type="button"><Undo2 size={15} /> Undo</button>
     </div>
