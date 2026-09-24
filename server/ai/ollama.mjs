@@ -956,7 +956,10 @@ const prepareFinalAnswer = ({ draft, request, messages, evidenceSources, require
     if (webEvidenceUnavailable) throw webSearchNoResultsError();
     throw error;
   }
-  return { outputText: webEvidenceUnavailable ? `${WEB_EVIDENCE_UNAVAILABLE_NOTICE}${outputText}` : outputText };
+  // The notice ends with a blank line, so leading indentation in the draft
+  // would turn its first paragraph (and its citations) into an indented code
+  // block. The rewritten text is released as a whole, so trimming is safe.
+  return { outputText: webEvidenceUnavailable ? `${WEB_EVIDENCE_UNAVAILABLE_NOTICE}${outputText.trimStart()}` : outputText };
 };
 
 export const createOllamaResponse = async ({ request, config, fetchImpl = fetch, requestId, signal }) => {
@@ -1208,8 +1211,10 @@ export const createOllamaStreamingResponse = async ({
         && !requiresCurriculumValidation;
       const bufferedParts = [];
       // Even live prose holds its opening characters until the first
-      // non-whitespace one shows it is not a bare JSON document, so that
-      // format failure can still be replaced instead of shown token by token.
+      // non-whitespace one shows it is not a bare JSON object, so that format
+      // failure can still be replaced instead of shown token by token. Only
+      // "{" is held: "[" commonly opens ordinary prose (a Markdown link), which
+      // must keep streaming and keep its visible partial on a length stop.
       let liveMode = streamImmediately ? "pending" : "buffered";
       const payload = await ollamaChatStream({
         body,
@@ -1226,7 +1231,7 @@ export const createOllamaStreamingResponse = async ({
           if (liveMode !== "pending") return;
           const opening = bufferedParts.join("").trimStart();
           if (!opening) return;
-          if (opening[0] === "{" || opening[0] === "[") {
+          if (opening[0] === "{") {
             liveMode = "held";
             return;
           }

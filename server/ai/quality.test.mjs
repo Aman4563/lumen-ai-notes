@@ -204,6 +204,18 @@ for (const stream of TRANSPORTS) {
     }
   });
 
+  test(`${label(stream)}: an indented library-only draft cannot become a code block under the notice`, async () => {
+    const { result, error, deltas } = await run({
+      stream,
+      runConfig: webConfig,
+      request: webRequest,
+      replies: [{ toolQuery: "latest release features this month" }, "\n    Validation data selects hyperparameters [S1]."],
+    });
+    assert.equal(error, null, error?.message);
+    assert.equal(result.outputText, `${WEB_EVIDENCE_UNAVAILABLE_NOTICE}Validation data selects hyperparameters [S1].`);
+    if (stream) assert.equal(deltas.join(""), result.outputText);
+  });
+
   test(`${label(stream)}: relevance-filtered web results degrade the same way as an empty search`, async () => {
     const { result, error } = await run({
       stream,
@@ -365,6 +377,68 @@ test("source-free live prose still streams before the terminal event", async () 
   assert.equal(streamedEarly, true, "the JSON guard must not buffer ordinary source-free prose");
   assert.deepEqual(deltas, ["  Least ", "squares ", "fits lines."]);
   assert.equal(result.outputText, deltas.join(""));
+});
+
+test("source-free live prose that opens with a Markdown link still streams live", async () => {
+  const request = { ...baseRequest, context: "", contextCitations: [], documentTitle: "" };
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const deltas = [];
+  const resultPromise = createOllamaStreamingResponse({
+    request,
+    config,
+    requestId: "live-link-prose",
+    fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        const line = (value) => controller.enqueue(new TextEncoder().encode(`${JSON.stringify(value)}\n`));
+        line({ model: "test-model", done: false, message: { role: "assistant", content: "[Least squares](https://example.org/ols) " } });
+        gate.then(() => {
+          line({ model: "test-model", done: true, done_reason: "stop", message: { role: "assistant", content: "fits lines." } });
+          controller.close();
+        });
+      },
+    }), { headers: { "Content-Type": "application/x-ndjson" } }),
+    onDelta: (text) => deltas.push(text),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const streamedEarly = deltas.length === 1;
+  release();
+  const result = await resultPromise;
+  assert.equal(streamedEarly, true, "only an opening '{' is held; '[' opens ordinary Markdown");
+  assert.equal(result.outputText, "[Least squares](https://example.org/ols) fits lines.");
+  assert.equal(deltas.join(""), result.outputText);
+});
+
+test("a length-stopped source-free answer that opens with a link keeps its visible partial", async () => {
+  const request = { ...baseRequest, context: "", contextCitations: [], documentTitle: "" };
+  const bodies = [];
+  const deltas = [];
+  const error = await createOllamaStreamingResponse({
+    request,
+    config,
+    requestId: "live-link-length",
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(`${[
+        JSON.stringify({ model: "test-model", done: false, message: { role: "assistant", content: "[Least squares](https://example.org/ols) " } }),
+        JSON.stringify({ model: "test-model", done: false, message: { role: "assistant", content: "minimizes" } }),
+        JSON.stringify({ model: "test-model", done: true, done_reason: "length", message: { role: "assistant", content: "" } }),
+      ].join("\n")}\n`, { headers: { "Content-Type": "application/x-ndjson" } });
+    },
+    onDelta: (text) => deltas.push(text),
+  }).then(() => null, (caught) => caught);
+  assert.equal(error?.code, "AI_INCOMPLETE_RESPONSE");
+  assert.equal(bodies.length, 1, "live text cannot be replaced by a regeneration");
+  assert.deepEqual(deltas, ["[Least squares](https://example.org/ols) ", "minimizes"], "the learner keeps the partial that was already streamed");
+});
+
+test("a bare JSON array that streamed live still fails typed instead of completing", async () => {
+  const request = { ...baseRequest, context: "", contextCitations: [], documentTitle: "" };
+  const { result, error, bodies, deltas } = await run({ stream: true, request, replies: [["[\"bias\", ", "\"variance\"]"]] });
+  assert.equal(result, null);
+  assert.equal(error?.code, "AI_CONTRACT_ERROR", "the browser discards a partial that failed this validation");
+  assert.equal(bodies.length, 1, "streamed text cannot be replaced by a regeneration");
+  assert.equal(deltas.join(""), "[\"bias\", \"variance\"]");
 });
 
 // ---------------------------------------------------------------------------
