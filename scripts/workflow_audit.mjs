@@ -217,6 +217,8 @@ try {
     .filter((button) => { const box = button.getBoundingClientRect(); return box.left < 0 || box.right > innerWidth; })
     .map((button) => button.textContent.trim()));
   assert.deepEqual(hiddenTools, [], "lecture tools overflow the phone screen");
+  // Issue #52: a lecture opened by link (not a card) still counts as opened.
+  await waitForStored(page, "profile", (stored) => stored.recent?.[0] === documentId, "a lecture opened by link never reached Recent");
 
   await page.click('button[aria-label="Open menu"]');
   await page.waitForFunction(() => document.querySelector(".app-sidebar")?.classList.contains("open"));
