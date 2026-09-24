@@ -6722,9 +6722,12 @@ input[type="range"] {
     transform: none;
   }
 
-  .teach-header-actions > span,
-  .teach-header-actions select,
-  .teach-header-actions button:first-of-type { display: none; }
+  /* Phone header: title on one row, then timer, section picker, and the
+     presenter buttons on a second row (the picker replaces 20+ swipes). */
+  .teach-mode .teach-header { flex-wrap: wrap; row-gap: 6px; }
+  .teach-mode .teach-header > div:first-child { flex: 1 1 100%; }
+  .teach-mode .teach-header > div.teach-header-actions { flex: 1 1 100%; justify-content: flex-end; }
+  .teach-header-actions select { flex: 1 1 auto; min-width: 0; max-width: none; }
 
   .update-banner {
     right: 9px;
@@ -7070,6 +7073,11 @@ input[type="range"] {
 }
 
 .annotation-dialog-close { position: absolute; top: 15px; right: 15px; }
+
+/* The dialog role lives on this frame (ARIA does not allow it on <form>);
+   it centers the form on wider screens and passes stray taps to the scrim. */
+.annotation-dialog-frame { position: absolute; inset: 0; display: grid; place-items: center; padding: 14px; pointer-events: none; }
+.annotation-dialog-frame > .annotation-dialog { pointer-events: auto; }
 .annotation-dialog h2 { margin: 8px 0 13px; font-family: "Manrope", sans-serif; font-size: 1.55rem; letter-spacing: -0.045em; }
 .annotation-dialog blockquote { max-height: 150px; overflow-y: auto; margin: 0; padding: 13px 15px; border-left: 4px solid var(--gold); border-radius: 0 10px 10px 0; color: var(--ink-soft); background: var(--gold-soft); font: 0.82rem/1.6 Georgia, serif; }
 .annotation-dialog label { display: grid; gap: 7px; margin-top: 14px; color: var(--ink-soft); font-size: 0.71rem; font-weight: 750; }
@@ -7128,6 +7136,7 @@ input[type="range"] {
 }
 
 @media (max-width: 740px) {
+  .annotation-dialog-frame { padding: 0; }
   .annotation-dialog { position: absolute; bottom: 0; width: 100%; max-height: calc(100dvh - 15px); padding: 22px 17px calc(22px + env(safe-area-inset-bottom)); border-radius: 23px 23px 0 0; }
   .annotation-color-options { grid-template-columns: 1fr 1fr; }
   .notebook-annotation-grid { grid-template-columns: 1fr; }
