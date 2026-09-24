@@ -60,6 +60,7 @@ const downloadDirectory = await mkdtemp(join(tmpdir(), "lumen-workflow-downloads
 const runtimeErrors = [];
 let browser;
 let acceptDialogs = true;
+let nativeDialogs = 0;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const clickByText = async (page, selector, text) => {
@@ -131,7 +132,10 @@ try {
   page.on("console", (message) => {
     if (message.type() === "error" && !message.text().includes("Failed to load resource")) runtimeErrors.push(message.text());
   });
-  page.on("dialog", (dialog) => acceptDialogs ? dialog.accept() : dialog.dismiss());
+  page.on("dialog", (dialog) => {
+    nativeDialogs += 1;
+    return acceptDialogs ? dialog.accept() : dialog.dismiss();
+  });
 
   const client = await page.createCDPSession();
   await client.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDirectory, eventsEnabled: true });
@@ -139,6 +143,13 @@ try {
   const documentId = "notes/part-01-foundations/01-ai-ml-mental-model.md";
   await page.goto(`${baseUrl}#/read/${encodeURIComponent(documentId)}`, { waitUntil: "networkidle2", timeout: 30_000 });
   await page.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+  // READER-13: every lecture tool is on screen on a phone; none hides in an
+  // unmarked sideways scroller.
+  const hiddenTools = await page.$$eval(".document-tools button", (buttons) => buttons
+    .filter((button) => button.getClientRects().length)
+    .filter((button) => { const box = button.getBoundingClientRect(); return box.left < 0 || box.right > innerWidth; })
+    .map((button) => button.textContent.trim()));
+  assert.deepEqual(hiddenTools, [], "lecture tools overflow the phone screen");
 
   await page.click('button[aria-label="Open menu"]');
   await page.waitForFunction(() => document.querySelector(".app-sidebar")?.classList.contains("open"));
@@ -282,16 +293,67 @@ try {
 
   await page.$eval(".reader-scroll", (node) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * 0.62; node.dispatchEvent(new Event("scroll")); });
   await delay(700);
+  // READER-6: the minutes-left estimate is visible, not under the toolbar.
+  const timeLeft = await page.$eval(".reading-time-left", (node) => {
+    const box = node.getBoundingClientRect();
+    return { text: node.textContent, visible: node.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)) };
+  }).catch(() => null);
+  assert.ok(timeLeft?.visible && /min/u.test(timeLeft.text), `the minutes-left estimate is not visible: ${JSON.stringify(timeLeft)}`);
+  // A text-size change keeps the passage being read in place instead of
+  // jumping to the same scroll fraction of a longer article.
+  const readingAnchor = await page.evaluate(() => {
+    const top = document.querySelector(".reader-scroll").getBoundingClientRect().top;
+    const block = [...document.querySelector(".markdown-body").children].find((node) => node.getBoundingClientRect().bottom > top + 1);
+    block.dataset.auditAnchor = "true";
+    return Math.round(block.getBoundingClientRect().top - top);
+  });
+  await page.$eval('button[aria-label="Reading appearance"]', (button) => button.click());
+  await page.waitForSelector(".display-popover");
+  await page.$eval('.display-popover input[type="range"]', (input) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "1.3");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await delay(400);
+  const anchorAfterResize = await page.evaluate(() => Math.round(document.querySelector("[data-audit-anchor]").getBoundingClientRect().top - document.querySelector(".reader-scroll").getBoundingClientRect().top));
+  assert.ok(Math.abs(anchorAfterResize - readingAnchor) <= 24, `a text-size change moved the reading position (${readingAnchor}px to ${anchorAfterResize}px)`);
+  await page.$eval('.display-popover input[type="range"]', (input) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "1");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".display-popover", { hidden: true });
 
   await clickByText(page, ".document-tools button", "Edit copy");
   await page.waitForSelector(".markdown-editor");
   await page.$eval(".markdown-editor", (textarea) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
-    setter.call(textarea, `${textarea.value}\n\n## Production audit marker\n\nThis edit must persist across a complete reload.\n`);
+    setter.call(textarea, `${textarea.value}\n\n## Production audit marker\n\nThis edit must persist across a complete reload. Its weights $w^T x$ render as math.\n`);
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await clickByText(page, ".editor-toolbar button", "Save");
   await page.waitForFunction(() => document.querySelector(".markdown-body")?.innerText.includes("Production audit marker"));
+  // READER-22: TeX in an edited copy renders through the sanitized KaTeX path.
+  await page.waitForSelector(".markdown-body .katex", { timeout: 10_000 })
+    .catch(() => assert.fail("TeX in an edited copy did not render as math"));
+
+  // READER-9: Reset asks inside the app before discarding anything, and
+  // Keep editing leaves the unsaved draft untouched.
+  await clickByText(page, ".document-tools button", "Edit copy");
+  await page.waitForSelector(".markdown-editor");
+  await page.$eval(".markdown-editor", (textarea) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(textarea, `${textarea.value}\nUnsaved reset guard marker.\n`);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const dialogsBeforeReset = nativeDialogs;
+  await clickByText(page, ".editor-toolbar button", "Reset");
+  await page.waitForSelector(".reset-confirm");
+  assert.equal(nativeDialogs, dialogsBeforeReset, "Reset used a native dialog instead of the in-app confirmation");
+  assert.match(await page.$eval(".reset-confirm", (node) => node.textContent), /unsaved changes/u, "the reset confirmation did not mention the unsaved changes it keeps");
+  await clickByText(page, ".reset-confirm button", "Keep editing");
+  await page.waitForSelector(".reset-confirm", { hidden: true });
+  assert.ok((await page.$eval(".markdown-editor", (node) => node.value)).includes("Unsaved reset guard marker."), "cancelling Reset lost the unsaved draft");
+  await clickByText(page, ".document-tools button", "Close editor");
+  await page.waitForSelector(".markdown-editor", { hidden: true });
 
   await clickByText(page, ".document-tools button", "Teach");
   await page.waitForSelector(".teach-mode");
@@ -732,6 +794,13 @@ try {
   await page.waitForSelector(".editor-toolbar");
   await page.waitForFunction(() => [...document.querySelectorAll(".editor-toolbar button")].some((button) => button.textContent.includes("History (1)")), { timeout: 5_000 })
     .catch(() => assert.fail("saving over existing content did not create a revision"));
+  await clickByText(page, ".editor-toolbar button", "History (1)");
+  await page.waitForSelector(".revision-dialog");
+  // READER-10: the history dialog is modal (focus inside, background inert)
+  // and closes on Escape.
+  assert.equal(await page.evaluate(() => document.querySelector(".revision-dialog").contains(document.activeElement) && document.querySelector(".reader-scroll").inert), true, "revision history did not take focus or make the reader inert");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".revision-dialog", { hidden: true });
   await clickByText(page, ".editor-toolbar button", "History (1)");
   await page.waitForSelector(".revision-dialog");
   await page.waitForFunction(() => [...document.querySelectorAll(".revision-dialog .diff-line.diff-removed")].some((line) => line.textContent.includes("Start writing here")), { timeout: 5_000 })
