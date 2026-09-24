@@ -46,7 +46,7 @@ The default response profiles are:
 
 | Profile | Default output ceiling | Behavior |
 |---|---:|---|
-| Fast | 900 tokens | Short, direct answer; provider thinking off. |
+| Fast | 900 tokens | Short, direct answer: prose is asked for about 150 words unless the learner asks for more; provider thinking off. |
 | Balanced | 1,800 tokens | Default depth/speed balance; provider thinking off. |
 | Deep | 3,200 tokens | Longer answer; supported local-model thinking may run privately. |
 
@@ -169,18 +169,30 @@ so the opt-in cannot be silently ignored. If a model-planned query returns no
 usable evidence and one disclosed round remains, Lumen retries once with that
 bounded learner-question query before failing closed. Feature-specific queries
 also require majority overlap across their distinctive terms so a generic product
-homepage cannot become evidence for an unrelated feature. A buffered grounded
-draft that fails citation syntax receives at most one local regeneration with
-explicit citation-placement guidance; a second failure remains an error. The phone flow shows the exact single
+homepage cannot become evidence for an unrelated feature. Before a buffered
+answer that must cite supplied evidence is validated, labels the model did
+write in a grouped or spaced form (`[S1, S2]`, `[S 1]`) are normalized to
+`[S1] [S2]`; the server never adds a label to text that has none, never
+changes case, and never touches code. A buffered grounded draft
+that still fails its citation check receives at most one local regeneration with
+explicit citation-placement guidance; a second failure remains an error. A prose
+answer that arrives as a bare JSON document gets one regeneration as Markdown,
+then fails with `AI_CONTRACT_ERROR`. The phone flow shows the exact single
 query before sending it. In Library-first mode, the browser sends
 `webSearch: true` only when the learner enabled fallback **and**
 local retrieval recommends it. A strong local match prevents web egress even
 when permission is checked. Public engines can rate-limit, return CAPTCHAs, omit
 recent sources, or supply irrelevant/misleading snippets. Reranking cannot repair
 evidence that SearXNG did not return, and Lumen does not fetch linked pages to
-verify snippets. Lumen therefore fails closed when evidence is empty or an
-answer lacks a valid `[W#]` citation, but this remains best-effort retrieval, not
-a guaranteed current-facts service. Review engine terms, rate limits, and privacy
+verify snippets. When the search returns no usable evidence but library passages
+were attached, a Markdown answer is generated from those passages only: it must
+cite a supplied `[S#]`, may not contain any `[W#]`, starts with a visible
+"Current-web evidence unavailable" notice, and reports `webSearch.used: false`
+with the rounds actually searched. Lumen still fails closed with
+`WEB_SEARCH_NO_RESULTS` when there is no library evidence, for structured tasks,
+or when the library-only answer fails its citation check twice, and whenever a
+searched answer lacks a valid `[W#]` citation. This remains best-effort
+retrieval, not a guaranteed current-facts service. Review engine terms, rate limits, and privacy
 settings before enabling them.
 
 The local-model disclosure acknowledgement is remembered only in the current
@@ -389,7 +401,17 @@ treating a different deployment as reproducible.
 ## Supported contracts
 
 Tasks: `tutor`, `explain`, `socratic`, `quiz`, `flashcards`, `interview`,
-`summarize`, `study_plan`, and `answer_feedback`.
+`summarize`, `study_plan`, `answer_feedback`, and `code_review`.
+
+Task instructions describe the expected answer shape rather than giving a
+literal template, because the small local model copies examples verbatim.
+A Socratic turn that follows a tutor question first assesses the learner's
+answer in one or two sentences (correct, partly correct, or a misconception),
+then asks exactly one new question that cites the supplied source motivating
+it. Code review labels each finding as a Defect (traced to a concrete failing
+input) or a Convention/alternative, and does not state a library default unless
+certain. Grounded prose is asked to end every source-backed paragraph or list
+item with its `[S#]` label.
 
 Every request chooses `responseProfile: "fast" | "balanced" | "deep"` (Balanced
 is the default) and may provide a smaller `maxOutputTokens`. It may also carry
@@ -411,8 +433,9 @@ when validated `webSearch: true` consent is present. Tool results are treated as
 untrusted evidence and returned as bounded public source metadata. If the model
 skips the tool before any search round, Lumen performs the bounded deterministic
 approved-question fallback described above. The request still fails closed if
-search yields no usable snippet, completion is not terminal, or the answer lacks
-a valid `[W#]`/URL citation to returned evidence.
+completion is not terminal or the answer lacks a valid `[W#]`/URL citation to
+returned evidence. If search yields no usable snippet, it fails closed unless
+library evidence can answer a Markdown request, as described above.
 
 Markdown answers must use ordinary GFM and standard `$...$` / `$$...$$` math
 delimiters. The shared browser renderer supports headings, emphasis, links,

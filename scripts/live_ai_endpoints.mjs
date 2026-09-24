@@ -33,16 +33,29 @@ for (const responseProfile of profiles) {
     for (const transport of responseProfile === "balanced" ? ["json", "stream"] : [responseFormat === "structured" ? "json" : "stream"]) {
       const started = Date.now();
       let deltas = "";
+      // Streamed phases reveal how often the first grounded draft needed a
+      // regeneration (issue #58); JSON transport cannot observe them.
+      const phases = [];
       try {
         const payload = { contract: AI_REQUEST_CONTRACT_ID, task, prompt: question, context, contextCitations: [1], documentTitle: "Evaluation basics", difficulty: "intermediate", history: [], webSearch: false, responseProfile, responseFormat };
-        const response = await (transport === "stream" ? requestAiStream : requestAi)(payload, { baseUrl, timeoutMs: config.limits.clientTimeoutMs, onDelta: (text) => { deltas += text; } });
+        const response = await (transport === "stream" ? requestAiStream : requestAi)(payload, { baseUrl, timeoutMs: config.limits.clientTimeoutMs, onDelta: (text) => { deltas += text; }, onStatus: (message) => phases.push(message) });
         assert.equal(response.status, "completed");
         assert.ok(response.outputText.trim().length > 20, "No usable answer reached the client");
         assert.match(response.outputText, /\[S1\]/);
         assert.equal(response.webSearch.used, false);
         if (responseFormat === "structured") assert.equal(validateStructuredAiResult(task, response.data), true, "Invalid interactive learning result");
-        else if (transport === "stream") assert.equal(deltas, response.outputText, "The visible stream differs from the saved answer");
-        results.push({ task, responseProfile, transport, ok: true, ms: Date.now() - started, outputTokens: response.usage?.outputTokens });
+        else {
+          assert.doesNotMatch(response.outputText.trim(), /^\{\s*"/, "A prose answer arrived as a JSON object");
+          if (transport === "stream") assert.equal(deltas, response.outputText, "The visible stream differs from the saved answer");
+        }
+        if (task === "socratic") {
+          assert.doesNotMatch(response.outputText, /^\s*(\*\*)?your question/i, "The Socratic reply copied a literal template prefix");
+          assert.match(response.outputText, /\?/, "The Socratic reply did not ask a question");
+        }
+        results.push({
+          task, responseProfile, transport, ok: true, ms: Date.now() - started, outputTokens: response.usage?.outputTokens, characters: response.outputText.length,
+          ...(transport === "stream" ? { regenerations: phases.filter((message) => /citation check|raw JSON|reached its limit/i.test(message)).length } : {}),
+        });
       } catch (error) {
         results.push({ task, responseProfile, transport, ok: false, ms: Date.now() - started, code: error.code, error: error.message });
       }

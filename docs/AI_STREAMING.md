@@ -50,6 +50,19 @@ rejects missing, duplicate, out-of-order, oversized, or post-terminal events.
 Structured tasks do not expose partial JSON; they emit progress and a fully
 validated final object.
 
+`webSearch.used` is `true` only when the answer is backed by retained web
+evidence (`sources` is non-empty). `requested: true, used: false, rounds > 0`
+means the authorized search ran but returned nothing usable, and the Markdown
+answer is library-only. That answer's `outputText` starts with this server-written
+notice, which contains no citation label:
+
+```markdown
+> **Current-web evidence unavailable.** The approved web search returned no usable public results, so this answer uses only your library sources and may not reflect the latest information.
+```
+
+A client that shows a web-fallback status should treat that combination as a
+failed fallback, not as "not needed" and never as "used".
+
 `requestAiStream(payload, options)` and `aiClient.requestStream(...)` resolve to
 the same final envelope as `requestAi`. `onDelta(text, event)` receives answer
 text. `onEvent(event)` receives metadata; when both callbacks are supplied,
@@ -62,7 +75,7 @@ Profiles choose a server-owned default when `maxOutputTokens` is omitted:
 
 | Profile | Default output cap | Ollama thinking | Intended use |
 | --- | ---: | --- | --- |
-| `fast` | 900 tokens | Off | Quick clarification and mobile follow-up |
+| `fast` | 900 tokens | Off | Quick clarification and mobile follow-up; prose is asked for about 150 words unless the learner wants more |
 | `balanced` | 1,800 tokens | Off | Default learning answer |
 | `deep` | 3,200 tokens | Bounded first pass, then direct completion if needed | Opt-in difficult analysis |
 
@@ -122,17 +135,32 @@ content/tool calls to be accumulated before a follow-up tool turn:
 
 Tool-capable intermediate turns are buffered because they may contain
 provisional prose before a search call. Source-free tool-free prose streams as
-it is generated. Prose backed by library or web evidence remains buffered until
+it is generated, except that its opening is held until the first non-whitespace
+character: an answer that opens with `{` or `[` stays buffered so a bare JSON
+document can be discarded instead of shown. Prose backed by library or web
+evidence remains buffered until
 terminal completion and citation validation, while phase/heartbeat events keep
-the request observable and cancellable. This integrity boundary prevents an
+the request observable and cancellable. Buffered text is normally released in
+the provider's original chunks. When the server changes the validated text (the
+empty-web notice, a normalized citation label, or a removed template prefix), it
+releases the final text instead, in chunks of at most 16,384 characters, so the
+deltas still equal `outputText` exactly. This integrity boundary prevents an
 unsupported partial draft from being shown and retained before Lumen can reject
 it. When an authorized Qwen turn skips its required search tool, Lumen
 discards the provisional prose, searches a bounded deterministic form of the
 approved learner question, and continues with the resulting evidence. Search
 results remain sanitized, canonically deduplicated, bounded, and ranked locally.
 If a model-planned query is empty and one configured round remains, Lumen uses
-that round for the bounded learner-question query before failing closed;
-Lumen does not fetch result pages.
+that round for the bounded learner-question query. When every round is empty,
+a Markdown request that carries library evidence is answered from that
+evidence with the notice above; the answer must cite a supplied `[S#]` and
+contains no `[W#]`. A request without library evidence, and any structured
+request, still fails closed with `WEB_SEARCH_NO_RESULTS`. Lumen does not fetch
+result pages.
+
+A prose task whose final text is a bare JSON object or array is never
+released. The server discards it and asks once for Markdown prose; a second
+JSON draft fails with `AI_CONTRACT_ERROR`.
 
 ## Markdown and diagrams
 
@@ -162,6 +190,6 @@ AI_STREAM_MAX_RESPONSE_BYTES=4194304
 Run focused coverage with:
 
 ```sh
-node --test server/ai/streaming.test.mjs src/lib/aiClient.test.mjs src/lib/aiRequestBudget.test.mjs src/lib/mermaidDiagrams.test.mjs
+node --test server/ai/streaming.test.mjs server/ai/quality.test.mjs src/lib/aiClient.test.mjs src/lib/aiRequestBudget.test.mjs src/lib/mermaidDiagrams.test.mjs
 npm run audit:mermaid
 ```
