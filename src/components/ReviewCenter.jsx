@@ -869,7 +869,9 @@ export default function ReviewCenter({
           : "You are caught up: nothing is due right now.";
   const forecastTotal = analytics.forecast.reduce((sum, value) => sum + value, 0);
   const forecastMax = Math.max(...analytics.forecast, 1);
-  const forecastDay = (index) => new Date(queueNow.getTime() + index * 86_400_000);
+  // Calendar arithmetic (not +24h) keeps the weekday labels on the same
+  // local days as the calendar-day buckets across DST changes.
+  const forecastDay = (index) => { const day = new Date(queueNow.getTime()); day.setHours(12, 0, 0, 0); day.setDate(day.getDate() + index); return day; };
   const forecastLabel = (index) => (index === 0 ? "Today" : index === 1 ? "Tomorrow" : forecastDay(index).toLocaleDateString(undefined, { weekday: "long" }));
   const forecastTick = (index) => forecastDay(index).toLocaleDateString(undefined, { weekday: "narrow" });
   const trendHasData = analytics.retentionTrend.some((week) => week.percent !== null);

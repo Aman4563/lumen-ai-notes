@@ -2661,7 +2661,7 @@ input[type="range"] {
 .review-analytics .forecast-ticks > span.is-today { color: var(--ink); font-weight: 850; }
 .review-analytics .forecast-ticks--ends { justify-content: space-between; }
 .review-analytics .forecast-ticks--ends > span { flex: 0 0 auto; }
-.forecast-empty { max-width: 200px; margin: 0; color: var(--ink-faint); font-size: 0.66rem; line-height: 1.45; text-align: right; }
+.forecast-empty { max-width: 200px; margin: 0; color: var(--ink-soft); font-size: 0.68rem; line-height: 1.45; text-align: right; }
 
 .review-settings-strip {
   display: flex;
