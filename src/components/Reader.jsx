@@ -1001,7 +1001,7 @@ export default function Reader({
 
       <div className="reader-scroll" ref={scrollRef} onScroll={handleScroll}>
         <div className={`reader-layout width-${settings.contentWidth}${!narrow && !drawer ? " panel-collapsed" : ""}`} style={{ "--font-scale": settings.fontScale, "--line-height": settings.lineHeight }}>
-          <main className="reader-main">
+          <div className="reader-main">
             <div className="document-meta">
               <div className="part-pill">{document.partNumber > 0 ? `Part ${document.partNumber}` : "Guide"}</div>
               <span>{document.minutes} min read</span>
@@ -1056,7 +1056,7 @@ export default function Reader({
               {previousDocument ? <button onClick={() => onOpenDocument(previousDocument.id)} type="button"><ChevronLeft size={20} /><span><small>Previous</small>{previousDocument.title}</span></button> : <span />}
               {nextDocument ? <button className="next" onClick={() => onOpenDocument(nextDocument.id)} type="button"><span><small>Next</small>{nextDocument.title}</span><ChevronRight size={20} /></button> : <span />}
             </nav>
-          </main>
+          </div>
 
           <aside
             ref={panelRef}

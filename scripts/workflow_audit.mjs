@@ -639,7 +639,7 @@ try {
   await page.mouse.down();
   await page.mouse.up();
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Drag across the board"));
-  assert.equal(await page.$eval(".toast", (node) => node.getAttribute("role")), "status", "tap-rejection toast is not exposed as a status live region");
+  assert.ok((await page.$eval(".toast-live[role=status]", (node) => node.textContent)).includes("Drag across the board"), "the tap-rejection toast was not announced through the persistent status region");
   assert.ok((await page.$eval(".board-hint", (node) => node.textContent)).includes("2 objects"), "a rejected zero-length tap changed the object count");
 
   assert.equal(await page.$eval('button[aria-label="Redo"]', (button) => button.disabled), true, "Redo was enabled before any undo");

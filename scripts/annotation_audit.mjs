@@ -367,7 +367,8 @@ try {
   assert.ok((await page.$eval(".notebook-annotation-card blockquote", (node) => node.textContent)).includes(relinkTarget), "the notebook card does not show the restored quote");
   await page.$eval('.notebook-annotation-card button[aria-label="Copy highlight"]', (button) => button.click());
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Highlight copied"));
-  assert.equal(await page.$eval(".toast", (node) => node.getAttribute("role")), "status", "the copy toast is not a status live region");
+  // Toasts announce through the shell's persistent status region, not the visual toast.
+  assert.ok((await page.$eval(".toast-live[role=status]", (node) => node.textContent)).includes("Highlight copied"), "the copy toast was not announced through the persistent status region");
   assert.ok((await page.evaluate(() => window.__lumenCopiedText || "")).includes(relinkTarget), "the copied highlight text did not reach the clipboard");
   await page.$eval('button[aria-label="Export the listed highlights as Markdown"]', (button) => button.click());
   const exportPath = await waitForDownload((name) => name.startsWith("lumen-highlights-") && name.endsWith(".md"), "the highlights Markdown export was not downloaded");
