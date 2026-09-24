@@ -194,6 +194,16 @@ export const unionBounds = (list) => list.reduce((union, bounds) => union
   : { ...bounds }, null);
 
 /**
+ * The extent a translation must keep on the page: the rendered (rotated)
+ * footprint and the stored, unrotated points. Stored points are clamped to
+ * the page, so a rotated object whose footprint still fits could otherwise
+ * be pushed until its raw points clamp and it squashes (BOARD-5).
+ */
+export const translationBounds = (object, size, measure = approximateMeasure) => object.rotation
+  ? unionBounds([objectBounds(object, size, measure), rotatedBounds(object, size, measure)])
+  : objectBounds(object, size, measure);
+
+/**
  * Limits a translation so the moving group stays on the page (BOARD-5):
  * the whole group moves by one clamped delta, never point by point, so an
  * edge can stop a move but can never squash an object. A group that already

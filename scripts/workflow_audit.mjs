@@ -857,6 +857,25 @@ try {
     }
     assert.ok(rotatedSvg, `no exported SVG carried the rotation transform within ${Date.now() - svgExportStarted}ms`);
     assert.match(rotatedSvg, /transform="rotate\((8[5-9]|9[0-5])\./, "the exported rotation must be near 90 degrees");
+    // BOARD-5 for rotated objects: the upright footprint would let the bar
+    // travel past the edge, but its stored points must never be clamped into
+    // a narrower shape. Nudge right into the edge, then back past the start.
+    {
+      const [start, end] = rotatedBoard.pages[1].objects[2].points;
+      const storedWidth = end.x - start.x;
+      await page.focus(".board-canvas");
+      for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft"]) {
+        await page.keyboard.down("Shift");
+        await page.keyboard.press(key);
+        await page.keyboard.up("Shift");
+      }
+      const nudged = await waitForStored(page, boardKey, (stored) => {
+        const [first, last] = stored.pages[1].objects[2].points;
+        return Math.abs(first.x - (start.x - (0.25 - Math.min(0.25, 1 - end.x)))) < 0.004 || last.x - first.x < storedWidth - 1e-6;
+      }, "nudging the rotated rectangle out and back did not persist");
+      const [first, last] = nudged.pages[1].objects[2].points;
+      assert.ok(Math.abs((last.x - first.x) - storedWidth) < 1e-6, `edge nudges squashed the rotated rectangle's stored width from ${storedWidth} to ${last.x - first.x}`);
+    }
     // Clean up: delete the test rectangle so later object-count pins hold.
     await page.keyboard.press("Delete");
     await waitForStored(page, boardKey, (stored) => stored.pages[1].objects.length === 2, "deleting the rotation-test rectangle did not persist");

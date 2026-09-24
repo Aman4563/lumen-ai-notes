@@ -62,6 +62,7 @@ import {
   stickyLayout,
   textLayout,
   translatePoints,
+  translationBounds,
   unionBounds,
 } from "../lib/boardGeometry.js";
 import { BOARD_SHORTCUTS } from "../lib/boardShortcuts.js";
@@ -1033,8 +1034,8 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
           ids: movable.map((object) => object.id),
           start: point,
           anchorMin: { x: anchorBounds.minX, y: anchorBounds.minY },
-          // The whole group's rendered extent limits the move (BOARD-5).
-          limits: unionBounds(movable.map((object) => rotatedBounds(object, size, measureText))),
+          // The whole group's extent limits the move (BOARD-5).
+          limits: translationLimits(movable, size),
           originals: new Map(movable.map((object) => [object.id, object.points])),
           before: boardRef.current,
           moved: false,
@@ -1384,6 +1385,9 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     notify?.(`${removing.size === 1 ? "Selected object" : `${removing.size} objects`} deleted. Undo is available.`);
   };
   const groupBounds = (list, size) => unionBounds(list.map((object) => rotatedBounds(object, size, measureText)));
+  // Translations keep rotated objects' stored points on the page too, so
+  // they can never be clamped into a squashed shape (BOARD-5).
+  const translationLimits = (list, size) => unionBounds(list.map((object) => translationBounds(object, size, measureText)));
   // Duplicates and pastes shift as one group and flip direction at an edge
   // instead of clamping point by point (BOARD-5).
   const cloneWithDelta = (object, delta) => ({
@@ -1394,7 +1398,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   });
   const duplicateSelected = () => {
     if (!selectedObjects.length) return;
-    const delta = placementOffset(groupBounds(selectedObjects, readGeometry().size), 0.025);
+    const delta = placementOffset(translationLimits(selectedObjects, readGeometry().size), 0.025);
     const duplicates = selectedObjects.map((object) => cloneWithDelta(object, delta));
     updateActiveObjects((current) => [...current, ...duplicates]);
     setSelectedIds(duplicates.map((object) => object.id));
@@ -1438,7 +1442,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   };
   const pasteClipboard = () => {
     if (!clipboardRef.current.length) return;
-    const delta = placementOffset(groupBounds(clipboardRef.current, readGeometry().size), 0.03);
+    const delta = placementOffset(translationLimits(clipboardRef.current, readGeometry().size), 0.03);
     const pasted = clipboardRef.current.map((object) => cloneWithDelta(object, delta));
     updateActiveObjects((current) => [...current, ...pasted]);
     setSelectedIds(pasted.map((object) => object.id));
@@ -1457,7 +1461,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   const nudgeSelected = (deltaX, deltaY) => {
     const moving = selectedObjects.filter((object) => !object.locked);
     if (!moving.length) return;
-    const delta = clampTranslation(groupBounds(moving, readGeometry().size), deltaX, deltaY);
+    const delta = clampTranslation(translationLimits(moving, readGeometry().size), deltaX, deltaY);
     if (!delta.x && !delta.y) return;
     const ids = new Set(moving.map((object) => object.id));
     updateActiveObjects((current) => current.map((object) => ids.has(object.id) ? { ...object, points: translatePoints(object.points, delta) } : object));

@@ -15,6 +15,7 @@ import {
   stickyLayout,
   textLayout,
   translatePoints,
+  translationBounds,
   unionBounds,
 } from "./boardGeometry.js";
 
@@ -65,6 +66,25 @@ test("edge moves clamp the group's delta and never squash an object (BOARD-5)", 
   const overhanging = { minX: -0.1, maxX: 0.5, minY: 0.2, maxY: 0.3 };
   assert.equal(clampTranslation(overhanging, -0.2, 0).x, 0, "an overhanging group cannot move further out");
   assert.equal(clampTranslation(overhanging, 0.2, 0).x, 0.2, "but may move back inward");
+});
+
+test("a rotated object near an edge moves without its stored points being clamped (BOARD-5)", () => {
+  // A wide bar turned upright: its footprint is narrow, but its stored,
+  // unrotated points still span 0.3 of the page and must stay on it.
+  const size = { width: 1006, height: 504 };
+  const bar = { tool: "rectangle", rotation: Math.PI / 2, points: [{ x: 0.55, y: 0.45 }, { x: 0.85, y: 0.55 }] };
+  assert.ok(rotatedBounds(bar, size).maxX < 0.8, "the upright footprint alone would allow the move");
+  let points = bar.points;
+  for (const step of [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05]) {
+    const delta = clampTranslation(translationBounds({ ...bar, points }, size), step, 0);
+    points = translatePoints(points, delta);
+    assert.ok(Math.abs((points[1].x - points[0].x) - 0.3) < 1e-9, "no stored point is clamped into a narrower shape");
+  }
+  assert.ok(Math.abs((points[1].x - points[0].x) - 0.3) < 1e-9, `six nudges out and six back kept the stored width (${points[1].x - points[0].x})`);
+
+  const offset = placementOffset(translationBounds({ ...bar, points: [{ x: 0.69, y: 0.45 }, { x: 0.99, y: 0.55 }] }, size), 0.025);
+  assert.equal(offset.x, -0.025, "a rotated duplicate at the edge flips left instead of squashing");
+  assert.deepEqual(translationBounds({ ...bar, rotation: 0 }, size), objectBounds(bar, size), "unrotated objects use their plain bounds");
 });
 
 test("duplicates flip their offset at an edge instead of clamping point by point", () => {
