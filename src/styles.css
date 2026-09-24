@@ -7537,6 +7537,7 @@ input[type="range"] {
   .reader-action-menu,
   .reader-action-scrim,
   .reader-side-panel,
+  .selection-toolbar,
   .toast,
   .fab { display: none !important; }
   body, .app-shell { background: #fff !important; color: #000 !important; }

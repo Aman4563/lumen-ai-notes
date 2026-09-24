@@ -617,6 +617,8 @@ try {
           ...(profile.personalNotes || {}),
           "notes/00-roadmap.md": "The zephyrine-quorum trick keeps optimizer updates stable during long study sessions.",
         };
+        // A saved reading place the note citation must keep (it scrolls no heading).
+        profile.readingPositions = { ...(profile.readingPositions || {}), "notes/00-roadmap.md": 0.5 };
         const put = store.put(profile, "profile");
         put.onerror = () => reject(put.error);
         put.onsuccess = () => resolve();
@@ -667,6 +669,10 @@ try {
     /zephyrine-quorum/i,
     "the focused editor did not contain the cited personal note",
   );
+  // The citation target skips the saved-position restore (TF-2); a note
+  // citation claims no scroll, so the lecture still opens at its saved place.
+  const noteLecturePlace = await noteScenario.page.$eval(".reader-scroll", (node) => node.scrollTop / Math.max(1, node.scrollHeight - node.clientHeight));
+  assert.ok(noteLecturePlace > 0.35 && noteLecturePlace < 0.65, `a personal-note citation dropped the saved reading place (at ${noteLecturePlace.toFixed(2)} of the lecture, saved 0.50)`);
   await noteScenario.page.close();
 
   // Pairing-protected servers (AI_AUTH=pairing) must gate generation behind

@@ -36,5 +36,8 @@ export const useRenderedMarkdown = (source) => {
     loadMathRenderer().then(() => { if (active) setMathReady(true); }).catch(() => {});
     return () => { active = false; };
   }, [needsMath]);
-  return useMemo(() => (needsMath && mathReady && mathRenderer ? mathRenderer(source) : renderMarkdown(source)), [mathReady, needsMath, source]);
+  // The renderer is shared: another reader surface may have loaded it while
+  // this one still showed plain Markdown, so use it whenever it exists.
+  // mathReady only forces the rerender when this hook's own load resolves.
+  return useMemo(() => (needsMath && mathRenderer ? mathRenderer(source) : renderMarkdown(source)), [mathReady, needsMath, source]); // eslint-disable-line react-hooks/exhaustive-deps
 };

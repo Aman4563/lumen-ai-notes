@@ -220,6 +220,17 @@ desktops in Paper, Night, and Contrast:
 - TeX in edited copies and uploads stayed raw. The reader now lazily loads the
   sanitized KaTeX path only for sources with TeX outside code.
 
+Review of those fixes reproduced three follow-up bugs, now fixed:
+
+- Export HTML printed every formula twice (the MathML and the unstyled KaTeX
+  HTML). The export now shows the MathML copy only.
+- A personal-note citation opened its lecture at the top instead of the saved
+  reading place (0.00 against a saved 0.50), because the citation skipped the
+  position restore without scrolling anywhere itself.
+- During the re-anchoring hold after a text-size change or citation, late
+  layout pulled Back to top, Find, outline, and narration jumps back to the old
+  passage (scrollTop 9,097 after Back to top). Those jumps now end the hold.
+
 Each fix has a regression check in the workflow, annotation, audio, control,
 responsive, AI UI, or unit suites. The citation check fails on the previous
 build: the cited heading was focused but 4,507 px below the viewport.

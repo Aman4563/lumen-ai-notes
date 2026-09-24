@@ -316,10 +316,34 @@ try {
   await delay(400);
   const anchorAfterResize = await page.evaluate(() => Math.round(document.querySelector("[data-audit-anchor]").getBoundingClientRect().top - document.querySelector(".reader-scroll").getBoundingClientRect().top));
   assert.ok(Math.abs(anchorAfterResize - readingAnchor) <= 24, `a text-size change moved the reading position (${readingAnchor}px to ${anchorAfterResize}px)`);
-  await page.$eval('.display-popover input[type="range"]', (input) => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "1");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+  // Restoring the text size re-anchors again. A jump the reader makes
+  // itself (Back to top) must end that hold, so late layout, such as a
+  // diagram finishing below, cannot pull the page back to the old passage.
+  // Reduced motion makes the jump instant and one evaluate keeps every step
+  // inside the hold's 900 ms window.
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  const afterBackToTop = await page.evaluate(async () => {
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const textSize = document.querySelector('.display-popover input[type="range"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(textSize, "1");
+    textSize.dispatchEvent(new Event("input", { bubbles: true }));
+    await frame();
+    document.querySelector('button[aria-label="Open lecture actions"]').click();
+    await frame();
+    [...document.querySelectorAll(".reader-action-grid button")].find((button) => button.textContent.includes("Back to top")).click();
+    await frame();
+    const lateLayout = document.createElement("div");
+    lateLayout.style.height = "600px";
+    document.querySelector(".markdown-body").append(lateLayout);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    lateLayout.remove();
+    return Math.round(document.querySelector(".reader-scroll").scrollTop);
   });
+  await page.emulateMediaFeatures([]);
+  assert.ok(afterBackToTop < 400, `late layout pulled Back to top back to the old passage (scrollTop ${afterBackToTop})`);
+  // Return to the 62% reading place that later persistence checks expect.
+  await page.$eval(".reader-scroll", (node) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * 0.62; node.dispatchEvent(new Event("scroll")); });
+  await delay(400);
   await page.keyboard.press("Escape");
   await page.waitForSelector(".display-popover", { hidden: true });
 

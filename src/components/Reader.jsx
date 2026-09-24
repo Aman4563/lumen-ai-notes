@@ -313,6 +313,16 @@ export default function Reader({
     events.forEach((type) => container.addEventListener(type, release, { passive: true }));
     anchorHoldRef.current = release;
   };
+  // Any jump the reader starts itself (outline, find, highlights, narration,
+  // Back to top) ends a pending hold so late layout cannot pull it back.
+  const releaseAnchor = () => anchorHoldRef.current?.();
+
+  const restoreSavedPosition = () => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const max = container.scrollHeight - container.clientHeight;
+    container.scrollTop = max > 0 ? max * Math.min(position || 0, 0.99) : 0;
+  };
 
   // Records the block at the top of the viewport (to re-anchor after a text
   // size change) and the section being read (for the outline marker).
@@ -404,10 +414,14 @@ export default function Reader({
       if (!article) return;
       const anchor = String(navigationTarget.anchor || "").replace(/^#/, "");
       const section = String(navigationTarget.section || "").trim();
+      // The saved-position restore skipped this lecture for the target; when
+      // the target claims no scroll of its own, apply the saved place here.
+      const justOpened = performance.now() - documentOpenedAtRef.current < 2_000;
       // AI retrieval cites per-lecture personal notes with this dedicated
       // anchor. It must open and focus the exact note editor, not fall
       // through to a same-slug heading search.
       if (anchor === "personal-note" || (!anchor && section.toLocaleLowerCase() === "personal note")) {
+        if (justOpened) restoreSavedPosition();
         pendingNoteFocusRef.current = true;
         setDrawer("notes");
         onNavigationHandled?.();
@@ -419,12 +433,12 @@ export default function Reader({
       if (destination) {
         // A lecture opened for this target jumps instantly and stays pinned
         // while diagrams above it finish rendering; a same-lecture jump glides.
-        const justOpened = performance.now() - documentOpenedAtRef.current < 2_000;
+        releaseAnchor();
         destination.scrollIntoView({ behavior: justOpened ? "auto" : scrollBehavior(), block: "start" });
         if (justOpened && scrollRef.current) holdAnchor(destination, destination.getBoundingClientRect().top - scrollRef.current.getBoundingClientRect().top, 2_500);
         destination.setAttribute("tabindex", "-1");
         destination.focus({ preventScroll: true });
-      }
+      } else if (justOpened) restoreSavedPosition();
       onNavigationHandled?.();
     });
     return () => cancelAnimationFrame(frame);
@@ -480,6 +494,7 @@ export default function Reader({
       .filter((node) => node.innerText.toLocaleLowerCase().includes(query))
       .filter((node) => !node.parentElement?.closest("p, li, td, th, pre, blockquote"));
     if (matches.length) {
+      releaseAnchor();
       matches[0].classList.add("reader-find-hit");
       matches[0].scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     }
@@ -498,7 +513,7 @@ export default function Reader({
     returnFocusRef: drawerReturnFocusRef,
   });
   usePopoverFocus(showSpeech, speechPopoverRef, listenButtonRef, (popover) => popover?.querySelector(".speech-controls .button.primary:not(:disabled)"));
-  usePopoverFocus(showDisplay, displayPopoverRef, appearanceButtonRef);
+  usePopoverFocus(showDisplay, displayPopoverRef, appearanceButtonRef, (popover) => popover?.querySelector("input"));
 
   useEffect(() => {
     if (!showFind && !showSpeech && !showDisplay) return undefined;
@@ -536,10 +551,7 @@ export default function Reader({
     // A citation or cross-lecture link for this lecture owns the first
     // scroll; restoring the saved position would cancel it (TF-2).
     if (navigationTarget?.documentId === document.id) return undefined;
-    const frame = requestAnimationFrame(() => {
-      const max = container.scrollHeight - container.clientHeight;
-      container.scrollTop = max > 0 ? max * Math.min(position || 0, 0.99) : 0;
-    });
+    const frame = requestAnimationFrame(restoreSavedPosition);
     return () => cancelAnimationFrame(frame);
   }, [document.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -619,6 +631,7 @@ export default function Reader({
   const scrollToHeading = (id) => {
     const heading = articleRef.current?.querySelector(`#${CSS.escape(id)}`);
     if (!heading) return;
+    releaseAnchor();
     heading.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
     heading.setAttribute("tabindex", "-1");
     if (narrow) {
@@ -637,6 +650,7 @@ export default function Reader({
     matches.forEach((node) => node.classList.remove("reader-find-hit"));
     const next = (findState.index + direction + matches.length) % matches.length;
     matches[next].classList.add("reader-find-hit");
+    releaseAnchor();
     matches[next].scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     setFindState({ index: next, total: matches.length });
   };
@@ -714,6 +728,7 @@ export default function Reader({
     clear();
     if (!target) return;
     target.classList.add("narration-active");
+    releaseAnchor();
     target.scrollIntoView({ block: "center", behavior: scrollBehavior() });
   }, [speech.activeLabel, speech.currentText, speech.status]);
 
@@ -812,6 +827,7 @@ export default function Reader({
   const openStoredAnnotation = (annotation) => {
     const result = resolveTextAnchor(articleRef.current, annotation);
     const element = result.range?.startContainer?.parentElement;
+    if (element) releaseAnchor();
     element?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     if (result.range) {
       const selection = window.getSelection();
@@ -958,7 +974,7 @@ export default function Reader({
 
       {showFind && <div className="reader-find" role="search"><Search size={18} /><input value={findQuery} onChange={(event) => setFindQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); moveFind(event.shiftKey ? -1 : 1); } }} placeholder="Find in this lecture…" aria-label="Find in this lecture" /><span aria-live="polite">{findState.total ? `${findState.index + 1}/${findState.total}` : findQuery ? "0" : ""}</span><button className="icon-button small" onClick={() => moveFind(-1)} disabled={!findState.total} aria-label="Previous match" type="button"><ChevronLeft size={17} /></button><button className="icon-button small" onClick={() => moveFind(1)} disabled={!findState.total} aria-label="Next match" type="button"><ChevronRight size={17} /></button><button className="icon-button small" onClick={() => { setShowFind(false); setFindQuery(""); }} aria-label="Close find" type="button"><X size={17} /></button></div>}
 
-      {showActions && <><button className="reader-action-scrim" onClick={() => setShowActions(false)} aria-label="Close lecture actions" tabIndex={-1} type="button" /><div ref={actionsDialogRef} className="reader-action-menu" role="dialog" aria-modal="true" aria-labelledby="reader-actions-title"><div className="popover-heading"><div><span className="eyebrow">Lecture actions</span><strong id="reader-actions-title">Study and file tools</strong></div><button className="icon-button small" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button"><X size={17} /></button></div><div className="reader-action-grid"><button onClick={openFind} type="button"><Search size={18} /><span><strong>Find in lecture</strong><small>Jump between matches</small></span></button><button onClick={() => { share(); setShowActions(false); }} type="button"><Share2 size={18} /><span><strong>Share</strong><small>Use the iPhone share sheet</small></span></button><button onClick={() => { copyLink(); setShowActions(false); }} type="button"><Copy size={18} /><span><strong>Copy link</strong><small>Copy this exact lecture</small></span></button><button onClick={() => { exportMarkdown(); setShowActions(false); }} type="button"><Download size={18} /><span><strong>Export Markdown</strong><small>Download the current copy</small></span></button><button onClick={() => { exportHtml(); setShowActions(false); }} type="button"><FileDown size={18} /><span><strong>Export HTML</strong><small>Self-contained printable page</small></span></button><button onClick={() => { setShowActions(false); requestAnimationFrame(() => window.print()); }} type="button"><Printer size={18} /><span><strong>Print / Save PDF</strong><small>Clean copy via the print dialog</small></span></button><button onClick={() => { onSetProgress(complete ? 0 : 1); setShowActions(false); }} type="button">{complete ? <RotateCcw size={18} /> : <CheckCircle2 size={18} />}<span><strong>{complete ? "Reset progress" : "Mark complete"}</strong><small>{complete ? "Start this lecture again" : "Set progress to 100%"}</small></span></button><button onClick={() => { scrollRef.current?.scrollTo({ top: 0, behavior: scrollBehavior() }); setShowActions(false); }} type="button"><ArrowUp size={18} /><span><strong>Back to top</strong><small>Return to the title</small></span></button></div></div></>}
+      {showActions && <><button className="reader-action-scrim" onClick={() => setShowActions(false)} aria-label="Close lecture actions" tabIndex={-1} type="button" /><div ref={actionsDialogRef} className="reader-action-menu" role="dialog" aria-modal="true" aria-labelledby="reader-actions-title"><div className="popover-heading"><div><span className="eyebrow">Lecture actions</span><strong id="reader-actions-title">Study and file tools</strong></div><button className="icon-button small" onClick={() => setShowActions(false)} aria-label="Close lecture actions" type="button"><X size={17} /></button></div><div className="reader-action-grid"><button onClick={openFind} type="button"><Search size={18} /><span><strong>Find in lecture</strong><small>Jump between matches</small></span></button><button onClick={() => { share(); setShowActions(false); }} type="button"><Share2 size={18} /><span><strong>Share</strong><small>Use the iPhone share sheet</small></span></button><button onClick={() => { copyLink(); setShowActions(false); }} type="button"><Copy size={18} /><span><strong>Copy link</strong><small>Copy this exact lecture</small></span></button><button onClick={() => { exportMarkdown(); setShowActions(false); }} type="button"><Download size={18} /><span><strong>Export Markdown</strong><small>Download the current copy</small></span></button><button onClick={() => { exportHtml(); setShowActions(false); }} type="button"><FileDown size={18} /><span><strong>Export HTML</strong><small>Self-contained printable page</small></span></button><button onClick={() => { setShowActions(false); requestAnimationFrame(() => window.print()); }} type="button"><Printer size={18} /><span><strong>Print / Save PDF</strong><small>Clean copy via the print dialog</small></span></button><button onClick={() => { onSetProgress(complete ? 0 : 1); setShowActions(false); }} type="button">{complete ? <RotateCcw size={18} /> : <CheckCircle2 size={18} />}<span><strong>{complete ? "Reset progress" : "Mark complete"}</strong><small>{complete ? "Start this lecture again" : "Set progress to 100%"}</small></span></button><button onClick={() => { releaseAnchor(); scrollRef.current?.scrollTo({ top: 0, behavior: scrollBehavior() }); setShowActions(false); }} type="button"><ArrowUp size={18} /><span><strong>Back to top</strong><small>Return to the title</small></span></button></div></div></>}
       {historyOpen && (() => {
         const selected = revisions.find((entry) => entry.id === selectedRevisionId) || revisions[0];
         // Rows compare the revision (old) with the current text (new):
