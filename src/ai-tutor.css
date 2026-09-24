@@ -157,23 +157,24 @@
 }
 
 .ai-tutor__connection--ready {
-  color: color-mix(in srgb, var(--ai-good) 82%, var(--ink, #172035));
+  color: var(--ai-good-ink);
   background: color-mix(in srgb, var(--teal-soft, #e3f5f1) 68%, var(--paper, #fffdf8));
 }
 
 .ai-tutor__connection--error,
 .ai-tutor__connection--disabled,
 .ai-tutor__connection--insecure {
-  color: color-mix(in srgb, var(--coral, #e96d53) 82%, var(--ink, #172035));
+  color: var(--ai-tutor-danger);
   background: color-mix(in srgb, var(--coral-soft, #fff0e9) 72%, var(--paper, #fffdf8));
 }
 
 .ai-tutor__mode-tabs {
   display: flex;
   gap: 7px;
-  padding: 16px 16px 4px;
+  padding: 16px 16px 6px;
   overflow-x: auto;
   scrollbar-width: none;
+  scroll-padding-inline: 16px;
   scroll-snap-type: x proximity;
 }
 
@@ -235,7 +236,9 @@
 }
 
 .ai-tutor__count {
+  flex: 0 0 auto;
   padding: 4px 8px;
+  white-space: nowrap;
   color: var(--ink-soft, #566078);
   background: var(--paper, #fffdf8);
   border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
@@ -305,7 +308,6 @@
   gap: 1px;
 }
 
-.ai-tutor__source-copy strong,
 .ai-tutor__source-copy small {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -313,11 +315,16 @@
 }
 
 .ai-tutor__source-copy strong {
+  display: -webkit-box;
+  overflow: hidden;
   font-size: 0.84rem;
+  overflow-wrap: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .ai-tutor__source-copy small {
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.7rem;
 }
 
@@ -382,16 +389,17 @@
 
 .ai-tutor__grounding-note {
   margin-top: 10px;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
 }
 
 .ai-tutor__field-error {
   margin-top: 8px;
-  color: var(--coral, #e96d53);
+  color: var(--ai-tutor-danger);
   font-weight: 700;
 }
 
 .ai-tutor__conversation {
+  position: relative;
   min-width: 0;
   max-height: 720px;
   padding: 18px;
@@ -437,6 +445,7 @@
 }
 
 .ai-tutor__message {
+  position: relative;
   min-width: 0;
   overflow-wrap: anywhere;
   max-width: min(100%, 760px);
@@ -463,14 +472,27 @@
 }
 
 .ai-tutor__message-meta {
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   margin-bottom: 10px;
   font-size: 0.73rem;
 }
 
+.ai-tutor__message-meta > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.ai-tutor__message-meta > .ai-tutor__web-status {
+  flex: 0 1 auto;
+  max-width: 100%;
+  white-space: normal;
+}
+
 .ai-tutor__message-meta span {
   padding: 2px 7px;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   background: var(--paper-3, #f0eee7);
   border-radius: 999px;
 }
@@ -558,11 +580,13 @@
 }
 
 .ai-tutor__citation {
+  position: relative;
   display: inline-flex;
-  min-height: 25px;
+  min-height: 0;
   margin: 0 2px;
-  padding: 1px 6px;
-  color: var(--ai-accent);
+  padding: 0 5px;
+  line-height: 1.45;
+  color: var(--ai-accent-ink);
   vertical-align: baseline;
   background: var(--ai-accent-soft);
   border: 1px solid color-mix(in srgb, var(--ai-accent) 38%, transparent);
@@ -733,6 +757,7 @@
 
 .ai-tutor__quiz-question legend {
   display: grid;
+  float: left;
   grid-template-columns: 28px minmax(0, 1fr);
   align-items: start;
   width: 100%;
@@ -741,22 +766,12 @@
   line-height: 1.5;
 }
 
-.ai-tutor__quiz-question legend > span:first-child {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  color: white;
-  background: var(--ai-accent);
-  border-radius: 8px;
-  font-size: 0.73rem;
-  place-items: center;
-}
-
 .ai-tutor__difficulty-tag {
   display: inline-block;
+  clear: both;
   margin: 8px 0;
   padding: 2px 7px;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   background: var(--paper-3, #f0eee7);
   border-radius: 999px;
   font-size: 0.68rem;
@@ -766,6 +781,7 @@
 
 .ai-tutor__quiz-options {
   display: grid;
+  clear: both;
   gap: 7px;
   margin-bottom: 10px;
 }
@@ -981,6 +997,7 @@
 }
 
 .ai-tutor__composer-row {
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 11px;
@@ -993,6 +1010,11 @@
   color: var(--ink-soft, #566078);
   font-size: 0.8rem;
   font-weight: 700;
+}
+
+.ai-tutor__difficulty > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .ai-tutor__difficulty select {
@@ -1325,19 +1347,11 @@
 
   .ai-tutor__mode-tabs {
     padding-inline: 22px;
+    scroll-padding-inline: 22px;
   }
 
   .ai-tutor__mode-description {
     margin-inline: 24px;
-  }
-
-  .ai-tutor__workspace {
-    grid-template-columns: minmax(230px, 0.72fr) minmax(0, 2fr);
-  }
-
-  .ai-tutor__context {
-    border-right: 1px solid var(--line, rgba(23, 32, 53, 0.1));
-    border-bottom: 0;
   }
 
   .ai-tutor__disclosure-grid {
@@ -1352,6 +1366,15 @@
 @media (min-width: 1080px) {
   .ai-tutor__workspace {
     grid-template-columns: minmax(270px, 0.7fr) minmax(0, 2.3fr);
+  }
+
+  .ai-tutor__workspace.is-setup {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-tutor__context {
+    border-right: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+    border-bottom: 0;
   }
 
   .ai-tutor__context,
@@ -1389,12 +1412,14 @@
 
   .ai-tutor__loading,
   .ai-tutor__request-error,
+  .ai-tutor__request-note,
   .ai-tutor__submit-row {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .ai-tutor__request-error > svg {
+  .ai-tutor__request-error > svg,
+  .ai-tutor__request-note > svg {
     display: none;
   }
 
@@ -1595,22 +1620,17 @@
 }
 
 .ai-tutor__message-meta .is-warning {
-  color: var(--ai-warn);
+  color: var(--ai-warn, var(--ai-tutor-warn));
   background: var(--gold-soft, #fff6df);
 }
 
 .ai-tutor__message-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-top: 13px;
   padding-top: 9px;
-  overflow-x: auto;
   border-top: 1px solid var(--line, rgba(23, 32, 53, 0.1));
-  scrollbar-width: none;
-}
-
-.ai-tutor__message-actions::-webkit-scrollbar {
-  display: none;
 }
 
 .ai-tutor__message-actions button {
@@ -1631,30 +1651,49 @@
 
 .ai-tutor__message-actions button:hover,
 .ai-tutor__message-actions button[aria-expanded="true"] {
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   background: var(--ai-accent-soft);
 }
 
-.ai-tutor__message-actions button:disabled {
-  opacity: 0.42;
+.ai-tutor__message-actions button:disabled,
+.ai-tutor__message-actions button[aria-disabled="true"] {
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
+.ai-tutor__message-actions button[aria-disabled="true"]:hover {
+  color: var(--ink-soft, #566078);
+  background: transparent;
+}
+
+/* The shared two-tone focus ring (the old 26% tint measured about 1.4:1).
+   The source filter shows it on its label, so the bare input drops the
+   global ring and halo. */
 .ai-tutor__source-panel-toggle:focus-visible,
 .ai-tutor__source-modes button:focus-visible,
 .ai-tutor__message-actions button:focus-visible,
-.ai-tutor__source-tools input:focus-visible {
+.ai-tutor__source-tools > label:focus-within,
+.ai-tutor__scroll:focus-visible,
+.ai-tutor__message:focus-visible,
+.ai-tutor__request-note:focus-visible,
+.ai-tutor__request-error:focus-visible,
+.ai-tutor__quiz-feedback:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
   box-shadow: 0 0 0 7px var(--focus-halo);
 }
 
-.ai-tutor__message-actions button > span {
+.ai-tutor__source-tools input:focus-visible {
+  outline: 0;
+  box-shadow: none;
+}
+
+.ai-tutor__message-actions .ai-tutor__action-count {
   display: grid;
   min-width: 18px;
   height: 18px;
   padding-inline: 4px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   background: var(--ai-accent-soft);
   border-radius: 999px;
   font-size: 0.62rem;
@@ -1876,17 +1915,23 @@
 .ai-tutor__response-text.markdown-body {
   max-width: 100%;
   color: inherit;
-  font-size: 0.92rem;
-  line-height: 1.66;
+  font-size: 1rem;
+  line-height: 1.7;
   overflow-wrap: anywhere;
+}
+
+.ai-tutor__response-text.markdown-body > :is(p, ul, ol, blockquote, h4, h5, h6) {
+  max-width: 68ch;
 }
 
 .ai-tutor__response-text.markdown-body > :first-child { margin-top: 0; }
 .ai-tutor__response-text.markdown-body > :last-child { margin-bottom: 0; }
-.ai-tutor__response-text.markdown-body h1 { margin: 1.2em 0 0.55em; font-size: 1.35em; }
-.ai-tutor__response-text.markdown-body h2 { margin: 1.35em 0 0.55em; padding-bottom: 0.22em; font-size: 1.18em; }
-.ai-tutor__response-text.markdown-body h3 { margin: 1.15em 0 0.45em; font-size: 1.08em; }
-.ai-tutor__response-text.markdown-body h4 { margin: 1em 0 0.4em; font-size: 1em; }
+/* Model headings render as h4-h6 below the message heading; the class keeps
+   the size of the Markdown level the model wrote. */
+.ai-tutor__response-text.markdown-body :is(h4, h5, h6) { margin: 1em 0 0.4em; padding-bottom: 0; font-size: 1em; }
+.ai-tutor__response-text.markdown-body .ai-tutor__md-h1 { margin: 1.2em 0 0.55em; font-size: 1.3em; }
+.ai-tutor__response-text.markdown-body .ai-tutor__md-h2 { margin: 1.35em 0 0.55em; font-size: 1.16em; }
+.ai-tutor__response-text.markdown-body .ai-tutor__md-h3 { margin: 1.15em 0 0.45em; font-size: 1.06em; }
 .ai-tutor__response-text.markdown-body p,
 .ai-tutor__response-text.markdown-body ul,
 .ai-tutor__response-text.markdown-body ol,
@@ -2026,7 +2071,7 @@
 .ai-tutor__composer-notice {
   margin: 7px 0;
   padding: 8px 10px;
-  color: color-mix(in srgb, var(--ai-good) 82%, var(--ink, #172035));
+  color: var(--ai-good-ink);
   background: var(--teal-soft, #e3f5f1);
   border-radius: 9px;
   font-size: 0.74rem;
@@ -2045,7 +2090,7 @@
   50% { opacity: 0; }
 }
 
-@media (min-width: 720px) {
+@media (min-width: 1080px) {
   .ai-tutor__source-panel-toggle { display: none; }
   .ai-tutor__source-panel { display: block; padding-top: 0; }
 }
@@ -2059,8 +2104,8 @@
   .ai-tutor__header { padding: 14px; }
   .ai-tutor__mark { flex-basis: 42px; width: 42px; height: 42px; border-radius: 13px; }
   .ai-tutor__connection { padding-inline: 14px; }
-  .ai-tutor__mode-tabs { padding: 12px 12px 2px; }
-  .ai-tutor__mode-tabs button { min-height: 40px; padding: 8px 13px; }
+  .ai-tutor__mode-tabs { padding: 12px 12px 6px; scroll-padding-inline: 12px; }
+  .ai-tutor__mode-tabs button { min-height: 44px; padding: 8px 14px; }
   .ai-tutor__mode-description { margin: 7px 14px 12px; }
   .ai-tutor__context { padding: 10px 12px; }
   .ai-tutor__source-panel { max-height: 58svh; overflow: auto; overscroll-behavior: contain; }
@@ -2071,13 +2116,18 @@
   .ai-tutor__composer { padding: 13px 12px calc(14px + env(safe-area-inset-bottom)); }
   .ai-tutor__composer textarea { min-height: 96px; font-size: 16px; }
   .ai-tutor__composer-row { align-items: flex-end; }
-  .ai-tutor__model { max-width: 52%; text-align: right; }
-  .ai-tutor__privacy-body { max-height: 46svh; overflow: auto; overscroll-behavior: contain; }
+  .ai-tutor__model { margin-left: auto; text-align: right; }
   .ai-tutor__consent--acknowledged { grid-template-columns: 22px minmax(0, 1fr); }
   .ai-tutor__consent--acknowledged .ai-tutor__text-button { grid-column: 2; justify-self: start; }
   .ai-tutor__stream-actions { align-items: stretch; flex-direction: column; }
   .ai-tutor__stream-actions .ai-tutor__button { width: 100%; }
   .ai-tutor__message-actions { margin-inline: -4px; padding-inline: 1px; }
+  .ai-tutor__message-actions button,
+  .ai-tutor__text-button,
+  .ai-tutor__consent--acknowledged .ai-tutor__text-button,
+  .ai-tutor__response-text .code-copy { min-height: 44px; }
+  .ai-tutor__session-stats { padding-inline: 14px; }
+  .ai-tutor__citation::after { position: absolute; content: ""; inset: -9px -3px; }
 }
 
 @media (max-width: 390px) {
@@ -2085,3 +2135,178 @@
   .ai-tutor__response-profiles label > span { min-height: 48px; padding-inline: 7px; }
   .ai-tutor__response-profiles small { display: none; }
 }
+
+/* Session statistics line up with the connection banner. */
+.ai-tutor__session-stats {
+  margin: 0;
+  padding: 8px 20px 0;
+  color: var(--ink-soft, #566078);
+}
+
+/* Structured fields (quiz, cards, plans) render inline Markdown and math. */
+.ai-tutor__inline-md .katex { font-size: 1.05em; }
+.ai-tutor__inline-md code {
+  padding: 0.05em 0.3em;
+  background: var(--paper-3, #f0eee7);
+  border-radius: 5px;
+  font-size: 0.9em;
+}
+
+.ai-tutor__quiz-prompt { min-width: 0; }
+
+.ai-tutor__quiz-number {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  color: white;
+  background: var(--ai-accent-strong);
+  border-radius: 8px;
+  font-size: 0.73rem;
+  place-items: center;
+}
+
+.ai-tutor__quiz-option-text { min-width: 0; }
+
+.ai-tutor__option-letter {
+  font-weight: 800;
+}
+
+.ai-tutor__option-mark {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  gap: 4px;
+  margin-top: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 780;
+}
+
+.ai-tutor__option-mark.is-correct {
+  color: var(--ai-good-ink);
+  background: var(--paper, #fffdf8);
+}
+
+.ai-tutor__option-mark.is-incorrect {
+  color: var(--ai-tutor-danger);
+  background: var(--paper, #fffdf8);
+}
+
+/* Wide tables and display equations scroll inside a wrapper that becomes
+   keyboard-focusable when it overflows. Shadows at the edges show there is
+   more to scroll. */
+.ai-tutor__scroll {
+  --scroll-cover: var(--paper, #fffdf8);
+  max-width: 100%;
+  margin: 1.2em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  border-radius: 12px;
+  background:
+    linear-gradient(to right, var(--scroll-cover) 40%, transparent) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--scroll-cover) 40%, transparent) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--ink, #172035) 22%, transparent), transparent) left center / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--ink, #172035) 22%, transparent), transparent) right center / 12px 100% no-repeat scroll;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ai-tutor__response-text.markdown-body .ai-tutor__scroll > table {
+  margin: 0;
+  max-width: none;
+  overflow: visible;
+}
+
+.ai-tutor__response-text.markdown-body .ai-tutor__scroll--math .katex-display {
+  max-width: none;
+  margin: 0;
+  overflow: visible;
+}
+
+/* KaTeX keeps a visually hidden MathML copy for screen readers. The shared
+   block-math style made that copy a hidden, focusable scroller (an invisible
+   Tab stop in every equation); keep it a plain inline element. */
+.ai-tutor .katex-mathml math[display="block"] {
+  display: inline;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: none;
+}
+
+/* A learner's own Stop is a neutral note, not an error. */
+.ai-tutor__request-note {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 13px;
+  color: var(--ink, #172035);
+  background: var(--paper-2, #f9f7f1);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 14px;
+}
+
+.ai-tutor__request-note > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--ink-soft, #566078);
+}
+
+.ai-tutor__request-note > div { flex: 1; }
+.ai-tutor__request-note p { margin: 3px 0 0; color: var(--ink-soft, #566078); line-height: 1.45; }
+.ai-tutor__request-note small { display: block; margin-top: 5px; }
+
+/* Setup states (server not set up, pairing required) replace the composer
+   with one focused card. */
+.ai-tutor__setup-card {
+  display: grid;
+  min-height: 200px;
+  padding: 28px 16px;
+  color: var(--ink-soft, #566078);
+  text-align: center;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+}
+
+.ai-tutor__setup-card > svg { color: var(--ai-accent-ink); }
+.ai-tutor__setup-card h3 { margin: 0; color: var(--ink, #172035); font-size: 1.08rem; }
+.ai-tutor__setup-card p { max-width: 38rem; margin: 0; line-height: 1.55; }
+.ai-tutor__setup-card .ai-tutor__button { margin-top: 6px; }
+
+/* Above an existing conversation the card stays compact. */
+.ai-tutor__setup-card:has(+ .ai-tutor__messages) {
+  min-height: 0;
+  margin-bottom: 14px;
+  padding: 16px;
+  background: var(--paper-2, #f9f7f1);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 14px;
+}
+
+.ai-tutor__composer.is-collapsed .ai-tutor__privacy { margin-top: 0; }
+.ai-tutor__composer.is-collapsed .ai-tutor__submit-row { justify-content: flex-end; }
+
+/* Grounding scope cards stack in a narrow panel instead of breaking words. */
+.ai-tutor__source-panel { container-type: inline-size; }
+
+@container (max-width: 330px) {
+  .ai-tutor__source-modes { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ai-tutor__source-modes button :is(strong, small) { overflow-wrap: normal; }
+
+@media (max-width: 719px) {
+  .ai-tutor__response-text.markdown-body { font-size: 1rem; }
+}
+
+@media (forced-colors: active) {
+  .ai-tutor__option-mark { border: 1px solid CanvasText; }
+}
+
+.ai-tutor__composer > .ai-tutor__web-status { margin-bottom: 12px; }

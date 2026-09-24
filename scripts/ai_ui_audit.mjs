@@ -101,7 +101,7 @@ const quizData = Object.freeze({
       "Whenever validation performance falls",
     ],
     correctIndex: 1,
-    explanation: "The test split is a final untouched estimate; using it for choices leaks evaluation information into development. [S1]",
+    explanation: "The test split is a final untouched estimate of $\\hat{R}(f)$; using it for choices leaks evaluation information into development. [S1]",
     difficulty: "interview",
   }],
 });
@@ -164,7 +164,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0 } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -233,7 +233,7 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         }));
       } else {
         const localCitation = body.context.match(/^\[(S\d+)\]/)?.[1] || "S1";
-        const outputText = `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
+        const outputText = answerText ? answerText(localCitation) : `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
         const sources = body.webSearch ? [{ title: "PyTorch release notes", url: "https://pytorch.org/blog/releases/#stable", snippet: "Current release evidence." }] : [];
         const approach = { summary: "Ground in the local library, then use approved current evidence where needed.", steps: ["Locate relevant library evidence.", "Attach the approved web result.", "Present a concise answer with citations."] };
         const response = {
@@ -360,7 +360,10 @@ try {
   assert.equal((await page.$$(".ai-tutor__response-text table")).length, 1, "GFM table did not render");
   assert.equal((await page.$$(".ai-tutor__response-text .katex")).length > 0, true, "LaTeX did not render through KaTeX");
   assert.equal((await page.$$(".ai-tutor__response-text .code-shell")).length, 1, "fenced code block did not render");
-  assert.equal((await page.$$(".ai-tutor__response-text h2")).length, 1, "Markdown heading did not render");
+  // Answer headings sit below the tutor h2 and the per-message h3: a model
+  // "##" renders as h4 and keeps its visual size through a class.
+  assert.deepEqual(await page.$$eval(".ai-tutor__response-text .ai-tutor__md-h2", (nodes) => nodes.map((node) => node.tagName)), ["H4"], "Markdown heading did not render below the message heading");
+  assert.equal((await page.$$(".ai-tutor__response-text :is(h1, h2, h3)")).length, 0, "an answer heading escaped the tutor's heading hierarchy");
   await page.waitForSelector('.ai-tutor__message--assistant .diagram-shell[data-diagram-status="rendered"] svg', { timeout: 15_000 }).catch(async (error) => {
     const diagnostic = await page.$eval(".ai-tutor__message--assistant .diagram-shell", (node) => node.closest(".ai-tutor__response-text")?.outerHTML || node.outerHTML).catch(() => "<diagram shell missing>");
     error.message += `\nDiagram DOM: ${diagnostic.slice(0, 2_000)}\nRuntime errors: ${runtimeErrors.join(" | ") || "none"}`;
@@ -417,11 +420,16 @@ try {
   assert.match(savedNote.note, /AI-generated draft/i, "saved AI note is not labeled as a generated draft");
   assert.doesNotMatch(savedNote.text, /\[W\d+\](?!\()/, "web citations were not materialized into durable links");
   assert.equal(profileWithNote.clippings.filter((clip) => clip.origin === "ai-tutor").length, 1, "one save action must create exactly one clipping");
+  // Saved stays focusable (aria-disabled) so keyboard focus is not dropped;
+  // activating it again must not create a second clipping.
   assert.equal(
-    await page.$eval(".ai-tutor__message--assistant .ai-tutor__message-actions", (node) => [...node.querySelectorAll("button")].find((button) => /saved to notes/i.test(button.textContent))?.disabled),
-    true,
+    await page.$eval(".ai-tutor__message--assistant .ai-tutor__message-actions", (node) => [...node.querySelectorAll("button")].find((button) => /saved to notes/i.test(button.textContent))?.getAttribute("aria-disabled")),
+    "true",
     "the save action did not disable after saving",
   );
+  await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Saved to notes");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal((await readProfile(page)).clippings.filter((clip) => clip.origin === "ai-tutor").length, 1, "activating Saved to notes again created a second clipping");
 
   // Trigger the delegated citation action directly. The asynchronous local
   // history commit can replace this rendered Markdown subtree between
@@ -479,6 +487,16 @@ try {
   await clickByText(page, ".ai-tutor__quiz-question button", "Check answer");
   await page.waitForSelector(".ai-tutor__quiz-feedback.is-correct");
   assert.match(await page.$eval(".ai-tutor__quiz-feedback", (node) => node.textContent), /final untouched estimate/i);
+  // Structured fields render math through KaTeX; the question text is one
+  // grid cell beside its number; options are lettered and the result is
+  // stated in text, not colour alone; focus follows to the feedback.
+  assert.ok((await page.$$(".ai-tutor__quiz-feedback .katex")).length > 0, "quiz math rendered as raw TeX");
+  assert.equal(await page.$eval(".ai-tutor__quiz", (node) => node.textContent.includes("$")), false, "raw $ delimiters remained in the quiz");
+  assert.deepEqual(await page.$eval(".ai-tutor__quiz-question legend", (node) => [...node.children].map((child) => child.className)), ["ai-tutor__quiz-number", "ai-tutor__inline-md ai-tutor__quiz-prompt"], "the quiz question text was split across the legend grid");
+  assert.deepEqual(await page.$$eval(".ai-tutor__quiz-options label", (nodes) => nodes.map((node) => node.textContent.trim().slice(0, 2))), ["A.", "B.", "C."], "quiz options were not lettered");
+  assert.match(await page.$eval(".ai-tutor__quiz-options label.is-correct", (node) => node.textContent), /Your answer · correct/, "the correct answer was marked by colour only");
+  assert.match(await page.$eval(".ai-tutor__quiz-feedback", (node) => node.textContent), /Correct — B is right/);
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("ai-tutor__quiz-feedback")), true, "focus did not move to the quiz feedback that replaced Check answer");
 
   // Copy and Export produce readable Markdown: code and math unchanged,
   // structured results as learners saw them, and [S#] labels resolved.
@@ -752,6 +770,12 @@ try {
   await pairing.page.$eval(".ai-tutor__pairing button[type='submit']", (button) => button.click());
   await pairing.page.waitForSelector(".ai-tutor__pairing-error", { timeout: 8_000 });
   assert.match(await pairing.page.$eval(".ai-tutor__pairing-error", (node) => node.textContent), /does not match/i, "a rejected pairing code did not explain itself");
+  assert.deepEqual(await pairing.page.$eval(".ai-tutor__pairing input", (input) => ({
+    invalid: input.getAttribute("aria-invalid"),
+    describedByError: document.getElementById(input.getAttribute("aria-describedby") || "")?.classList.contains("ai-tutor__pairing-error") === true,
+  })), { invalid: "true", describedByError: true }, "the rejected pairing code was not linked to its error");
+  await pairing.page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__pairing input"), { timeout: 3_000 }).catch(() => assert.fail("a rejected pairing code did not return focus to the code field"));
+  assert.equal(await pairing.page.$(".ai-tutor__composer textarea"), null, "the pairing state still showed the full composer");
   await pairing.page.$eval(".ai-tutor__pairing input", (input) => { input.value = ""; });
   await pairing.page.type(".ai-tutor__pairing input", "correct-horse-battery");
   await pairing.page.$eval(".ai-tutor__pairing button[type='submit']", (button) => button.click());
@@ -759,6 +783,7 @@ try {
   assert.equal(pairing.calls.pair.length, 2, "pairing attempts were not sent exactly twice");
   assert.equal(pairing.calls.respond.length, 0, "an unpaired browser reached the AI response endpoint");
   assert.equal(await pairing.page.$(".ai-tutor__pairing"), null, "the pairing panel remained after a successful pairing");
+  assert.equal(await pairing.page.evaluate(() => document.activeElement?.tagName), "H2", "successful pairing left focus on <body>");
   await pairing.page.close();
 
   // A server from an older build advertises no request contract. The UI must
@@ -781,6 +806,12 @@ try {
   await disabled.page.waitForSelector(".ai-tutor__connection--disabled", { timeout: 10_000 });
   assert.match(await disabled.page.$eval(".ai-tutor__connection--disabled", (node) => node.textContent), /not configured on this server/i);
   assert.equal(await disabled.page.$eval(sendSelector, (button) => button.disabled), true, "server-disabled AI did not disable generation");
+  // A server without AI shows one focused card and a reason next to the
+  // disabled Generate button instead of the whole composer.
+  assert.match(await disabled.page.$eval(".ai-tutor__setup-card", (node) => node.textContent), /not set up on this server/i, "the AI-disabled state did not explain itself");
+  assert.equal(await disabled.page.$(".ai-tutor__composer textarea"), null, "the AI-disabled state still showed the full composer");
+  assert.equal(await disabled.page.$(".ai-tutor__mode-tabs"), null, "the AI-disabled state still offered study modes");
+  assert.match(await disabled.page.$eval(".ai-tutor__disabled-reason", (node) => node.textContent), /not set up on this server/i, "the disabled Generate button had no reason");
   await clickByText(disabled.page, ".ai-tutor__connection button", "Check again");
   await disabled.page.waitForFunction(() => document.querySelector(".ai-tutor__connection--disabled"), { timeout: 8_000 });
   assert.ok(disabled.calls.config.length >= 2, "disabled-state configuration retry did not recheck the server");
@@ -1018,13 +1049,17 @@ try {
     // A configuration refresh keeps the armed one-request web permission.
     await clickByText(page, ".ai-tutor__mode-tabs button", "Explain");
     await clickByText(page, ".ai-tutor__source-modes button", "Library first");
-    await page.locator(".ai-tutor__web-search input").click();
+    await page.$eval(".ai-tutor__web-search input", (input) => input.click());
     const configChecks = calls.config.length;
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 8_000 }).catch(async (error) => {
+      error.message += `\nPage: ${await page.evaluate(() => `${location.hash} ${document.querySelector(".ai-tutor__connection")?.className || "no tutor"} ${document.body.innerText.slice(0, 600)}`)}\nRuntime errors: ${runtimeErrors.join(" | ") || "none"}`;
+      throw error;
+    });
     await clickByText(page, ".ai-tutor__connection button", "Refresh");
     await page.waitForFunction(() => document.querySelector(".ai-tutor__connection--ready"), { timeout: 8_000 });
     assert.ok(calls.config.length > configChecks, "Refresh did not recheck the server");
     assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), true, "a configuration refresh silently withdrew the learner's web permission");
-    await page.locator(".ai-tutor__web-search input").click();
+    await page.$eval(".ai-tutor__web-search input", (input) => input.click());
 
     // The engine choice is remembered across route changes.
     await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
@@ -1036,6 +1071,154 @@ try {
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
   } finally {
     await lifecycleContext.close();
+  }
+
+  // Keyboard and screen-reader flow (issue #56): focus never falls to <body>
+  // after Generate, completion, Stop or Clear; progress is announced once per
+  // phase in one persistent region and the elapsed counter is not live; wide
+  // tables and equations are keyboard-scrollable; the grounding radiogroup
+  // moves with arrow keys; answers never extend the page with blank space;
+  // Clear uses an in-app dialog that traps and restores focus.
+  const keyboardContext = await browser.createBrowserContext();
+  try {
+    const page = await keyboardContext.newPage();
+    await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    attachDiagnostics(page, "tutor-keyboard");
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+      // An in-page stream that delivers deltas over time, used once below to
+      // check that following an answer never scrolls the page itself.
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = async (input, init = {}) => {
+        const url = typeof input === "string" ? input : input.url;
+        const slow = window.__lumenAuditSlowStream;
+        if (!slow || !url.includes("/api/ai/respond/stream")) return nativeFetch(input, init);
+        window.__lumenAuditSlowStream = null;
+        const encoder = new TextEncoder();
+        const text = Array.from({ length: 40 }, (_, index) => `Paragraph ${index + 1} explains why a final holdout must stay untouched.\n\n`).join("");
+        const approach = { summary: "Stream a long answer.", steps: ["Answer in parts."] };
+        const response = { ok: true, requestId: "audit-slow-stream", outputText: text, data: null, status: "completed", model: "audit-local-model", usage: { inputTokens: 10, outputTokens: 400, totalTokens: 410 }, webSearch: { requested: false, used: false, rounds: 0 }, sources: [], approach };
+        const stream = new ReadableStream({
+          async start(controller) {
+            const send = (event) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)); } catch { /* aborted */ } };
+            send({ type: "start", protocol: "lumen.ai.ndjson.v1", requestId: response.requestId, model: response.model, responseFormat: "markdown", responseProfile: "balanced", startedAt: new Date().toISOString() });
+            send({ type: "approach", requestId: response.requestId, approach });
+            const pieces = text.match(/[\s\S]{1,120}/g);
+            for (let index = 0; index < pieces.length; index += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 60));
+              if (init.signal?.aborted) return;
+              send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
+            }
+            send({ type: "complete", requestId: response.requestId, response });
+            try { controller.close(); } catch { /* aborted */ }
+          },
+        });
+        return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" } });
+      };
+    });
+    const wideAnswer =(citation) => `## Wide evidence\n\nRepeated holdout inspection leaks information. [${citation}]\n\n| Signal | Risk | Mitigation that is deliberately long | Owner |\n| --- | --- | --- | --- |\n| Repeated inspection | Optimistic estimate | Freeze every choice before the final look | Evaluation lead |\n\n$$\n\\hat{w} = \\arg\\min_w \\sum_{i=1}^{n}(y_i - x_i^T w)^2 + \\lambda \\lVert w \\rVert_2^2 + \\gamma \\lVert w \\rVert_1 + \\text{a deliberately long tail term}\n$$\n\nDone.`;
+    await installAiMocks(page, () => secureConfig, { responseDelayMs: 900, answerText: wideAnswer });
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    const setPrompt = (value) => page.$eval(".ai-tutor__composer textarea", (field, text) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+    const activeElement = () => page.evaluate(() => {
+      const node = document.activeElement;
+      return { tag: node?.tagName || "", className: String(node?.className || ""), text: node?.textContent?.replace(/\s+/g, " ").trim().slice(0, 60) || "", label: node?.getAttribute?.("aria-label") || "" };
+    });
+    const announcement = () => page.$eval(".ai-tutor > p.visually-hidden[role='status']", (node) => node.textContent.trim());
+
+    await setPrompt("Keyboard check: why does repeated holdout inspection leak information?");
+    await page.$eval(sendSelector, (button) => button.focus());
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".ai-tutor__message--streaming", { timeout: 5_000 });
+    await page.waitForFunction(() => /Stop generating/.test(document.activeElement?.textContent || ""), { timeout: 3_000 }).catch(() => assert.fail("Generate did not move focus to Stop"));
+    assert.equal(await page.$eval(".ai-tutor__stream-status", (node) => node.getAttribute("role") || node.getAttribute("aria-live")), null, "the elapsed-time line is still a live region");
+    assert.equal(await page.$eval(".ai-tutor__stream-status small", (node) => node.getAttribute("aria-hidden")), "true", "the elapsed seconds are exposed to screen readers");
+    assert.equal(await page.$$eval(".ai-tutor__message--streaming [aria-live], .ai-tutor__message--streaming [role='status']", (nodes) => nodes.length), 0, "a live region remained inside the busy streaming answer");
+    assert.equal(await page.$eval(".ai-tutor__message--streaming", (node) => node.getAttribute("aria-busy")), "true");
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 10_000 });
+    await page.waitForFunction(() => document.activeElement?.matches?.(".ai-tutor__message--assistant[data-message-id]"), { timeout: 3_000 }).catch(async () => assert.fail(`completion left focus on ${JSON.stringify(await activeElement())}`));
+    assert.match(await announcement(), /answer ready/i, "completion was not announced");
+
+    // Wide content: focusable, named scroll regions; KaTeX's hidden MathML is
+    // not an extra invisible Tab stop; the page gains no blank scroll area.
+    const regions = await page.$$eval(".ai-tutor__message--assistant .ai-tutor__scroll", (nodes) => nodes.map((node) => ({ tabindex: node.getAttribute("tabindex"), role: node.getAttribute("role"), label: node.getAttribute("aria-label"), overflows: node.scrollWidth > node.clientWidth })));
+    assert.deepEqual(regions.map((region) => region.label), ["Table, scrolls sideways", "Equation, scrolls sideways"], `wide table/equation regions were not named: ${JSON.stringify(regions)}`);
+    assert.ok(regions.every((region) => region.overflows && region.tabindex === "0" && region.role === "group"), `overflowing regions were not keyboard-scrollable: ${JSON.stringify(regions)}`);
+    assert.deepEqual(await page.$$eval(".ai-tutor .katex-mathml math", (nodes) => [...new Set(nodes.map((node) => getComputedStyle(node).overflowX))]), ["visible"], "KaTeX's hidden MathML copy became a focusable scroller");
+    const extent = await page.evaluate(() => ({ document: document.documentElement.scrollHeight, app: Math.ceil(document.querySelector(".app-main").getBoundingClientRect().bottom + scrollY) }));
+    assert.ok(extent.document <= extent.app + 2, `the conversation extended the page with blank space: ${JSON.stringify(extent)}`);
+    const rows = await page.$$eval(".ai-tutor__message-actions", (nodes) => nodes.map((node) => node.scrollWidth - node.clientWidth));
+    assert.ok(rows.every((overflow) => overflow <= 1), `answer actions were hidden in a sideways scroller: ${rows}`);
+    const chips = await page.$$eval(".ai-tutor__message-meta > span", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)));
+    assert.ok(chips.every((height) => height <= 24), `message meta chips broke mid-word: ${chips}`);
+
+    // Grounding radiogroup: one Tab stop; arrows move and select.
+    await page.click(".ai-tutor__source-panel-toggle");
+    assert.equal(await page.$$eval(".ai-tutor__source-modes [role='radio']", (nodes) => nodes.filter((node) => node.tabIndex === 0).length), 1, "the grounding radiogroup has more than one Tab stop");
+    await page.$eval(".ai-tutor__source-modes [aria-checked='true']", (node) => node.focus());
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await page.$eval(".ai-tutor__source-modes [aria-checked='true'] strong", (node) => node.textContent), "Current lesson", "ArrowDown did not select the next grounding scope");
+    assert.equal((await activeElement()).text.startsWith("Current lesson"), true, "ArrowDown did not move focus with the selection");
+    await page.keyboard.press("Home");
+    assert.equal(await page.$eval(".ai-tutor__source-modes [aria-checked='true'] strong", (node) => node.textContent), "Library first", "Home did not select the first grounding scope");
+
+    // Following a streaming answer scrolls only the conversation: a learner
+    // who scrolls the page away is not pulled back, during or after it.
+    await setPrompt("Keyboard check: stream this answer slowly.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = true; });
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
+    // The learner scrolls the page back to the top (a wheel gesture, then the
+    // scroll itself; emulated touch viewports ignore synthetic wheel scrolling).
+    await page.evaluate(() => {
+      window.dispatchEvent(new WheelEvent("wheel", { deltaY: -600 }));
+      window.scrollTo({ top: 0, behavior: "instant" });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const scrolledTo = await page.evaluate(() => scrollY);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "streaming pulled the page back after the learner scrolled away");
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
+
+    // A learner's own Stop is a neutral note that receives focus.
+    await setPrompt("Keyboard check: stop this one.");
+    await page.$eval(sendSelector, (button) => button.focus());
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /Stop generating/.test(document.activeElement?.textContent || ""), { timeout: 3_000 });
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".ai-tutor__request-note", { timeout: 5_000 });
+    assert.equal(await page.$(".ai-tutor__request-error"), null, "a learner's own Stop was shown as an error");
+    assert.equal(await page.$eval(".ai-tutor__request-note", (node) => node.getAttribute("role")), null, "the Stop note was an assertive alert");
+    assert.equal((await activeElement()).className.includes("ai-tutor__request-note"), true, "Stop left focus on <body>");
+    assert.match(await announcement(), /Generation stopped/);
+
+    // Clear asks in an in-app dialog: focus starts on Cancel, Escape restores
+    // focus to Clear, confirming clears and focuses the tutor heading.
+    await page.$eval('[aria-label="Clear AI tutor conversation"]', (button) => button.focus());
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".tutor-dialog[role='alertdialog'][aria-modal='true']", { timeout: 3_000 });
+    assert.equal((await activeElement()).text, "Cancel", "the confirmation did not focus its safe choice");
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Tab");
+    assert.equal((await activeElement()).text, "Cancel", "Tab escaped the confirmation dialog");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".tutor-dialog", { hidden: true });
+    assert.equal((await activeElement()).label, "Clear AI tutor conversation", "cancelling did not return focus to Clear");
+    assert.ok((await page.$$(".ai-tutor__message")).length > 0, "cancelling the confirmation cleared the conversation");
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".tutor-dialog");
+    await clickByText(page, ".tutor-dialog button", "Clear conversation");
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message"), { timeout: 5_000 });
+    assert.equal((await activeElement()).tag, "H2", "Clear left focus on <body>");
+    await waitForStoredHistory(page, "empty");
+  } finally {
+    await keyboardContext.close();
   }
 
   let modelOnline = false;
@@ -1064,7 +1247,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, validated quiz, answer-to-note clipping, bounded persistence/clear, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

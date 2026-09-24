@@ -9,6 +9,7 @@ import {
   ChevronDown,
   CircleStop,
   Copy,
+  Cpu,
   ExternalLink,
   FileQuestion,
   LoaderCircle,
@@ -19,10 +20,12 @@ import {
   RotateCcw,
   Search,
   Send,
+  ServerOff,
   ShieldCheck,
   Sparkles,
   Download,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   AI_DATA_DISCLOSURE,
@@ -33,7 +36,9 @@ import {
 import { AI_REQUEST_CONTRACT_ID } from "../lib/aiContract";
 import { buildConversationWindow } from "../lib/conversationMemory";
 import { fitAiRequestContext } from "../lib/aiRequestBudget";
-import { renderTutorMarkdown } from "../lib/tutorMarkdown";
+import { renderTutorInlineMarkdown, renderTutorMarkdown } from "../lib/tutorMarkdown";
+import { useScrollableRegions } from "../lib/useScrollableRegions.js";
+import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
 import { downloadBlob } from "../lib/download.js";
 import { buildTutorContext, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
@@ -135,8 +140,6 @@ const MAX_HISTORY_MESSAGE_CHARS = 3_000;
 const MAX_PROMPT_CHARS = 5_700;
 const MAX_RESPONSE_CHARS = 160_000;
 const LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY = "lumen.ai.local-disclosure-ack.v1";
-const CITATION_PATTERN = /(\[(?:S|W)\d+\])/g;
-const CITATION_EXACT_PATTERN = /^\[([SW])(\d+)\]$/;
 const WEB_FALLBACK_STATES = new Set(["off", "armed", "not-needed", "searching", "used", "failed"]);
 
 const readLocalDisclosureAcknowledgement = () => {
@@ -558,37 +561,27 @@ const verifyPublicConfig = (config) => {
 const modeById = (id) => MODE_OPTIONS.find((mode) => mode.id === id) || MODE_OPTIONS[0];
 const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.label || "Balanced";
 
-const InlineCitations = ({ text, citationSources = [], webSources = [], onNavigateSource }) => {
-  const sourceMap = useMemo(() => new Map(
-    citationSources.map((source) => [`[S${source.citationNumber}]`, source]),
-  ), [citationSources]);
-  const webSourceMap = useMemo(() => new Map(
-    webSources.map((source, index) => [`[W${Number.isSafeInteger(source?.index) ? source.index : index + 1}]`, source]),
-  ), [webSources]);
-  const parts = String(text || "").split(CITATION_PATTERN);
-  return parts.map((part, index) => {
-    const citation = part.match(CITATION_EXACT_PATTERN);
-    if (!citation) return <span key={`${index}-${part.slice(0, 12)}`}>{part}</span>;
-    if (citation[1] === "W") {
-      const webSource = webSourceMap.get(part);
-      if (!webSource) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited web evidence that was not supplied" key={`${part}-${index}`}>{part}</span>;
-      return <a className="ai-tutor__citation" href={webSource.url} target="_blank" rel="noopener noreferrer" title={`Open ${webSource.title}`} aria-label={`Open web citation ${part}: ${webSource.title}`} key={`${part}-${index}`}>{part}</a>;
-    }
-    const source = sourceMap.get(part);
-    if (!source) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited a source that was not supplied" key={`${part}-${index}`}>{part}</span>;
-    return (
-      <button
-        className="ai-tutor__citation"
-        type="button"
-        title={`Open ${source.title}`}
-        aria-label={`Open citation ${part}: ${source.title}`}
-        onClick={() => onNavigateSource?.(source.original, { citation: part, sourceId: source.id })}
-        key={`${part}-${index}`}
-      >
-        {part}
-      </button>
-    );
-  });
+/**
+ * One structured-result field (quiz option, card side, plan step) rendered as
+ * sanitized inline Markdown: KaTeX math, emphasis, code spans and the same
+ * citation controls as prose answers, handled by delegation.
+ */
+const InlineRichText = ({ text, citationSources = [], webSources = [], onNavigateSource, className = "" }) => {
+  const markup = useMemo(
+    () => ({ __html: renderTutorInlineMarkdown(text, citationSources, webSources) }),
+    [citationSources, text, webSources],
+  );
+  const handleClick = useCallback((event) => {
+    const citation = event.target.closest?.("[data-ai-citation]");
+    if (!citation) return;
+    // A citation inside a quiz option label must not also pick that option.
+    event.preventDefault();
+    const match = citation.dataset.aiCitation?.match(/^S(\d+)$/);
+    const source = match && citationSources.find((item) => item.citationNumber === Number(match[1]));
+    if (source) onNavigateSource?.(source.original, { citation: `[S${source.citationNumber}]`, sourceId: source.id });
+  }, [citationSources, onNavigateSource]);
+  // renderTutorInlineMarkdown sanitizes provider output through DOMPurify.
+  return <span className={`ai-tutor__inline-md ${className}`.trim()} onClick={handleClick} dangerouslySetInnerHTML={markup} />;
 };
 
 const copyPlainText = async (text) => {
@@ -626,6 +619,7 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
   // Partial fenced blocks are ordinary during token streaming. Rendering is
   // intentionally deferred until the validated terminal answer is mounted.
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
+  useScrollableRegions(responseRef, html);
   const handleClick = useCallback((event) => {
     const citation = event.target.closest?.("[data-ai-citation]");
     if (citation) {
@@ -658,19 +652,25 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
   );
 };
 
+const optionLetter = (index) => String.fromCharCode(65 + index);
+
 const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSource }) => {
   const [answers, setAnswers] = useState({});
   const [checked, setChecked] = useState({});
+  // "Check answer" is replaced by its feedback; focus follows it there.
+  const focusFeedbackRef = useRef("");
+  const cite = (text, className) => <InlineRichText className={className} text={text} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} />;
   return (
     <div className="ai-tutor__quiz">
-      <div className="ai-tutor__result-title"><FileQuestion size={20} aria-hidden="true" /><div><h4>{quiz.title}</h4><p>{quiz.instructions}</p></div></div>
+      <div className="ai-tutor__result-title"><FileQuestion size={20} aria-hidden="true" /><div><h4>{quiz.title}</h4><p>{cite(quiz.instructions)}</p></div></div>
       {quiz.questions.map((question, questionIndex) => {
         const chosen = answers[question.id];
         const revealed = checked[question.id];
         const correct = chosen === question.correctIndex;
+        const answerLetter = optionLetter(question.correctIndex);
         return (
           <fieldset className="ai-tutor__quiz-question" key={question.id}>
-            <legend><span>{questionIndex + 1}</span><InlineCitations text={question.prompt} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></legend>
+            <legend><span className="ai-tutor__quiz-number">{questionIndex + 1}</span>{cite(question.prompt, "ai-tutor__quiz-prompt")}</legend>
             <span className="ai-tutor__difficulty-tag">{question.difficulty}</span>
             <div className="ai-tutor__quiz-options">
               {question.options.map((option, optionIndex) => {
@@ -685,17 +685,28 @@ const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSo
                       disabled={revealed}
                       onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))}
                     />
-                    <span><InlineCitations text={option} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></span>
+                    <span className="ai-tutor__quiz-option-text">
+                      <span className="ai-tutor__option-letter">{optionLetter(optionIndex)}.</span> {cite(option)}
+                      {(isCorrect || isIncorrect) && <span className={`ai-tutor__option-mark ${isCorrect ? "is-correct" : "is-incorrect"}`}>{isCorrect ? <Check size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}<span>{isCorrect ? (optionIndex === chosen ? "Your answer · correct" : "Correct answer") : "Your answer · incorrect"}</span></span>}
+                    </span>
                   </label>
                 );
               })}
             </div>
             {!revealed ? (
-              <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={!Number.isSafeInteger(chosen)} onClick={() => setChecked((current) => ({ ...current, [question.id]: true }))}>Check answer</button>
+              <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={!Number.isSafeInteger(chosen)} onClick={() => { focusFeedbackRef.current = question.id; setChecked((current) => ({ ...current, [question.id]: true })); }}>Check answer</button>
             ) : (
-              <div className={correct ? "ai-tutor__quiz-feedback is-correct" : "ai-tutor__quiz-feedback is-incorrect"} role="status">
-                <strong>{correct ? "Correct" : `Not quite — answer ${question.correctIndex + 1} is correct.`}</strong>
-                <p><InlineCitations text={question.explanation} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p>
+              <div
+                className={correct ? "ai-tutor__quiz-feedback is-correct" : "ai-tutor__quiz-feedback is-incorrect"}
+                tabIndex={-1}
+                ref={(node) => {
+                  if (!node || focusFeedbackRef.current !== question.id) return;
+                  focusFeedbackRef.current = "";
+                  node.focus({ preventScroll: true });
+                }}
+              >
+                <strong>{correct ? `Correct — ${answerLetter} is right.` : `Not quite — the correct answer is ${answerLetter}.`}</strong>
+                <p>{cite(question.explanation)}</p>
               </div>
             )}
           </fieldset>
@@ -758,10 +769,10 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
             <span>Select card {index + 1}</span>
           </label>
           <span className="ai-tutor__flashcard-side">Prompt</span>
-          <p><InlineCitations text={card.front} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>
+          <p><InlineRichText text={card.front} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>
           <button className="ai-tutor__text-button" type="button" aria-expanded={Boolean(expanded[index])} onClick={() => setExpanded((current) => ({ ...current, [index]: !current[index] }))}>{expanded[index] ? "Hide answer" : "Reveal answer"}<ChevronDown size={16} aria-hidden="true" /></button>
-          {expanded[index] && <div className="ai-tutor__flashcard-answer"><span className="ai-tutor__flashcard-side">Answer</span><p><InlineCitations text={card.back} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>{card.hint && <p className="ai-tutor__hint"><strong>Hint:</strong> <InlineCitations text={card.hint} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>}</div>}
-          {card.tags.length > 0 && <div className="ai-tutor__tags" aria-label="Suggested tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
+          {expanded[index] && <div className="ai-tutor__flashcard-answer"><span className="ai-tutor__flashcard-side">Answer</span><p><InlineRichText text={card.back} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>{card.hint && <p className="ai-tutor__hint"><strong>Hint:</strong> <InlineRichText text={card.hint} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} /></p>}</div>}
+          {card.tags.length > 0 && <div className="ai-tutor__tags" role="group" aria-label="Suggested tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
         </article>
       ))}
       {onCreateFlashcardDrafts ? <button className="ai-tutor__button ai-tutor__button--primary" type="button" disabled={!selected.length} aria-disabled={["saving", "saved", "exists"].includes(draftState.status) || undefined} onClick={createDrafts}>{draftState.status === "saving" ? <LoaderCircle className="ai-tutor__spin" size={17} aria-hidden="true" /> : <Check size={17} aria-hidden="true" />} {draftState.status === "saved" ? "Added to Review" : draftState.status === "exists" ? "Already in Review" : "Add selected to review"}</button> : <p className="ai-tutor__muted">Flashcard drafts are ready. Connect the review-deck callback to save them.</p>}
@@ -772,18 +783,18 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
 
 const StudyPlanResult = ({ plan, citationSources, webSources, onNavigateSource }) => (
   <div className="ai-tutor__study-plan">
-    <div className="ai-tutor__result-title"><Sparkles size={20} aria-hidden="true" /><div><h4>{plan.title}</h4><p><InlineCitations text={plan.goal} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p></div></div>
+    <div className="ai-tutor__result-title"><Sparkles size={20} aria-hidden="true" /><div><h4>{plan.title}</h4><p><InlineRichText text={plan.goal} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p></div></div>
     <ol>
       {plan.milestones.map((milestone, index) => (
         <li key={`${milestone.title}-${index}`}>
-          <div className="ai-tutor__milestone-head"><span>{index + 1}</span><div><h5><InlineCitations text={milestone.title} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></h5><small>{milestone.estimatedMinutes} minutes</small></div></div>
-          <p><InlineCitations text={milestone.outcome} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p>
-          <ul>{milestone.activities.map((activity, activityIndex) => <li key={`${activityIndex}-${activity}`}><InlineCitations text={activity} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></li>)}</ul>
-          <p className="ai-tutor__mastery"><strong>Evidence of mastery:</strong> <InlineCitations text={milestone.evidenceOfMastery} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p>
+          <div className="ai-tutor__milestone-head"><span>{index + 1}</span><div><h5><InlineRichText text={milestone.title} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></h5><small>{milestone.estimatedMinutes} minutes</small></div></div>
+          <p><InlineRichText text={milestone.outcome} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p>
+          <ul>{milestone.activities.map((activity, activityIndex) => <li key={`${activityIndex}-${activity}`}><InlineRichText text={activity} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></li>)}</ul>
+          <p className="ai-tutor__mastery"><strong>Evidence of mastery:</strong> <InlineRichText text={milestone.evidenceOfMastery} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></p>
         </li>
       ))}
     </ol>
-    {plan.cautions.length > 0 && <div className="ai-tutor__cautions"><strong>Watch for</strong><ul>{plan.cautions.map((caution, cautionIndex) => <li key={`${cautionIndex}-${caution}`}><InlineCitations text={caution} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></li>)}</ul></div>}
+    {plan.cautions.length > 0 && <div className="ai-tutor__cautions"><strong>Watch for</strong><ul>{plan.cautions.map((caution, cautionIndex) => <li key={`${cautionIndex}-${caution}`}><InlineRichText text={caution} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} /></li>)}</ul></div>}
   </div>
 );
 
@@ -834,7 +845,7 @@ const CONFIG_INVALIDATING_REQUEST_ERRORS = new Set([
 ]);
 
 const ResponseEvidence = ({ message, onNavigateSource }) => (
-  <div className="ai-tutor__evidence" aria-label="Evidence attached to this response">
+  <div className="ai-tutor__evidence" role="group" aria-label="Evidence attached to this response">
     {message.citationSources.length > 0 && (
       <section>
         <strong>Library evidence</strong>
@@ -897,12 +908,16 @@ const ResponseApproach = ({ message }) => {
 };
 
 const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReusePrompt, onSaveAnswerNote, requestBusy = false }) => {
+  const saveHintId = useId();
   const [panel, setPanel] = useState("");
   const [copyStatus, setCopyStatus] = useState("idle");
   const [noteStatus, setNoteStatus] = useState("idle");
   const hasEvidence = message.citationSources.length > 0 || message.webSources.length > 0;
   const canSaveNote = message.role === "assistant" && !message.incomplete && typeof onSaveAnswerNote === "function";
+  const noun = message.role === "assistant" ? "response" : "request";
   const saveNote = () => {
+    // Saved stays focusable (aria-disabled) so keyboard focus is not lost.
+    if (noteStatus === "saved") return;
     const saved = onSaveAnswerNote({
       // Structured results are saved as the readable Markdown the learner saw;
       // the host appends the source list itself.
@@ -923,17 +938,18 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
   const togglePanel = (next) => setPanel((current) => current === next ? "" : next);
   return (
     <>
-      <div className="ai-tutor__message-actions" aria-label={`${message.role === "assistant" ? "Response" : "Request"} actions`}>
-        <button type="button" onClick={copyMessage} aria-label={`Copy ${message.role === "assistant" ? "response" : "request"}`}>
+      <div className="ai-tutor__message-actions" role="group" aria-label={`${message.role === "assistant" ? "Response" : "Request"} actions`}>
+        <button type="button" onClick={copyMessage}>
           {copyStatus === "copied" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
-          {copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "Copy"}
+          {copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "Copy"}<span className="visually-hidden"> {noun}</span>
         </button>
         {message.role === "user" && <button type="button" disabled={requestBusy} onClick={() => onReusePrompt?.(message)}><RotateCcw size={15} aria-hidden="true" /> Edit & reuse</button>}
         {message.role === "assistant" && <button type="button" disabled={requestBusy} onClick={() => onPrepareRegenerate?.(message)}><RotateCcw size={15} aria-hidden="true" /> Edit & regenerate</button>}
-        {canSaveNote && <button type="button" disabled={noteStatus === "saved"} onClick={saveNote} aria-label="Save this answer to your notebook as a labeled AI note">{noteStatus === "saved" ? <Check size={15} aria-hidden="true" /> : <NotebookPen size={15} aria-hidden="true" />} {noteStatus === "saved" ? "Saved to notes" : "Save to notes"}</button>}
-        {message.role === "assistant" && hasEvidence && <button type="button" aria-expanded={panel === "sources"} onClick={() => togglePanel("sources")}><BookOpen size={15} aria-hidden="true" /> Sources <span>{message.citationSources.length + message.webSources.length}</span></button>}
+        {canSaveNote && <button type="button" aria-disabled={noteStatus === "saved" || undefined} aria-describedby={saveHintId} onClick={saveNote}>{noteStatus === "saved" ? <Check size={15} aria-hidden="true" /> : <NotebookPen size={15} aria-hidden="true" />} {noteStatus === "saved" ? "Saved to notes" : "Save to notes"}</button>}
+        {message.role === "assistant" && hasEvidence && <button type="button" aria-expanded={panel === "sources"} onClick={() => togglePanel("sources")}><BookOpen size={15} aria-hidden="true" /> Sources <span className="ai-tutor__action-count">{message.citationSources.length + message.webSources.length}</span></button>}
         {message.role === "assistant" && <button type="button" aria-expanded={panel === "approach"} onClick={() => togglePanel("approach")}><Sparkles size={15} aria-hidden="true" /> Approach</button>}
       </div>
+      {canSaveNote && <span className="visually-hidden" id={saveHintId}>{noteStatus === "saved" ? "This answer is in your Notebook as a labeled AI note." : "Saves this answer to your Notebook as a labeled AI note."}</span>}
       <span className="ai-tutor__copy-status" role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : ""}</span>
       {panel === "sources" && <ResponseEvidence message={message} onNavigateSource={onNavigateSource} />}
       {panel === "approach" && <ResponseApproach message={message} />}
@@ -979,18 +995,41 @@ export default function AiTutor({
 }) {
   const headingId = useId();
   const promptId = useId();
-  const privacyId = useId();
   const sendReasonId = useId();
+  const sendSummaryId = useId();
+  const counterId = useId();
+  const pairingErrorId = useId();
   const sourceNumbersRef = useRef(new Map());
   const nextSourceNumberRef = useRef(1);
   const requestControllerRef = useRef(null);
   const lastRequestRef = useRef(null);
-  const responseEndRef = useRef(null);
   const conversationRef = useRef(null);
   const followStreamRef = useRef(true);
   const promptRef = useRef(null);
   const activeResponseRef = useRef(null);
   const streamFrameRef = useRef(0);
+  // Focus and scroll are moved deliberately so they never fall to <body>
+  // when the control that had focus is disabled or unmounted.
+  const headingRef = useRef(null);
+  const sendButtonRef = useRef(null);
+  const stopButtonRef = useRef(null);
+  const streamingArticleRef = useRef(null);
+  const requestNoticeRef = useRef(null);
+  const focusStopOnMountRef = useRef(false);
+  const pendingFocusRef = useRef(null);
+  const programmaticScrollAtRef = useRef(0);
+  const userScrolledRef = useRef(false);
+  const [announcement, setAnnouncement] = useState({ text: "", id: 0 });
+  const announce = useCallback((text) => setAnnouncement((current) => ({ text, id: current.id + 1 })), []);
+  const scrollConversationToEnd = useCallback(() => {
+    const surface = conversationRef.current;
+    if (!surface) return;
+    programmaticScrollAtRef.current = Date.now();
+    surface.scrollTop = surface.scrollHeight;
+  }, []);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const sourceModeRefs = useRef({});
+  const pairingInputRef = useRef(null);
   const [storedDraft] = useState(readTutorDraft);
   const initialModeOption = modeById(MODE_OPTIONS.some((mode) => mode.id === storedDraft?.modeId) ? storedDraft.modeId : initialMode);
   const [modeId, setModeId] = useState(initialModeOption.id);
@@ -1237,6 +1276,50 @@ export default function AiTutor({
     return () => window.clearInterval(timer);
   }, [requestState.status]);
 
+  // Announce progress through one persistent polite status region: each new
+  // phase, a reminder every 30 seconds, then the outcome. The visible
+  // seconds counter and streamed text are never live.
+  const activeStage = activeResponse?.stage || "";
+  useEffect(() => {
+    // Effects can flush after the request already ended; a stale phase must
+    // not replace its outcome announcement.
+    if (activeStage && activeResponseRef.current?.stage === activeStage) announce(activeStage);
+  }, [activeStage, announce]);
+  useEffect(() => {
+    if (requestState.status === "loading" && requestElapsed > 0 && requestElapsed % 30 === 0) announce(`Still working, ${requestElapsed} seconds so far.`);
+  }, [announce, requestElapsed, requestState.status]);
+
+  // A new answer starts at the end of the conversation. When Generate or
+  // Retry started it, focus moves to Stop (which also brings it into view);
+  // a Cmd/Ctrl+Enter send keeps focus in the question box.
+  const activeResponseId = activeResponse?.id || "";
+  useLayoutEffect(() => {
+    if (!activeResponseId) return;
+    scrollConversationToEnd();
+    if (focusStopOnMountRef.current) {
+      focusStopOnMountRef.current = false;
+      stopButtonRef.current?.focus();
+    }
+  }, [activeResponseId, scrollConversationToEnd]);
+
+  // Any scroll gesture while an answer is generating means the learner is
+  // reading something else; completion then does not move the page.
+  useEffect(() => {
+    if (requestState.status !== "loading") return undefined;
+    const markScrolled = () => { userScrolledRef.current = true; };
+    const onKeyDown = (event) => {
+      if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key) && !event.target?.closest?.("textarea, input, select, [contenteditable='true']")) markScrolled();
+    };
+    window.addEventListener("wheel", markScrolled, { passive: true });
+    window.addEventListener("touchmove", markScrolled, { passive: true });
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("wheel", markScrolled);
+      window.removeEventListener("touchmove", markScrolled);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [requestState.status]);
+
   const historyRef = useRef(history);
   historyRef.current = history;
   const lastExternalHistoryRef = useRef({
@@ -1277,6 +1360,45 @@ export default function AiTutor({
   const publishHistory = useCallback((updater) => {
     setHistory((current) => normalizeHistory(typeof updater === "function" ? updater(current) : updater).filter((message) => !tombstoneIds.has(message.id)));
   }, [tombstoneIds]);
+
+  // True when focus sits on a control that a finished, failed or stopped
+  // request removes or disables (Generate, Stop, Retry), or already on <body>.
+  const focusIsOnRequestControls = useCallback(() => {
+    const active = document.activeElement;
+    return !active
+      || active === document.body
+      || active === sendButtonRef.current
+      || Boolean(streamingArticleRef.current?.contains(active))
+      || Boolean(requestNoticeRef.current?.contains(active));
+  }, []);
+
+  // Brings the start of a new answer into view inside the conversation and,
+  // when needed, the page, allowing for the fixed top bar.
+  const revealMessageStart = useCallback((target) => {
+    const surface = conversationRef.current;
+    if (surface?.contains(target)) {
+      programmaticScrollAtRef.current = Date.now();
+      surface.scrollTop = Math.max(0, target.offsetTop - 8);
+    }
+    const topbar = document.querySelector(".app-topbar")?.getBoundingClientRect();
+    const visibleTop = Math.max(0, topbar?.bottom ?? 0) + 12;
+    const top = target.getBoundingClientRect().top;
+    if (top < visibleTop || top > window.innerHeight * 0.66) window.scrollBy({ top: top - visibleTop, behavior: scrollBehavior() });
+  }, []);
+
+  // Applies focus/scroll requested by the last state change once the target
+  // (a new answer, the outcome note or the tutor heading) is rendered.
+  useLayoutEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending) return;
+    const target = pending.kind === "message"
+      ? [...(conversationRef.current?.querySelectorAll("[data-message-id]") || [])].find((node) => node.dataset.messageId === pending.id)
+      : pending.kind === "notice" ? requestNoticeRef.current : headingRef.current;
+    if (!target) return;
+    pendingFocusRef.current = null;
+    if (pending.scroll) revealMessageStart(target);
+    if (pending.focus) target.focus({ preventScroll: true });
+  });
 
   const manuallySelectedSources = useMemo(() => normalizedSources
     .filter((source) => selectedSourceIds.has(source.id))
@@ -1505,6 +1627,8 @@ export default function AiTutor({
     };
     setRequestState({ status: "loading", error: null });
     followStreamRef.current = true;
+    userScrolledRef.current = false;
+    pendingFocusRef.current = null;
     setComposerNotice("");
     const initialActiveResponse = {
       id: responseId,
@@ -1534,7 +1658,9 @@ export default function AiTutor({
     const flushStream = () => {
       streamFrameRef.current = 0;
       updateActiveResponse((current) => ({ ...current, content: streamedText }));
-      if (followStreamRef.current) requestAnimationFrame(() => responseEndRef.current?.scrollIntoView?.({ behavior: "auto", block: "nearest" }));
+      // Follow inside the conversation only; the page itself never moves
+      // while a learner reads elsewhere.
+      if (followStreamRef.current) requestAnimationFrame(scrollConversationToEnd);
     };
     const queueDelta = (delta) => {
       if (typeof delta !== "string" || !delta || streamTruncated) return;
@@ -1727,6 +1853,7 @@ export default function AiTutor({
         cancelAnimationFrame(streamFrameRef.current);
         streamFrameRef.current = 0;
       }
+      const restoreFocus = focusIsOnRequestControls();
       publishHistory((current) => [...current, assistantMessage]);
       activeResponseRef.current = null;
       setActiveResponse(null);
@@ -1734,7 +1861,12 @@ export default function AiTutor({
       lastRequestRef.current = null;
       setPrompt((current) => current.trim() === requestSpec.displayPrompt ? "" : current);
       if (requestSpec.webSearch) setComposerNotice("Current-web fallback covered that one request only. Tick it again to allow it for your next question.");
-      requestAnimationFrame(() => responseEndRef.current?.scrollIntoView?.({ behavior: scrollBehavior(), block: "nearest" }));
+      // Show the new answer from its start (not its end) unless the learner
+      // scrolled away meanwhile, and move focus there if it was on Generate,
+      // Stop or nowhere.
+      pendingFocusRef.current = { kind: "message", id: responseId, focus: restoreFocus, scroll: followStreamRef.current && !userScrolledRef.current };
+      const seconds = Math.round(assistantMessage.durationMs / 1_000);
+      announce(`${requestSpec.mode.label} ${requestSpec.mode.structured ? "result" : "answer"} ready${seconds > 0 ? ` after ${seconds} second${seconds === 1 ? "" : "s"}` : ""}.`);
     } catch (error) {
       const clientError = error instanceof AiClientError
         ? error
@@ -1757,6 +1889,7 @@ export default function AiTutor({
         "AI_INVALID_RESPONSE",
       ]).has(clientError.code);
       const invalidatesConfig = CONFIG_INVALIDATING_REQUEST_ERRORS.has(clientError.code);
+      const restoreFocus = focusIsOnRequestControls();
       if (partial && !partialFailedValidation) {
         publishHistory((current) => [...current, {
           id: responseId,
@@ -1804,11 +1937,16 @@ export default function AiTutor({
           webFallbackStatus,
         },
       });
+      // Stop and the streaming card are gone; the outcome note takes focus.
+      // A failure is announced by its alert; a learner's own Stop is not an
+      // error and is confirmed politely.
+      pendingFocusRef.current = { kind: "notice", focus: restoreFocus };
+      if (cancelled) announce(partial && !partialFailedValidation ? "Generation stopped. The partial answer is kept." : "Generation stopped.");
     } finally {
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
       if (inFlightRef.current?.responseId === responseId) inFlightRef.current = null;
     }
-  }, [buildFittedRequest, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary]);
+  }, [announce, buildFittedRequest, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd]);
 
   const submit = (event) => {
     event?.preventDefault?.();
@@ -1849,6 +1987,7 @@ export default function AiTutor({
     };
     lastRequestRef.current = requestSpec;
     if (effectiveWebSearch) setWebSearch(false);
+    focusStopOnMountRef.current = document.activeElement !== promptRef.current;
     runRequest(requestSpec);
   };
 
@@ -1857,6 +1996,7 @@ export default function AiTutor({
     if (!retrySpec || requestState.status === "loading" || !localDisclosureAcknowledged) return;
     if (retrySpec.webSearch && !effectiveWebSearch) return;
     if (retrySpec.webSearch) setWebSearch(false);
+    focusStopOnMountRef.current = document.activeElement !== promptRef.current;
     runRequest(lastRequestRef.current, { appendUser: false });
   };
 
@@ -1986,16 +2126,61 @@ export default function AiTutor({
 
   const clearHistory = () => {
     if (requestState.status === "loading") return;
-    if (typeof window !== "undefined" && !window.confirm("Clear this local AI tutor conversation? Your library notes and review cards will not be deleted.")) return;
+    setConfirmClearOpen(true);
+  };
+
+  const confirmClear = () => {
+    setConfirmClearOpen(false);
     publishHistory([]);
     lastRequestRef.current = null;
     setRequestState({ status: "idle", error: null });
+    // The Clear button disappears with the conversation; the tutor heading
+    // takes focus instead of <body>.
+    pendingFocusRef.current = { kind: "heading", focus: true };
+    announce("Conversation cleared.");
+  };
+
+  const submitPairing = async (event) => {
+    event.preventDefault();
+    if (pairingBusy || !pairingCode.trim()) return;
+    setPairingBusy(true);
+    setPairingError("");
+    try {
+      await aiClient.pair(pairingCode);
+      setPairingCode("");
+      setConfigAttempt((attempt) => attempt + 1);
+      // The pairing form disappears once the server confirms the session.
+      pendingFocusRef.current = { kind: "heading", focus: true };
+      announce("This browser is paired. Checking the tutor again.");
+    } catch (error) {
+      setPairingError(error instanceof AiClientError ? error.message : "Pairing failed. Try again.");
+      window.setTimeout(() => pairingInputRef.current?.focus(), 0);
+    } finally {
+      setPairingBusy(false);
+    }
+  };
+
+  // Roving focus for the grounding radiogroup: one Tab stop, arrow keys move
+  // and select, Home/End jump to the ends.
+  const onSourceModeKeyDown = (event, index) => {
+    const steps = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+    const next = event.key in steps
+      ? (index + steps[event.key] + SOURCE_MODES.length) % SOURCE_MODES.length
+      : event.key === "Home" ? 0 : event.key === "End" ? SOURCE_MODES.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    chooseSourceMode(SOURCE_MODES[next].id);
+    sourceModeRefs.current[SOURCE_MODES[next].id]?.focus();
   };
 
   const configIcon = configState.status === "ready" ? <ShieldCheck size={16} aria-hidden="true" />
     : configState.status === "checking" ? <LoaderCircle className="ai-tutor__spin" size={16} aria-hidden="true" />
       : configState.status === "pairing" ? <LockKeyhole size={16} aria-hidden="true" />
         : <AlertTriangle size={16} aria-hidden="true" />;
+
+  // Nothing can be generated until the server is set up or this browser is
+  // paired, so those states show a focused card instead of the full composer.
+  const setupRequired = configState.status === "disabled" || configState.status === "pairing";
 
   // Conversation export (Markdown) and session statistics (AI-002/PERF-002).
   const sessionStats = (() => {
@@ -2016,12 +2201,50 @@ export default function AiTutor({
     })], "text/markdown;charset=utf-8");
   };
 
+  const disabledReason = configState.status === "disabled"
+    ? "Generation is unavailable because AI is not set up on this server."
+    : configState.status === "pairing"
+      ? "Pair this browser with the code from the server operator to enable generation."
+      : configState.status === "insecure"
+        ? "Generation is off on this connection. Open Lumen over HTTPS."
+        : configState.status === "error"
+          ? "Generation is unavailable until the local model responds. Lumen checks again automatically."
+          : configState.status !== "ready"
+            ? ""
+            : !prompt.trim()
+              ? "Enter a learning request to enable generation."
+              : promptTooLong
+                ? `Shorten the prompt to ${promptLimit.toLocaleString()} characters for this server’s input limit.`
+                : contextTooSmall
+                  ? "Select fewer sources, shorten the prompt, or clear conversation history so every selected source can be included."
+                  : requestTooLarge
+                    ? `This request is ${requestPayloadBytes.toLocaleString()} UTF-8 bytes; reduce it below the server's ${configuredRequestByteLimit.toLocaleString()}-byte local-model budget.`
+                    : !localDisclosureAcknowledged
+                      ? "Review and acknowledge the local-model disclosure once on this browser to enable generation."
+                      : "";
+
+  const cancelled = requestState.status === "cancelled";
+  const requestNotice = (requestState.status === "error" || cancelled) && (
+    <div className={cancelled ? "ai-tutor__request-note" : "ai-tutor__request-error"} role={cancelled ? undefined : "alert"} tabIndex={-1} ref={requestNoticeRef}>
+      {cancelled ? <CircleStop size={20} aria-hidden="true" /> : <AlertTriangle size={20} aria-hidden="true" />}
+      <div>
+        <strong>{cancelled ? "Stopped" : requestErrorTitle(requestState.status, requestState.error?.code)}</strong>
+        <p>{cancelled ? "You stopped this answer. Anything it had written is kept above, and your question is still in the box." : requestState.error?.message}</p>
+        {!cancelled && <WebFallbackBadge status={requestState.error?.webFallbackStatus} />}
+        {requestState.error?.retryAfter && <small>Server retry guidance: wait {requestState.error.retryAfter} seconds.</small>}
+        {!cancelled && requestState.error?.requestId && <small>Request ID: {requestState.error.requestId}</small>}
+        {requestState.error?.canRetry && lastRequestRef.current?.webSearch === true && !effectiveWebSearch && <small>Re-enable “Allow current-web fallback” below to authorize one retry. The retry may generate and send a new search query.</small>}
+      </div>
+      {requestState.error?.canRetry && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={retry} disabled={!localDisclosureAcknowledged || (lastRequestRef.current?.webSearch === true && !effectiveWebSearch)}><RefreshCw size={15} aria-hidden="true" /> {cancelled ? "Generate again" : "Retry"}</button>}
+    </div>
+  );
+
   return (
     <section className={`ai-tutor ${className}`.trim()} aria-labelledby={headingId}>
       <header className="ai-tutor__header">
         <div className="ai-tutor__identity">
           <span className="ai-tutor__mark" aria-hidden="true"><BrainCircuit size={24} /></span>
-          <div><span className="ai-tutor__eyebrow">Grounded learning assistant</span><h2 id={headingId}>Lumen AI Tutor</h2></div>
+          <div><span className="ai-tutor__eyebrow">Grounded learning assistant</span><h2 id={headingId} ref={headingRef} tabIndex={-1}>Lumen AI Tutor</h2></div>
         </div>
         <div className="ai-tutor__header-actions">
           {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={exportConversation} aria-label="Export conversation as Markdown" title="Export conversation"><Download size={18} /></button>}
@@ -2030,67 +2253,55 @@ export default function AiTutor({
         </div>
       </header>
 
-      {sessionStats && <p className="ai-tutor__session-stats" aria-label="Session statistics">{sessionStats.count} answers this session{sessionStats.median !== null ? ` · median ${(sessionStats.median / 1_000).toFixed(1)}s` : ""}{sessionStats.tokens ? ` · ${sessionStats.tokens.toLocaleString()} output tokens` : ""}</p>}
+      {sessionStats && <p className="ai-tutor__session-stats">{sessionStats.count} answers in this conversation{sessionStats.median !== null ? ` · median ${(sessionStats.median / 1_000).toFixed(1)}s` : ""}{sessionStats.tokens ? ` · ${sessionStats.tokens.toLocaleString()} output tokens` : ""}</p>}
 
       <div className={`ai-tutor__connection ai-tutor__connection--${configState.status}`} role="status">
         {configIcon}<span>{configState.message}</span>
-        {["ready", "error", "disabled"].includes(configState.status) && <button className="ai-tutor__text-button" type="button" disabled={requestState.status === "loading"} aria-label="Check AI connection" onClick={() => setConfigAttempt((attempt) => attempt + 1)}><RefreshCw size={14} aria-hidden="true" /> {configState.status === "ready" ? "Refresh" : "Check again"}</button>}
+        {["ready", "error", "disabled"].includes(configState.status) && <button className="ai-tutor__text-button" type="button" disabled={requestState.status === "loading"} onClick={() => setConfigAttempt((attempt) => attempt + 1)}><RefreshCw size={14} aria-hidden="true" /> {configState.status === "ready" ? "Refresh" : "Check again"}<span className="visually-hidden"> AI connection</span></button>}
       </div>
 
       {configState.status === "pairing" && (
-        <form
-          className="ai-tutor__pairing"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            if (pairingBusy || !pairingCode.trim()) return;
-            setPairingBusy(true);
-            setPairingError("");
-            try {
-              await aiClient.pair(pairingCode);
-              setPairingCode("");
-              setConfigAttempt((attempt) => attempt + 1);
-            } catch (error) {
-              setPairingError(error instanceof AiClientError ? error.message : "Pairing failed. Try again.");
-            } finally {
-              setPairingBusy(false);
-            }
-          }}
-        >
+        <form className="ai-tutor__pairing" onSubmit={submitPairing}>
           <label htmlFor={`${headingId}-pairing-code`}>Pairing code</label>
           <div className="ai-tutor__pairing-row">
             <input
               id={`${headingId}-pairing-code`}
+              ref={pairingInputRef}
               type="password"
               autoComplete="one-time-code"
               value={pairingCode}
               maxLength={200}
               placeholder="Code from the server operator"
+              aria-invalid={pairingError ? true : undefined}
+              aria-describedby={pairingError ? pairingErrorId : undefined}
               onChange={(event) => setPairingCode(event.target.value)}
             />
             <button className="ai-tutor__button ai-tutor__button--primary" type="submit" disabled={pairingBusy || !pairingCode.trim()}>
               {pairingBusy ? <LoaderCircle className="ai-tutor__spin" size={16} aria-hidden="true" /> : <LockKeyhole size={16} aria-hidden="true" />} Pair this browser
             </button>
           </div>
-          {pairingError && <p className="ai-tutor__pairing-error" role="alert">{pairingError}</p>}
+          {pairingError && <p className="ai-tutor__pairing-error" id={pairingErrorId} role="alert">{pairingError}</p>}
           <p className="ai-tutor__pairing-note">This browser remembers your pairing.</p>
         </form>
       )}
 
-      <div className="ai-tutor__mode-tabs" aria-label="Tutor mode">
-        {MODE_OPTIONS.map((mode) => <button aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-active" : ""} type="button" disabled={requestState.status === "loading"} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
-      </div>
-      <p className="ai-tutor__mode-description">{currentMode.description}</p>
+      {!setupRequired && <>
+        <div className="ai-tutor__mode-tabs" role="group" aria-label="Tutor mode">
+          {MODE_OPTIONS.map((mode) => <button aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-active" : ""} type="button" disabled={requestState.status === "loading"} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
+        </div>
+        <p className="ai-tutor__mode-description">{currentMode.description}</p>
+      </>}
 
-      <div className="ai-tutor__workspace">
-        <aside className={`ai-tutor__context ${sourcePanelOpen ? "is-open" : ""}`} aria-labelledby={`${headingId}-sources`}>
+      <div className={`ai-tutor__workspace${setupRequired ? " is-setup" : ""}`}>
+        {!setupRequired && <aside className={`ai-tutor__context ${sourcePanelOpen ? "is-open" : ""}`} aria-labelledby={`${headingId}-sources`}>
           <button className="ai-tutor__source-panel-toggle" type="button" aria-expanded={sourcePanelOpen} aria-controls={`${headingId}-source-panel`} onClick={() => setSourcePanelOpen((open) => !open)}>
             <span><BookOpen size={18} aria-hidden="true" /><span><strong id={`${headingId}-sources`}>Grounding</strong><small>{sourceMode === "library-first" ? "Library first · all lessons" : sourceMode === "none" ? "No library · lesson text not sent" : `${SOURCE_MODES.find((item) => item.id === sourceMode)?.label} · ${selectedSources.length} attached`}</small></span></span>
             <ChevronDown size={18} aria-hidden="true" />
           </button>
           <div className="ai-tutor__source-panel" id={`${headingId}-source-panel`}>
-            <div className="ai-tutor__section-head"><div><span className="ai-tutor__eyebrow">Evidence scope</span><h3>Where should Lumen look?</h3></div>{sourceMode === "library-first" ? <span className="ai-tutor__count">Auto</span> : sourceMode !== "none" && <span className="ai-tutor__count" aria-label={`${selectedSources.length} of ${MAX_SELECTED_SOURCES} sources attached`}>{selectedSources.length}/{MAX_SELECTED_SOURCES}</span>}</div>
+            <div className="ai-tutor__section-head"><div><span className="ai-tutor__eyebrow">Evidence scope</span><h3>Where should Lumen look?</h3></div>{sourceMode === "library-first" ? <span className="ai-tutor__count">Auto</span> : sourceMode !== "none" && <><span className="ai-tutor__count" aria-hidden="true">{selectedSources.length}/{MAX_SELECTED_SOURCES}</span><span className="visually-hidden">{selectedSources.length} of {MAX_SELECTED_SOURCES} sources attached</span></>}</div>
             <div className="ai-tutor__source-modes" role="radiogroup" aria-label="Library grounding scope">
-              {SOURCE_MODES.map((item) => <button type="button" role="radio" aria-checked={sourceMode === item.id} className={sourceMode === item.id ? "is-active" : ""} disabled={requestState.status === "loading"} onClick={() => chooseSourceMode(item.id)} key={item.id}><strong>{item.label}</strong><small>{item.short}</small></button>)}
+              {SOURCE_MODES.map((item, index) => <button type="button" role="radio" aria-checked={sourceMode === item.id} tabIndex={sourceMode === item.id ? 0 : -1} ref={(node) => { sourceModeRefs.current[item.id] = node; }} className={sourceMode === item.id ? "is-active" : ""} disabled={requestState.status === "loading"} onClick={() => chooseSourceMode(item.id)} onKeyDown={(event) => onSourceModeKeyDown(event, index)} key={item.id}><strong>{item.label}</strong><small>{item.short}</small></button>)}
             </div>
             {sourceMode === "library-first" ? (
               <>
@@ -2140,29 +2351,45 @@ export default function AiTutor({
             {sourceWarning && <p className="ai-tutor__field-error" role="alert">{sourceWarning}</p>}
             {sourceMode !== "library-first" && <p className="ai-tutor__grounding-note">{selectedSources.length ? `Sources: ${selectedSources.map((source) => `[S${source.citationNumber}]`).join(", ")}.` : "No source text will be sent."}</p>}
           </div>
-        </aside>
+        </aside>}
 
         <section className="ai-tutor__conversation" aria-label="Conversation" ref={conversationRef} onScroll={(event) => {
+          // Ignore the tutor's own scrolling; a learner scrolling up pauses
+          // following, scrolling back to the end resumes it.
+          if (Date.now() - programmaticScrollAtRef.current < 150) return;
           const surface = event.currentTarget;
           followStreamRef.current = surface.scrollHeight - surface.scrollTop - surface.clientHeight < 140;
         }}>
-          {history.length === 0 && !activeResponse ? (
+          {setupRequired && <div className="ai-tutor__setup-card">
+              {configState.status === "pairing" ? <LockKeyhole size={26} aria-hidden="true" /> : <ServerOff size={26} aria-hidden="true" />}
+              <h3>{configState.status === "pairing" ? "Pair this browser to start" : "AI is not set up on this server"}</h3>
+              <p>{configState.status === "pairing"
+                ? "This server asks for a one-time code from its operator. Enter it above; this browser remembers the pairing."
+                : "The host has not enabled the local model, so the Mac tutor cannot answer here. Your lessons, notes and reviews work as usual."}</p>
+              {configState.status === "disabled" && onUseOnDevice && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={onUseOnDevice}><Cpu size={16} aria-hidden="true" /> Use On-device Lite instead</button>}
+            </div>}
+          {history.length === 0 && !activeResponse ? (setupRequired ? null : (
             <div className="ai-tutor__welcome"><MessageCircleQuestion size={28} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a question or choose a study mode.</p></div>
-          ) : (
-            <div className="ai-tutor__messages" aria-label="AI tutor conversation">
-              {history.map((message) => (
-                <article className={`ai-tutor__message ai-tutor__message--${message.role}`} key={message.id}>
-                  <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeById(message.mode).label}</span>{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
-                  {message.role === "assistant"
-                    ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
-                    : <p className="ai-tutor__user-prompt">{message.content}</p>}
-                  <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`)} onSaveAnswerNote={onSaveAnswerNote} />
-                </article>
-              ))}
+          )) : (
+            <div className="ai-tutor__messages" role="group" aria-label="AI tutor conversation">
+              {history.map((message, index) => {
+                const titleId = `${headingId}-message-${index}`;
+                const modeLabel = modeById(message.mode).label;
+                return (
+                  <article className={`ai-tutor__message ai-tutor__message--${message.role}`} key={message.id} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined} aria-labelledby={titleId}>
+                    <h3 className="visually-hidden" id={titleId}>{message.role === "assistant" ? `Tutor answer, ${modeLabel}${message.incomplete ? ", stopped early" : ""}` : `Your question, ${modeLabel}`}</h3>
+                    <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeLabel}</span>{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
+                    {message.role === "assistant"
+                      ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
+                      : <p className="ai-tutor__user-prompt">{message.content}</p>}
+                    <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`)} onSaveAnswerNote={onSaveAnswerNote} />
+                  </article>
+                );
+              })}
               {activeResponse && (
-                <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true">
+                <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true" ref={streamingArticleRef}>
                   <div className="ai-tutor__message-meta"><strong>Lumen Tutor</strong><span>{modeById(activeResponse.mode).label}</span><span>{RESPONSE_PROFILES.find((item) => item.id === activeResponse.responseProfile)?.label || "Balanced"}</span><span className="ai-tutor__live-badge"><i aria-hidden="true" /> Live</span><WebFallbackBadge status={activeResponse.webFallbackStatus} /></div>
-                  <div className="ai-tutor__stream-status" role="status" aria-live="polite"><span>{activeResponse.stage || "Generating response…"}</span><small>{requestElapsed}s</small></div>
+                  <div className="ai-tutor__stream-status"><span>{activeResponse.stage || "Generating response…"}</span><small aria-hidden="true">{requestElapsed}s</small></div>
                   {activeResponse.content
                     ? <AssistantMessage message={activeResponse} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} streaming />
                     : <div className="ai-tutor__response-skeleton" aria-hidden="true"><i /><i /><i /></div>}
@@ -2170,36 +2397,39 @@ export default function AiTutor({
                     ? `${activeResponse.content.length.toLocaleString()} characters received`
                     : activeResponse.sourceMode === "none" && !["searching", "used"].includes(activeResponse.webFallbackStatus)
                       ? "Waiting for the first token…"
-                      : "Preparing your answer and checking sources…"}</span><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => requestControllerRef.current?.abort()}><CircleStop size={16} aria-hidden="true" /> Stop generating</button></div>
+                      : "Preparing your answer and checking sources…"}</span><button className="ai-tutor__button ai-tutor__button--secondary" type="button" ref={stopButtonRef} onClick={() => requestControllerRef.current?.abort()}><CircleStop size={16} aria-hidden="true" /> Stop generating</button></div>
                 </article>
               )}
             </div>
           )}
-          {(requestState.status === "error" || requestState.status === "cancelled") && <div className="ai-tutor__request-error" role="alert"><AlertTriangle size={20} aria-hidden="true" /><div><strong>{requestErrorTitle(requestState.status, requestState.error?.code)}</strong><p>{requestState.error?.message}</p><WebFallbackBadge status={requestState.error?.webFallbackStatus} />{requestState.error?.retryAfter && <small>Server retry guidance: wait {requestState.error.retryAfter} seconds.</small>}{requestState.error?.requestId && <small>Request ID: {requestState.error.requestId}</small>}{requestState.error?.canRetry && lastRequestRef.current?.webSearch === true && !effectiveWebSearch && <small>Re-enable “Allow current-web fallback” below to authorize one retry. The retry may generate and send a new search query.</small>}</div>{requestState.error?.canRetry && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={retry} disabled={!localDisclosureAcknowledged || (lastRequestRef.current?.webSearch === true && !effectiveWebSearch)}><RefreshCw size={15} aria-hidden="true" /> Retry</button>}</div>}
-          <div ref={responseEndRef} />
+          {requestNotice}
         </section>
       </div>
 
-      <form className="ai-tutor__composer" onSubmit={submit}>
-        <div className="ai-tutor__composer-row">
-        <label className="ai-tutor__difficulty"><span>Depth</span><select value={difficulty} disabled={requestState.status === "loading"} onChange={(event) => { setDifficulty(event.target.value); outboundChanged(); }}>{DIFFICULTIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-          <span className="ai-tutor__model">{configState.config?.model ? `Local model: ${configState.config.model}` : "Local model is host-managed"}</span>
-        </div>
-        <fieldset className="ai-tutor__response-profiles" disabled={requestState.status === "loading"}>
-          <legend>Response</legend>
-          <div>{RESPONSE_PROFILES.map((item) => {
-            const unavailable = item.id === "deep" && !deepProfileAvailable;
-            return <label className={`${responseProfile === item.id ? "is-active" : ""}${unavailable ? " is-unavailable" : ""}`} key={item.id}><input type="radio" name={`${headingId}-response-profile`} value={item.id} checked={responseProfile === item.id} disabled={unavailable} onChange={() => { setResponseProfile(item.id); outboundChanged(); }} /><span><strong>{item.label}</strong><small>{unavailable ? "Requires a local model that attests thinking support" : item.detail}</small></span></label>;
-          })}</div>
-        </fieldset>
-        <label className={`ai-tutor__web-search ${effectiveWebSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={effectiveWebSearch} disabled={!webSearchAvailable || !libraryWebEligible || requestState.status === "loading"} onChange={(event) => changeWebSearch(event.target.checked)} /><span><strong>Allow current-web fallback for this request</strong><small>{!libraryWebEligible ? "Select Library first to use web fallback." : webSearchAvailable ? "Searches only when needed. Queries go to public search engines." : configState.config?.service?.toolCallingCapable === false ? "This model does not support web search." : configState.config?.webSearch?.configured ? "Search is offline. Start SearXNG on your Mac, then refresh." : "Web search is not configured."}</small></span></label>
-        {effectiveWebSearch && <WebFallbackBadge status="armed" />}
-        <label className="ai-tutor__prompt-label" htmlFor={promptId}>Your question</label>
-        <textarea ref={promptRef} id={promptId} value={prompt} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} maxLength={promptLimit} rows={4} placeholder="Ask anything about AI/ML, your library, or the current lesson…" />
-        {composerNotice && <p className="ai-tutor__composer-notice" role="status">{composerNotice}</p>}
-        <div className="ai-tutor__character-count"><span>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}</span>{contextPreview.length > 0 && <span>{contextPreview.length.toLocaleString()} source characters prepared</span>}{conversationWindow.compactedMessages > 0 && <span>{conversationWindow.compactedMessages} older messages will be visibly compacted</span>}</div>
+      <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement.text}{announcement.id % 2 ? " " : ""}</p>
 
-        <div className="ai-tutor__privacy" id={privacyId}>
+      <form className={`ai-tutor__composer${setupRequired ? " is-collapsed" : ""}`} onSubmit={submit}>
+        {!setupRequired && <>
+          <div className="ai-tutor__composer-row">
+            <label className="ai-tutor__difficulty"><span>Depth</span><select value={difficulty} disabled={requestState.status === "loading"} onChange={(event) => { setDifficulty(event.target.value); outboundChanged(); }}>{DIFFICULTIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+            <span className="ai-tutor__model">{configState.config?.model ? `Local model: ${configState.config.model}` : "Local model is host-managed"}</span>
+          </div>
+          <fieldset className="ai-tutor__response-profiles" disabled={requestState.status === "loading"}>
+            <legend>Response</legend>
+            <div>{RESPONSE_PROFILES.map((item) => {
+              const unavailable = item.id === "deep" && !deepProfileAvailable;
+              return <label className={`${responseProfile === item.id ? "is-active" : ""}${unavailable ? " is-unavailable" : ""}`} key={item.id}><input type="radio" name={`${headingId}-response-profile`} value={item.id} checked={responseProfile === item.id} disabled={unavailable} onChange={() => { setResponseProfile(item.id); outboundChanged(); }} /><span><strong>{item.label}</strong><small>{unavailable ? "Requires a local model that attests thinking support" : item.detail}</small></span></label>;
+            })}</div>
+          </fieldset>
+          <label className={`ai-tutor__web-search ${effectiveWebSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={effectiveWebSearch} disabled={!webSearchAvailable || !libraryWebEligible || requestState.status === "loading"} onChange={(event) => changeWebSearch(event.target.checked)} /><span><strong>Allow current-web fallback for this request</strong><small>{!libraryWebEligible ? "Select Library first to use web fallback." : webSearchAvailable ? "Searches only when needed. Queries go to public search engines." : configState.config?.service?.toolCallingCapable === false ? "This model does not support web search." : configState.config?.webSearch?.configured ? "Search is offline. Start SearXNG on your Mac, then refresh." : "Web search is not configured."}</small></span></label>
+          {effectiveWebSearch && <WebFallbackBadge status="armed" />}
+          <label className="ai-tutor__prompt-label" htmlFor={promptId}>Your question</label>
+          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} maxLength={promptLimit} rows={4} placeholder="Ask anything about AI/ML, your library, or the current lesson…" />
+          {composerNotice && <p className="ai-tutor__composer-notice" role="status">{composerNotice}</p>}
+          <div className="ai-tutor__character-count"><span id={counterId}>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>{contextPreview.length > 0 && <span>{contextPreview.length.toLocaleString()} source characters prepared</span>}{conversationWindow.compactedMessages > 0 && <span>{conversationWindow.compactedMessages} older messages will be visibly compacted</span>}</div>
+        </>}
+
+        <div className="ai-tutor__privacy">
           <button className="ai-tutor__privacy-toggle" type="button" aria-expanded={privacyOpen} onClick={() => setPrivacyOpen((open) => !open)}><span><LockKeyhole size={18} aria-hidden="true" /><strong>Privacy and request details</strong></span><ChevronDown size={18} aria-hidden="true" /></button>
           {privacyOpen && <div className="ai-tutor__privacy-body">
             <p><strong>Model destination:</strong> {AI_DATA_DISCLOSURE.destination}. The browser calls only Lumen’s same-origin server; no paid-provider key is accepted or exposed here.</p>
@@ -2215,23 +2445,21 @@ export default function AiTutor({
         </div>
 
         <div className="ai-tutor__submit-row">
-          {!localDisclosureAcknowledged ? <label className="ai-tutor__consent"><input type="checkbox" checked={false} onChange={(event) => { const acknowledged = event.target.checked; setLocalDisclosureAcknowledged(acknowledged); rememberLocalDisclosureAcknowledgement(acknowledged); }} /><span>Allow prompts and attached notes to use the local model on your Mac. Remember on this browser.</span></label> : <div className="ai-tutor__consent ai-tutor__consent--acknowledged"><ShieldCheck size={18} aria-hidden="true" /><span>Local model enabled</span><button type="button" className="ai-tutor__text-button" onClick={() => { rememberLocalDisclosureAcknowledgement(false); setLocalDisclosureAcknowledged(false); setPrivacyOpen(true); }}>Review again</button></div>}
-          <button className="ai-tutor__button ai-tutor__button--primary ai-tutor__send" type="submit" disabled={!requestReady} aria-describedby={`${privacyId} ${sendReasonId}`}>{requestState.status === "loading" ? <LoaderCircle className="ai-tutor__spin" size={18} aria-hidden="true" /> : <Send size={18} aria-hidden="true" />} {requestState.status === "loading" ? "Working…" : `Generate ${currentMode.label}`}</button>
+          {setupRequired ? null : !localDisclosureAcknowledged ? <label className="ai-tutor__consent"><input type="checkbox" checked={false} onChange={(event) => { const acknowledged = event.target.checked; setLocalDisclosureAcknowledged(acknowledged); rememberLocalDisclosureAcknowledgement(acknowledged); }} /><span>Allow prompts and attached notes to use the local model on your Mac. Remember on this browser.</span></label> : <div className="ai-tutor__consent ai-tutor__consent--acknowledged"><ShieldCheck size={18} aria-hidden="true" /><span>Local model enabled</span><button type="button" className="ai-tutor__text-button" onClick={() => { rememberLocalDisclosureAcknowledgement(false); setLocalDisclosureAcknowledged(false); setPrivacyOpen(true); }}>Review again</button></div>}
+          <button className="ai-tutor__button ai-tutor__button--primary ai-tutor__send" type="submit" ref={sendButtonRef} disabled={!requestReady} aria-describedby={`${sendSummaryId} ${sendReasonId}`}>{requestState.status === "loading" ? <LoaderCircle className="ai-tutor__spin" size={18} aria-hidden="true" /> : <Send size={18} aria-hidden="true" />} {requestState.status === "loading" ? "Working…" : `Generate ${currentMode.label}`}</button>
         </div>
-        <p className="ai-tutor__disabled-reason" id={sendReasonId}>{configState.status !== "ready"
-          ? ""
-          : !prompt.trim()
-            ? "Enter a learning request to enable generation."
-            : promptTooLong
-              ? `Shorten the prompt to ${promptLimit.toLocaleString()} characters for this server’s input limit.`
-            : contextTooSmall
-              ? "Select fewer sources, shorten the prompt, or clear conversation history so every selected source can be included."
-              : requestTooLarge
-                ? `This request is ${requestPayloadBytes.toLocaleString()} UTF-8 bytes; reduce it below the server's ${configuredRequestByteLimit.toLocaleString()}-byte local-model budget.`
-              : !localDisclosureAcknowledged
-                  ? "Review and acknowledge the local-model disclosure once on this browser to enable generation."
-                  : ""}</p>
+        <span className="visually-hidden" id={sendSummaryId}>{effectiveWebSearch ? "Sends to the local model on the Lumen server, with current-web fallback allowed for this request." : "Sends to the local model on the Lumen server. Web fallback is off."}</span>
+        <p className="ai-tutor__disabled-reason" id={sendReasonId} role="status">{disabledReason}</p>
       </form>
+
+      <TutorConfirmDialog
+        open={confirmClearOpen}
+        title="Clear this conversation?"
+        body="This removes the saved tutor messages on this device. Your lessons, notes and review cards are not deleted."
+        confirmLabel="Clear conversation"
+        onConfirm={confirmClear}
+        onCancel={() => setConfirmClearOpen(false)}
+      />
     </section>
   );
 }

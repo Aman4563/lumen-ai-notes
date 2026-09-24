@@ -55,6 +55,9 @@ try {
     try {
       if (await page.$('[aria-label="Clear AI tutor conversation"]')) {
         await page.locator('[aria-label="Clear AI tutor conversation"]').click();
+        // Clearing asks in the tutor's own confirmation dialog.
+        await page.waitForSelector(".tutor-dialog");
+        await clickText(page, ".tutor-dialog button", "Clear conversation");
         await page.waitForFunction(() => !document.querySelector('.ai-tutor__message--assistant'));
       }
       await clickText(page, ".ai-tutor__mode-tabs button", mode);
@@ -82,7 +85,8 @@ try {
       assert.equal(await page.$$eval("[data-ai-engine-option]", (nodes) => nodes.every((node) => !node.disabled)), true);
       if (mode === "Quiz") {
         await page.click(".ai-tutor__quiz-options input");
-        await page.click(".ai-tutor__quiz-question button");
+        // A grounded quiz question can contain citation buttons; pick Check answer by name.
+        await clickText(page, ".ai-tutor__quiz-question button", "Check answer");
         await page.waitForSelector(".ai-tutor__quiz-feedback");
       }
       if (mode === "Flashcards") {
@@ -92,7 +96,7 @@ try {
         await page.waitForSelector(".ai-tutor__draft-status.is-saved");
       }
       if (mode === "Explain") {
-        await page.click('[aria-label="Save this answer to your notebook as a labeled AI note"]');
+        await clickText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Save to notes");
         await page.waitForFunction(() => [...document.querySelectorAll(".ai-tutor__message-actions button")].some((button) => button.textContent.includes("Saved to notes")));
       }
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2), true, `${mode} overflows on mobile`);
