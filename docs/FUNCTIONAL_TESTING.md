@@ -234,3 +234,27 @@ Review of those fixes reproduced three follow-up bugs, now fixed:
 Each fix has a regression check in the workflow, annotation, audio, control,
 responsive, AI UI, or unit suites. The citation check fails on the previous
 build: the cited heading was focused but 4,507 px below the viewport.
+
+## Whiteboard bugs reproduced on 2026-09-24
+
+Touch-emulated Chrome at 320–852px wide and desktop at 1280px reproduced
+these defects before the fix (issue #55):
+
+- On touch, Text and Sticky note opened their dialog and closed it at once:
+  the tap's compatibility click landed on the new scrim. Placement now runs
+  on the click that ends the tap; the workflow audit taps at 20% height.
+- Points were fractions of whatever canvas showed them, so a square drawn on
+  a phone became a 2.4:1 rectangle on a Mac. Pages now keep their authoring
+  size and are letterboxed with one uniform scale. Legacy boards adopt the
+  canvas they are first shown on without rewriting any point.
+- Edge moves, nudges, and duplicates clamped each point and squashed shapes.
+  The whole selection now moves by one clamped delta.
+- The phone toolbar was a 1,228–1,480px strip with Undo, Redo, and Zoom off
+  screen; landscape showed 13–73px of canvas above the bottom navigation.
+  The responsive audit now measures the visible canvas, not the element box.
+- Board chrome kept light colours in Night (1.85:1 actions); tools, colours,
+  and backgrounds had no pressed state; objects could not be selected by
+  keyboard; Delete acted from the page select and behind open dialogs.
+- The eraser cut holes in the grid, wrapped text could only be selected by
+  its first line, sticky notes hid overflow silently, placed text could not
+  be edited, and SVG export scaled text and strokes differently from PNG.
