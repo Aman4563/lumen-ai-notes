@@ -13,7 +13,7 @@
 .phone-tutor__icon-button { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 12px; color: var(--ink-soft); background: var(--paper-2); cursor: pointer; }
 
 .phone-tutor__disclosure { padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--teal) 32%, var(--line)); border-radius: 13px; background: var(--teal-soft); }
-.phone-tutor__disclosure summary { cursor: pointer; font-size: .8rem; font-weight: 650; }
+.phone-tutor__disclosure summary { margin-block: -13px; padding-block: 15px; cursor: pointer; font-size: .8rem; font-weight: 650; }
 .phone-tutor__disclosure[open] summary { margin-bottom: 8px; }
 .phone-tutor__disclosure svg { flex: 0 0 auto; margin-top: 2px; color: var(--teal); }
 .phone-tutor__disclosure p { margin: 0; color: var(--ink-soft); font-size: .8rem; line-height: 1.5; }
@@ -221,3 +221,35 @@
 @media (prefers-reduced-motion: reduce) {
   .phone-tutor .spin { animation: none; }
 }
+
+/* Model headings start at h4 below the per-message heading; keep sizes. */
+.phone-tutor__safe-response .ai-tutor__md-h1 { font-size: 1.2rem; }
+.phone-tutor__safe-response .ai-tutor__md-h2 { font-size: 1.08rem; }
+.phone-tutor__safe-response :is(.ai-tutor__md-h3, .ai-tutor__md-h4) { font-size: .98rem; }
+
+/* Wide tables and display equations scroll inside a focusable wrapper with
+   edge shadows (see useScrollableRegions). */
+.phone-tutor .ai-tutor__scroll {
+  --scroll-cover: var(--paper);
+  max-width: 100%;
+  margin: 10px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  border-radius: 10px;
+  background:
+    linear-gradient(to right, var(--scroll-cover) 40%, transparent) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--scroll-cover) 40%, transparent) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) left center / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) right center / 12px 100% no-repeat scroll;
+}
+.phone-tutor .ai-tutor__scroll > table { margin: 0; }
+.phone-tutor .ai-tutor__scroll .katex-display { margin: 0; overflow: visible; }
+.phone-tutor .ai-tutor__scroll:focus-visible,
+.phone-tutor__quiz-feedback:focus-visible { outline: 2px solid var(--focus-ring, color-mix(in srgb, var(--teal) 70%, var(--ink))); outline-offset: 2px; }
+
+/* KaTeX's hidden MathML copy must not become an invisible, focusable scroller. */
+.phone-tutor .katex-mathml math[display="block"] { display: inline; width: auto; margin: 0; padding: 0; overflow: visible; border: 0; background: none; }
+
+.phone-tutor__inline-md .katex { font-size: 1.05em; }
+.phone-tutor__option-mark { display: block; margin-top: 4px; font-size: .72rem; font-weight: 750; }

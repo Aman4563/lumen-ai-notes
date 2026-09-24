@@ -197,7 +197,8 @@ try {
   const sendButtonSelector = ".phone-tutor__send-row button[type='submit']";
   assert.equal(await page.$eval(sendButtonSelector, (button) => button.disabled), false, "loaded local model did not enable a valid prompt");
   await page.click(sendButtonSelector);
-  await page.waitForSelector(".phone-tutor__message.is-streaming .phone-tutor__safe-response h2");
+  // A model "##" heading renders as h4 below the per-message heading.
+  await page.waitForSelector(".phone-tutor__message.is-streaming .phone-tutor__safe-response h4.ai-tutor__md-h2");
   await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant")].some((node) => node.textContent.includes("negative loss gradient")));
   assert.ok(await page.$(".phone-tutor__message.is-assistant .katex-display"), "display LaTeX was not rendered through KaTeX");
   assert.ok(await page.$(".phone-tutor__message.is-assistant table"), "GFM table was not rendered");

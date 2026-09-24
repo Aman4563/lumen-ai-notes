@@ -1,4 +1,5 @@
-import { Marked } from "marked";
+import katex from "katex";
+import { Marked, Renderer } from "marked";
 import markedKatex from "marked-katex-extension";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
 import { tutorPlainText } from "./tutorExport.js";
@@ -10,10 +11,26 @@ tutorMarked.use({
   renderer: markdownRenderer,
 });
 
+// Tutor answers sit under the page's h1, the tutor's h2 and a per-message h3,
+// so model headings start at h4. The class keeps their visual size.
+// Wide tables get a wrapper that the tutor makes keyboard-scrollable when it
+// actually overflows. Only this tutor-only instance changes; lessons do not.
+tutorMarked.use({
+  renderer: {
+    heading(token) {
+      const level = Math.min(6, Math.max(4, token.depth + 2));
+      return `<h${level} class="ai-tutor__md-h${Math.min(token.depth, 4)}">${this.parser.parseInline(token.tokens)}</h${level}>\n`;
+    },
+    table(token) {
+      return `<div class="ai-tutor__scroll" data-scroll-label="Table">${Renderer.prototype.table.call(this, token)}</div>\n`;
+    },
+  },
+});
+
 // Keep the comparatively large KaTeX runtime and fonts in the lazy tutor
 // route, not the mobile startup bundle. AI output is still rendered locally,
 // untrusted, and sanitized before it reaches the DOM.
-tutorMarked.use(markedKatex({
+const KATEX_OPTIONS = Object.freeze({
   throwOnError: false,
   trust: false,
   strict: "warn",
@@ -24,7 +41,18 @@ tutorMarked.use(markedKatex({
   // (`$\\theta$)`). Paired non-standard delimiters parse that normal prose
   // correctly without consuming the next expression.
   nonStandard: true,
-}));
+});
+tutorMarked.use(markedKatex({ ...KATEX_OPTIONS }));
+// Display equations get the same scroll wrapper as tables.
+tutorMarked.use({
+  extensions: [{
+    name: "blockKatex",
+    renderer(token) {
+      if (!token.displayMode) return false;
+      return `<div class="ai-tutor__scroll ai-tutor__scroll--math" data-scroll-label="Equation">${katex.renderToString(token.text, { ...KATEX_OPTIONS, displayMode: true })}</div>\n`;
+    },
+  }],
+});
 
 const renderTutorBaseMarkdown = (source) => sanitizeMarkdownHtml(tutorMarked.parse(source || ""));
 
@@ -151,6 +179,16 @@ export const normalizeTutorMathDelimiters = (markdown) => {
  */
 export const renderTutorMarkdown = (markdown, citationSources = [], webSources = []) => (
   renderTutorBaseMarkdown(decorateTutorCitations(normalizeTutorMathDelimiters(markdown), citationSources, webSources))
+);
+
+/**
+ * One structured-result field (a quiz option, a card side, a plan step) as
+ * sanitized inline HTML: emphasis, code spans, KaTeX math and the same
+ * citation controls as prose. Inline parsing cannot produce blocks, fences or
+ * Mermaid diagrams.
+ */
+export const renderTutorInlineMarkdown = (text, citationSources = [], webSources = []) => sanitizeMarkdownHtml(
+  tutorMarked.parseInline(decorateTutorCitations(String(text || "").replace(/\r\n?/g, "\n").replace(/\n+/g, " "), citationSources, webSources)),
 );
 
 // Plain text that keeps code, math and identifiers such as `for _ in` intact.

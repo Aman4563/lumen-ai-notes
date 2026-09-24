@@ -20,6 +20,8 @@ import {
   WifiOff,
 } from "lucide-react";
 import PhoneLocalAiSettings from "./PhoneLocalAiSettings";
+import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
+import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import {
   getPhoneLocalAiEngine,
   inspectPhoneLocalAiRequestFit,
@@ -28,7 +30,7 @@ import {
   selectCitablePhoneSources,
   selectCompletedPhoneHistory,
 } from "../lib/phoneLocalAi.js";
-import { renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
+import { renderPhoneTutorInlineMarkdown, renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
 import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
@@ -275,6 +277,7 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
   );
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
+  useScrollableRegions(responseRef, html);
   const handleClick = async (event) => {
     const codeButton = event.target.closest?.(".code-copy");
     if (codeButton) {
@@ -356,60 +359,47 @@ const EvidenceDetails = ({ message, onNavigateSource }) => {
 };
 
 /**
- * Renders [S#]/[W#] labels inside structured string fields as the same
- * navigable citations the prose surface produces. Text is emitted as React
- * nodes, never HTML, so it stays safe inside legends, labels, and list items.
+ * Renders a structured string field (quiz option, card side, plan step) as
+ * sanitized inline Markdown: KaTeX math, emphasis, code spans, and the same
+ * navigable [S#]/[W#] citation controls the prose surface produces.
  */
 const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSource }) => {
-  const sourceMap = useMemo(() => new Map(sources.map((source, index) => [
-    `[S${Number.isSafeInteger(source?.citationNumber) ? source.citationNumber : index + 1}]`,
-    source,
-  ])), [sources]);
-  const webMap = useMemo(() => new Map(citations.map((citation, index) => [
-    `[W${Number.isSafeInteger(citation?.index) ? citation.index : index + 1}]`,
-    citation,
-  ])), [citations]);
-  return String(text ?? "").split(/(\[(?:S|W)\d+\])/g).map((part, index) => {
-    const match = part.match(/^\[([SW])\d+\]$/);
-    if (!match) return <span key={`${index}-${part.slice(0, 12)}`}>{part}</span>;
-    if (match[1] === "W") {
-      const web = webMap.get(part);
-      if (!web) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited web evidence that was not supplied" key={`${part}-${index}`}>{part}</span>;
-      return <a className="ai-tutor__citation" href={web.url} target="_blank" rel="noopener noreferrer" aria-label={`Open web citation ${part}: ${web.title}`} key={`${part}-${index}`}>{part}</a>;
-    }
-    const source = sourceMap.get(part);
-    if (!source) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited a source that was not supplied" key={`${part}-${index}`}>{part}</span>;
-    return (
-      <button
-        className="ai-tutor__citation"
-        type="button"
-        aria-label={`Open citation ${part}: ${source.title}`}
-        onClick={() => onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor })}
-        key={`${part}-${index}`}
-      >
-        {part}
-      </button>
-    );
-  });
+  const markup = useMemo(() => ({ __html: renderPhoneTutorInlineMarkdown(text, sources, citations) }), [citations, sources, text]);
+  const handleClick = (event) => {
+    const citationButton = event.target.closest?.("[data-ai-citation]");
+    if (!citationButton) return;
+    // A citation inside a quiz option label must not also pick that option.
+    event.preventDefault();
+    const requested = Number(citationButton.dataset.aiCitation?.match(/^S(\d+)$/)?.[1]);
+    const source = Number.isSafeInteger(requested)
+      ? sources.find((candidate, index) => (Number.isSafeInteger(candidate?.citationNumber) ? candidate.citationNumber : index + 1) === requested)
+      : null;
+    if (source) onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor });
+  };
+  // renderPhoneTutorInlineMarkdown sanitizes model-authored HTML with DOMPurify.
+  return <span className="phone-tutor__inline-md" onClick={handleClick} dangerouslySetInnerHTML={markup} />;
 };
 
 const QuizResult = ({ quiz, messageId, sources = [], citations = [], onNavigateSource }) => {
   const [answers, setAnswers] = useState({});
   const [revealed, setRevealed] = useState({});
+  // "Check answer" is replaced by its feedback; focus follows it there.
+  const focusFeedbackRef = useRef("");
   const cite = (text) => <InlineFieldCitations text={text} sources={sources} citations={citations} onNavigateSource={onNavigateSource} />;
   return (
     <div className="phone-tutor__quiz">
       <h4>{quiz.title}</h4><p>{cite(quiz.instructions)}</p>
       {quiz.questions.map((question, questionIndex) => (
         <fieldset key={question.id}>
-          <legend>{questionIndex + 1}. {cite(question.prompt)}</legend>
+          <legend><span className="phone-tutor__quiz-number">{questionIndex + 1}.</span> {cite(question.prompt)}</legend>
           {question.options.map((option, optionIndex) => {
             const checked = answers[question.id] === optionIndex;
             const open = revealed[question.id];
             const correct = optionIndex === question.correctIndex;
-            return <label className={open && correct ? "is-correct" : open && checked ? "is-incorrect" : ""} key={`${question.id}-${optionIndex}`}><input type="radio" name={`${messageId}-${question.id}`} checked={checked} disabled={open} onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} /><span>{cite(option)}</span></label>;
+            const mark = open && correct ? (checked ? "Your answer · correct" : "Correct answer") : open && checked ? "Your answer · incorrect" : "";
+            return <label className={open && correct ? "is-correct" : open && checked ? "is-incorrect" : ""} key={`${question.id}-${optionIndex}`}><input type="radio" name={`${messageId}-${question.id}`} checked={checked} disabled={open} onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} /><span><strong>{String.fromCharCode(65 + optionIndex)}.</strong> {cite(option)}{mark && <small className="phone-tutor__option-mark">{mark}</small>}</span></label>;
           })}
-          {!revealed[question.id] ? <button type="button" disabled={!Number.isSafeInteger(answers[question.id])} onClick={() => setRevealed((current) => ({ ...current, [question.id]: true }))}>Check answer</button> : <div className="phone-tutor__quiz-feedback" role="status"><strong>{answers[question.id] === question.correctIndex ? "Correct" : `Answer ${question.correctIndex + 1} is correct.`}</strong><p>{cite(question.explanation)}</p></div>}
+          {!revealed[question.id] ? <button type="button" disabled={!Number.isSafeInteger(answers[question.id])} onClick={() => { focusFeedbackRef.current = question.id; setRevealed((current) => ({ ...current, [question.id]: true })); }}>Check answer</button> : <div className="phone-tutor__quiz-feedback" tabIndex={-1} ref={(node) => { if (node && focusFeedbackRef.current === question.id) { focusFeedbackRef.current = ""; node.focus({ preventScroll: true }); } }}><strong>{answers[question.id] === question.correctIndex ? `Correct — ${String.fromCharCode(65 + question.correctIndex)} is right.` : `Not quite — the correct answer is ${String.fromCharCode(65 + question.correctIndex)}.`}</strong><p>{cite(question.explanation)}</p></div>}
         </fieldset>
       ))}
     </div>
@@ -478,6 +468,8 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
   const promptId = useId();
   const promptFieldRef = useRef(null);
+  const headingRef = useRef(null);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const controllerRef = useRef(null);
   const pendingSearchRef = useRef(null);
   const lastRequestRef = useRef(null);
@@ -936,15 +928,15 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   return (
     <section className="phone-tutor" aria-labelledby="phone-tutor-title">
       <header className="phone-tutor__header">
-        <div className="phone-tutor__identity"><span><Cpu size={23} aria-hidden="true" /></span><div><small>Built with Llama · Safari WebGPU · experimental</small><h2 id="phone-tutor-title">Lumen On-device Lite</h2></div></div>
-        {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => { activeUserMessageIdRef.current = null; setHistory([]); lastRequestRef.current = null; setRequestState({ status: "idle", message: "" }); }}><Trash2 size={18} /></button>}
+        <div className="phone-tutor__identity"><span><Cpu size={23} aria-hidden="true" /></span><div><small>Built with Llama · Safari WebGPU · experimental</small><h2 id="phone-tutor-title" ref={headingRef} tabIndex={-1}>Lumen On-device Lite</h2></div></div>
+        {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => setConfirmClearOpen(true)}><Trash2 size={18} /></button>}
       </header>
 
       <details className="phone-tutor__disclosure"><summary>Privacy and session details</summary><p>Answers run on this device. This conversation clears on reload and is excluded from backups. {PHONE_LOCAL_AI_DISCLOSURE.inference} Web searches require approval of the exact query. <a href="./licenses/LLAMA_3_2_COMMUNITY_LICENSE.txt" target="_blank" rel="noopener noreferrer">Llama 3.2 license</a>.</p></details>
 
       <PhoneLocalAiSettings engine={engine} onNotify={onNotify} onStatusChange={setEngineStatus} interactionBusy={interactionLocked} />
 
-      <div className="phone-tutor__mode-tabs" aria-label="On-device tutor mode">
+      <div className="phone-tutor__mode-tabs" role="group" aria-label="On-device tutor mode">
         {PHONE_TUTOR_MODES.map((mode) => <button type="button" aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-selected" : ""} disabled={interactionLocked} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
       </div>
       <p className="phone-tutor__mode-description">{currentMode.description}</p>
@@ -970,6 +962,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
               {history.map((message) => (
                 <article className={`phone-tutor__message is-${message.role}`} key={message.id}>
+                  <h3 className="visually-hidden">{message.role === "assistant" ? "On-device answer" : "Your question"}, {PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</h3>
                   <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{typeof onSaveAnswerNote === "function" && <button type="button" aria-label={savedNoteMessageIds.has(message.id) ? "Saved to notes" : "Save to notes: this answer becomes a labeled AI note in your notebook"} disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Regenerate</button>}</div>}</div>
                   {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
                   {message.role === "assistant" && <EvidenceDetails message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onNavigateSource={onNavigateSource} />}
@@ -1002,6 +995,23 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
         {!engineStatus.loaded && <p className="phone-tutor__disabled-reason">Load the model above to start.</p>}
         {engineStatus.loaded && Boolean(prompt.trim()) && !requestFit.fits && <p className="phone-tutor__disabled-reason" role="alert">{requestFit.message}</p>}
       </form>
+
+      <TutorConfirmDialog
+        open={confirmClearOpen}
+        title="Clear this on-device session?"
+        body="This removes the on-device conversation from this tab. Your lessons, notes and review cards are not deleted."
+        confirmLabel="Clear session"
+        onConfirm={() => {
+          setConfirmClearOpen(false);
+          activeUserMessageIdRef.current = null;
+          setHistory([]);
+          lastRequestRef.current = null;
+          setRequestState({ status: "idle", message: "" });
+          // The Clear button disappears with the conversation.
+          globalThis.setTimeout?.(() => headingRef.current?.focus(), 0);
+        }}
+        onCancel={() => setConfirmClearOpen(false)}
+      />
     </section>
   );
 }

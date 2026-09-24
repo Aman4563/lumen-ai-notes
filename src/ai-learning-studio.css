@@ -22,7 +22,7 @@
 .ai-engine-picker__options > button.is-selected { border-color: color-mix(in srgb, var(--teal) 70%, var(--line)); background: var(--teal-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--teal) 35%, transparent); }
 .ai-engine-picker__options > button.is-selected svg { color: var(--teal); }
 .ai-engine-picker__note { margin: 0; color: var(--ink-soft); font-size: .78rem; line-height: 1.45; }
-.ai-engine-picker__note summary { cursor: pointer; padding-block: 5px; }
+.ai-engine-picker__note summary { cursor: pointer; padding-block: 13px; }
 .ai-engine-picker__note p { margin: 6px 0 0; }
 .ai-engine-picker__options > button:disabled { cursor: wait; opacity: .65; }
 
