@@ -29,15 +29,17 @@ Safety and grounding rules:
 const TASK_INSTRUCTIONS = Object.freeze({
   tutor: "Answer as an adaptive tutor. Explain, check understanding, and end with one useful next action.",
   explain: "Follow the learner's requested scope and length exactly. Within that bound, explain the concept in layers: intuition, mechanics, example, failure modes, and interview-level takeaways. End when the requested final item is complete.",
-  socratic: "Use the Socratic method. Ask one focused question at a time; do not reveal the full solution unless the learner asks. When curriculum sources are supplied, cite the source that motivates your question using its exact [S#] label, even when you make no factual claim. Place the label after the question without revealing the answer.",
+  socratic: "Use the Socratic method. When the learner has just answered your previous question, first assess that answer in one or two sentences: say whether it is correct, partly correct, or a misconception, and why. Then ask exactly one focused question; do not reveal the full solution unless the learner asks. When curriculum sources are supplied, cite the source that motivates your question using its exact [S#] label, even when you make no factual claim. Place the label after the question without revealing the answer.",
   quiz: "Create a discriminating quiz that tests recall, application, and misconceptions. Every answer explanation must teach why alternatives fail. Silently remove any question whose keyed answer is not directly supported by the supplied context.",
   flashcards: "Create atomic active-recall cards. Avoid vague prompts, oversized answers, and simple copy-completion cues. Each front must unambiguously ask for a claim supported by the supplied context; silently remove any card whose back contradicts or exceeds that context.",
   interview: "Act as a senior technical interviewer. Follow the learner's requested scope and length. When asked for a question, ask one focused question and wait for the learner's answer; do not supply the answer or a full interview guide. Probe assumptions, trade-offs, failure handling, measurement, and production constraints where relevant.",
   summarize: "Produce a faithful learning summary with core ideas, formulas, assumptions, pitfalls, and a short recall checklist.",
   study_plan: "Create a dependency-aware study plan with realistic activities and observable evidence of mastery.",
   answer_feedback: "Evaluate the learner answer against the question and supplied context. Be precise, constructive, and calibration-aware.",
-  code_review: "Review the supplied code as a rigorous senior engineer. Report findings in priority order: correctness defects first, then complexity/performance, edge cases and failure handling, API/idiom quality, and missing tests. Quote the exact fragment each finding concerns, explain the concrete failure it can cause, and propose a specific fix (a short corrected snippet where useful). Separate certain defects from stylistic judgment, and say clearly when the code looks correct. If no code was actually supplied, say so and ask for it instead of inventing code to review.",
+  code_review: "Review the supplied code as a rigorous senior engineer. Report findings in priority order: correctness defects first, then complexity/performance, edge cases and failure handling, API/idiom quality, and missing tests. Label every finding as either a Defect or a Convention/alternative. A Defect gives a wrong result, crash, or data/security problem for a concrete input that you have traced through the code, including edge cases such as empty or single-element input. A Convention/alternative covers style, idiom, naming, and valid alternative definitions or designs (for example population versus sample variance); never present one as a defect. Quote the exact fragment each finding concerns, explain the concrete failure it can cause, and propose a specific fix (a short corrected snippet where useful) that is itself correct and numerically stable (for example, never replace a two-pass variance with the cancellation-prone E[x^2] - E[x]^2 shortcut). Do not state a library's default behavior, version, or API contract unless you are certain; otherwise tell the learner to confirm it in the official documentation. Say clearly when the code looks correct. If no code was actually supplied, say so and ask for it instead of inventing code to review.",
 });
+
+const FAST_PROFILE_INSTRUCTION = "Fast profile: keep the answer brief, about 150 words or fewer unless the learner explicitly asks for more detail or a specific length. Lead with the direct answer, prefer a short list to long paragraphs, include only the most important formula or example, and skip optional background.";
 
 const SEARCH_TOOL = Object.freeze({
   type: "function",
@@ -77,22 +79,35 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
   const schemaInstruction = request.responseFormat === "structured" && applyStructuredFormat
     ? `\nReturn only JSON conforming to this schema: ${JSON.stringify(STRUCTURED_SCHEMAS[request.task].schema)}\nCitation placement for structured JSON: citations are literal text inside schema string values, never commentary outside the JSON. Put supporting [S#]/[W#] labels in flashcard backs, quiz explanations, study-plan goals/outcomes/evidence, or answer-feedback explanation fields as applicable.`
     : "";
+  const responseProfile = ["fast", "balanced", "deep"].includes(request.responseProfile)
+    ? request.responseProfile
+    : "balanced";
   const completionTarget = Math.max(96, Math.floor(request.maxOutputTokens * 0.82));
   const completionInstruction = request.responseFormat === "structured"
     ? `Hard completion budget: return one complete, schema-valid result within ${completionTarget} tokens. If the requested breadth cannot fit, include fewer high-quality items; never begin an item you cannot finish.`
     : `Hard completion budget: finish the complete answer within about ${completionTarget} tokens, below the ${request.maxOutputTokens}-token provider ceiling. Prioritize the learner's requested scope, reserve room to finish the final thought and close Markdown fences, and omit lower-priority detail rather than running into the ceiling.`;
-  const system = `${BASE_INSTRUCTIONS}\n\nCurrent server date: ${currentDate}.\nTask-specific instruction: ${TASK_INSTRUCTIONS[request.task]}\n${completionInstruction}\n${searchInstruction}${schemaInstruction}`;
-  const sourceLabels = (request.contextCitations || []).map((number) => `[S${number}]`);
-  const citationRequirement = sourceLabels.length
-    ? `\n\nRequired citations: use at least one of these exact labels in your final answer: ${sourceLabels.join(", ")}. Cite only source-supported text. A question must cite the source that motivates it, even without a factual claim. In JSON, place citations inside supported string values, never outside the JSON.`
+  // A lower token ceiling alone does not make a small model brief: it wrote
+  // Fast answers as long as Deep ones. Fast prose therefore gets an explicit
+  // length target; structured results keep their item-count contracts.
+  const profileInstruction = responseProfile === "fast" && request.responseFormat !== "structured"
+    ? `\n${FAST_PROFILE_INSTRUCTION}`
     : "";
-  const questionFormat = request.task === "socratic" && sourceLabels.length
-    ? `\nRequired response: one question grounded in the context above, followed by its source label. Output pattern: Your question? ${sourceLabels[0]}. Choose the label that actually supports your question. Do not answer the question.`
+  const system = `${BASE_INSTRUCTIONS}\n\nCurrent server date: ${currentDate}.\nTask-specific instruction: ${TASK_INSTRUCTIONS[request.task]}\n${completionInstruction}${profileInstruction}\n${searchInstruction}${schemaInstruction}`;
+  const sourceLabels = (request.contextCitations || []).map((number) => `[S${number}]`);
+  const citationRequirement = !sourceLabels.length
+    ? ""
+    : request.responseFormat === "structured"
+      ? `\n\nRequired citations: use at least one of these exact labels in your final answer: ${sourceLabels.join(", ")}. Cite only source-supported text. A question must cite the source that motivates it, even without a factual claim. In JSON, place citations inside supported string values, never outside the JSON.`
+      : `\n\nRequired citations: cite the supplied sources with these exact labels: ${sourceLabels.join(", ")}. Write each label on its own in square brackets exactly as shown, never inside code. End every paragraph or list item that uses the sources with the label of the source that supports it, and include at least one label in your first paragraph. Cite only source-supported text. A question must cite the source that motivates it, even without a factual claim.`;
+  // Describe the Socratic shape instead of showing a literal template: the
+  // 4B model copied an "Output pattern: Your question?" example verbatim.
+  // A prior assistant turn means the learner's message is probably an answer
+  // that deserves a brief assessment before the next question.
+  const learnerMayBeAnswering = (request.history || []).some((message) => message?.role === "assistant");
+  const questionFormat = request.task === "socratic"
+    ? `\nRequired response format: ${learnerMayBeAnswering ? "if the learner's latest message answers your previous question, open with a one- or two-sentence assessment of that answer that says whether it is correct, partly correct, or a misconception, and why; then " : ""}ask exactly one new focused question${sourceLabels.length ? ` grounded in the context above, and end it with the exact label of the supplied source that motivates it (one of ${sourceLabels.join(", ")})` : ""}. Do not answer your new question, and do not put a heading or a label word in front of it.`
     : "";
   const learnerRequest = `Learner level: ${request.difficulty}\nTask: ${request.prompt}${conversationMemory}${contextBlock}${citationRequirement}${questionFormat}`;
-  const responseProfile = ["fast", "balanced", "deep"].includes(request.responseProfile)
-    ? request.responseProfile
-    : "balanced";
   const messages = messagesOverride || [
     { role: "system", content: system },
     ...request.history.map(({ role, content }) => ({ role, content })),
