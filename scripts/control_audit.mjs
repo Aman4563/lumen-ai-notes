@@ -251,10 +251,32 @@ try {
     whileOpen: async () => { inspected += await inspectControls(page, "reader actions"); },
   });
 
-  await clickByText(page, ".document-tools button", "Teach");
-  await page.waitForSelector(".teach-mode");
-  inspected += await inspectControls(page, "teaching mode");
-  await page.click('button[aria-label="Exit teaching mode"]');
+  // Reader phone side panel (READER-2): closed, it is inert and hidden; open,
+  // it is a modal sheet with the full focus contract.
+  const closedPanel = await page.$eval(".reader-side-panel", (panel) => ({ inert: panel.inert, hidden: panel.getAttribute("aria-hidden"), visibility: getComputedStyle(panel).visibility }));
+  if (!closedPanel.inert || closedPanel.hidden !== "true") findings.push(`reader side panel: closed phone panel is still reachable (${JSON.stringify(closedPanel)})`);
+  await page.$eval(".reader-scroll", (node) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * 0.4; node.dispatchEvent(new Event("scroll")); });
+  await auditDialog(page, "reader outline sheet", {
+    open: () => openBySelector(page, 'button[aria-label="Table of contents"]'),
+    containerSelector: ".reader-side-panel.open",
+    whileOpen: async () => {
+      inspected += await inspectControls(page, "reader outline sheet");
+      const sheet = await page.$eval(".reader-side-panel", (panel) => ({ role: panel.getAttribute("role"), modal: panel.getAttribute("aria-modal"), current: panel.querySelector('.outline-list [aria-current="location"]')?.textContent || "" }));
+      if (sheet.role !== "dialog" || sheet.modal !== "true") findings.push(`reader outline sheet: open phone sheet is not a modal dialog (${JSON.stringify(sheet)})`);
+      if (!sheet.current) findings.push("reader outline sheet: the section being read is not marked aria-current in the outline");
+    },
+  });
+
+  // Teaching Mode (READER-5): the phone layout hides nothing that the focus
+  // trap still counts, so Tab and Shift+Tab wrap inside the dialog.
+  await auditDialog(page, "teaching mode", {
+    open: () => openByText(page, ".document-tools button", "Teach"),
+    containerSelector: ".teach-mode",
+    whileOpen: async () => {
+      inspected += await inspectControls(page, "teaching mode");
+      if (!(await page.$eval('select[aria-label="Jump to teaching section"]', (select) => select.getClientRects().length > 0))) findings.push("teaching mode: the phone layout hides the section picker");
+    },
+  });
 
   await clickByText(page, ".document-tools button", "Whiteboard");
   await page.waitForSelector(".board-canvas");
@@ -344,7 +366,7 @@ try {
 
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
   assert.equal(findings.length, 0, `control quality failures:\n${findings.map((finding) => `- ${finding}`).join("\n")}`);
-  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, create-note dialog, review card dialog, settings drawer, and nested install sheet; and opener focus-restore verified for all five dialogs after the deferred-restore repair.`);
+  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; and opener focus-restore verified for all seven dialogs.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

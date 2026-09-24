@@ -90,6 +90,38 @@ try {
   const documentId = "notes/part-01-foundations/01-ai-ml-mental-model.md";
   await page.goto(`${baseUrl}#/read/${encodeURIComponent(documentId)}`, { waitUntil: "networkidle2", timeout: 30_000 });
   await page.waitForSelector(".markdown-body h1");
+
+  // READER-1: mid-lecture on a phone, a selection gets Highlight/Clip/Ask AI
+  // right above the bottom navigation instead of only in the top tool row.
+  await page.$eval(".reader-scroll", (node) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * 0.5; node.dispatchEvent(new Event("scroll")); });
+  await delay(250);
+  const midQuote = await page.evaluate(() => {
+    const top = document.querySelector(".reader-scroll").getBoundingClientRect().top;
+    const paragraph = [...document.querySelectorAll(".markdown-body p")].find((node) => { const box = node.getBoundingClientRect(); return box.top > top + 40 && box.bottom < innerHeight - 260 && node.textContent.trim().length > 40; });
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+    return paragraph.textContent.replace(/\s+/g, " ").trim();
+  });
+  await page.waitForSelector(".selection-toolbar", { visible: true, timeout: 5_000 });
+  const selectionTools = await page.$eval(".selection-toolbar", (bar) => {
+    const box = bar.getBoundingClientRect();
+    const nav = document.querySelector(".bottom-nav")?.getBoundingClientRect();
+    return { top: box.top, bottom: box.bottom, navTop: nav?.top ?? innerHeight, labels: [...bar.querySelectorAll("button")].map((button) => button.textContent.trim()) };
+  });
+  assert.ok(selectionTools.top >= 0 && selectionTools.bottom <= selectionTools.navTop, `selection tools are off-screen or under the bottom nav: ${JSON.stringify(selectionTools)}`);
+  assert.ok(["Highlight", "Clip"].every((label) => selectionTools.labels.includes(label)), `selection tools are missing actions: ${selectionTools.labels.join(", ")}`);
+  await page.click(".selection-toolbar button:first-child");
+  await page.waitForSelector(".annotation-dialog");
+  assert.equal((await page.$eval(".annotation-dialog blockquote", (node) => node.textContent)).replace(/\s+/g, " ").trim(), midQuote, "the selection toolbar highlighted a different passage");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".annotation-dialog", { hidden: true });
+  await page.evaluate(() => getSelection().removeAllRanges());
+  await page.waitForSelector(".selection-toolbar", { hidden: true, timeout: 5_000 });
+  await page.$eval(".reader-scroll", (node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+
   const quote = await page.$eval(".markdown-body", (article) => {
     const paragraph = [...article.querySelectorAll("p")].find((node) => node.textContent.trim().length > 120);
     const textNode = [...paragraph.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.nodeValue.trim().length > 40) || paragraph.firstChild;

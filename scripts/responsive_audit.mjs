@@ -177,6 +177,36 @@ try {
     await navigate(`read/${encodeURIComponent(documentId)}`, ".reader-view");
     await page.waitForSelector(".markdown-body h1");
     await inspect("reader", ".reader-view");
+    if (textScale === 1) {
+      // READER-8: small laptops start with the outline hidden so the lecture
+      // keeps a readable column. READER-7: line length visibly changes
+      // wherever the screen has room, and explains itself where it cannot.
+      const readerLayout = await page.evaluate(async () => {
+        const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const panel = getComputedStyle(document.querySelector(".reader-side-panel"));
+        const article = () => Math.round(document.querySelector(".markdown-body").getBoundingClientRect().width);
+        const state = { panelShown: panel.display !== "none" && panel.visibility !== "hidden", article: article(), widths: {} };
+        document.querySelector('[aria-label="Reading appearance"]').click();
+        await frame();
+        const buttons = [...document.querySelectorAll(".display-popover .segmented button")];
+        state.note = document.querySelector(".display-popover .width-note")?.textContent || "";
+        for (const button of buttons) { button.click(); await frame(); state.widths[button.textContent.trim()] = article(); }
+        buttons.find((button) => button.textContent.trim() === "comfortable")?.click();
+        document.querySelector('[aria-label="Close appearance"]').click();
+        await frame();
+        return state;
+      });
+      const problems = [];
+      if (width > 980 && width < 1240 && (readerLayout.panelShown || readerLayout.article < 560)) problems.push(`Outline squeezes the lecture to ${readerLayout.article}px`);
+      const { focused, comfortable, wide } = readerLayout.widths;
+      const offered = Object.keys(readerLayout.widths).length > 0;
+      if (offered && !(focused < wide)) problems.push(`Line length has no visible effect: ${JSON.stringify(readerLayout.widths)}`);
+      if (!offered && !readerLayout.note) problems.push("Line length is hidden without an explanation");
+      if ([768, 1920].includes(width) && !(focused < comfortable && comfortable < wide)) problems.push(`Line length options are not distinct: ${JSON.stringify(readerLayout.widths)}`);
+      if (width <= 430 && offered) problems.push("Phone offers a line-length control that cannot change anything");
+      results.push({ device, width, height, textScale, surface: "reader-layout", ok: problems.length === 0, problems, ...readerLayout });
+      if (problems.length) console.log(JSON.stringify(results.at(-1)));
+    }
     for (const [surface, opener, panel, closer] of [
       ["reader-notes", '[aria-label="Personal notes"]', ".reader-side-panel.open", '.reader-side-panel [aria-label="Close panel"]'],
       ["appearance", '[aria-label="Reading appearance"]', ".display-popover", '[aria-label="Close appearance"]'],

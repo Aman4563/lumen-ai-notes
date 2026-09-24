@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, Eye, EyeOff, Expand, Minus, Minimize2, Pause, Play, Plus, Printer, RotateCcw, Square } from "lucide-react";
-import { renderMarkdown, splitTeachingSections } from "../lib/markdown";
+import { splitTeachingSections } from "../lib/markdown";
 import { plainTextFromMarkdown } from "../lib/content";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
+import { renderReaderMarkdown, useRenderedMarkdown } from "../lib/useRenderedMarkdown.js";
+import { useModalDialog } from "../hooks/useModalDialog.js";
+
+const TEACHING_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-view > :not(.teach-mode)"];
 
 export default function TeachingMode({ title, source, onClose, speech }) {
   const sections = useMemo(() => splitTeachingSections(source), [source]);
@@ -16,7 +20,7 @@ export default function TeachingMode({ title, source, onClose, speech }) {
   const rootRef = useRef(null);
   const touchStartRef = useRef(null);
   const current = sections[index] || { title, markdown: source };
-  const currentHtml = useMemo(() => renderMarkdown(current.markdown), [current.markdown]);
+  const currentHtml = useRenderedMarkdown(current.markdown);
   const currentMarkup = useMemo(() => ({ __html: currentHtml }), [currentHtml]);
   useMermaidDiagrams(articleRef, { contentKey: currentHtml, enabled: !concealed, theme: "dark" });
 
@@ -48,35 +52,21 @@ export default function TeachingMode({ title, source, onClose, speech }) {
     return () => clearInterval(timer);
   }, [timerStarted]);
 
-  useEffect(() => {
-    const previouslyFocused = document.activeElement;
-    const regions = [...document.querySelectorAll(".app-sidebar, .app-topbar, .bottom-nav, .reader-view > :not(.teach-mode)")];
-    regions.forEach((region) => {
-      region.inert = true;
-      region.setAttribute("aria-hidden", "true");
-    });
-    requestAnimationFrame(() => rootRef.current?.querySelector('button[aria-label="Exit teaching mode"]')?.focus());
-    return () => {
-      regions.forEach((region) => {
-        region.inert = false;
-        region.removeAttribute("aria-hidden");
-      });
-      previouslyFocused?.focus?.();
-    };
-  }, []);
+  // Inert background, Exit-first focus, Tab wrap over the controls that are
+  // actually rendered (phone hides some), Escape, and focus restore.
+  useModalDialog(true, rootRef, {
+    onClose: close,
+    background: TEACHING_BACKGROUND,
+    initialFocus: (root) => root.querySelector('button[aria-label="Exit teaching mode"]'),
+  });
 
   useEffect(() => {
     const handleKey = (event) => {
-      if (event.key === "Tab") {
-        const focusable = [...(rootRef.current?.querySelectorAll("button:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1'])") || [])];
-        if (!focusable.length) return;
-        const first = focusable[0];
-        const last = focusable.at(-1);
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      } else if (event.key === "ArrowRight" || event.key === "PageDown") move(1);
+      // Arrow keys belong to the section picker and to focused scrollers
+      // (wide code, tables, diagrams) rather than to section navigation.
+      if (event.target.closest?.("select, input, textarea, pre, .table-scroll, .diagram-shell")) return;
+      if (event.key === "ArrowRight" || event.key === "PageDown") move(1);
       else if (event.key === "ArrowLeft" || event.key === "PageUp") move(-1);
-      else if (event.key === "Escape") close();
       else if (event.key === " " && event.target === document.body) {
         event.preventDefault();
         if (speech.status === "speaking" || speech.status === "paused") speech.togglePause();
@@ -85,7 +75,9 @@ export default function TeachingMode({ title, source, onClose, speech }) {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [close, current.markdown, move, speech]);
+  }, [current.markdown, index, move, speech]);
+
+  const canFullscreen = Boolean(document.documentElement.requestFullscreen);
 
   return (
     <div ref={rootRef} className="teach-mode" role="dialog" aria-modal="true" aria-label={`Teaching mode: ${title}`}>
@@ -94,7 +86,7 @@ export default function TeachingMode({ title, source, onClose, speech }) {
           <span className="eyebrow">Teaching mode · {index + 1} of {sections.length}</span>
           <strong>{title}</strong>
         </div>
-        <div className="teach-header-actions"><span><Clock3 size={14} /> {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</span><select value={index} onChange={(event) => { speech.stop(); setIndex(Number(event.target.value)); }} aria-label="Jump to teaching section">{sections.map((section, sectionIndex) => <option value={sectionIndex} key={`${section.title}-${sectionIndex}`}>{sectionIndex + 1}. {section.title}</option>)}</select><button className="icon-button inverse" onClick={printDocument} aria-label="Print or save as PDF" title="Print all sections / save as PDF" type="button"><Printer size={19} /></button><button className="icon-button inverse" onClick={() => document.documentElement.requestFullscreen?.().catch(() => {})} disabled={!document.documentElement.requestFullscreen} aria-label="Enter fullscreen" type="button"><Expand size={19} /></button><button className="icon-button inverse" onClick={close} aria-label="Exit teaching mode" type="button"><Minimize2 size={21} /></button></div>
+        <div className="teach-header-actions"><span className="teach-timer" aria-label={`Teaching time ${Math.floor(elapsed / 60)} minutes ${elapsed % 60} seconds`}><Clock3 size={14} aria-hidden="true" /> {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</span><select value={index} onChange={(event) => { speech.stop(); setIndex(Number(event.target.value)); }} aria-label="Jump to teaching section">{sections.map((section, sectionIndex) => <option value={sectionIndex} key={`${section.title}-${sectionIndex}`}>{sectionIndex + 1}. {section.title}</option>)}</select><button className="icon-button inverse" onClick={printDocument} aria-label="Print or save as PDF" title="Print all sections / save as PDF" type="button"><Printer size={19} /></button>{canFullscreen && <button className="icon-button inverse" onClick={() => document.documentElement.requestFullscreen?.().catch(() => {})} aria-label="Enter fullscreen" type="button"><Expand size={19} /></button>}<button className="icon-button inverse" onClick={close} aria-label="Exit teaching mode" type="button"><Minimize2 size={21} /></button></div>
       </header>
       <main className="teach-stage" onTouchStart={(event) => { touchStartRef.current = event.touches[0]?.clientX; }} onTouchEnd={(event) => { const start = touchStartRef.current; const end = event.changedTouches[0]?.clientX; if (Number.isFinite(start) && Number.isFinite(end) && Math.abs(end - start) > 55) move(end < start ? 1 : -1); touchStartRef.current = null; }}>
         <div className="teach-card">
@@ -124,7 +116,7 @@ export default function TeachingMode({ title, source, onClose, speech }) {
           <ChevronRight size={24} />
         </button>
         </div>
-        <div className="teach-section-progress" aria-label={`${index + 1} of ${sections.length} sections`}><span style={{ width: `${((index + 1) / sections.length) * 100}%` }} /></div>
+        <div className="teach-section-progress" role="progressbar" aria-label="Teaching progress" aria-valuemin={1} aria-valuemax={sections.length} aria-valuenow={index + 1} aria-valuetext={`Section ${index + 1} of ${sections.length}`}><span style={{ width: `${((index + 1) / sections.length) * 100}%` }} /></div>
       </footer>
       {printReady && (
         <div className="teach-print-document">
@@ -132,7 +124,7 @@ export default function TeachingMode({ title, source, onClose, speech }) {
           {sections.map((section, sectionIndex) => (
             <section key={`${section.title}-${sectionIndex}`}>
               <h2>{sectionIndex + 1}. {section.title}</h2>
-              <div className="markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(section.markdown) }} />
+              <div className="markdown-body" dangerouslySetInnerHTML={{ __html: renderReaderMarkdown(section.markdown) }} />
             </section>
           ))}
           <p className="teach-print-footer">Teaching outline exported from Lumen AI Notes.</p>

@@ -112,6 +112,25 @@ try {
   await page.click('button[aria-label="Listen"]');
   await page.waitForSelector('.speech-popover[role="dialog"]');
   await page.waitForFunction(() => document.querySelector(".speech-popover .popover-heading strong")?.textContent.includes("4 device voices"));
+  // READER-12: the sheet takes focus and its Read control is above the fold;
+  // READER-3: scope tiles draw their own theme colors, never the browser's
+  // default button face.
+  const sheet = await page.$eval(".speech-popover", (popover) => {
+    const read = [...popover.querySelectorAll(".speech-controls button")].find((button) => button.textContent.includes("Read"));
+    const box = read.getBoundingClientRect();
+    const frame = popover.getBoundingClientRect();
+    const active = getComputedStyle(popover.querySelector(".speech-scope-grid button.active"));
+    return {
+      focusInside: popover.contains(document.activeElement),
+      readInView: box.top >= frame.top && box.bottom <= frame.bottom,
+      idleTiles: [...popover.querySelectorAll(".speech-scope-grid button:not(.active)")].map((button) => getComputedStyle(button).backgroundColor),
+      activeDistinct: active.color !== active.backgroundColor,
+    };
+  });
+  assert.equal(sheet.focusInside, true, "opening narration did not move focus into the sheet");
+  assert.equal(sheet.readInView, true, "the Read control is below the fold of the narration sheet");
+  assert.ok(sheet.idleTiles.every((color) => color === "rgba(0, 0, 0, 0)"), `narration scope tiles fell back to the browser button face: ${sheet.idleTiles.join(", ")}`);
+  assert.equal(sheet.activeDistinct, true, "the selected narration scope has no visible contrast");
 
   assert.equal(await page.$$eval('select[aria-label="Narration voice"] option', (options) => options.length), 4, "all reported voices must be selectable");
   assert.equal(await page.$$eval('select[aria-label="Narration language"] option', (options) => options.length), 4, "all reported languages plus automatic mode must be selectable");

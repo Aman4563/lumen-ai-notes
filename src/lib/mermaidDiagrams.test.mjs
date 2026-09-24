@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   MERMAID_RENDER_LIMITS,
+  describeMermaidDefinition,
   mermaidDefinitionForFence,
   mermaidErrorLocation,
   subscribeToMermaidTheme,
@@ -93,4 +94,28 @@ test("dialog scroll locks preserve diagrams while actual theme changes notify al
     });
   }
   assert.ok(disconnected);
+});
+
+test("rendered diagrams get a text alternative built from the preserved definition", () => {
+  assert.equal(
+    describeMermaidDefinition("flowchart LR\n  A[Parameters] --> B[Forward prediction]\n  B --> C[Loss]\n  C --> D[Gradient via chain rule]\n  D --> A"),
+    "Flowchart: Parameters → Forward prediction → Loss → Gradient via chain rule → Parameters",
+  );
+  assert.equal(
+    describeMermaidDefinition('flowchart TD\n  E{Env ok?} -->|no| F[Fix wrappers]\n  E -- yes --> T["Targets (hand) match"]'),
+    "Flowchart: Env ok? → Fix wrappers (no); Env ok? → Targets (hand) match (yes)",
+  );
+  assert.equal(
+    describeMermaidDefinition("sequenceDiagram\n  participant L as Learner\n  L->>Tutor: Ask why gradients vanish\n  Tutor-->>L: Explain the chain rule"),
+    "Sequence diagram: Learner to Tutor: Ask why gradients vanish; Tutor to Learner: Explain the chain rule",
+  );
+  assert.equal(
+    describeMermaidDefinition("stateDiagram-v2\n  [*] --> Running\n  Running --> Failed: deadline\n  Failed --> [*]"),
+    "State diagram: Start → Running; Running → Failed (deadline); Failed → End",
+  );
+  assert.equal(describeMermaidDefinition("---\ntitle: Path\n---\n%% note\nflowchart TD\n  A --> B"), "Flowchart: A → B");
+  // Author markup never reaches the accessible name as markup.
+  assert.equal(describeMermaidDefinition('flowchart LR\n  A["<img src=x onerror=alert(1)> Safe"] --> B[Done]'), "Flowchart: Safe → Done");
+  const long = `flowchart LR\n${Array.from({ length: 80 }, (_, index) => `  N${index}[Step number ${index}] --> N${index + 1}[Step number ${index + 1}]`).join("\n")}`;
+  assert.ok(describeMermaidDefinition(long).length <= 700, "the accessible name stays bounded");
 });

@@ -56,6 +56,151 @@ export const mermaidDefinitionForFence = (language, source) => {
   return "";
 };
 
+const DIAGRAM_KINDS = [
+  [/^(?:flowchart|graph)\b/u, "Flowchart"],
+  [/^sequenceDiagram\b/u, "Sequence diagram"],
+  [/^classDiagram/u, "Class diagram"],
+  [/^stateDiagram/u, "State diagram"],
+  [/^erDiagram\b/u, "Entity relationship diagram"],
+  [/^journey\b/u, "User journey"],
+  [/^gantt\b/u, "Gantt chart"],
+  [/^pie\b/u, "Pie chart"],
+  [/^mindmap\b/u, "Mind map"],
+  [/^timeline\b/u, "Timeline"],
+];
+const MAX_DESCRIPTION_CHARACTERS = 700;
+const SKIPPED_LINE = /^(?:%%|classDef\b|class\b|style\b|linkStyle\b|click\b|subgraph\b|end\b|direction\b|note\b|autonumber\b|participant\b|actor\b|activate\b|deactivate\b|loop\b|alt\b|else\b|opt\b|par\b|and\b|rect\b|title\b|accTitle\b|accDescr\b)/u;
+// An id followed by one Mermaid node shape, each closed by its own bracket:
+// ((..)) [[..]] [(..)] ([..]) {{..}} [/..] [\..] [..] (..) {..} >..]
+const NODE_DECLARATION = /([A-Za-z0-9_][\w-]*)\s*(?:\(\(([^)\n]*)\)\)|\[\[([^\]\n]*)\]\]|\[\(([^)\n]*)\)\]|\(\[([^\]\n]*)\]\)|\{\{([^}\n]*)\}\}|\[[/\\]([^\]\n]*?)[/\\]\]|\[("[^"\n]*"|[^\]\n]*)\]|\(("[^"\n]*"|[^)\n]*)\)|\{("[^"\n]*"|[^}\n]*)\}|>([^\]\n]*)\])/gu;
+const FLOW_EDGE = /\s*(<?(?:-{2,}|={2,}|-\.+-|~{3,})[>xo]?)\s*(?:\|([^|]*)\|)?\s*/u;
+
+const cleanLabel = (value) => String(value || "")
+  .replace(/"/gu, "")
+  .replace(/<br\s*\/?>/giu, " ")
+  .replace(/<[^>]*>/gu, "")
+  .replace(/[`*]/gu, "")
+  .replace(/\s+/gu, " ")
+  .trim();
+
+const describeEdges = (edges) => {
+  const parts = [];
+  let path = null;
+  for (const edge of edges) {
+    if (path && !edge.label && !path.closed && path.nodes.at(-1) === edge.from) {
+      path.nodes.push(edge.to);
+      continue;
+    }
+    path = { nodes: [edge.from, edge.to], label: edge.label, closed: Boolean(edge.label) };
+    parts.push(path);
+  }
+  return parts.map((part) => `${part.nodes.join(" → ")}${part.label ? ` (${part.label})` : ""}`);
+};
+
+const flowchartParts = (lines) => {
+  const labels = new Map();
+  const order = [];
+  const nameOf = (id) => labels.get(id) || id;
+  const edges = [];
+  for (const line of lines) {
+    const bare = line
+      .replace(/--\s+([^-|>][^>|]*?)\s+-->/gu, "-->|$1|")
+      .replace(/==\s+([^=|>][^>|]*?)\s+==>/gu, "==>|$1|")
+      .replace(/-\.\s+([^.|>][^>|]*?)\s+\.->/gu, "-.->|$1|")
+      .replace(NODE_DECLARATION, (match, id, ...shapes) => {
+        const label = shapes.slice(0, 10).find((value) => value !== undefined);
+        if (!labels.has(id)) labels.set(id, cleanLabel(label) || id);
+        if (!order.includes(id)) order.push(id);
+        return id;
+      })
+      .replace(/:::[\w-]+/gu, "");
+    const pieces = bare.split(FLOW_EDGE);
+    if (pieces.length < 4) {
+      pieces[0]?.split("&").map((id) => id.trim()).filter((id) => /^[\w-]+$/u.test(id)).forEach((id) => { if (!order.includes(id)) order.push(id); });
+      continue;
+    }
+    for (let index = 0; index + 3 < pieces.length; index += 3) {
+      const sources = pieces[index].split("&").map((id) => id.trim()).filter(Boolean);
+      const targets = pieces[index + 3].split("&").map((id) => id.trim()).filter(Boolean);
+      const label = cleanLabel(pieces[index + 2]);
+      sources.forEach((from) => targets.forEach((to) => {
+        [from, to].forEach((id) => { if (!order.includes(id)) order.push(id); });
+        edges.push({ from, to, label });
+      }));
+    }
+  }
+  const named = edges.map((edge) => ({ ...edge, from: nameOf(edge.from), to: nameOf(edge.to) }));
+  const parts = describeEdges(named);
+  const connected = new Set(edges.flatMap((edge) => [edge.from, edge.to]));
+  const isolated = order.filter((id) => !connected.has(id)).map(nameOf);
+  return isolated.length ? [...parts, ...isolated] : parts;
+};
+
+const sequenceParts = (lines) => {
+  const aliases = new Map();
+  const parts = [];
+  for (const line of lines) {
+    const participant = line.match(/^(?:participant|actor)\s+(\S+)(?:\s+as\s+(.+))?$/u);
+    if (participant) {
+      aliases.set(participant[1], cleanLabel(participant[2] || participant[1]));
+      continue;
+    }
+    const message = line.match(/^([^-+\s][^-]*?)\s*(?:-{1,2}>>|-{1,2}>|-{1,2}x|-{1,2}\))\s*[+-]?\s*([^:]+?)\s*:\s*(.*)$/u);
+    if (message) {
+      const [, from, to, text] = message;
+      parts.push(`${aliases.get(from.trim()) || from.trim()} to ${aliases.get(to.trim()) || to.trim()}: ${cleanLabel(text)}`);
+    }
+  }
+  return parts;
+};
+
+const stateParts = (lines) => {
+  const edges = [];
+  for (const line of lines) {
+    const transition = line.match(/^(\S+)\s*-->\s*([^:]+?)\s*(?::\s*(.*))?$/u);
+    if (!transition) continue;
+    const name = (value, fallback) => (value.trim() === "[*]" ? fallback : cleanLabel(value));
+    edges.push({ from: name(transition[1], "Start"), to: name(transition[2], "End"), label: cleanLabel(transition[3]) });
+  }
+  return describeEdges(edges);
+};
+
+/**
+ * A plain-language text alternative built from the preserved Mermaid
+ * definition (never from generated SVG), e.g. "Flowchart: Parameters →
+ * Forward prediction → Loss". It becomes the rendered diagram's accessible
+ * name so assistive technology gets the node labels a role=img would hide.
+ */
+export const describeMermaidDefinition = (definition) => {
+  const lines = normalizeLineEndings(definition).split("\n").map((line) => line.trim()).filter(Boolean);
+  let header = "";
+  let body = [];
+  let inFrontmatter = false;
+  for (const [index, line] of lines.entries()) {
+    if (!header && index === 0 && line === "---") { inFrontmatter = true; continue; }
+    if (inFrontmatter) { if (line === "---") inFrontmatter = false; continue; }
+    if (line.startsWith("%%")) continue;
+    if (!header) { header = line; continue; }
+    body.push(line);
+  }
+  const kind = DIAGRAM_KINDS.find(([pattern]) => pattern.test(header))?.[1] || "Diagram";
+  const sequence = kind === "Sequence diagram";
+  const classes = kind === "Class diagram";
+  body = body.filter((line) => (sequence && /^(?:participant|actor)\b/u.test(line)) || (classes && /^class\b/u.test(line)) || !SKIPPED_LINE.test(line));
+  let parts = [];
+  if (kind === "Flowchart") parts = flowchartParts(body);
+  else if (sequence) parts = sequenceParts(body);
+  else if (kind === "State diagram") parts = stateParts(body);
+  else {
+    parts = body
+      .map((line) => cleanLabel(line.replace(/^class\s+/u, "").replace(/[{}]/gu, "")))
+      .filter((line) => /[\p{L}\p{N}]/u.test(line));
+  }
+  const summary = parts.filter(Boolean).join("; ");
+  const text = summary ? `${kind}: ${summary}` : kind;
+  return text.length > MAX_DESCRIPTION_CHARACTERS ? `${text.slice(0, MAX_DESCRIPTION_CHARACTERS - 1).trimEnd()}…` : text;
+};
+
 export const mermaidErrorLocation = (error) => {
   const location = error?.hash?.loc || error?.loc || error?.location;
   const lineCandidate = location?.first_line ?? location?.line ?? error?.line;
@@ -255,17 +400,24 @@ const showDiagramFailure = (node, definition, error, kind = "syntax") => {
   }
 };
 
-const showRenderedDiagram = (node, svgText) => {
+// Mermaid draws 16px labels. Below this fit scale (about 11.5px on screen)
+// a phone-width diagram stops being legible, so it keeps this share of its
+// natural width and the shell scrolls horizontally instead.
+const READABLE_DIAGRAM_SCALE = 0.72;
+
+const showRenderedDiagram = (node, svgText, definition = "") => {
   if (!node?.isConnected) return false;
   const svg = safeSvgElement(svgText);
   if (!svg) return false;
+  const naturalWidth = Number(svg.viewBox?.baseVal?.width) || Number.parseFloat(svg.getAttribute("viewBox")?.split(/[\s,]+/u)[2]) || 0;
+  if (naturalWidth > 0) svg.style.setProperty("--diagram-readable-width", `${Math.round(naturalWidth * READABLE_DIAGRAM_SCALE)}px`);
   node.replaceChildren(svg);
   node.dataset.diagramRenderCount = String((Number(node.dataset.diagramRenderCount) || 0) + 1);
   node.dataset.diagramStatus = "rendered";
   node.dataset.processed = "true";
   delete node.dataset.rendering;
   node.removeAttribute("aria-busy");
-  node.setAttribute("aria-label", "Rendered Mermaid diagram");
+  node.setAttribute("aria-label", describeMermaidDefinition(definition));
   const shell = node.closest(".diagram-shell");
   shell?.classList.remove("diagram-failed");
   if (shell) shell.dataset.diagramStatus = "rendered";
@@ -335,7 +487,7 @@ export const renderMermaidDiagrams = (root, {
           skipped += 1;
           continue;
         }
-        if (!showRenderedDiagram(node, svg)) throw new Error("Mermaid returned invalid SVG");
+        if (!showRenderedDiagram(node, svg, definition)) throw new Error("Mermaid returned invalid SVG");
         rendered += 1;
       } catch (error) {
         if (abortRequested(signal) || !root.isConnected || !node.isConnected) {

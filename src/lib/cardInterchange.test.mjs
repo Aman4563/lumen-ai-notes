@@ -73,4 +73,7 @@ test("standalone HTML export is self-contained and escapes the title", () => {
   assert.match(html, /<h1>Body<\/h1>/);
   assert.match(html, /Part 5 — Classical Supervised Learning/);
   assert.doesNotMatch(html, /https?:\/\//, "no external asset references");
+  // KaTeX emits an HTML copy and a MathML copy of each formula; without
+  // KaTeX's stylesheet the export must show only the MathML one.
+  assert.match(html, /\.katex-html\s*\{\s*display:\s*none;?\s*\}/, "TeX would render twice in the export");
 });

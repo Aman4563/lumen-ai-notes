@@ -36,6 +36,7 @@ export default function NarrationPanel({
   audioBookmarks = [],
   onPlayBookmark,
   onDeleteBookmark,
+  panelRef,
 }) {
   const active = speech.status === "speaking" || speech.status === "paused";
   const matchingVoiceValues = new Set(speech.voiceGroups.flatMap((group) => group.voices.map(voiceValue)));
@@ -48,11 +49,11 @@ export default function NarrationPanel({
   };
 
   return (
-    <div className="reader-popover speech-popover" role="dialog" aria-label="Narration settings">
+    <div ref={panelRef} id="reader-narration-panel" className="reader-popover speech-popover" role="dialog" aria-labelledby="reader-narration-title">
       <div className="popover-heading">
         <div>
           <span className="eyebrow">Listen</span>
-          <strong>{speech.supported ? `${speech.voices.length} device voice${speech.voices.length === 1 ? "" : "s"} available` : "Speech is unavailable"}</strong>
+          <strong id="reader-narration-title">{speech.supported ? `${speech.voices.length} device voice${speech.voices.length === 1 ? "" : "s"} available` : "Speech is unavailable"}</strong>
         </div>
         <button className="icon-button small" onClick={onClose} aria-label="Close narration" type="button"><X size={17} /></button>
       </div>
@@ -79,6 +80,25 @@ export default function NarrationPanel({
           {target.available ? `${target.label} · ${target.text.length.toLocaleString()} characters` : target.reason}
         </p>
       </fieldset>
+
+      {/* Play and transport sit right under the target so they stay above
+          the fold on phones; voice and sound settings follow. */}
+      <div className="speech-controls">
+        {active ? (
+          <>
+            <button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button>
+            <button className="button primary" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} type="button">{speech.status === "paused" ? <Play size={18} /> : <Pause size={18} />} {speech.status === "paused" ? "Resume" : "Pause"}</button>
+            <button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>
+            <button className="button secondary" onClick={speech.stop} type="button"><Square size={16} fill="currentColor" /> Stop</button>
+            <span className="speech-count">{speech.progress.current + 1}/{speech.progress.total}</span>
+          </>
+        ) : (
+          <>
+            <button className="button primary" onClick={onRead} disabled={!speech.supported || !target.available} type="button"><Play size={18} fill="currentColor" /> Read {target.label.toLocaleLowerCase()}</button>
+            <button className="button secondary" onClick={speech.preview} disabled={!speech.supported} type="button"><Volume2 size={17} /> Test voice</button>
+          </>
+        )}
+      </div>
 
       <div className="speech-choice-grid">
         <label>
@@ -193,22 +213,6 @@ export default function NarrationPanel({
         ))}
       </div>
 
-      <div className="speech-controls">
-        {active ? (
-          <>
-            <button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button>
-            <button className="button primary" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} type="button">{speech.status === "paused" ? <Play size={18} /> : <Pause size={18} />} {speech.status === "paused" ? "Resume" : "Pause"}</button>
-            <button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>
-            <button className="button secondary" onClick={speech.stop} type="button"><Square size={16} fill="currentColor" /> Stop</button>
-            <span className="speech-count">{speech.progress.current + 1}/{speech.progress.total}</span>
-          </>
-        ) : (
-          <>
-            <button className="button primary" onClick={onRead} disabled={!speech.supported || !target.available} type="button"><Play size={18} fill="currentColor" /> Read {target.label.toLocaleLowerCase()}</button>
-            <button className="button secondary" onClick={speech.preview} disabled={!speech.supported} type="button"><Volume2 size={17} /> Test voice</button>
-          </>
-        )}
-      </div>
       <div className="speech-live" role="status" aria-live="polite">
         {speech.currentText && <p className="speech-current"><strong>{speech.activeLabel}</strong>{speech.currentText}</p>}
         {speech.error && <p className="inline-warning">{speech.error}</p>}

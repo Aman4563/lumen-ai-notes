@@ -421,6 +421,19 @@ try {
   });
   await page.waitForSelector(".markdown-body", { timeout: 10_000 });
   assert.match(await page.evaluate(() => window.location.hash), /^#\/read\//, "citation did not navigate to its source document");
+  // TF-2: the cited section, not the saved reading position, owns the first
+  // scroll. The reader focuses the cited heading; it must also be in view.
+  const citedPlacement = await page.waitForFunction(() => {
+    const heading = document.activeElement;
+    const scroller = document.querySelector(".reader-scroll");
+    if (!scroller || !/^H[1-4]$/u.test(heading?.tagName || "")) return false;
+    const offset = heading.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    return offset > -4 && offset < 160 ? { heading: heading.textContent.trim(), offset: Math.round(offset) } : false;
+  }, { timeout: 5_000 }).then((handle) => handle.jsonValue()).catch(async () => page.evaluate(() => ({
+    active: document.activeElement?.tagName, text: document.activeElement?.textContent?.trim().slice(0, 60),
+    offset: Math.round((document.activeElement?.getBoundingClientRect().top || 0) - (document.querySelector(".reader-scroll")?.getBoundingClientRect().top || 0)),
+  })));
+  assert.ok(citedPlacement?.heading, `citation opened the lesson but not the cited section: ${JSON.stringify(citedPlacement)}`);
 
   await page.evaluate(() => { window.location.hash = "#/ai"; });
   await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
@@ -604,6 +617,8 @@ try {
           ...(profile.personalNotes || {}),
           "notes/00-roadmap.md": "The zephyrine-quorum trick keeps optimizer updates stable during long study sessions.",
         };
+        // A saved reading place the note citation must keep (it scrolls no heading).
+        profile.readingPositions = { ...(profile.readingPositions || {}), "notes/00-roadmap.md": 0.5 };
         const put = store.put(profile, "profile");
         put.onerror = () => reject(put.error);
         put.onsuccess = () => resolve();
@@ -654,6 +669,10 @@ try {
     /zephyrine-quorum/i,
     "the focused editor did not contain the cited personal note",
   );
+  // The citation target skips the saved-position restore (TF-2); a note
+  // citation claims no scroll, so the lecture still opens at its saved place.
+  const noteLecturePlace = await noteScenario.page.$eval(".reader-scroll", (node) => node.scrollTop / Math.max(1, node.scrollHeight - node.clientHeight));
+  assert.ok(noteLecturePlace > 0.35 && noteLecturePlace < 0.65, `a personal-note citation dropped the saved reading place (at ${noteLecturePlace.toFixed(2)} of the lecture, saved 0.50)`);
   await noteScenario.page.close();
 
   // Pairing-protected servers (AI_AUTH=pairing) must gate generation behind
