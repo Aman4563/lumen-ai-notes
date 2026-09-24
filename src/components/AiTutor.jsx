@@ -688,9 +688,14 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
   const [expanded, setExpanded] = useState({});
   const [draftState, setDraftState] = useState({ status: "idle", message: "" });
   const selectionSet = useMemo(() => new Set(selected), [selected]);
-  const toggle = (index) => setSelected((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index].sort((a, b) => a - b));
+  // A finished add stays reflected on the button until the selection changes.
+  const changeSelection = (update) => {
+    setSelected(update);
+    setDraftState((current) => current.status === "saving" ? current : { status: "idle", message: "" });
+  };
+  const toggle = (index) => changeSelection((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index].sort((a, b) => a - b));
   const createDrafts = async () => {
-    if (!onCreateFlashcardDrafts || !selected.length || draftState.status === "saving") return;
+    if (!onCreateFlashcardDrafts || !selected.length || ["saving", "saved", "exists"].includes(draftState.status)) return;
     setDraftState({ status: "saving", message: "Adding selected drafts…" });
     try {
       const chosenCards = selected.map((index) => cards[index]).map((card) => ({
@@ -700,22 +705,29 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
         hint: card.hint?.trim() || null,
         tags: [...new Set(card.tags.map((tag) => tag.trim()).filter(Boolean))],
       }));
-      await onCreateFlashcardDrafts(chosenCards, {
+      const result = await onCreateFlashcardDrafts(chosenCards, {
         requestId: message.requestId,
         mode: message.mode,
         sourceIds: message.citationSources.map((source) => source.id),
         webSources: message.webSources.map(({ title, url }) => ({ title, url })),
       });
-      setDraftState({ status: "saved", message: `${chosenCards.length} flashcard draft${chosenCards.length === 1 ? "" : "s"} added for review.` });
-    } catch {
-      setDraftState({ status: "error", message: "The drafts could not be added. Your selection is still here; try again." });
+      const added = Number.isSafeInteger(result?.added) ? result.added : chosenCards.length;
+      const skipped = Number.isSafeInteger(result?.skipped) ? result.skipped : 0;
+      if (!added && skipped) {
+        setDraftState({ status: "exists", message: `Already in Review: ${skipped === 1 ? "this card is" : `all ${skipped} cards are`} in your deck.` });
+        return;
+      }
+      setDraftState({ status: "saved", message: `${added} flashcard draft${added === 1 ? "" : "s"} added for review${skipped ? `; ${skipped} already in Review` : ""}.` });
+    } catch (error) {
+      const reason = error instanceof Error && error.message ? ` ${error.message.replace(/\.?$/, ".")}` : "";
+      setDraftState({ status: "error", message: `The drafts could not be added.${reason} Your selection is still here; try again.` });
     }
   };
   return (
     <div className="ai-tutor__flashcards">
       <div className="ai-tutor__flashcard-actions">
         <p><strong>{selected.length}</strong> of {cards.length} selected</p>
-        <button className="ai-tutor__text-button" type="button" onClick={() => setSelected(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear all" : "Select all"}</button>
+        <button className="ai-tutor__text-button" type="button" onClick={() => changeSelection(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear all" : "Select all"}</button>
       </div>
       {cards.map((card, index) => (
         <article className={`ai-tutor__flashcard ${selectionSet.has(index) ? "is-selected" : ""}`} key={`${message.id}-card-${index}`}>
@@ -730,7 +742,7 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
           {card.tags.length > 0 && <div className="ai-tutor__tags" aria-label="Suggested tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
         </article>
       ))}
-      {onCreateFlashcardDrafts ? <button className="ai-tutor__button ai-tutor__button--primary" type="button" disabled={!selected.length || draftState.status === "saving"} onClick={createDrafts}>{draftState.status === "saving" ? <LoaderCircle className="ai-tutor__spin" size={17} aria-hidden="true" /> : <Check size={17} aria-hidden="true" />} Add selected to review</button> : <p className="ai-tutor__muted">Flashcard drafts are ready. Connect the review-deck callback to save them.</p>}
+      {onCreateFlashcardDrafts ? <button className="ai-tutor__button ai-tutor__button--primary" type="button" disabled={!selected.length} aria-disabled={["saving", "saved", "exists"].includes(draftState.status) || undefined} onClick={createDrafts}>{draftState.status === "saving" ? <LoaderCircle className="ai-tutor__spin" size={17} aria-hidden="true" /> : <Check size={17} aria-hidden="true" />} {draftState.status === "saved" ? "Added to Review" : draftState.status === "exists" ? "Already in Review" : "Add selected to review"}</button> : <p className="ai-tutor__muted">Flashcard drafts are ready. Connect the review-deck callback to save them.</p>}
       {draftState.message && <p className={`ai-tutor__draft-status is-${draftState.status}`} role="status">{draftState.message}</p>}
     </div>
   );
@@ -895,7 +907,7 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
           {copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "Copy"}
         </button>
         {message.role === "user" && <button type="button" disabled={requestBusy} onClick={() => onReusePrompt?.(message)}><RotateCcw size={15} aria-hidden="true" /> Edit & reuse</button>}
-        {message.role === "assistant" && <button type="button" disabled={requestBusy} onClick={() => onPrepareRegenerate?.(message)}><RotateCcw size={15} aria-hidden="true" /> Regenerate</button>}
+        {message.role === "assistant" && <button type="button" disabled={requestBusy} onClick={() => onPrepareRegenerate?.(message)}><RotateCcw size={15} aria-hidden="true" /> Edit & regenerate</button>}
         {canSaveNote && <button type="button" disabled={noteStatus === "saved"} onClick={saveNote} aria-label="Save this answer to your notebook as a labeled AI note">{noteStatus === "saved" ? <Check size={15} aria-hidden="true" /> : <NotebookPen size={15} aria-hidden="true" />} {noteStatus === "saved" ? "Saved to notes" : "Save to notes"}</button>}
         {message.role === "assistant" && hasEvidence && <button type="button" aria-expanded={panel === "sources"} onClick={() => togglePanel("sources")}><BookOpen size={15} aria-hidden="true" /> Sources <span>{message.citationSources.length + message.webSources.length}</span></button>}
         {message.role === "assistant" && <button type="button" aria-expanded={panel === "approach"} onClick={() => togglePanel("approach")}><Sparkles size={15} aria-hidden="true" /> Approach</button>}
@@ -1791,8 +1803,11 @@ export default function AiTutor({
   const prepareRegenerate = useCallback((assistantMessage) => {
     const index = history.findIndex((message) => message.id === assistantMessage.id);
     const userMessage = index > 0 ? [...history.slice(0, index)].reverse().find((message) => message.role === "user") : null;
-    if (userMessage) preparePrompt(userMessage, "Request restored. Review its sources and settings, renew consent, then generate a fresh response.");
-  }, [history, preparePrompt]);
+    // Mention only what the learner actually has to renew: the remembered
+    // local-model disclosure and the one-request web permission.
+    const usedWeb = ["searching", "used", "failed", "not-needed"].includes(assistantMessage.webFallbackStatus);
+    if (userMessage) preparePrompt(userMessage, `Request restored. Review its sources and settings${localDisclosureAcknowledged ? "" : ", acknowledge the local-model disclosure"}${usedWeb ? ", tick “Allow current-web fallback” again if it should search the web" : ""}, then generate a fresh response.`);
+  }, [history, localDisclosureAcknowledged, preparePrompt]);
 
   const chooseSourceMode = (nextMode) => {
     if (requestState.status === "loading" || nextMode === sourceMode) return;
@@ -2039,7 +2054,7 @@ export default function AiTutor({
                   {message.role === "assistant"
                     ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
                     : <p className="ai-tutor__user-prompt">{message.content}</p>}
-                  <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, "Request restored. Edit it, review grounding and consent, then send.")} onSaveAnswerNote={onSaveAnswerNote} />
+                  <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`)} onSaveAnswerNote={onSaveAnswerNote} />
                 </article>
               ))}
               {activeResponse && (
@@ -2051,7 +2066,7 @@ export default function AiTutor({
                     : <div className="ai-tutor__response-skeleton" aria-hidden="true"><i /><i /><i /></div>}
                   <div className="ai-tutor__stream-actions"><span>{activeResponse.content
                     ? `${activeResponse.content.length.toLocaleString()} characters received`
-                    : activeResponse.sourceMode === "no-library" && !["searching", "used"].includes(activeResponse.webFallbackStatus)
+                    : activeResponse.sourceMode === "none" && !["searching", "used"].includes(activeResponse.webFallbackStatus)
                       ? "Waiting for the first token…"
                       : "Preparing your answer and checking sources…"}</span><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => requestControllerRef.current?.abort()}><CircleStop size={16} aria-hidden="true" /> Stop generating</button></div>
                 </article>

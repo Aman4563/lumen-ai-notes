@@ -2565,26 +2565,36 @@ export default function App() {
       .map((card) => materializeAiFlashcard(card, metadata))
       .slice(0, 20);
     if (!candidates.length) throw new Error("No valid flashcards were supplied");
-    let added = 0;
-    let skipped = 0;
-    setProfile((current) => {
-      const fingerprints = new Set(current.reviewItems.map((item) => `${item.front.trim().toLocaleLowerCase()}\u0000${item.back.trim().toLocaleLowerCase()}`));
-      const documentId = metadata.sourceIds?.find((id) => allDocumentMap.has(id)) || "";
-      const created = [];
-      candidates.forEach((card) => {
-        const front = card.front.trim();
-        const back = `${card.back.trim()}${card.hint?.trim() ? `\n\nHint: ${card.hint.trim()}` : ""}`;
-        const fingerprint = `${front.toLocaleLowerCase()}\u0000${back.toLocaleLowerCase()}`;
-        if (fingerprints.has(fingerprint)) { skipped += 1; return; }
-        fingerprints.add(fingerprint);
-        created.push(createReviewItem({ type: "basic", front, back, tags: [...(card.tags || []), "ai-draft"], documentId }));
-      });
-      added = Math.min(created.length, Math.max(0, 10_000 - current.reviewItems.length));
-      if (!added) return current;
-      return { ...current, reviewItems: [...created.slice(0, added), ...current.reviewItems] };
+    // Decide what is new from the latest committed profile, outside the state
+    // updater: React may defer an updater, so counts assigned inside it could
+    // still read 0 here and report a failure for cards that were saved.
+    const fingerprintOf = (front, back) => `${front.trim().toLocaleLowerCase()}\u0000${back.trim().toLocaleLowerCase()}`;
+    const seen = new Set(profileRef.current.reviewItems.map((item) => fingerprintOf(item.front, item.back)));
+    const documentId = metadata.sourceIds?.find((id) => allDocumentMap.has(id)) || "";
+    const fresh = [];
+    candidates.forEach((card) => {
+      const front = card.front.trim();
+      const back = `${card.back.trim()}${card.hint?.trim() ? `\n\nHint: ${card.hint.trim()}` : ""}`;
+      const fingerprint = fingerprintOf(front, back);
+      if (seen.has(fingerprint)) return;
+      seen.add(fingerprint);
+      fresh.push({ front, back, tags: [...(card.tags || []), "ai-draft"] });
     });
-    if (!added) throw new Error("Every generated card already exists or the review deck is full");
-    notify(`${added} AI flashcard${added === 1 ? "" : "s"} added to review${skipped ? `; ${skipped} duplicate${skipped === 1 ? " was" : "s were"} skipped` : ""}.`);
+    const skipped = candidates.length - fresh.length;
+    const room = Math.max(0, 10_000 - profileRef.current.reviewItems.length);
+    const created = fresh.slice(0, room).map((card) => createReviewItem({ type: "basic", ...card, documentId }));
+    if (!created.length) {
+      if (fresh.length) throw new Error("The review deck is full. Archive or delete cards before adding more.");
+      return { added: 0, skipped };
+    }
+    setProfile((current) => {
+      const existing = new Set(current.reviewItems.map((item) => fingerprintOf(item.front, item.back)));
+      const unique = created.filter((item) => !existing.has(fingerprintOf(item.front, item.back)));
+      if (!unique.length) return current;
+      return { ...current, reviewItems: [...unique, ...current.reviewItems].slice(0, 10_000) };
+    });
+    notify(`${created.length} AI flashcard${created.length === 1 ? "" : "s"} added to review${skipped ? `; ${skipped} already in Review` : ""}.`);
+    return { added: created.length, skipped };
   }, [allDocumentMap, notify]);
 
   const saveAiAnswerNote = useCallback((payload = {}) => {

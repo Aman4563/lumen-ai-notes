@@ -393,32 +393,39 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
   const [revealed, setRevealed] = useState({});
   const [saveState, setSaveState] = useState({ status: "idle", message: "" });
   const save = async () => {
-    if (!onCreateFlashcardDrafts || !selected.length || saveState.status === "saving") return;
+    if (!onCreateFlashcardDrafts || !selected.length || ["saving", "saved", "exists"].includes(saveState.status)) return;
     const chosen = selected.map((index) => cards[index]);
     setSaveState({ status: "saving", message: "Adding selected cards…" });
     try {
-      await onCreateFlashcardDrafts(chosen, {
+      const result = await onCreateFlashcardDrafts(chosen, {
         mode: "on-device-flashcards",
         sourceIds: message.sources.map((source) => source.documentId || source.id).filter(Boolean),
         webCitationStyle: "explicit-w",
         webSources: message.citations.map(({ index, title, url }) => ({ index, title, url })),
       });
-      setSaveState({ status: "saved", message: `${chosen.length} card${chosen.length === 1 ? "" : "s"} added to review.` });
-    } catch {
-      setSaveState({ status: "error", message: "Cards were not saved. Your selection is still available to retry." });
+      const added = Number.isSafeInteger(result?.added) ? result.added : chosen.length;
+      const skipped = Number.isSafeInteger(result?.skipped) ? result.skipped : 0;
+      if (!added && skipped) setSaveState({ status: "exists", message: "Already in Review: these cards are in your deck." });
+      else setSaveState({ status: "saved", message: `${added} card${added === 1 ? "" : "s"} added to review${skipped ? `; ${skipped} already in Review` : ""}.` });
+    } catch (error) {
+      setSaveState({ status: "error", message: `Cards were not saved.${error instanceof Error && error.message ? ` ${error.message.replace(/\.?$/, ".")}` : ""} Your selection is still available to retry.` });
     }
+  };
+  const changeSelection = (update) => {
+    setSelected(update);
+    setSaveState((current) => current.status === "saving" ? current : { status: "idle", message: "" });
   };
   return (
     <div className="phone-tutor__flashcards">
-      <div className="phone-tutor__flashcard-head"><strong>{selected.length}/{cards.length} selected</strong><button type="button" onClick={() => setSelected(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear" : "Select all"}</button></div>
+      <div className="phone-tutor__flashcard-head"><strong>{selected.length}/{cards.length} selected</strong><button type="button" onClick={() => changeSelection(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear" : "Select all"}</button></div>
       {cards.map((card, index) => <article key={`${message.id}-card-${index}`}>
-        <label><input type="checkbox" checked={selected.includes(index)} onChange={() => setSelected((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])} /><span>Select card {index + 1}</span></label>
+        <label><input type="checkbox" checked={selected.includes(index)} onChange={() => changeSelection((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])} /><span>Select card {index + 1}</span></label>
         <small>Prompt</small><p><InlineFieldCitations text={card.front} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>
         <button type="button" aria-expanded={Boolean(revealed[index])} onClick={() => setRevealed((current) => ({ ...current, [index]: !current[index] }))}>{revealed[index] ? "Hide answer" : "Reveal answer"}<ChevronDown size={15} aria-hidden="true" /></button>
         {revealed[index] && <div className="phone-tutor__card-answer"><small>Answer</small><p><InlineFieldCitations text={card.back} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>{card.hint && <p><strong>Hint:</strong> <InlineFieldCitations text={card.hint} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>}</div>}
         {card.tags.length > 0 && <div className="phone-tutor__tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
       </article>)}
-      {onCreateFlashcardDrafts && <button className="phone-tutor__primary" type="button" disabled={!selected.length || saveState.status === "saving"} onClick={save}><Check size={16} aria-hidden="true" /> Add selected to review</button>}
+      {onCreateFlashcardDrafts && <button className="phone-tutor__primary" type="button" disabled={!selected.length} aria-disabled={["saving", "saved", "exists"].includes(saveState.status) || undefined} onClick={save}><Check size={16} aria-hidden="true" /> {saveState.status === "saved" ? "Added to Review" : saveState.status === "exists" ? "Already in Review" : "Add selected to review"}</button>}
       {saveState.message && <p className={`phone-tutor__save-status is-${saveState.status}`} role="status">{saveState.message}</p>}
     </div>
   );
