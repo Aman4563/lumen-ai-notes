@@ -60,6 +60,31 @@ test("import validates hostile input through the hardened normalizer", () => {
   assert.equal(second.tool, "line");
 });
 
+test("page sizes, rotation, and the real background travel; files without sizes still import (issue #55)", () => {
+  const sizedBoard = {
+    ...board,
+    background: "dots",
+    pages: [{ ...board.pages[0], size: { width: 393, height: 478 }, objects: [{ ...board.pages[0].objects[0], rotation: 0.5 }] }],
+  };
+  const envelope = exportBoardDocument(sizedBoard);
+  assert.equal(envelope.format, "lumen.board.v1", "the format stays v1: size is an optional, additive field");
+  assert.equal(envelope.background, "dots");
+  assert.deepEqual(envelope.pages[0].size, { width: 393, height: 478 });
+  assert.equal(envelope.pages[0].objects[0].rotation, 0.5);
+  const parsed = parseBoardInterchange(JSON.stringify(envelope));
+  assert.deepEqual(parsed.pages[0].size, { width: 393, height: 478 }, "an imported page keeps its authoring size");
+  assert.equal(parsed.pages[0].objects[0].rotation, 0.5);
+
+  // A file exported before sizes existed imports unchanged and adopts the
+  // importing canvas later, exactly like a legacy stored page.
+  const legacyFile = JSON.stringify({ format: BOARD_INTERCHANGE_FORMAT, pages: [{ name: "Old", objects: [{ tool: "line", color: "#17283e", width: 3, points: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.5 }] }] }] });
+  const legacy = parseBoardInterchange(legacyFile);
+  assert.equal(legacy.ok, true);
+  assert.equal("size" in legacy.pages[0], false);
+  assert.deepEqual(legacy.pages[0].objects[0].points, [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.5 }]);
+  assert.equal("size" in exportBoardDocument({ ...board, pages: legacy.pages }).pages[0], false, "unsized pages export without a size");
+});
+
 test("imported pages append within the 20-page cap with collision-safe names", () => {
   const parsed = parseBoardInterchange(JSON.stringify(exportBoardDocument(board)));
   const merged = mergeImportedPages(board, parsed.pages);

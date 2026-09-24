@@ -196,13 +196,22 @@ const mergePage = (basePage, localPage, remotePage, detectedAt) => {
   const local = localPage || base;
   const remote = remotePage || base;
   const name = scalarMerge(base.name, local.name, remote.name);
+  // Page size (issue #55) is adopted once from the authoring canvas. Two tabs
+  // adopting different sizes for a legacy page is an expected race and
+  // resolves deterministically without a user-facing conflict; changing a
+  // size that already existed is recorded like any other contested edit.
+  const size = scalarMerge(base.size || null, local.size || null, remote.size || null);
   const objects = mergeObjects(pageId, base.objects || [], local.objects || [], remote.objects || [], detectedAt);
   const conflicts = [...objects.conflicts];
   if (name.conflict) {
     const loser = name.value === local.name ? remote.name : local.name;
     conflicts.push(conflictRecord({ kind: "concurrent-page-rename", pageId, detectedAt, fingerprint: String(loser) }));
   }
-  return { page: { id: pageId, name: name.value || "Untitled page", objects: objects.records }, conflicts };
+  if (size.conflict && base.size) {
+    const loser = equal(size.value, local.size) ? remote.size : local.size;
+    conflicts.push(conflictRecord({ kind: "concurrent-page-resize", pageId, detectedAt, fingerprint: stableString(loser) }));
+  }
+  return { page: { id: pageId, name: name.value || "Untitled page", ...(size.value ? { size: size.value } : {}), objects: objects.records }, conflicts };
 };
 
 const mergePages = (baseItems, localItems, remoteItems, detectedAt) => {

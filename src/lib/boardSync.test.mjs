@@ -151,3 +151,35 @@ test("a peer's rotation survives the three-way board merge as object data", () =
   const arrived = clamped.pages.flatMap((page) => page.objects).find((object) => object.id === "object-1");
   assert.equal(arrived.rotation, Math.PI, "normalization must clamp rotation into [-π, π]");
 });
+
+test("page sizes migrate sparsely: legacy boards stay byte-identical and adopted sizes survive every path (issue #55)", () => {
+  const legacy = board([{ id: "page-1", name: "Page 1", objects: [object("a")] }]);
+  assert.equal("size" in legacy.pages[0], false, "normalization never fabricates a size for a legacy page");
+  assert.equal(JSON.stringify(normalizeBoardDocument(legacy)), JSON.stringify(legacy), "legacy payloads round-trip unchanged");
+  const sized = board([{ id: "page-1", name: "Page 1", size: { width: 392.6, height: 478 }, objects: [object("a")] }]);
+  assert.deepEqual(sized.pages[0].size, { width: 393, height: 478 });
+  assert.equal("size" in board([{ id: "page-1", name: "Page 1", size: { width: "x" }, objects: [] }]).pages[0], false, "malformed sizes are dropped");
+  assert.deepEqual(sized.pages[0].objects, legacy.pages[0].objects, "adopting a size never rewrites the stored points");
+
+  // Adoption in one tab merges into a peer's concurrent drawing without a conflict.
+  const peer = board([{ id: "page-1", name: "Page 1", objects: [object("a"), object("peer")] }]);
+  const adopted = mergeBoardVersions(legacy, sized, peer, { now: NOW });
+  assert.deepEqual(adopted.board.pages[0].size, { width: 393, height: 478 });
+  assert.deepEqual(adopted.board.pages[0].objects.map((item) => item.id), ["a", "peer"]);
+  assert.equal(adopted.conflicts.length, 0);
+});
+
+test("racing size adoption resolves deterministically; changing an existing size is recorded", () => {
+  const legacy = board([{ id: "page-1", name: "Page 1", objects: [object("a")] }]);
+  const phone = board([{ id: "page-1", name: "Page 1", size: { width: 393, height: 478 }, objects: [object("a")] }]);
+  const mac = board([{ id: "page-1", name: "Page 1", size: { width: 1006, height: 512 }, objects: [object("a")] }]);
+  const forward = mergeBoardVersions(legacy, phone, mac, { now: NOW });
+  const reversed = mergeBoardVersions(legacy, mac, phone, { now: NOW });
+  assert.deepEqual(forward.board.pages[0].size, reversed.board.pages[0].size, "the winner does not depend on tab order");
+  assert.equal(forward.conflicts.length, 0, "two tabs adopting a legacy page is not a user-facing conflict");
+
+  const other = board([{ id: "page-1", name: "Page 1", size: { width: 800, height: 600 }, objects: [object("a")] }]);
+  const contested = mergeBoardVersions(phone, mac, other, { now: NOW });
+  assert.ok(contested.conflicts.some((conflict) => conflict.kind === "concurrent-page-resize"));
+  assert.ok(boardPayloadEqual(mergeBoardVersions(phone, phone, phone, { now: NOW }).board, phone), "an unchanged size merges to itself");
+});

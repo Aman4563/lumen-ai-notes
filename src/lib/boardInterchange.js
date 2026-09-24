@@ -3,8 +3,10 @@ import { createId } from "./id.js";
 
 /**
  * Whiteboard JSON interchange `lumen.board.v1` (BOARD-003, issue #11).
- * Export carries authoring content only — background, page names, objects
- * with their lock state — never ids, sync metadata, or the active page.
+ * Export carries authoring content only — background, page names, each
+ * page's optional authoring size (issue #55; files without one still import
+ * and adopt the importing canvas), objects with their lock state and
+ * rotation — never ids, sync metadata, or the active page.
  * Import appends pages to the current board (undoable through the normal
  * history path), regenerates every id, and funnels all content through the
  * hardened normalizeBoardDocument as its validator.
@@ -17,9 +19,10 @@ export const exportBoardDocument = (board, { title = "", exportedAt = new Date()
   format: BOARD_INTERCHANGE_FORMAT,
   exportedAt: exportedAt.toISOString(),
   title: String(title || "").slice(0, 200),
-  background: board.background === "dark" ? "dark" : "grid",
+  background: ["grid", "dots", "plain"].includes(board.background) ? board.background : "grid",
   pages: (board.pages || []).map((page) => ({
     name: String(page.name || "Page").slice(0, 60),
+    ...(page.size ? { size: { width: page.size.width, height: page.size.height } } : {}),
     objects: (page.objects || []).map((object) => ({
       tool: object.tool,
       color: object.color,
@@ -28,6 +31,7 @@ export const exportBoardDocument = (board, { title = "", exportedAt = new Date()
       fontSize: object.fontSize,
       text: object.text,
       locked: object.locked === true,
+      ...(object.rotation ? { rotation: object.rotation } : {}),
       points: object.points.map((point) => ({ x: point.x, y: point.y })),
     })),
   })),
@@ -58,6 +62,7 @@ export const parseBoardInterchange = (jsonText) => {
     pages: parsed.pages.map((page) => ({
       id: createId(),
       name: typeof page?.name === "string" ? page.name.slice(0, 60) : "Imported page",
+      size: page?.size,
       objects: Array.isArray(page?.objects) ? page.objects : [],
     })),
   });
