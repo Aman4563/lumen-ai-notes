@@ -172,13 +172,13 @@ try {
   await page.waitForSelector(".review-card-dialog");
   assert.ok((await page.$$eval(".review-card-dialog textarea", (nodes) => nodes[1]?.value || "")).includes(quote.trim().slice(0, 30)));
   await clickByText(page, ".review-card-dialog button", "Add to review");
-  await new Promise((resolve) => setTimeout(resolve, 700));
 
-  const persisted = await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("lumen-ai-notes", 1);
-    request.onsuccess = () => { const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile"); get.onsuccess = () => resolve(get.result); get.onerror = () => reject(get.error); };
-    request.onerror = () => reject(request.error);
-  }));
+  const persisted = await waitForStored(
+    page,
+    "profile",
+    (profile) => profile.annotations?.length === 1 && profile.annotations[0].color === "teal" && profile.reviewItems?.length > 0,
+    "the edited highlight and its review card were not saved",
+  );
   assert.equal(persisted.annotations.length, 1);
   assert.equal(persisted.annotations[0].color, "teal");
   assert.equal(persisted.annotations[0].purpose, "interview");
