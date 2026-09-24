@@ -737,6 +737,16 @@ export default function ReviewCenter({
     (start && !start.disabled ? start : titleRef.current)?.focus();
   }, [session]);
 
+  // Leaving an interview round or a lab returns focus to the center.
+  const practiceOpen = Boolean(activeLab || interviewCards);
+  const wasPracticingRef = useRef(false);
+  useEffect(() => {
+    if (practiceOpen) { wasPracticingRef.current = true; return; }
+    if (!wasPracticingRef.current) return;
+    wasPracticingRef.current = false;
+    titleRef.current?.focus();
+  }, [practiceOpen]);
+
   const removeMistake = (mistake) => {
     const index = mistakes.findIndex((entry) => entry.id === mistake.id);
     onDeleteMistake?.(mistake.id);
