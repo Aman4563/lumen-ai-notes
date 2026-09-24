@@ -7832,8 +7832,6 @@ input[type="range"] {
 .diff-discard { border-left-color: var(--coral); background: color-mix(in srgb, var(--coral) 14%, transparent); }
 .diff-discard code { text-decoration: line-through; }
 
-.import-cards-label { cursor: pointer; }
-
 /* Wave 8: search facets, notebook mistake results */
 .library-facets { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 13px; }
 .library-facets button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--paper); color: var(--ink-soft); font-size: 0.68rem; font-weight: 750; }

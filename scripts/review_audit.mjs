@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -8,6 +8,7 @@ const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-review-profile-"));
 const downloadDirectory = await mkdtemp(join(tmpdir(), "lumen-review-downloads-"));
+const fixtureDirectory = await mkdtemp(join(tmpdir(), "lumen-review-fixtures-"));
 const errors = [];
 let browser;
 
@@ -287,6 +288,46 @@ try {
     target?.querySelector('button[aria-label="Delete review card"]')?.click();
   });
 
+  // Issue #54 (REV-1/REV-9): a lumen.cards.v1 deck imports through a real,
+  // keyboard-operable Import button, reports its counts, and never throws.
+  const deckCount = async () => Number((await page.$eval(".review-deck-heading h2", (node) => node.textContent)).match(/^(\d+)/)?.[1]);
+  await page.waitForFunction(() => ![...document.querySelectorAll(".review-deck-card")].some((card) => card.textContent.includes("Which split tunes hyperparameters?")), { timeout: 5_000 });
+  const cardsBefore = await deckCount();
+  const deckFile = join(fixtureDirectory, "import-deck.json");
+  await writeFile(deckFile, JSON.stringify({ format: "lumen.cards.v1", exportedAt: new Date().toISOString(), cards: [
+    { type: "basic", front: "Imported: what does dropout do during training?", back: "It randomly zeroes activations so units cannot co-adapt.", tags: ["imported"] },
+    { type: "cloze", front: "Imported: early stopping halts training when {{validation loss}} stops improving.", back: "validation loss", tags: ["imported"] },
+  ] }));
+  const importFocused = await page.evaluate(() => {
+    const button = [...document.querySelectorAll(".review-deck-tools button")].find((node) => node.textContent.trim() === "Import");
+    button?.focus();
+    return Boolean(button) && document.activeElement === button;
+  });
+  assert.ok(importFocused, "the deck Import control must be a focusable button");
+  const [chooser] = await Promise.all([page.waitForFileChooser({ timeout: 5_000 }), page.keyboard.press("Enter")]);
+  await chooser.accept([deckFile]);
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 cards imported"), { timeout: 5_000 })
+    .catch(() => assert.fail("importing a card deck did not confirm the imported count"));
+  await page.waitForFunction((expected) => Number(document.querySelector(".review-deck-heading h2")?.textContent.match(/^(\d+)/)?.[1]) === expected, { timeout: 5_000 }, cardsBefore + 2)
+    .catch(() => assert.fail("imported cards did not appear in the deck"));
+  const importDeck = (json) => page.$eval('.review-deck-tools input[type="file"]', (input, text) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([text], "deck.json", { type: "application/json" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, json);
+  await importDeck(await readFile(deckFile, "utf8"));
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("already in your deck"), { timeout: 5_000 })
+    .catch(() => assert.fail("re-importing the same deck did not report the duplicates"));
+  await importDeck("{ not json");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Import failed"), { timeout: 5_000 })
+    .catch(() => assert.fail("a malformed card file did not surface an import error"));
+  assert.equal(await deckCount(), cardsBefore + 2, "duplicate and malformed imports must not grow the deck");
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const imported = (await readProfile(page)).reviewItems.filter((item) => item.front.startsWith("Imported:"));
+  assert.equal(imported.length, 2, "both imported cards must persist");
+  assert.ok(imported.every((item) => item.reviewCount === 0 && item.tags.includes("imported")), "imported cards start fresh and keep their tags");
+
   // Issue #16: enabling the Adaptive (FSRS) scheduler migrates existing
   // cards once (history replay or SM-2 seed) and grades store FSRS state.
   await page.select('select[aria-label="Scheduling algorithm"]', "fsrs");
@@ -398,9 +439,10 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, keyboard deck import with duplicate and malformed-file feedback, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
   await rm(downloadDirectory, { recursive: true, force: true });
+  await rm(fixtureDirectory, { recursive: true, force: true });
 }

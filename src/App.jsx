@@ -2734,20 +2734,26 @@ export default function App() {
   }, []);
 
   const importCardsFile = useCallback(async (file) => {
-    const text = await file.text().catch(() => "");
-    const parsed = parseCardInterchange(text);
-    if (!parsed.ok) { notify(parsed.error, "error", 6000); return; }
-    const { added, duplicates } = importReviewCards(profileRef.current.reviewItems, parsed.cards);
-    if (!added.length) {
-      notify(duplicates ? "Every card in that file is already in your deck; nothing was imported." : "No valid cards were found in that file.", "warning", 6000);
-      return;
+    // Failures stay visible: every exit path reports what happened.
+    try {
+      if (file.size > 20 * 1024 * 1024) { notify("That card file is larger than 20 MB; split the deck and import it in parts.", "error", 6000); return; }
+      const text = await file.text().catch(() => "");
+      const parsed = parseCardInterchange(text);
+      if (!parsed.ok) { notify(`Import failed: ${parsed.error}`, "error", 6000); return; }
+      const { added, duplicates, overCapacity } = importReviewCards(profileRef.current.reviewItems, parsed.cards);
+      if (!added.length) {
+        notify(overCapacity ? "Your deck already holds 10,000 cards; archive or delete cards before importing more." : duplicates ? "Every card in that file is already in your deck; nothing was imported." : "No valid cards were found in that file.", overCapacity ? "error" : "warning", 6000);
+        return;
+      }
+      setProfile((current) => ({
+        ...current,
+        reviewItems: [...added, ...current.reviewItems].slice(0, 10_000),
+        activity: recordActivityEntry(current.activity, { kind: "import", label: `Imported ${added.length} review card${added.length === 1 ? "" : "s"}`, refId: "" }),
+      }));
+      notify(`${added.length} card${added.length === 1 ? "" : "s"} imported into the new queue${duplicates ? `; ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped` : ""}${overCapacity ? `; ${overCapacity} left out because the deck is full` : ""}${parsed.invalid ? `; ${parsed.invalid} invalid entr${parsed.invalid === 1 ? "y" : "ies"} ignored` : ""}.`, duplicates || overCapacity || parsed.invalid ? "warning" : "success", 6000);
+    } catch (error) {
+      notify(`Import failed: ${error?.message || "the file could not be read"}.`, "error", 6000);
     }
-    setProfile((current) => ({
-      ...current,
-      reviewItems: [...added, ...current.reviewItems].slice(0, 10_000),
-      activity: recordActivityEntry(current.activity, { kind: "import", label: `Imported ${added.length} review card${added.length === 1 ? "" : "s"}`, refId: "" }),
-    }));
-    notify(`${added.length} card${added.length === 1 ? "" : "s"} imported into the new queue${duplicates ? `; ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped` : ""}${parsed.invalid ? `; ${parsed.invalid} invalid entr${parsed.invalid === 1 ? "y" : "ies"} ignored` : ""}.`, duplicates || parsed.invalid ? "warning" : "success", 6000);
   }, [notify]);
 
   const logManualMistake = useCallback((draft) => {
