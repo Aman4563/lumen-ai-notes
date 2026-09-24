@@ -2,6 +2,13 @@
   --ai-accent: var(--violet, #7467a8);
   --ai-accent-soft: var(--violet-soft, #f0edfb);
   --ai-good: var(--teal, #2f8e86);
+  /* Text-safe variants mixed toward the theme ink: at least 4.5:1 on the
+     tutor's paper and soft fills in Paper, Night and Contrast. */
+  --ai-accent-ink: color-mix(in srgb, var(--ai-accent) 72%, var(--ink, #172035));
+  --ai-accent-strong: var(--ai-accent);
+  --ai-good-ink: color-mix(in srgb, var(--ai-good) 68%, var(--ink, #172035));
+  --ai-tutor-danger: color-mix(in srgb, var(--coral, #e96d53) 55%, var(--ink, #172035));
+  --ai-tutor-warn: color-mix(in srgb, var(--gold, #e8b55b) 45%, var(--ink, #172035));
   width: 100%;
   color: var(--ink, #172035);
   background: var(--paper, #fffdf8);
@@ -9,6 +16,18 @@
   border-radius: clamp(18px, 3vw, 28px);
   box-shadow: var(--shadow-md, 0 16px 42px rgba(25, 35, 58, 0.12));
   overflow: hidden;
+}
+
+/* In dark palettes the violet accent is light, so white CTA and badge text
+   needs a deeper fill (6.5:1). */
+[data-theme="dark"] .ai-tutor {
+  --ai-accent-strong: #5d4fb0;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="system"] .ai-tutor {
+    --ai-accent-strong: #5d4fb0;
+  }
 }
 
 .ai-tutor button,
@@ -79,7 +98,7 @@
 .ai-tutor__eyebrow {
   display: block;
   margin-bottom: 3px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-size: 0.69rem;
   font-weight: 850;
   letter-spacing: 0.12em;
@@ -120,7 +139,7 @@
 
 .ai-tutor__icon-button:hover:not(:disabled) {
   color: var(--ink, #172035);
-  border-color: var(--ai-accent);
+  border-color: var(--ai-accent-ink);
 }
 
 .ai-tutor__connection {
@@ -264,7 +283,7 @@
   width: 19px;
   height: 19px;
   margin: 0;
-  accent-color: var(--ai-accent);
+  accent-color: var(--ai-accent-ink);
 }
 
 .ai-tutor__source-citation {
@@ -272,7 +291,7 @@
   flex: 0 0 32px;
   width: 32px;
   height: 32px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   background: var(--ai-accent-soft);
   border-radius: 10px;
   font-size: 0.75rem;
@@ -324,7 +343,7 @@
 }
 
 .ai-tutor__source-copy small.is-error {
-  color: color-mix(in srgb, var(--coral, #e96d53) 62%, var(--ink, #172035));
+  color: var(--ai-tutor-danger);
   white-space: normal;
 }
 
@@ -395,7 +414,7 @@
 
 .ai-tutor__welcome svg {
   margin-bottom: 13px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
 }
 
 .ai-tutor__welcome h3 {
@@ -461,8 +480,8 @@
   align-items: center;
   width: fit-content;
   padding: 4px 9px;
-  color: var(--ai-accent, #315cbb);
-  background: var(--blue-soft, #eaf0ff);
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
   border: 1px solid color-mix(in srgb, var(--ai-accent, #315cbb) 24%, transparent);
   border-radius: 999px;
   font-size: 0.72rem;
@@ -471,21 +490,21 @@
 }
 
 .ai-tutor__message-meta .ai-tutor__web-status {
-  color: var(--ai-accent, #315cbb);
-  background: var(--blue-soft, #eaf0ff);
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
 }
 
 .ai-tutor__web-status.is-used,
 .ai-tutor__web-status.is-not-needed,
 .ai-tutor__message-meta .ai-tutor__web-status.is-used,
 .ai-tutor__message-meta .ai-tutor__web-status.is-not-needed {
-  color: var(--ai-good, #13745f);
+  color: var(--ai-good-ink);
   background: var(--teal-soft, #e3f5f1);
 }
 
 .ai-tutor__web-status.is-failed,
 .ai-tutor__message-meta .ai-tutor__web-status.is-failed {
-  color: var(--ai-warn, #9b5a00);
+  color: var(--ai-warn, var(--ai-tutor-warn));
   background: var(--gold-soft, #fff6df);
 }
 
@@ -518,7 +537,7 @@
 }
 
 .ai-tutor__response-list-row > span {
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-weight: 800;
 }
 
@@ -554,7 +573,7 @@
 }
 
 .ai-tutor__citation--missing {
-  color: var(--coral, #e96d53);
+  color: var(--ai-tutor-danger);
   background: var(--coral-soft, #fff0e9);
   border-style: dashed;
   cursor: help;
@@ -615,7 +634,7 @@
   align-items: center;
   min-height: 36px;
   gap: 6px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-size: 0.78rem;
   font-weight: 760;
   overflow-wrap: anywhere;
@@ -623,7 +642,7 @@
 
 .ai-tutor__web-sources small {
   display: block;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.7rem;
   line-height: 1.4;
 }
@@ -640,7 +659,7 @@
 }
 
 .ai-tutor__loading {
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   background: var(--ai-accent-soft);
 }
 
@@ -652,7 +671,7 @@
 
 .ai-tutor__request-error {
   align-items: flex-start;
-  color: color-mix(in srgb, var(--coral, #e96d53) 78%, var(--ink, #172035));
+  color: var(--ai-tutor-danger);
   background: var(--coral-soft, #fff0e9);
   border: 1px solid color-mix(in srgb, var(--coral, #e96d53) 30%, transparent);
 }
@@ -685,7 +704,7 @@
 .ai-tutor__result-title > svg {
   flex: 0 0 auto;
   margin-top: 2px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
 }
 
 .ai-tutor__result-title h4,
@@ -832,7 +851,7 @@
 .ai-tutor__flashcard-side {
   display: block;
   margin-bottom: 3px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-size: 0.67rem;
   font-weight: 850;
   letter-spacing: 0.09em;
@@ -876,11 +895,11 @@
 }
 
 .ai-tutor__draft-status.is-saved {
-  color: var(--ai-good);
+  color: var(--ai-good-ink);
 }
 
 .ai-tutor__draft-status.is-error {
-  color: var(--coral, #e96d53);
+  color: var(--ai-tutor-danger);
 }
 
 .ai-tutor__study-plan > ol {
@@ -909,7 +928,7 @@
   width: 28px;
   height: 28px;
   color: white;
-  background: var(--ai-accent);
+  background: var(--ai-accent-strong);
   border-radius: 9px;
   font-size: 0.75rem;
   font-weight: 800;
@@ -922,7 +941,7 @@
 }
 
 .ai-tutor__milestone-head small {
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
 }
 
 .ai-tutor__study-plan > ol > li > p,
@@ -986,7 +1005,7 @@
 }
 
 .ai-tutor__model {
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.72rem;
 }
 
@@ -1033,7 +1052,7 @@
 
 .ai-tutor__web-search small {
   margin-top: 2px;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.7rem;
   line-height: 1.35;
 }
@@ -1060,7 +1079,7 @@
 }
 
 .ai-tutor__composer textarea:focus {
-  border-color: var(--ai-accent);
+  border-color: var(--ai-accent-ink);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ai-accent) 16%, transparent);
 }
 
@@ -1073,7 +1092,7 @@
   justify-content: space-between;
   gap: 10px;
   margin: 6px 2px 13px;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.7rem;
 }
 
@@ -1104,7 +1123,7 @@
 }
 
 .ai-tutor__privacy-toggle > span svg {
-  color: var(--ai-good);
+  color: var(--ai-good-ink);
 }
 
 .ai-tutor__privacy-toggle[aria-expanded="true"] > svg {
@@ -1153,7 +1172,7 @@
   gap: 7px;
   margin-top: 11px;
   padding: 9px;
-  color: color-mix(in srgb, var(--ai-good) 84%, var(--ink, #172035));
+  color: var(--ai-good-ink);
   background: var(--teal-soft, #e3f5f1);
   border-radius: 10px;
 }
@@ -1168,7 +1187,7 @@
   align-items: center;
   min-height: 35px;
   gap: 4px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-weight: 700;
 }
 
@@ -1203,7 +1222,7 @@
 }
 
 .ai-tutor__consent--acknowledged > svg {
-  color: var(--ai-good, #13745f);
+  color: var(--ai-good-ink);
 }
 
 .ai-tutor__consent--acknowledged .ai-tutor__text-button {
@@ -1226,7 +1245,7 @@
 
 .ai-tutor__button--primary {
   color: white;
-  background: linear-gradient(145deg, var(--ai-accent), color-mix(in srgb, var(--ai-accent) 65%, var(--navy, #172646)));
+  background: linear-gradient(145deg, var(--ai-accent-strong), color-mix(in srgb, var(--ai-accent-strong) 65%, var(--navy, #172646)));
   box-shadow: 0 8px 18px color-mix(in srgb, var(--ai-accent) 23%, transparent);
 }
 
@@ -1261,7 +1280,7 @@
   min-height: 36px;
   gap: 5px;
   padding: 5px 3px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   background: transparent;
   font-size: 0.76rem;
   font-weight: 760;
@@ -1278,7 +1297,7 @@
 
 .ai-tutor__muted,
 .ai-tutor__disabled-reason {
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.75rem;
 }
 
@@ -1463,7 +1482,7 @@
 }
 
 .ai-tutor__source-panel-toggle small {
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.7rem;
 }
 
@@ -1532,7 +1551,7 @@
   gap: 8px;
   margin: 0 0 10px;
   padding: 10px;
-  color: color-mix(in srgb, var(--ai-good) 82%, var(--ink, #172035));
+  color: var(--ai-good-ink);
   background: var(--teal-soft, #e3f5f1);
   border-radius: 11px;
   font-size: 0.72rem;
@@ -1560,7 +1579,7 @@
   min-height: 42px;
   gap: 7px;
   padding: 0 10px;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   background: var(--paper, #fffdf8);
   border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
   border-radius: 10px;
@@ -1700,7 +1719,7 @@
 
 .ai-tutor__approach > p:last-child {
   margin: 9px 0 0;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.7rem;
 }
 
@@ -1734,7 +1753,7 @@
 .ai-tutor__trace-details summary {
   min-height: 40px;
   padding: 10px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-weight: 740;
   cursor: pointer;
 }
@@ -1756,7 +1775,7 @@
 }
 
 .ai-tutor__trace-details dt {
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-size: 0.64rem;
 }
 
@@ -1770,7 +1789,7 @@
 .ai-tutor__memory summary {
   min-height: 40px;
   padding: 10px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-weight: 740;
   cursor: pointer;
 }
@@ -1796,7 +1815,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--ai-good) !important;
+  color: var(--ai-good-ink) !important;
   background: var(--teal-soft, #e3f5f1) !important;
 }
 
@@ -1818,21 +1837,21 @@
 
 .ai-tutor__stream-status {
   margin-bottom: 11px;
-  color: var(--ai-accent);
+  color: var(--ai-accent-ink);
   font-size: 0.75rem;
   font-weight: 720;
 }
 
 .ai-tutor__stream-status small {
   flex: 0 0 auto;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   font-variant-numeric: tabular-nums;
 }
 
 .ai-tutor__stream-actions {
   margin-top: 12px;
   padding-top: 10px;
-  color: var(--ink-faint, #848ca0);
+  color: var(--ink-soft, #566078);
   border-top: 1px solid var(--line, rgba(23, 32, 53, 0.1));
   font-size: 0.69rem;
 }
@@ -1979,7 +1998,7 @@
 
 .ai-tutor__pairing-error {
   margin: 8px 0 0;
-  color: var(--danger, #b3323f);
+  color: var(--danger, var(--ai-tutor-danger));
   font-size: 0.76rem;
 }
 
