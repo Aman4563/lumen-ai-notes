@@ -127,8 +127,24 @@ try {
   await pageA.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await pageA.$eval(".app-sidebar", (node) => node.classList.contains("open") && !node.inert), true, "a background profile update dismissed mobile navigation");
 
+  // Issue #52: opening a lecture by link records it in Recent once. Two idle
+  // tabs on different lectures must not keep rewriting Recent at each other.
+  const lectureA = "notes/part-01-foundations/01-ai-ml-mental-model.md";
+  const lectureB = "notes/part-01-foundations/02-problem-framing-and-objectives.md";
+  await pageA.evaluate((id) => { location.hash = `#/read/${encodeURIComponent(id)}`; }, lectureA);
+  await pageA.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+  await delay(800);
+  await pageB.evaluate((id) => { location.hash = `#/read/${encodeURIComponent(id)}`; }, lectureB);
+  await pageB.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+  await delay(2_000);
+  const settledRevision = (await readProfile(pageA)).syncMeta.revision;
+  await delay(3_000);
+  const idle = await readProfile(pageA);
+  assert.ok(idle.syncMeta.revision - settledRevision <= 1, `two idle reader tabs kept rewriting the profile (${idle.syncMeta.revision - settledRevision} revisions in 3s)`);
+  assert.deepEqual(idle.recent.slice(0, 2), [lectureB, lectureA], "the most recently opened lecture must lead Recent");
+
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Cross-tab audit passed: simultaneous unique notes were atomically merged, broadcast, and durable after two-tab reload; background settings updates preserve an open mobile menu.");
+  console.log("Cross-tab audit passed: simultaneous unique notes were atomically merged, broadcast, and durable after two-tab reload; background settings updates preserve an open mobile menu; two idle reader tabs leave Recent settled.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

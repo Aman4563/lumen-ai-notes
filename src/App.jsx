@@ -1706,10 +1706,18 @@ export default function App() {
 
   // Every way into a lecture counts as opening it: cards, deep and shared
   // links, a restored PWA route, and Back/Forward (issue #52). Waiting for
-  // hydration keeps the stored profile from being overwritten, and a no-op
-  // update when it is already first avoids a write per background save.
+  // hydration keeps the stored profile from being overwritten. It records
+  // once per entry: a remote profile adoption rebuilds allDocumentMap, and
+  // re-recording then made two tabs on different lectures rewrite Recent
+  // back and forth forever.
+  const recordedOpenRef = useRef("");
   useEffect(() => {
-    if (!hydrated || view !== "reader" || !allDocumentMap.has(currentDocumentId)) return;
+    if (view !== "reader") {
+      recordedOpenRef.current = "";
+      return;
+    }
+    if (!hydrated || !allDocumentMap.has(currentDocumentId) || recordedOpenRef.current === currentDocumentId) return;
+    recordedOpenRef.current = currentDocumentId;
     setProfile((current) => (current.recent[0] === currentDocumentId && current.lastDocumentId === currentDocumentId
       ? current
       : { ...current, lastDocumentId: currentDocumentId, recent: [currentDocumentId, ...current.recent.filter((item) => item !== currentDocumentId)].slice(0, 20) }));
