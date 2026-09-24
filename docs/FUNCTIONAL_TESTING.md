@@ -367,3 +367,17 @@ New regression checks: the workflow audit waits for a link-opened lecture to
 reach Recent, and the control audit requires an enabled fresh-profile reading
 tile and a curriculum map with one Tab stop that ArrowRight advances. Both
 fail against the 36026b2 build.
+
+A review pass on the fix branch reproduced three more bugs before merge:
+
+- The first link-opened-Recent fix re-ran whenever a tab adopted another
+  tab's profile. Two idle tabs reading different lectures then rewrote Recent
+  at each other (1,337 profile revisions in 3 seconds in the cross-tab
+  audit). Recent is now recorded once per entry into a lecture, and the
+  cross-tab audit holds two idle reader tabs still.
+- Pressing Clear blurred the search field first, so a half-typed query
+  (`attenti`) was still saved as a recent search. Clear now keeps focus in
+  the field, and the workflow audit checks that an abandoned query is not
+  recorded.
+- Uploaded notes lost match snippets for accent-folded terms (`naive` in a
+  note that says "naïve"). The unit audit covers this case.
