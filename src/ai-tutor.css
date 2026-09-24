@@ -302,6 +302,42 @@
   font-size: 0.7rem;
 }
 
+.ai-tutor__source-open {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 44px;
+  gap: 9px;
+  padding: 3px;
+}
+
+.ai-tutor__source--open .ai-tutor__source-citation {
+  flex-basis: auto;
+  width: auto;
+  padding-inline: 7px;
+  font-size: 0.68rem;
+}
+
+.ai-tutor__source-citation.is-pending {
+  color: var(--ink-soft, #566078);
+  background: var(--paper-3, #f0eee7);
+}
+
+.ai-tutor__source-copy small.is-error {
+  color: color-mix(in srgb, var(--coral, #e96d53) 62%, var(--ink, #172035));
+  white-space: normal;
+}
+
+.ai-tutor__empty-filter {
+  margin: 0;
+  padding: 12px;
+  color: var(--ink-soft, #566078);
+  background: var(--paper, #fffdf8);
+  border: 1px dashed var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 12px;
+  font-size: 0.78rem;
+}
+
 .ai-tutor__empty-source {
   display: flex;
   align-items: flex-start;

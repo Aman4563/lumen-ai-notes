@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTutorContext, outputTokensForProfile, retrievalTraceCounts, shouldUseWebFallback } from "./tutorGrounding.js";
+import { buildTutorContext, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "./tutorGrounding.js";
 
 test("source context never cuts a label or claims a source that did not fit", () => {
   const sources = [
@@ -34,6 +34,20 @@ test("requires learner consent and a retrieval recommendation before web egress"
   assert.equal(shouldUseWebFallback({ learnerAllowedWeb: false, trace: recommended }), false);
   assert.equal(shouldUseWebFallback({ learnerAllowedWeb: true, trace: { webFallback: { recommended: false } } }), false);
   assert.equal(shouldUseWebFallback({ learnerAllowedWeb: true, trace: null }), false);
+});
+
+test("recognizes requests about the open lesson", () => {
+  for (const prompt of [
+    "Explain the key ideas in this lesson with a short example and one common mistake.",
+    "Teach the selected material using one focused Socratic question at a time.",
+    "Explain this excerpt from my lecture “Linear Regression” in context:\n\n\"OLS minimizes squared residuals.\"",
+    "Summarize the current chapter",
+  ]) assert.equal(refersToOpenLesson(prompt), true, prompt);
+  for (const prompt of [
+    "How does the PPO clipped surrogate objective limit policy updates?",
+    "What is the chapter on transformers about?",
+    "Review this code for bugs and suggest fixes.",
+  ]) assert.equal(refersToOpenLesson(prompt), false, prompt);
 });
 
 test("reads the versioned library trace counts", () => {

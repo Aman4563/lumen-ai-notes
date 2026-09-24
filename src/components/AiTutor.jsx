@@ -34,7 +34,7 @@ import { AI_REQUEST_CONTRACT_ID } from "../lib/aiContract";
 import { buildConversationWindow } from "../lib/conversationMemory";
 import { fitAiRequestContext } from "../lib/aiRequestBudget";
 import { renderTutorMarkdown, tutorMarkdownPlainText } from "../lib/tutorMarkdown";
-import { buildTutorContext, outputTokensForProfile, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
+import { buildTutorContext, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -123,6 +123,9 @@ const RESPONSE_PROFILES = Object.freeze([
 ]);
 
 const MAX_SELECTED_SOURCES = 8;
+// Of the eight Library-first passages, a request about the open lesson
+// reserves most for that lesson; the rest still come from the whole library.
+const OPEN_LESSON_RESERVED_PASSAGES = 6;
 const MAX_WEB_SOURCES = 8;
 const MAX_VISIBLE_HISTORY = 50;
 const MAX_SERVER_HISTORY = 12;
@@ -914,6 +917,8 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
  */
 export default function AiTutor({
   sources = [],
+  sourceCatalog = [],
+  loadSource,
   initialMode = "explain",
   initialPrompt = "",
   insertPrompt = null,
@@ -966,6 +971,8 @@ export default function AiTutor({
   const [sourceMode, setSourceMode] = useState("library-first");
   const [sourcePanelOpen, setSourcePanelOpen] = useState(false);
   const [sourceQuery, setSourceQuery] = useState("");
+  const [catalogSources, setCatalogSources] = useState([]);
+  const [sourceLoads, setSourceLoads] = useState({});
   const [webSearch, setWebSearch] = useState(false);
   const [localDisclosureAcknowledged, setLocalDisclosureAcknowledged] = useState(readLocalDisclosureAcknowledgement);
   const [privacyOpen, setPrivacyOpen] = useState(false);
@@ -988,7 +995,7 @@ export default function AiTutor({
 
   const normalizedSources = useMemo(() => {
     const seen = new Set();
-    return sources.flatMap((source, index) => {
+    return [...sources, ...catalogSources].flatMap((source, index) => {
       if (!source || typeof source !== "object") return [];
       const text = sourceText(source);
       if (!text) return [];
@@ -1010,7 +1017,7 @@ export default function AiTutor({
         initiallySelected: source.selected === true,
       }];
     });
-  }, [sources]);
+  }, [catalogSources, sources]);
 
   const sourceSignature = useMemo(() => normalizedSources
     .map((source) => `${source.id}:${source.revision}:${source.title}:${source.section}:${source.initiallySelected}`)
@@ -1182,11 +1189,30 @@ export default function AiTutor({
   // local even if a stale checkbox state survives a rapid mode change.
   const libraryWebEligible = sourceMode === "library-first" && typeof retrieveLibrary === "function";
   const effectiveWebSearch = libraryWebEligible && webSearch;
+  // The lesson the learner has open (App marks it selected). Library-first
+  // requests about "this lesson" reserve its passages at send time.
+  const openLesson = useMemo(() => normalizedSources.find((source) => source.initiallySelected) || null, [normalizedSources]);
+  // Choose sources offers the whole library: loaded sources first, then every
+  // catalog lesson, whose text loads only when the learner ticks it.
+  const chooseEntries = useMemo(() => {
+    const seen = new Set();
+    const entries = normalizedSources.map((source) => {
+      seen.add(source.id);
+      return { id: source.id, title: source.title, section: source.section, source };
+    });
+    (Array.isArray(sourceCatalog) ? sourceCatalog : []).forEach((item) => {
+      const id = asTrimmedString(item?.id, 240);
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      entries.push({ id, title: asTrimmedString(item.title, 200) || "Untitled lesson", section: asTrimmedString(item.section, 200), source: null });
+    });
+    return entries;
+  }, [normalizedSources, sourceCatalog]);
   const filteredSources = useMemo(() => {
     const query = sourceQuery.trim().toLocaleLowerCase();
-    if (!query) return normalizedSources;
-    return normalizedSources.filter((source) => `${source.title} ${source.section}`.toLocaleLowerCase().includes(query));
-  }, [normalizedSources, sourceQuery]);
+    if (!query) return chooseEntries;
+    return chooseEntries.filter((entry) => `${entry.title} ${entry.section}`.toLocaleLowerCase().includes(query));
+  }, [chooseEntries, sourceQuery]);
   const normalizeRetrievedSources = useCallback((result) => {
     const rawPassages = Array.isArray(result?.passages) ? result.passages : [];
     const seen = new Set();
@@ -1428,6 +1454,11 @@ export default function AiTutor({
             maxPassages: MAX_SELECTED_SOURCES,
             maxBytes: requestSpec.retrievalMaxBytes,
             currentSources: requestSpec.contextSources.map(({ id, title, section }) => ({ id, title, section })),
+            ...(requestSpec.openLessonId ? {
+              selectedDocumentId: requestSpec.openLessonId,
+              reservedDocumentId: requestSpec.openLessonId,
+              reservedPassages: OPEN_LESSON_RESERVED_PASSAGES,
+            } : {}),
           });
         } catch (error) {
           if (controller.signal.aborted) throw error;
@@ -1457,6 +1488,11 @@ export default function AiTutor({
           }
           payload = assertFittedAiRequest(fitted, "The retrieved library context exceeds the local model request limit. Narrow the question or clear older conversation turns.");
           const fittedNothing = retrieved.length > 0 && citationSources.length === 0;
+          const reservedIds = new Set((Array.isArray(result?.passages) ? result.passages : []).filter((passage) => passage?.reserved === true).map((passage) => passage.id));
+          const reservedAttached = citationSources.filter((source) => reservedIds.has(source.id)).length;
+          const attachedSummary = citationSources.length
+            ? `Library retrieval attached ${citationSources.length} relevant passage${citationSources.length === 1 ? "" : "s"}${reservedAttached ? `, including ${reservedAttached} from the open lesson “${requestSpec.openLessonTitle || "this lesson"}”` : ""}.`
+            : "Library retrieval found no passage that fit this request's remaining context budget.";
           retrievalTrace = normalizeRetrievalTrace({
             ...(result?.trace && typeof result.trace === "object" ? result.trace : {}),
             strategy: result?.trace?.strategy || "library-first",
@@ -1464,7 +1500,7 @@ export default function AiTutor({
             passages: citationSources.length,
             summary: fittedNothing
               ? `Library retrieval found relevant passages, but none fit this request's remaining context budget.${useWebFallback ? " Using the learner-authorized web fallback." : ""}`
-              : result?.trace?.summary || (citationSources.length ? `Library retrieval attached ${citationSources.length} relevant passage${citationSources.length === 1 ? "" : "s"}.` : "Library retrieval found no passage that fit this request's remaining context budget."),
+              : result?.trace?.summary || attachedSummary,
             ...(fittedNothing ? { webFallback: { recommended: true, code: "fitted_library_context_empty", reason: "No complete retrieved passage fit the final model request." } } : {}),
           });
           updateActiveResponse((current) => ({
@@ -1660,13 +1696,20 @@ export default function AiTutor({
     const included = new Set(requestPreview.includedCitationNumbers);
     const citationSources = sourceSnapshot.filter((source) => included.has(source.citationNumber)).map(citationSnapshot);
     const createdAt = new Date().toISOString();
+    const displayPrompt = prompt.trim();
+    // "Explain this lesson", an unedited mode default or an Ask AI excerpt
+    // is about the open lesson; generic wording alone never retrieves it.
+    const aboutOpenLesson = sourceMode === "library-first" && openLesson
+      && (displayPrompt === currentMode.prompt || refersToOpenLesson(displayPrompt));
     const requestSpec = {
       userMessageId: createId(),
       createdAt,
-      displayPrompt: prompt.trim(),
+      displayPrompt,
       mode: currentMode,
       sources: citationSources,
       contextSources: sourceSnapshot,
+      openLessonId: aboutOpenLesson ? asTrimmedString(openLesson.original?.documentId || openLesson.id, 240) : "",
+      openLessonTitle: aboutOpenLesson ? openLesson.title : "",
       sourceMode,
       webSearch: effectiveWebSearch,
       responseProfile,
@@ -1752,23 +1795,55 @@ export default function AiTutor({
     outboundChanged();
   };
 
+  // Loads a catalog lesson's text on demand, then selects it (still capped).
+  const loadAndSelectSource = async (entry) => {
+    if (typeof loadSource !== "function" || sourceLoads[entry.id] === "loading") return;
+    if (selectedSourceIds.size >= MAX_SELECTED_SOURCES) {
+      setSourceWarning(`Choose up to ${MAX_SELECTED_SOURCES} sources per request so citations remain precise.`);
+      return;
+    }
+    setSourceLoads((current) => ({ ...current, [entry.id]: "loading" }));
+    try {
+      const text = asTrimmedString(await loadSource(entry.id));
+      if (!text) throw new Error("empty source");
+      setCatalogSources((current) => current.some((source) => source.id === entry.id)
+        ? current
+        : [...current, { id: entry.id, documentId: entry.id, title: entry.title, section: entry.section, text, selected: false }]);
+      setSelectedSourceIds((current) => current.size >= MAX_SELECTED_SOURCES ? current : new Set([...current, entry.id]));
+      setSourceLoads((current) => { const next = { ...current }; delete next[entry.id]; return next; });
+      outboundChanged();
+    } catch {
+      setSourceLoads((current) => ({ ...current, [entry.id]: "error" }));
+    }
+  };
+
   const toggleVisibleSources = () => {
     if (requestState.status === "loading") return;
     outboundChanged();
-    setSelectedSourceIds((current) => {
-      const visibleIds = filteredSources.slice(0, MAX_SELECTED_SOURCES).map((source) => source.id);
-      const allSelected = visibleIds.length > 0 && visibleIds.every((id) => current.has(id));
-      if (allSelected) return new Set([...current].filter((id) => !visibleIds.includes(id)));
-      const next = new Set(current);
-      for (const id of visibleIds) {
-        if (next.size >= MAX_SELECTED_SOURCES) break;
-        next.add(id);
-      }
-      return next;
-    });
+    const visible = filteredSources.slice(0, MAX_SELECTED_SOURCES);
+    const allSelected = visible.length > 0 && visible.every((entry) => selectedSourceIds.has(entry.id));
+    if (allSelected) {
+      setSelectedSourceIds((current) => new Set([...current].filter((id) => !visible.some((entry) => entry.id === id))));
+      return;
+    }
+    let room = MAX_SELECTED_SOURCES - selectedSourceIds.size;
+    const loaded = [];
+    for (const entry of visible) {
+      if (room <= 0) break;
+      if (selectedSourceIds.has(entry.id)) continue;
+      room -= 1;
+      if (entry.source) loaded.push(entry.id);
+      else void loadAndSelectSource(entry);
+    }
+    if (loaded.length) setSelectedSourceIds((current) => new Set([...current, ...loaded].slice(0, MAX_SELECTED_SOURCES)));
   };
 
   const toggleSource = (sourceId) => {
+    const entry = chooseEntries.find((item) => item.id === sourceId);
+    if (entry && !entry.source) {
+      void loadAndSelectSource(entry);
+      return;
+    }
     outboundChanged();
     setSelectedSourceIds((current) => {
       const next = new Set(current);
@@ -1894,38 +1969,61 @@ export default function AiTutor({
       <div className="ai-tutor__workspace">
         <aside className={`ai-tutor__context ${sourcePanelOpen ? "is-open" : ""}`} aria-labelledby={`${headingId}-sources`}>
           <button className="ai-tutor__source-panel-toggle" type="button" aria-expanded={sourcePanelOpen} aria-controls={`${headingId}-source-panel`} onClick={() => setSourcePanelOpen((open) => !open)}>
-            <span><BookOpen size={18} aria-hidden="true" /><span><strong id={`${headingId}-sources`}>Grounding</strong><small>{SOURCE_MODES.find((item) => item.id === sourceMode)?.label} · {selectedSources.length} attached</small></span></span>
+            <span><BookOpen size={18} aria-hidden="true" /><span><strong id={`${headingId}-sources`}>Grounding</strong><small>{sourceMode === "library-first" ? "Library first · all lessons" : sourceMode === "none" ? "No library · lesson text not sent" : `${SOURCE_MODES.find((item) => item.id === sourceMode)?.label} · ${selectedSources.length} attached`}</small></span></span>
             <ChevronDown size={18} aria-hidden="true" />
           </button>
           <div className="ai-tutor__source-panel" id={`${headingId}-source-panel`}>
-            <div className="ai-tutor__section-head"><div><span className="ai-tutor__eyebrow">Evidence scope</span><h3>Where should Lumen look?</h3></div><span className="ai-tutor__count">{selectedSources.length}/{MAX_SELECTED_SOURCES}</span></div>
+            <div className="ai-tutor__section-head"><div><span className="ai-tutor__eyebrow">Evidence scope</span><h3>Where should Lumen look?</h3></div>{sourceMode === "library-first" ? <span className="ai-tutor__count">Auto</span> : sourceMode !== "none" && <span className="ai-tutor__count" aria-label={`${selectedSources.length} of ${MAX_SELECTED_SOURCES} sources attached`}>{selectedSources.length}/{MAX_SELECTED_SOURCES}</span>}</div>
             <div className="ai-tutor__source-modes" role="radiogroup" aria-label="Library grounding scope">
               {SOURCE_MODES.map((item) => <button type="button" role="radio" aria-checked={sourceMode === item.id} className={sourceMode === item.id ? "is-active" : ""} disabled={requestState.status === "loading"} onClick={() => chooseSourceMode(item.id)} key={item.id}><strong>{item.label}</strong><small>{item.short}</small></button>)}
             </div>
-            {sourceMode !== "none" && normalizedSources.length ? (
+            {sourceMode === "library-first" ? (
               <>
-                {sourceMode === "choose" && <div className="ai-tutor__source-tools"><label><Search size={15} aria-hidden="true" /><span className="sr-only">Filter learning sources</span><input type="search" value={sourceQuery} onChange={(event) => setSourceQuery(event.target.value)} placeholder="Filter library…" /></label><button className="ai-tutor__text-button" type="button" onClick={toggleVisibleSources}>{filteredSources.slice(0, MAX_SELECTED_SOURCES).every((source) => selectedSourceIds.has(source.id)) ? "Clear shown" : "Select shown"}</button></div>}
-                <div className="ai-tutor__source-list">
-                  {(sourceMode === "current" ? currentLessonSources : filteredSources).map((source) => {
-                    const selected = sourceMode === "current" || selectedSourceIds.has(source.id);
-                    return (
-                      <article className={`ai-tutor__source ${selected ? "is-selected" : ""}`} key={source.id}>
-                        <label>
-                          <input type="checkbox" checked={selected} disabled={sourceMode !== "choose" || requestState.status === "loading"} onChange={() => toggleSource(source.id)} />
-                          <span className="ai-tutor__source-citation">S{source.citationNumber}</span>
-                          <span className="ai-tutor__source-copy"><strong>{source.title}</strong>{source.section && <small>{source.section}</small>}<small>{source.text.length.toLocaleString()} characters</small></span>
-                        </label>
-                        {onNavigateSource && <button className="ai-tutor__icon-button" type="button" onClick={() => onNavigateSource(source.original, { citation: `[S${source.citationNumber}]`, sourceId: source.id })} aria-label={`Open ${source.title}`} title="Open source"><ExternalLink size={16} /></button>}
-                      </article>
-                    );
-                  })}
-                </div>
+                <p className="ai-tutor__grounding-note">Relevant passages are chosen from every lesson, note and upload when you send.{openLesson ? " Questions about “this lesson” also include the open lesson:" : ""}</p>
+                {openLesson && <div className="ai-tutor__source-list"><article className="ai-tutor__source ai-tutor__source--open is-selected">
+                  <div className="ai-tutor__source-open"><span className="ai-tutor__source-citation">Open</span><span className="ai-tutor__source-copy"><strong>{openLesson.title}</strong>{openLesson.section && <small>{openLesson.section}</small>}</span></div>
+                  {onNavigateSource && <button className="ai-tutor__icon-button" type="button" onClick={() => onNavigateSource(openLesson.original, { sourceId: openLesson.id })} aria-label={`Open ${openLesson.title}`} title="Open lesson"><ExternalLink size={16} /></button>}
+                </article></div>}
               </>
-            ) : sourceMode !== "none" ? (
-              <div className="ai-tutor__empty-source"><BookOpen size={20} aria-hidden="true" /><p>No lesson is attached. You can still ask a free question; claims will be labeled as general knowledge unless web fallback is enabled.</p></div>
+            ) : sourceMode === "current" ? (currentLessonSources.length ? (
+              <div className="ai-tutor__source-list">
+                {currentLessonSources.map((source) => (
+                  <article className="ai-tutor__source is-selected" key={source.id}>
+                    <label>
+                      <input type="checkbox" checked disabled onChange={() => {}} />
+                      <span className="ai-tutor__source-citation">S{source.citationNumber}</span>
+                      <span className="ai-tutor__source-copy"><strong>{source.title}</strong>{source.section && <small>{source.section}</small>}<small>{source.text.length.toLocaleString()} characters</small></span>
+                    </label>
+                    {onNavigateSource && <button className="ai-tutor__icon-button" type="button" onClick={() => onNavigateSource(source.original, { citation: `[S${source.citationNumber}]`, sourceId: source.id })} aria-label={`Open ${source.title}`} title="Open source"><ExternalLink size={16} /></button>}
+                  </article>
+                ))}
+              </div>
+            ) : <div className="ai-tutor__empty-source"><BookOpen size={20} aria-hidden="true" /><p>No lesson is attached. You can still ask a free question; claims will be labeled as general knowledge unless web fallback is enabled.</p></div>
+            ) : sourceMode === "choose" ? (
+              <>
+                <div className="ai-tutor__source-tools"><label><Search size={15} aria-hidden="true" /><span className="visually-hidden">Filter learning sources</span><input type="search" value={sourceQuery} onChange={(event) => setSourceQuery(event.target.value)} placeholder="Filter library…" /></label><button className="ai-tutor__text-button" type="button" disabled={!filteredSources.length || requestState.status === "loading"} onClick={toggleVisibleSources}>{filteredSources.length && filteredSources.slice(0, MAX_SELECTED_SOURCES).every((entry) => selectedSourceIds.has(entry.id)) ? "Clear shown" : "Select shown"}</button></div>
+                {filteredSources.length ? (
+                  <div className="ai-tutor__source-list">
+                    {filteredSources.map((entry) => {
+                      const selected = selectedSourceIds.has(entry.id);
+                      const loadState = sourceLoads[entry.id];
+                      return (
+                        <article className={`ai-tutor__source ${selected ? "is-selected" : ""}`} key={entry.id} aria-busy={loadState === "loading" || undefined}>
+                          <label>
+                            <input type="checkbox" checked={selected} disabled={requestState.status === "loading" || loadState === "loading"} onChange={() => toggleSource(entry.id)} />
+                            {entry.source ? <span className="ai-tutor__source-citation">S{entry.source.citationNumber}</span> : <span className="ai-tutor__source-citation is-pending" aria-hidden="true">{loadState === "loading" ? <LoaderCircle className="ai-tutor__spin" size={13} /> : "+"}</span>}
+                            <span className="ai-tutor__source-copy"><strong>{entry.title}</strong>{entry.section && <small>{entry.section}</small>}<small className={loadState === "error" ? "is-error" : undefined}>{entry.source ? `${entry.source.text.length.toLocaleString()} characters` : loadState === "loading" ? "Loading lesson text…" : loadState === "error" ? "Could not load this lesson. Tick it to try again." : "Loads when selected"}</small></span>
+                          </label>
+                          {onNavigateSource && <button className="ai-tutor__icon-button" type="button" onClick={() => onNavigateSource(entry.source?.original || { id: entry.id, documentId: entry.id, title: entry.title }, { sourceId: entry.id })} aria-label={`Open ${entry.title}`} title="Open source"><ExternalLink size={16} /></button>}
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : <p className="ai-tutor__empty-filter" role="status">No lessons match “{sourceQuery.trim()}”.</p>}
+              </>
             ) : <div className="ai-tutor__empty-source"><ShieldCheck size={20} aria-hidden="true" /><p>No library text will be included. The question and bounded recent conversation are still sent to your local model.</p></div>}
             {sourceWarning && <p className="ai-tutor__field-error" role="alert">{sourceWarning}</p>}
-            <p className="ai-tutor__grounding-note">{sourceMode === "library-first" ? "Relevant passages are selected from your library when you send." : selectedSources.length ? `Sources: ${selectedSources.map((source) => `[S${source.citationNumber}]`).join(", ")}.` : "No source text will be sent."}</p>
+            {sourceMode !== "library-first" && <p className="ai-tutor__grounding-note">{selectedSources.length ? `Sources: ${selectedSources.map((source) => `[S${source.citationNumber}]`).join(", ")}.` : "No source text will be sent."}</p>}
           </div>
         </aside>
 

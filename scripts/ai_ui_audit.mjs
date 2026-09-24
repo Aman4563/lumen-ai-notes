@@ -792,6 +792,40 @@ try {
     assert.equal(await page.$$eval(".ai-tutor__message--user", (nodes) => nodes.length), turns, "the conversation showed a duplicated user turn");
     const conflictToasts = await page.evaluate(() => window.__lumenAuditToasts.filter((text) => /concurrent tab/i.test(text)));
     assert.deepEqual(conflictToasts, [], "a single tab showed a false concurrent-tab warning");
+
+    // Library first must ground "explain this lesson" in the open lesson even
+    // though that generic wording matches other chapters better.
+    const lessonId = "notes/part-05-supervised-learning/01-linear-regression.md";
+    await page.evaluate((id) => { window.location.hash = `#/read/${encodeURIComponent(id)}`; }, lessonId);
+    await page.waitForSelector(".reader-scroll .markdown-body h2, .markdown-body h2", { timeout: 15_000 });
+    await page.evaluate(() => { window.location.hash = "#/ai"; });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    assert.match(await page.$eval(".ai-tutor__source-panel-toggle small", (node) => node.textContent), /Library first · all lessons/, "the Library-first summary implied an attached lesson");
+    assert.match(await page.$eval(".ai-tutor__source--open", (node) => node.textContent), /Linear Regression/, "the open lesson was not shown in Library first");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "Explain the key ideas in this lesson with a short example and one common mistake.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForFunction((count) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= count && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 }, turns + 1);
+    const lessonContext = String(calls.respond.at(-1).body.context);
+    const lessonBlocks = [...lessonContext.matchAll(/^\[S\d+\] ([^\n]*)/gm)].map((match) => match[1]);
+    assert.match(lessonBlocks[0] || "", /Linear Regression/, `the open lesson did not lead the Library-first evidence: ${JSON.stringify(lessonBlocks)}`);
+    assert.ok(lessonBlocks.filter((title) => /Linear Regression/.test(title)).length >= 4, `too few open-lesson passages were attached: ${JSON.stringify(lessonBlocks)}`);
+    await clickByText(page, ".ai-tutor__message--assistant:last-of-type .ai-tutor__message-actions button", "Approach");
+    assert.match(await page.$eval(".ai-tutor__message--assistant:last-of-type .ai-tutor__approach", (node) => node.textContent), /from the open lesson/i, "the Approach panel did not disclose the reserved open-lesson passages");
+
+    // Choose sources lists the whole catalog and loads a lesson when ticked.
+    await page.click(".ai-tutor__source-panel-toggle");
+    await clickByText(page, ".ai-tutor__source-modes button", "Choose sources");
+    assert.ok((await page.$$(".ai-tutor__source-list .ai-tutor__source")).length >= 143, "Choose sources did not list the full library");
+    await page.type(".ai-tutor__source-tools input", "logistic");
+    await page.waitForFunction(() => [...document.querySelectorAll(".ai-tutor__source-list .ai-tutor__source strong")].some((node) => /Logistic Regression/.test(node.textContent)));
+    await page.$eval(".ai-tutor__source-list .ai-tutor__source input", (input) => input.click());
+    await page.waitForFunction(() => /characters/.test(document.querySelector(".ai-tutor__source-list .ai-tutor__source")?.textContent || ""), { timeout: 10_000 });
+    assert.equal(await page.$eval(".ai-tutor__count", (node) => node.textContent), "2/8", "a ticked catalog lesson was not attached");
+    await page.$eval(".ai-tutor__source-tools input", (input) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "zzqq-no-such-lesson");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    assert.match(await page.$eval(".ai-tutor__empty-filter", (node) => node.textContent), /No lessons match/, "an empty source filter showed no message");
   } finally {
     await singleTabContext.close();
   }

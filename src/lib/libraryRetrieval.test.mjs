@@ -205,6 +205,56 @@ test("retrieval trace distinguishes sufficient evidence from web fallback", asyn
   assert.equal(current.trace.webFallback.recommended, true);
 });
 
+test("a request about the open lesson reserves that lesson's passages", async () => {
+  const { documents, searchIndex } = await loadGeneratedCorpus();
+  const lessonId = "notes/part-05-supervised-learning/01-linear-regression.md";
+  const query = "Explain the key ideas in this lesson with a short example and one common mistake.";
+  const loadSource = (id) => loadNote(id);
+  const unreserved = await retrieveLibrary(query, { documents, searchIndex, loadSource, maxPassages: 8, selectedDocumentId: lessonId });
+  // The generic wording alone never finds the open lesson; this is the
+  // reported Library-first failure that the reservation exists for.
+  assert.equal(unreserved.passages.some((passage) => passage.documentId === lessonId), false);
+
+  const reserved = await retrieveLibrary(query, {
+    documents, searchIndex, loadSource, maxPassages: 8, selectedDocumentId: lessonId,
+    reservedDocumentId: lessonId, reservedPassages: 4,
+  });
+  const lessonPassages = reserved.passages.filter((passage) => passage.documentId === lessonId);
+  assert.equal(lessonPassages.length, 4);
+  assert.deepEqual(reserved.passages.slice(0, 4).map((passage) => passage.documentId), Array(4).fill(lessonId), "reserved passages must lead the evidence list");
+  assert.ok(lessonPassages.every((passage) => passage.reserved === true));
+  assert.equal(new Set(lessonPassages.map((passage) => passage.section)).size, 4, "reserved passages should span distinct sections");
+  assert.deepEqual([...lessonPassages].sort((left, right) => left.startLine - right.startLine).map((passage) => passage.id), lessonPassages.map((passage) => passage.id), "reserved passages keep reading order");
+  assert.equal(reserved.trace.selection.reservedDocumentId, lessonId);
+  assert.equal(reserved.trace.selection.reservedPassages, 4);
+  assert.equal(reserved.trace.webFallback.recommended, false, "a question about the attached open lesson does not need current-web evidence");
+  assert.equal(reserved.trace.webFallback.code, "open_lesson_reserved");
+  assert.ok(lessonPassages.every((passage) => passage.text.replace(/^#+\s.*$/gmu, "").trim().length >= 40), "a bare heading line is not reserved as evidence");
+  assert.ok(reserved.passages.length <= 8);
+  assert.ok(reserved.passages.every((passage) => !("matched" in passage) && !("ordinal" in passage)));
+});
+
+test("reserved passages respect the byte budget and do not weaken an unrelated match", async () => {
+  const { documents, searchIndex } = await loadGeneratedCorpus();
+  const lessonId = "notes/part-05-supervised-learning/01-linear-regression.md";
+  const loadSource = (id) => loadNote(id);
+  const bounded = await retrieveLibrary("Explain this lesson", {
+    documents, searchIndex, loadSource, reservedDocumentId: lessonId, reservedPassages: 4, maxBytes: 2_000, maxPassageBytes: 600,
+  });
+  assert.ok(bounded.passages.length >= 1 && bounded.passages[0].documentId === lessonId);
+  assert.ok(bounded.passages.reduce((sum, passage) => sum + utf8Bytes(passage.text), 0) <= 2_000);
+
+  const focused = await retrieveLibrary("How does the PPO clipped surrogate objective limit policy updates?", {
+    documents, searchIndex, loadSource, reservedDocumentId: lessonId, reservedPassages: 2,
+  });
+  assert.ok(focused.passages.some((passage) => /policy-gradients-actor-critic-ppo/.test(passage.documentId)));
+  assert.equal(focused.trace.confidence.level, "high", "open-lesson passages must not lower confidence in a strong unrelated match");
+  assert.equal(focused.trace.webFallback.recommended, false);
+
+  const missing = await retrieveLibrary("Explain this lesson", { documents, searchIndex, loadSource, reservedDocumentId: "notes/missing.md", reservedPassages: 4 });
+  assert.equal(missing.trace.selection.reservedPassages, 0);
+});
+
 test("an aborted retrieval stops before loading source documents", async () => {
   const controller = new AbortController();
   controller.abort(new DOMException("cancelled", "AbortError"));

@@ -1927,6 +1927,23 @@ export default function App() {
       }];
     });
   }, [allDocumentMap, builtInSources, currentDocument.id, profile.customDocuments, profile.edits, profile.recent]);
+  // "Choose sources" lists the whole library; a lecture's text loads only when
+  // the learner ticks it, through the same cache the Reader uses.
+  const aiSourceCatalog = useMemo(() => allDocuments.map((document) => ({
+    id: document.id,
+    title: document.title,
+    section: document.partTitle || (document.partNumber ? `Part ${document.partNumber}` : ""),
+  })), [allDocuments]);
+  const loadAiSource = useCallback(async (id) => {
+    const document = allDocumentMap.get(id);
+    if (!document) throw new Error("This lesson is no longer in your library.");
+    const edited = profileRef.current.edits[id];
+    if (typeof edited === "string") return edited;
+    if (document.source === "custom") return document.raw || "";
+    const text = await loadDocumentSource(id);
+    setBuiltInSources((current) => current[id] ? current : { ...current, [id]: text });
+    return text;
+  }, [allDocumentMap]);
   const retrieveLibrarySources = useCallback((query, options = {}) => retrieveLibrary(query, {
     ...options,
     documents: allDocuments,
@@ -3267,7 +3284,7 @@ export default function App() {
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
-            : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onNotify={notify} /></Suspense></div>)}
+            : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onNotify={notify} /></Suspense></div>)}
           {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </main>
