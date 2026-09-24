@@ -83,6 +83,17 @@ const readStored = (page, key) => page.evaluate((storageKey) => new Promise((res
   };
 }), key);
 
+const writeStored = (page, key, value) => page.evaluate(([storageKey, record]) => new Promise((resolve, reject) => {
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const transaction = request.result.transaction("study-data", "readwrite");
+    transaction.objectStore("study-data").put(record, storageKey);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  };
+}), [key, value]);
+
 // The whiteboard page is fitted inside the canvas (issue #55); coordinates are
 // fractions of the fitted page, which the canvas exposes as data attributes.
 const boardPageBox = async (page) => {
@@ -945,6 +956,41 @@ try {
   const pngBytes = await readFile(boardPngPath);
   assert.ok(pngBytes.length > 0, "exported whiteboard PNG is empty");
   assert.deepEqual([...pngBytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], "exported whiteboard file does not start with the PNG signature");
+
+  // Issue #55 migration: a legacy page (no stored size) that has content keeps
+  // every point, and a phone in landscape never freezes its short canvas onto
+  // it, not even on the first edit there; shown in portrait, it adopts that
+  // canvas without rewriting a point.
+  {
+    const legacyDocument = "notes/part-01-foundations/02-problem-framing-and-objectives.md";
+    const legacyKey = `board:${legacyDocument}`;
+    const legacyLine = { id: "legacy-line", tool: "line", color: "#17283e", fill: "#fff1a8", width: 3, fontSize: 24, text: "", locked: false, points: [{ x: 0.2, y: 0.3 }, { x: 0.6, y: 0.5 }] };
+    await writeStored(page, legacyKey, { version: 2, activePageId: "legacy-page", background: "grid", pages: [{ id: "legacy-page", name: "Page 1", objects: [legacyLine] }], syncMeta: { revision: 1, updatedAt: "", writerId: "", conflicts: [] } });
+    await page.setViewport({ width: 852, height: 393, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    await page.goto(`${baseUrl}#/board/${encodeURIComponent(legacyDocument)}`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"), { timeout: 15_000 });
+    await page.$eval('button[aria-label="Pen"]', (button) => button.click());
+    const landscapeBox = await boardPageBox(page);
+    await page.mouse.move(landscapeBox.left + landscapeBox.width * 0.3, landscapeBox.top + landscapeBox.height * 0.5);
+    await page.mouse.down();
+    await page.mouse.move(landscapeBox.left + landscapeBox.width * 0.5, landscapeBox.top + landscapeBox.height * 0.6, { steps: 5 });
+    await page.mouse.up();
+    const edited = await waitForStored(page, legacyKey, (stored) => stored.pages[0].objects.length === 2, "a pen stroke on a legacy page in landscape was not persisted");
+    assert.equal("size" in edited.pages[0], false, `a landscape phone froze its short canvas ${JSON.stringify(edited.pages[0].size)} onto a legacy page with content`);
+    assert.deepEqual(edited.pages[0].objects[0].points, legacyLine.points, "editing a legacy page rewrote its stored points");
+    await page.setViewport({ width: 402, height: 874, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector(".board-canvas", { timeout: 15_000 });
+    const adopted = await waitForStored(page, legacyKey, (stored) => Boolean(stored.pages[0].size), "the legacy page did not adopt the portrait canvas it is shown on");
+    const portraitCanvas = await page.$eval(".board-canvas", (canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      return { width: Math.round(rect.width), height: Math.round(rect.height) };
+    });
+    assert.deepEqual(adopted.pages[0].size, portraitCanvas, "the legacy page adopted a size other than the canvas it is shown on");
+    assert.deepEqual(adopted.pages[0].objects[0].points, legacyLine.points, "adopting a size rewrote the legacy page's points");
+    await page.goto(`${baseUrl}#/board/${encodeURIComponent(documentId)}`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 pages"), { timeout: 15_000 });
+  }
 
   await clickByText(page, ".bottom-nav button", "Notebook");
   await page.waitForSelector(".notebook-page");

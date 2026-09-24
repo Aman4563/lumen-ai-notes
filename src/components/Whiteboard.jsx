@@ -106,6 +106,9 @@ const describeObject = (object) => {
 };
 // Phone portrait and landscape share the compact toolbar (BOARD-4/LAND).
 const COMPACT_QUERY = "(max-width: 740px), (max-height: 540px)";
+// A phone in landscape: its short canvas must never become the authoring
+// size of a page that already has content (issue #55).
+const isShortViewport = () => typeof window !== "undefined" && Boolean(window.matchMedia?.("(max-height: 540px)").matches);
 
 const useMediaQuery = (query) => {
   const read = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(query).matches;
@@ -519,8 +522,12 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const rect = canvasRef.current?.getBoundingClientRect();
     return rect && rect.width >= 100 && rect.height >= 100 ? normalizePageSize(rect) : null;
   };
-  const withAdoptedSize = (page) => {
-    if (page.size) return page;
+  // `previous` is the page before the edit. A legacy page that already has
+  // content keeps rendering in the live canvas while a phone is in landscape,
+  // exactly like the adoption effect below, so the first edit there never
+  // freezes a stretched aspect onto the existing drawing.
+  const withAdoptedSize = (page, previous = page) => {
+    if (page.size || (previous.objects?.length && isShortViewport())) return page;
     const size = measuredCanvasSize();
     return size ? { ...page, size } : page;
   };
@@ -539,7 +546,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   // Every object edit funnels through here, so a page adopts its authoring
   // size the moment it first receives content (issue #55).
   const updateActiveObjects = useCallback((updater, record = true) => {
-    const apply = (current) => ({ ...current, pages: current.pages.map((page) => page.id === current.activePageId ? withAdoptedSize({ ...page, objects: (typeof updater === "function" ? updater(page.objects) : updater).slice(-5_000) }) : page) });
+    const apply = (current) => ({ ...current, pages: current.pages.map((page) => page.id === current.activePageId ? withAdoptedSize({ ...page, objects: (typeof updater === "function" ? updater(page.objects) : updater).slice(-5_000) }, page) : page) });
     if (record) setWithHistory(apply);
     else setBoard(apply);
   }, [setWithHistory]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -799,7 +806,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
   useEffect(() => {
     if (!loaded || loadedDocumentRef.current !== documentId || replacementBlockedRef.current) return;
     if (!board.pages.some((page) => !page.size && page.objects.length)) return;
-    if (window.matchMedia?.("(max-height: 540px)").matches) return;
+    if (isShortViewport()) return;
     const size = measuredCanvasSize();
     if (!size) return;
     setBoard((current) => ({ ...current, pages: current.pages.map((page) => page.size || !page.objects.length ? page : { ...page, size }) }));
