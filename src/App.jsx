@@ -1626,20 +1626,20 @@ export default function App() {
     notify("Your edited copy was saved.");
     return true;
   };
-  const resetEdit = () => {
+  const resetEdit = (unsavedDraft) => {
+    const keepDraft = typeof unsavedDraft === "string";
     setProfile((current) => {
       const edits = { ...current.edits };
       const previous = edits[currentDocument.id];
       delete edits[currentDocument.id];
-      return {
-        ...current,
-        edits,
-        revisions: typeof previous === "string" && previous.length <= 400_000
-          ? appendRevision(current.revisions, revisionForDocument(currentDocument.id, previous, "before restoring the original"))
-          : current.revisions,
-      };
+      const now = Date.now();
+      let revisions = current.revisions;
+      if (typeof previous === "string" && previous.length <= 400_000) revisions = appendRevision(revisions, revisionForDocument(currentDocument.id, previous, "before restoring the original", new Date(now)));
+      // Unsaved typing is banked too, one millisecond newer so it lists first.
+      if (keepDraft && unsavedDraft !== previous && unsavedDraft.length <= 400_000) revisions = appendRevision(revisions, revisionForDocument(currentDocument.id, unsavedDraft, "unsaved draft before restoring the original", new Date(now + 1)));
+      return { ...current, edits, revisions };
     });
-    notify("The built-in lecture was restored. Your edited copy is kept as a revision.");
+    notify(keepDraft ? "The built-in lecture was restored. Your saved copy and unsaved draft are kept in History." : "The built-in lecture was restored. Your edited copy is kept as a revision.");
   };
   const toggleBookmark = () => {
     const adding = !profile.bookmarks.includes(currentDocument.id);
