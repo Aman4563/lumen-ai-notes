@@ -69,6 +69,10 @@ test("worker errors surface as typed failures and a crash falls back to main-thr
   const fallback = await client.search("gradient", ["doc", "custom"]);
   assert.equal(fallback.results.length, 2);
   assert.ok(fallback.results.every((result) => typeof result.searchScore === "number"));
+  const corrected = await client.search("gradiant", ["doc"]);
+  assert.deepEqual(corrected.results[0].corrections, [{ term: "gradiant", word: "gradient" }], "typo corrections ride the fallback result contract");
+  const contextual = await client.search("parameters", ["doc"]);
+  assert.match(contextual.results[0].snippet, /updates parameters/, "the fallback cuts snippets from the corpus body");
 });
 
 test("worker construction failure degrades to synchronous search and terminate is final", async () => {

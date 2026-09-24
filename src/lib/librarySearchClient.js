@@ -76,7 +76,7 @@ export const createLibrarySearchClient = ({ workerFactory = defaultWorkerFactory
       }
       for (const document of documents) {
         const body = new Map(bodies).get(document.id) || document.searchText || "";
-        fallbackBuiltins.set(document.id, { ...document, ...(typeof document.hasCode === "boolean" ? {} : contentCapabilities(body)), raw: "", searchText: body });
+        fallbackBuiltins.set(document.id, { ...document, ...(typeof document.hasCode === "boolean" ? {} : contentCapabilities(body)), raw: "", searchText: body, snippetText: body });
       }
     },
     updateCustom(upsert = [], removeIds = []) {
@@ -99,6 +99,7 @@ export const createLibrarySearchClient = ({ workerFactory = defaultWorkerFactory
           searchScore: document.searchScore,
           snippet: document.description,
           matchedTerms: document.matchedTerms || [],
+          corrections: document.corrections || [],
         }));
         return Promise.resolve({ stale: requestId !== requestCounter, results });
       }

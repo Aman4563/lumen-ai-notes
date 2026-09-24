@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { applyPronunciations, chunkSpeechText, normalizePronunciations } from "../src/lib/speech.js";
 import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFILE_VERSION } from "../src/lib/db.js";
-import { contentCapabilities, foldPluralTerm, searchDocuments, spellingAlternates, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
+import { contentCapabilities, foldPluralTerm, pruneRecentSearches, pushRecentSearch, searchDocuments, spellingAlternates, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { synonymAlternatesFor } from "../src/lib/searchSynonyms.js";
 import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads.js";
 import { createId } from "../src/lib/id.js";
@@ -194,6 +194,57 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   assert.equal(contentCapabilities("> f′(x) = lim<sub>h→0</sub> [f(x + h) − f(x)] / h").hasFormula, true, "the curriculum's blockquote/sub formula style counts");
   assert.equal(contentCapabilities("```mermaid\nflowchart LR\n```").hasCode, false, "a mermaid diagram alone is not code");
   assert.equal(contentCapabilities("> a plain quotation without math").hasFormula, false);
+}
+
+// Issue #52: exclusion-only queries, exact part numbers, word-bounded short
+// terms, ranked typo corrections, lecture snippets, and committed recents.
+{
+  const doc = (id, title, partNumber, body, extra = {}) => ({ id, title, partTitle: `Part ${partNumber} — ${extra.partName || "Topic"}`, description: extra.description || "Stock description.", searchText: body.toLocaleLowerCase(), snippetText: body, raw: "", partNumber, chapterNumber: extra.chapter || 1, tags: [] });
+  const corpus = [
+    doc("lin", "Linear Regression", 5, "Linear Regression. Ordinary least squares fits a regression line.", { partName: "Classical Supervised Learning" }),
+    doc("docker", "Docker Storage", 15, "Volumes provide storage and average throughput for containers.", { partName: "Accelerators" }),
+    doc("rag", "Retrieval pipelines", 8, "RAG systems retrieve passages. Many rags to riches stories.", { partName: "LLMs" }),
+    doc("trans", "Transformers", 21, "The transformer stacks attention layers.", { partName: "Inference" }),
+    doc("intro", "Course intro", 1, "Welcome. Later chapters cover regressions briefly.", { partName: "Foundations", chapter: 2 }),
+  ];
+  const ids = (query, docs = corpus) => searchDocuments(docs, query).map((result) => result.id);
+
+  assert.deepEqual(ids("-regression"), ["rag", "docker", "trans"], "an exclusion on its own must exclude (in curriculum order), not return everything");
+  assert.deepEqual(ids("−regression"), ids("-regression"), "the typographic minus shown in help excludes like an ASCII hyphen");
+  assert.deepEqual(ids("–regression"), ids("-regression"), "an autocorrected en dash also excludes");
+  assert.deepEqual(ids('"x −y" regression').length, 0, "a folded minus inside a phrase never turns into an exclusion");
+
+  assert.deepEqual(ids("part:5"), ["lin"], "part:5 matches Part 5 only, never Part 15");
+  assert.deepEqual(ids("part:1"), ["intro"], "part:1 never matches Parts 15 or 21");
+  assert.deepEqual(ids("part:05"), ["lin"], "zero-padded part numbers still compare numerically");
+  assert.deepEqual(ids("part:supervised"), ["lin"], "part: still matches a word of the Part title");
+
+  assert.deepEqual(ids("rag"), ["rag"], "a short term never matches inside another word (storage, average)");
+  assert.deepEqual(ids("RAG"), ["rag"], "an all-caps acronym matches only as a whole word");
+  assert.deepEqual(ids("-rag"), ["intro", "lin", "docker", "trans"], "short exclusions follow the same word rule");
+  assert.deepEqual(ids("tran"), ["trans"], "a short prefix still finds longer words while typing");
+  assert.deepEqual(ids("TRAN"), [], "an acronym must be the whole word");
+  assert.ok(ids("rags").includes("rag") && ids("RAGS").includes("rag"), "plural forms still match");
+
+  const typo = searchDocuments(corpus, "regresion");
+  assert.equal(typo[0].id, "lin", "a typo ranks the document whose title holds the corrected word first");
+  assert.deepEqual(typo[0].corrections, [{ term: "regresion", word: "regression" }], "the correction is reported for the results hint");
+  assert.ok(typo[0].matchedTerms.includes("regression"), "the corrected word is highlighted");
+  assert.ok(searchDocuments(corpus, "regression")[0].searchScore > typo[0].searchScore, "exact still outranks the same document reached by typo tolerance");
+
+  const snippet = searchDocuments(corpus, "least squares")[0].description;
+  assert.ok(snippet.includes("Ordinary least squares"), `built-in snippets come from the case-preserved body: ${snippet}`);
+  assert.ok(!snippet.startsWith("Linear Regression"), "the snippet skips the repeated title line");
+  assert.equal(searchDocuments(corpus, "linear")[0].description, "Stock description.", "a title-only match keeps the stock description");
+  assert.equal(searchDocuments(corpus, "zzzz").length, 0);
+
+  const typed = ["d", "dr", "dro", "drop", "dropo", "dropou", "dropout"].reduce((list, entry) => pushRecentSearch(list, entry), ["attention"]);
+  assert.deepEqual(typed, ["dropout", "attention"], "unfinished prefixes are replaced by the committed query");
+  assert.deepEqual(pushRecentSearch(["attention"], "attention mask"), ["attention mask", "attention"], "a longer query that starts a new word keeps the shorter search");
+  assert.deepEqual(pushRecentSearch(["Dropout", "rag"], "dropout"), ["dropout", "rag"], "recents dedupe case-insensitively");
+  assert.deepEqual(pushRecentSearch(["−regression"], "-regression"), ["-regression"], "a typographic-minus search is the same recent search");
+  assert.deepEqual(pushRecentSearch(["a", "b", "c", "d", "e", "f"], "g").length, 6, "recents stay bounded");
+  assert.deepEqual(pruneRecentSearches(["dropout", "dropou", "drop", "dro", "dr", "d", "attenti", 'title:"problem framing a"', 'title:"problem framing and objectives"', "", 4]), ["dropout", "attenti", 'title:"problem framing and objectives"'], "stored prefix junk self-heals on load");
 }
 
 // LEARN-003: bury/suspend/archive exclusion, crunch weak-first ordering, and

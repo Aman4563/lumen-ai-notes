@@ -24,6 +24,9 @@ const upsertBuiltin = (document, body) => {
     ...(typeof document.hasCode === "boolean" ? {} : contentCapabilities(body ?? document.searchText)),
     raw: "",
     searchText: "",
+    // The case-preserved plain body is kept only to cut result snippets;
+    // matching always runs on the normalized copy below.
+    snippetText: typeof body === "string" ? body : "",
     normalizedSearchText: normalizedBody,
     // Precomputed once so typo-tolerant matching never re-tokenizes ~1 MB
     // of corpus text per keystroke.
@@ -68,6 +71,7 @@ self.onmessage = (event) => {
         searchScore: document.searchScore,
         snippet: document.description,
         matchedTerms: document.matchedTerms || [],
+        corrections: document.corrections || [],
       }));
       self.postMessage({ type: "result", requestId: message.requestId, results });
     }
