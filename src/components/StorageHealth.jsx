@@ -53,6 +53,12 @@ const webllmCacheUsage = async () => {
   return { bytes: total, requests };
 };
 
+const ROUTE_LIST = "./offline-routes.json";
+const addRouteFiles = (protectedUrls, list) => {
+  if (!Array.isArray(list?.files)) return;
+  list.files.forEach((file) => protectedUrls.add(new URL(file, location.href).href));
+};
+
 const removeOptionalCache = async () => {
   if (!("caches" in window)) return 0;
   // `/api/*` is deliberately excluded from the service worker. A successful
@@ -68,9 +74,20 @@ const removeOptionalCache = async () => {
   if (!htmlResponse.ok) throw new Error("The current app shell could not be refreshed. Offline files were kept.");
   const html = await htmlResponse.text();
   const protectedUrls = new Set(Array.from(html.matchAll(/(?:src|href)=["']([^"']+)["']/g)).map((match) => new URL(match[1], location.href).href));
-  ["./", "./index.html", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"]
+  ["./", "./index.html", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", ROUTE_LIST]
     .forEach((url) => protectedUrls.add(new URL(url, location.href).href));
+  // Route screens are shell code the service worker precaches at install.
+  // Keep the current build's list and each cache's own installed list.
+  const routeResponse = await fetch(ROUTE_LIST, { cache: "reload" });
+  const routeList = routeResponse.ok ? await routeResponse.json().catch(() => null) : null;
+  if (!Array.isArray(routeList?.files)) throw new Error("The offline screen list could not be refreshed. Offline files were kept.");
+  addRouteFiles(protectedUrls, routeList);
   let removed = 0;
+  for (const name of await caches.keys()) {
+    if (!name.startsWith("lumen-ai-notes-v")) continue;
+    const cache = await caches.open(name);
+    addRouteFiles(protectedUrls, await (await cache.match(new URL(ROUTE_LIST, location.href).href))?.json().catch(() => null));
+  }
   for (const name of await caches.keys()) {
     if (!name.startsWith("lumen-ai-notes-v")) continue;
     const cache = await caches.open(name);

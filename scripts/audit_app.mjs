@@ -63,6 +63,31 @@ if (entryScript) {
   assert(entrySource.includes("service-worker.js?build="), "production registration must select the service worker for this exact build");
   assert(entrySource.includes("vite:preloadError"), "production startup must listen for missing lazy JS/CSS files");
 }
+// Route screens are shell code: the worker precaches them from the build's
+// route list so every screen opens offline after one online visit, while
+// content (lectures, search, diagrams, the WebLLM runtime, fonts) stays lazy.
+assert(exists("offline-routes.json"), "the build did not emit the offline route list");
+const routeList = exists("offline-routes.json") ? JSON.parse(read("offline-routes.json")) : { files: [] };
+const routeFiles = Array.isArray(routeList.files) ? routeList.files : [];
+assert(typeof routeList.build === "string" && routeList.build.length > 0, "the offline route list must name its build so the worker can reject a mismatched release");
+assert(routeList.entry === entryScript, `the offline route list entry (${routeList.entry}) must match the HTML entry (${entryScript})`);
+for (const file of routeFiles) assert(exists(file), `the offline route list references a missing file: ${file}`);
+for (const screen of ["Reader", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "StorageHealth", "DeviceEvidence"]) {
+  assert(routeFiles.some((file) => file.startsWith(`assets/${screen}-`) && file.endsWith(".js")), `the offline route list omits the ${screen} screen`);
+}
+for (const screen of ["AiLearningStudio", "AiTutor", "PhoneLocalAiTutor"]) {
+  assert(routeFiles.some((file) => file.startsWith(`assets/${screen}-`) && file.endsWith(".css")), `the offline route list omits the ${screen} stylesheet`);
+}
+assert(routeFiles.every((file) => /^assets\/[^/]+\.(?:js|css)$/.test(file)), "the offline route list may only name fingerprinted JS/CSS (fonts and images stay on demand)");
+const eagerContent = routeFiles.filter((file) => /\/(?:README|\d{2}-)|content-search|mermaid\.core|cytoscape|Diagram-|-definition-|interviewTracks|labs\.v1|fsrsOptimizer/.test(file));
+assert(eagerContent.length === 0, `the offline route list eagerly caches content: ${eagerContent.join(", ")}`);
+const htmlFiles = new Set([...index.matchAll(/(?:src|href)="\.\/([^"#]+)"/g)].map((match) => match[1]));
+const routeBytes = routeFiles.filter((file) => !htmlFiles.has(file) && exists(file)).reduce((total, file) => total + statSync(resolve(dist, file)).size, 0);
+assert(routeBytes < 900_000, `route screens add ${routeBytes} bytes to service-worker installation; keep them under 900 KB`);
+assert(worker.includes("offline-routes.json"), "the service worker must precache the route screens at install");
+assert(worker.includes("list?.build !== BUILD_ID"), "the service worker must reject a route list from a different build");
+assert(worker.includes("htmlAssets.includes(routes.entry)"), "the service worker must reject a route list whose entry differs from the HTML");
+
 const searchChunk = scripts.find((path) => path.includes("content-search"));
 assert(searchChunk && statSync(resolve(dist, searchChunk)).size > 500_000, "the lazy full-text search corpus was not emitted separately");
 assert(!index.includes("content-search"), "the full-text search corpus must not load on the home screen");
@@ -77,3 +102,4 @@ console.log("App audit passed.");
 console.log(`Startup entry: ${entryScript} (${entryScript ? statSync(resolve(dist, entryScript)).size : 0} bytes)`);
 console.log(`On-demand JavaScript chunks: ${scripts.length - 1}`);
 console.log(`Manifest icons: ${manifest.icons.length}`);
+console.log(`Offline route screens: ${routeFiles.length} files, ${routeBytes} bytes beyond the HTML entry`);
