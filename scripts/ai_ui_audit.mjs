@@ -458,6 +458,37 @@ try {
   await page.waitForSelector(".ai-tutor__quiz-feedback.is-correct");
   assert.match(await page.$eval(".ai-tutor__quiz-feedback", (node) => node.textContent), /final untouched estimate/i);
 
+  // Copy and Export produce readable Markdown: code and math unchanged,
+  // structured results as learners saw them, and [S#] labels resolved.
+  await page.evaluate(() => {
+    window.__lumenAuditCopies = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { window.__lumenAuditCopies.push(value); } } });
+    window.__lumenAuditDownloads = [];
+    URL.createObjectURL = (blob) => { window.__lumenAuditDownloads.push(blob); return "blob:lumen-audit"; };
+    URL.revokeObjectURL = () => {};
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function auditClick() { if (!this.download) click.call(this); };
+  });
+  await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.find((node) => node.querySelector(".ai-tutor__response-text"))?.querySelector(".ai-tutor__message-actions button")?.click());
+  await page.waitForFunction(() => window.__lumenAuditCopies.length === 1);
+  const copiedProse = await page.evaluate(() => window.__lumenAuditCopies[0]);
+  assert.match(copiedProse, /score = evaluate\(frozen_model, holdout\)/, "Copy stripped underscores from code");
+  assert.match(copiedProse, /\$L = \\frac\{1\}\{n\}\\sum_i \\ell_i\$/, "Copy corrupted inline math");
+  assert.match(copiedProse, /\*\*final holdout\*\*/, "Copy did not keep the Markdown source");
+  assert.match(copiedProse, /\nSources:\n- \[S\d+\] /, "Copy did not resolve the answer's citation labels");
+  await page.$eval(".ai-tutor__message--assistant:has(.ai-tutor__quiz) .ai-tutor__message-actions button", (button) => button.click());
+  await page.waitForFunction(() => window.__lumenAuditCopies.length === 2);
+  const copiedQuiz = await page.evaluate(() => window.__lumenAuditCopies[1]);
+  assert.doesNotMatch(copiedQuiz, /"correctIndex"|^\{/, "Copy of a quiz produced raw JSON");
+  assert.match(copiedQuiz, /### Quiz: Leakage and evaluation[\s\S]*- B\. Only after model and threshold choices are frozen[\s\S]*\*\*Answer:\*\* B\./, "Copy of a quiz was not readable");
+  await page.click('[aria-label="Export conversation as Markdown"]');
+  await page.waitForFunction(() => window.__lumenAuditDownloads.length === 1);
+  const exported = await page.evaluate(() => window.__lumenAuditDownloads[0].text());
+  assert.match(exported, /## Lumen Tutor · Explain · Balanced/, "export headings omitted mode and profile");
+  assert.match(exported, /## Lumen Tutor · Quiz · Balanced[\s\S]*### Quiz: Leakage and evaluation/, "export did not format the quiz");
+  assert.doesNotMatch(exported, /"correctIndex"/, "export contained raw quiz JSON");
+  assert.match(exported, /Sources:\n- \[S\d+\] /, "export citations had no source list");
+
   await waitForStoredHistory(page, 4);
   const stored = await readProfile(page);
   assert.ok(stored.aiTutorHistory.length >= 4 && stored.aiTutorHistory.length <= 50, "integrated host did not persist bounded tutor history");

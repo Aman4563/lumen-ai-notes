@@ -82,6 +82,7 @@ import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
 import { recoverableImport } from "./lib/chunkRecovery.js";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
+import { downloadBlob } from "./lib/download.js";
 import {
   buildReviewQueue,
   createReviewItem,
@@ -129,19 +130,6 @@ const routeFor = (view, documentId) => {
   if (view === "reader") return `#/read/${encodeURIComponent(documentId)}`;
   if (view === "board") return `#/board/${encodeURIComponent(documentId)}`;
   return `#/${view === "settings" ? "home" : view}`;
-};
-
-const downloadBlob = (name, parts, type = "application/octet-stream") => {
-  const url = URL.createObjectURL(new Blob(parts, { type }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  document.body.appendChild(link);
-  link.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-    link.remove();
-  }, 2_000);
 };
 
 const downloadText = (name, value, type = "application/json") => {

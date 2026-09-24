@@ -28,10 +28,8 @@ import {
   selectCitablePhoneSources,
   selectCompletedPhoneHistory,
 } from "../lib/phoneLocalAi.js";
-import {
-  phoneTutorMarkdownPlainText,
-  renderPhoneTutorMarkdown,
-} from "../lib/phoneTutorMarkdown.js";
+import { renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
+import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../phone-local-ai-tutor.css";
@@ -823,18 +821,27 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
     run(regeneratedSpec, { appendUser: false });
   };
 
+  // Copy and Save use readable Markdown: exact code and math, structured
+  // results as the learner saw them, and a list resolving [S#]/[W#] labels.
+  const messageMarkdown = (message, includeSources = true) => tutorMessageMarkdown({
+    role: "assistant",
+    content: message.content,
+    data: message.data,
+    citationSources: message.sources || [],
+    webSources: message.citations || [],
+  }, { includeSources });
+
   const copyMessage = async (message) => {
-    const content = message.data ? JSON.stringify(message.data, null, 2) : phoneTutorMarkdownPlainText(message.content);
-    const copied = await writeClipboard(content);
+    const copied = await writeClipboard(messageMarkdown(message));
     setCopiedMessageId(copied ? message.id : "");
-    onNotify?.(copied ? "Answer copied." : "This browser did not allow clipboard access.", copied ? "success" : "error");
+    onNotify?.(copied ? "Answer copied as Markdown." : "This browser did not allow clipboard access.", copied ? "success" : "error");
     if (copied) globalThis.setTimeout?.(() => setCopiedMessageId((current) => current === message.id ? "" : current), 1_800);
   };
 
   const saveMessageNote = (message) => {
-    if (typeof onSaveAnswerNote !== "function" || message.data) return;
+    if (typeof onSaveAnswerNote !== "function") return;
     const saved = onSaveAnswerNote({
-      content: message.content,
+      content: messageMarkdown(message, false),
       title: `AI ${(PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "tutor").toLocaleLowerCase()} answer (on-device)`,
       citationSources: message.sources || [],
       webSources: (message.citations || []).map(({ index, title, url }) => ({ index, title, url })),
@@ -904,7 +911,7 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
               {history.map((message) => (
                 <article className={`phone-tutor__message is-${message.role}`} key={message.id}>
-                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{!message.data && typeof onSaveAnswerNote === "function" && <button type="button" aria-label="Save this answer to your notebook as a labeled AI note" disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Again</button>}</div>}</div>
+                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{typeof onSaveAnswerNote === "function" && <button type="button" aria-label={savedNoteMessageIds.has(message.id) ? "Saved to notes" : "Save to notes: this answer becomes a labeled AI note in your notebook"} disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Regenerate</button>}</div>}</div>
                   {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
                   {message.role === "assistant" && <EvidenceDetails message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onNavigateSource={onNavigateSource} />}
                 </article>

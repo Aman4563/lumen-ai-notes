@@ -33,7 +33,9 @@ import {
 import { AI_REQUEST_CONTRACT_ID } from "../lib/aiContract";
 import { buildConversationWindow } from "../lib/conversationMemory";
 import { fitAiRequestContext } from "../lib/aiRequestBudget";
-import { renderTutorMarkdown, tutorMarkdownPlainText } from "../lib/tutorMarkdown";
+import { renderTutorMarkdown } from "../lib/tutorMarkdown";
+import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
+import { downloadBlob } from "../lib/download.js";
 import { buildTutorContext, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
@@ -532,6 +534,7 @@ const verifyPublicConfig = (config) => {
 };
 
 const modeById = (id) => MODE_OPTIONS.find((mode) => mode.id === id) || MODE_OPTIONS[0];
+const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.label || "Balanced";
 
 const InlineCitations = ({ text, citationSources = [], webSources = [], onNavigateSource }) => {
   const sourceMap = useMemo(() => new Map(
@@ -864,10 +867,12 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
   const [copyStatus, setCopyStatus] = useState("idle");
   const [noteStatus, setNoteStatus] = useState("idle");
   const hasEvidence = message.citationSources.length > 0 || message.webSources.length > 0;
-  const canSaveNote = message.role === "assistant" && !message.data && !message.incomplete && typeof onSaveAnswerNote === "function";
+  const canSaveNote = message.role === "assistant" && !message.incomplete && typeof onSaveAnswerNote === "function";
   const saveNote = () => {
     const saved = onSaveAnswerNote({
-      content: message.content,
+      // Structured results are saved as the readable Markdown the learner saw;
+      // the host appends the source list itself.
+      content: tutorMessageMarkdown(message, { includeSources: false }),
       title: `AI ${modeById(message.mode).label.toLocaleLowerCase()} answer`,
       citationSources: message.citationSources,
       webSources: message.webSources,
@@ -875,7 +880,9 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
     if (saved) setNoteStatus("saved");
   };
   const copyMessage = async () => {
-    const copied = await copyPlainText(message.role === "assistant" ? tutorMarkdownPlainText(message.content) : message.content);
+    // Raw Markdown keeps code, math and emphasis exact; structured results and
+    // the source list make the copy readable where it is pasted.
+    const copied = await copyPlainText(message.role === "assistant" ? tutorMessageMarkdown(message) : message.content);
     setCopyStatus(copied ? "copied" : "error");
     window.setTimeout(() => setCopyStatus("idle"), 1_800);
   };
@@ -893,7 +900,7 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
         {message.role === "assistant" && hasEvidence && <button type="button" aria-expanded={panel === "sources"} onClick={() => togglePanel("sources")}><BookOpen size={15} aria-hidden="true" /> Sources <span>{message.citationSources.length + message.webSources.length}</span></button>}
         {message.role === "assistant" && <button type="button" aria-expanded={panel === "approach"} onClick={() => togglePanel("approach")}><Sparkles size={15} aria-hidden="true" /> Approach</button>}
       </div>
-      <span className="ai-tutor__copy-status" role="status" aria-live="polite">{copyStatus === "copied" ? `${message.role === "assistant" ? "Response" : "Request"} copied.` : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : ""}</span>
+      <span className="ai-tutor__copy-status" role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : ""}</span>
       {panel === "sources" && <ResponseEvidence message={message} onNavigateSource={onNavigateSource} />}
       {panel === "approach" && <ResponseApproach message={message} />}
     </>
@@ -1884,21 +1891,12 @@ export default function AiTutor({
   })();
 
   const exportConversation = () => {
-    const lines = [`# Lumen AI Tutor conversation`, "", `Exported ${new Date().toISOString().slice(0, 10)}. Answers are model-generated from local sources — verify before relying on them.`, ""];
-    for (const message of history) {
-      lines.push(`## ${message.role === "assistant" ? "Lumen Tutor" : "You"}${message.durationMs && message.role === "assistant" ? ` · ${(message.durationMs / 1_000).toFixed(1)}s` : ""}`, "", String(message.content || "").trim(), "");
-    }
-    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `lumen-tutor-conversation-${new Date().toISOString().slice(0, 10)}.md`;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      URL.revokeObjectURL(url);
-      link.remove();
-    }, 2_000);
+    const exportedAt = new Date();
+    downloadBlob(`lumen-tutor-conversation-${exportedAt.toISOString().slice(0, 10)}.md`, [tutorConversationMarkdown(history, {
+      exportedAt,
+      modeLabel: (id) => modeById(id).label,
+      profileLabel: profileLabel,
+    })], "text/markdown;charset=utf-8");
   };
 
   return (

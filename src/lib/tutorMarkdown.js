@@ -1,6 +1,7 @@
 import { Marked } from "marked";
 import markedKatex from "marked-katex-extension";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
+import { tutorPlainText } from "./tutorExport.js";
 
 const tutorMarked = new Marked();
 tutorMarked.use({
@@ -152,13 +153,5 @@ export const renderTutorMarkdown = (markdown, citationSources = [], webSources =
   renderTutorBaseMarkdown(decorateTutorCitations(normalizeTutorMathDelimiters(markdown), citationSources, webSources))
 );
 
-export const tutorMarkdownPlainText = (markdown) => String(markdown || "")
-  .replace(/```[\s\S]*?```/g, (block) => block.replace(/^```[^\n]*\n?/, "").replace(/```$/, ""))
-  .replace(/`([^`]+)`/g, "$1")
-  .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-  .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-  .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-  .replace(/^[ \t]*>[ \t]?/gm, "")
-  .replace(/^[ \t]*[-+*][ \t]+/gm, "• ")
-  .replace(/[*_~]{1,3}/g, "")
-  .trim();
+// Plain text that keeps code, math and identifiers such as `for _ in` intact.
+export const tutorMarkdownPlainText = tutorPlainText;
