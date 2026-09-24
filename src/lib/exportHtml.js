@@ -4,7 +4,9 @@
  * module wraps it in a self-contained readable page — no external assets,
  * so the file opens anywhere and prints cleanly. Interactive affordances
  * from the in-app renderer (copy buttons, pending diagram shells) are
- * neutralized by print-safe CSS rather than re-parsing the HTML.
+ * neutralized by print-safe CSS rather than re-parsing the HTML. TeX
+ * rendered by KaTeX shows once, through its MathML copy: the HTML copy
+ * needs KaTeX's stylesheet, which the export does not carry.
  */
 const escapeHtml = (value) => String(value || "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -26,6 +28,7 @@ export const documentToStandaloneHtml = ({ title, renderedHtml, sourceLabel = ""
   blockquote { margin: 1em 0; padding: 2px 16px; border-left: 3px solid #d8d2c4; color: #4c5568; }
   .code-label, .code-copy, [data-diagram-status] > .mermaid { display: none; }
   .diagram-shell::before { content: "— diagram omitted in the exported copy —"; color: #8a8272; font-style: italic; }
+  .katex-html { display: none; }
   footer.export-provenance { margin-top: 48px; padding-top: 12px; border-top: 1px solid #e2ddd2; color: #8a8272; font-size: 0.72em; }
   @media print { body { padding: 0; } }
 </style>
