@@ -130,7 +130,16 @@ try {
               ? [{ tag: node.tagName, className: node.getAttribute("class"), text: (node.textContent || "").slice(0, 55), left: Math.round(box.left), right: Math.round(box.right) }] : [];
           }).slice(0, 8);
         const problems = [];
-        if (document.documentElement.scrollWidth > innerWidth + 2) problems.push(`Page width ${document.documentElement.scrollWidth} exceeds ${innerWidth}`);
+        if (document.documentElement.scrollWidth > innerWidth + 2) {
+          problems.push(`Page width ${document.documentElement.scrollWidth} exceeds ${innerWidth}`);
+          // Name the culprit even when it sits behind a modal (inert or hidden
+          // regions are skipped by the visible-overflow scan above).
+          if (!overflow.length) overflow.push(...[...document.body.querySelectorAll("*")].flatMap((node) => {
+            const box = node.getBoundingClientRect();
+            return box.width > 0 && box.right > innerWidth + 2 && !hasScrollOwner(node)
+              ? [{ tag: node.tagName, className: node.getAttribute("class"), text: (node.textContent || "").slice(0, 55), left: Math.round(box.left), right: Math.round(box.right), hidden: !visible(node) }] : [];
+          }).slice(-8));
+        }
         if (overflow.length) problems.push("Content extends beyond the viewport");
         if (dialog && (rect.top < -2 || rect.bottom > innerHeight + 2 || rect.left < -2 || rect.right > innerWidth + 2)) problems.push("Dialog extends beyond the viewport");
         if (canvas) {
