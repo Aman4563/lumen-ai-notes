@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { categoryForReviewItem, createMistake, MAX_MISTAKES, mistakeAnalytics, mistakeFingerprint, normalizeMistakes, recordMistake, updateMistake } from "./mistakes.js";
+import { categoryForReviewItem, createMistake, MAX_MISTAKES, mistakeAnalytics, mistakeFingerprint, normalizeMistakes, recordMistake, reinsertRecord, updateMistake } from "./mistakes.js";
 
 test("repeated failures merge into one reopening mistake instead of duplicating", () => {
   const now = new Date("2026-09-01T10:00:00.000Z");
@@ -82,4 +82,14 @@ test("mistake analytics count open/corrected per category and rank repeats", () 
   assert.equal(summary.mostRepeated.length, 1);
   assert.equal(summary.mostRepeated[0].prompt, "a");
   assert.equal(summary.mostRepeated[0].occurrences, 2);
+});
+
+test("undo reinserts a deleted record at its old position exactly once", () => {
+  const records = [{ id: "a" }, { id: "c" }];
+  const restored = reinsertRecord(records, { id: "b", note: "mine" }, 1);
+  assert.deepEqual(restored.map((entry) => entry.id), ["a", "b", "c"]);
+  assert.equal(reinsertRecord(restored, { id: "b" }, 0), restored, "a record that already came back is never duplicated");
+  assert.deepEqual(reinsertRecord(records, { id: "z" }, 99).map((entry) => entry.id), ["a", "c", "z"], "an out-of-range index appends");
+  assert.equal(reinsertRecord(records, null, 0), records);
+  assert.equal(reinsertRecord([{ id: "a" }, { id: "b" }], { id: "c" }, 0, 2).length, 2, "the collection bound still holds");
 });

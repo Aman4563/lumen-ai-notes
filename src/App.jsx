@@ -74,7 +74,7 @@ import { migrateItemsToFsrs } from "./lib/fsrs.js";
 import { MAX_ASSESSMENTS, MIN_ASSESSMENT_POOL, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
-import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
+import { categoryForReviewItem, recordMistake, reinsertRecord, updateMistake } from "./lib/mistakes.js";
 import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
 import { actionableDueCount, buildDailySession, planPace, resumeTarget, SESSION_LENGTHS } from "./lib/plan.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
@@ -84,6 +84,7 @@ import { lectureLoadMessage, recoverableImport } from "./lib/chunkRecovery.js";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
 import { downloadBlob } from "./lib/download.js";
+import { UndoStrip } from "./components/ReviewCenter";
 import {
   actionableReviewCount,
   createReviewItem,
@@ -913,7 +914,32 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   );
 }
 
-function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload, onCreate, onDeleteCustom, onDuplicateCustom, onDeleteClipping, onUpdateClipping, onCopyClipping, onCreateReview, onCopyAnnotation, onExportAnnotations, onDeleteAnnotation, onRestoreTrash, onDeleteTrash, onManageCustom, onOpenReview, onBatchOrganize, onBatchDelete, onRunLinkAudit, collections: appCollections }) {
+/**
+ * Clipping comments keep keystrokes local and commit after a short pause, on
+ * blur, and on unmount (REV-19): a profile write per keystroke re-rendered the
+ * whole app and could drop keys or hit React's update-depth limit.
+ */
+function ClippingNoteField({ clip, onCommit }) {
+  const [value, setValue] = useState(clip.note || "");
+  const focusedRef = useRef(false);
+  const draftRef = useRef(null);
+  const timerRef = useRef(0);
+  const commitRef = useRef(null);
+  commitRef.current = () => {
+    window.clearTimeout(timerRef.current);
+    if (draftRef.current === null) return;
+    const next = draftRef.current;
+    draftRef.current = null;
+    if (next !== (clip.note || "")) onCommit(clip.id, next);
+  };
+  useEffect(() => {
+    if (!focusedRef.current && draftRef.current === null) setValue(clip.note || "");
+  }, [clip.note]);
+  useEffect(() => () => commitRef.current(), []);
+  return <textarea value={value} maxLength={4_000} onFocus={() => { focusedRef.current = true; }} onChange={(event) => { setValue(event.target.value); draftRef.current = event.target.value; window.clearTimeout(timerRef.current); timerRef.current = window.setTimeout(() => commitRef.current(), 600); }} onBlur={() => { focusedRef.current = false; commitRef.current(); }} placeholder="Add why this matters, a question, or an interview connection…" aria-label="Comment on this clipping" />;
+}
+
+function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload, onCreate, onDeleteCustom, onDuplicateCustom, onDeleteClipping, onRestoreClipping, onUpdateClipping, onCopyClipping, onCreateReview, onCopyAnnotation, onExportAnnotations, onDeleteAnnotation, onRestoreTrash, onDeleteTrash, onManageCustom, onOpenReview, onBatchOrganize, onBatchDelete, onRunLinkAudit, collections: appCollections }) {
   const [notebookQuery, setNotebookQuery] = useState("");
   const [annotationPurpose, setAnnotationPurpose] = useState("all");
   const annotated = Object.entries(profile.personalNotes).filter(([, note]) => note.trim()).map(([id, note]) => ({ doc: allDocuments.find((item) => item.id === id), note })).filter((item) => item.doc);
@@ -925,6 +951,20 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
   const [selectMode, setSelectMode] = useState(false);
   const [selectedDocIds, setSelectedDocIds] = useState([]);
   const [linkReport, setLinkReport] = useState(null);
+  const [removedClipping, setRemovedClipping] = useState(null);
+  const clippingSectionRef = useRef(null);
+  const removeClipping = (clip) => {
+    const index = profile.clippings.findIndex((entry) => entry.id === clip.id);
+    onDeleteClipping(clip.id);
+    setRemovedClipping(onRestoreClipping ? { clip, index } : null);
+  };
+  const undoRemoveClipping = () => {
+    if (!removedClipping) return;
+    const { clip, index } = removedClipping;
+    onRestoreClipping(clip, index);
+    setRemovedClipping(null);
+    requestAnimationFrame(() => [...(clippingSectionRef.current?.querySelectorAll(".clipping-card") || [])].find((card) => card.dataset.clippingId === clip.id)?.querySelector('button[aria-label="Delete clipping"]')?.focus());
+  };
   const toggleDocSelection = (id) => setSelectedDocIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   const collections = profile.collections || [];
   const countFor = (filterId) => customDocuments.filter((doc) => (filterId === "archived" ? doc.archived : !doc.archived && (filterId === "all" || (doc.collectionId || "") === filterId))).length;
@@ -952,7 +992,7 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
 
       <div className="notebook-summary">
         <div><Bookmark size={20} /><strong>{bookmarked.length}</strong><span>Bookmarks</span></div>
-        <div><NotebookPen size={20} /><strong>{annotated.length}</strong><span>Annotations</span></div>
+        <div><NotebookPen size={20} /><strong>{annotated.length}</strong><span>Personal notes</span></div>
         <div><FileEdit size={20} /><strong>{edited.length}</strong><span>Edited copies</span></div>
         <div><Upload size={20} /><strong>{customDocuments.length}</strong><span>Uploads</span></div>
         <div><Highlighter size={20} /><strong>{profile.clippings.length}</strong><span>Clippings</span></div>
@@ -964,11 +1004,11 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
       {(customDocuments.length > 0) && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Created and uploaded</span><h2>My lectures</h2></div><div className="notebook-heading-actions"><button className="button ghost" onClick={() => setLinkReport(onRunLinkAudit())} type="button"><Search size={15} /> Check links</button><button className={selectMode ? "button secondary" : "button ghost"} onClick={() => { setSelectMode((value) => !value); setSelectedDocIds([]); }} aria-pressed={selectMode} type="button"><CheckCircle2 size={15} /> {selectMode ? "Done selecting" : "Select"}</button></div></div>
       {linkReport && <div className={linkReport.findings.length ? "link-report has-findings" : "link-report"} role="status">{linkReport.findings.length === 0 ? `Checked ${linkReport.scanned} document${linkReport.scanned === 1 ? "" : "s"} — every internal link opens.` : <>
         <strong>{linkReport.findings.length} broken link{linkReport.findings.length === 1 ? "" : "s"} across {linkReport.scanned} scanned document{linkReport.scanned === 1 ? "" : "s"}:</strong>
-        <ul>{linkReport.findings.slice(0, 12).map((finding, index) => <li key={index}><button className="text-button" onClick={() => onOpen(finding.documentId)} type="button">{finding.documentId.split("/").at(-1)}</button> → <code>{finding.href}</code> <small>({finding.kind.replace(/-/g, " ")})</small></li>)}</ul>
+        <ul>{linkReport.findings.slice(0, 12).map((finding, index) => <li key={index}><button className="text-button" onClick={() => onOpen(finding.documentId)} type="button">{allDocuments.find((item) => item.id === finding.documentId)?.title || finding.documentId.split("/").at(-1)}</button> → <code>{finding.href}</code> <small>({finding.kind.replace(/-/g, " ")})</small></li>)}</ul>
       </>}<button className="icon-button small" onClick={() => setLinkReport(null)} aria-label="Dismiss link report" type="button"><X size={14} /></button></div>}
       {selectMode && selectedDocIds.length > 0 && <div className="batch-toolbar" role="toolbar" aria-label="Batch actions"><strong>{selectedDocIds.length} selected</strong><label>Collection<select defaultValue="" onChange={(event) => { if (event.target.value !== "") { onBatchOrganize(selectedDocIds, { collectionId: event.target.value === "__none__" ? "" : event.target.value }); setSelectedDocIds([]); setSelectMode(false); event.target.value = ""; } }} aria-label="Assign selection to a collection"><option value="" disabled>Assign…</option><option value="__none__">No collection</option>{(appCollections || []).map((collection) => <option value={collection.id} key={collection.id}>{collection.name}</option>)}</select></label><button className="button ghost" onClick={() => { onBatchOrganize(selectedDocIds, { archived: collectionFilter !== "archived" }); setSelectedDocIds([]); setSelectMode(false); }} type="button"><Archive size={15} /> {collectionFilter === "archived" ? "Unarchive" : "Archive"}</button><button className="button ghost danger-text" onClick={() => { onBatchDelete(selectedDocIds); setSelectedDocIds([]); setSelectMode(false); }} type="button"><Trash2 size={15} /> Trash</button></div>}{(collections.length > 0 || customDocuments.some((doc) => doc.archived)) && <div className="collection-chips" role="radiogroup" aria-label="Filter by collection"><button role="radio" aria-checked={collectionFilter === "all"} className={collectionFilter === "all" ? "active" : ""} onClick={() => setCollectionFilter("all")} type="button">All ({countFor("all")})</button>{collections.map((collection) => <button role="radio" aria-checked={collectionFilter === collection.id} className={collectionFilter === collection.id ? "active" : ""} onClick={() => setCollectionFilter(collection.id)} key={collection.id} type="button">{collection.name} ({countFor(collection.id)})</button>)}{customDocuments.some((doc) => doc.archived) && <button role="radio" aria-checked={collectionFilter === "archived"} className={collectionFilter === "archived" ? "active archived-chip" : "archived-chip"} onClick={() => setCollectionFilter("archived")} type="button">Archived ({countFor("archived")})</button>}</div>}{visibleCustom.length ? <div className="document-list">{visibleCustom.map((doc) => <div className={selectMode && selectedDocIds.includes(doc.id) ? "notebook-document-row is-selected" : "notebook-document-row"} key={doc.id}>{selectMode && <label className="batch-check"><input type="checkbox" checked={selectedDocIds.includes(doc.id)} onChange={() => toggleDocSelection(doc.id)} aria-label={`Select ${doc.title}`} /></label>}{doc.pinned && <Pin size={13} className="pinned-marker" aria-label="Pinned" />}<DocumentCard doc={doc} profile={profile} onOpen={onOpen} compact /><div className="notebook-row-actions"><button className="icon-button" onClick={() => onManageCustom(doc.id)} aria-label={`Organize ${doc.title}`} title="Organize (rename, tags, collection, pin, archive)" type="button"><FileEdit size={17} /></button><button className="icon-button" onClick={() => onDuplicateCustom(doc.id)} aria-label={`Duplicate ${doc.title}`} title="Duplicate" type="button"><Copy size={17} /></button><button className="icon-button danger" onClick={() => onDeleteCustom(doc.id)} aria-label={`Delete ${doc.title}`} title="Delete" type="button"><Trash2 size={17} /></button></div></div>)}</div> : <div className="empty-state compact"><Search size={22} /><h2>Nothing in this view</h2><p>Choose another collection or clear the notebook search.</p></div>}</section>}
       {visibleAnnotated.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Captured ideas</span><h2>Personal notes</h2></div></div><div className="note-grid">{visibleAnnotated.map(({ doc, note }) => <button className="note-card" onClick={() => onOpen(doc.id)} key={doc.id} type="button"><span>{doc.partTitle}</span><strong>{doc.title}</strong><p>{note}</p><ChevronRight size={18} /></button>)}</div></section>}
-      {visibleClippings.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved excerpts</span><h2>Clippings</h2></div></div><div className="clipping-grid">{visibleClippings.map((clip) => { const doc = allDocuments.find((item) => item.id === clip.documentId); const linked = profile.reviewItems.some((item) => item.sourceClippingId === clip.id); const aiOrigin = clip.origin === "ai-tutor"; return <article className={`clipping-card${aiOrigin ? " clipping-card--ai" : ""}`} key={clip.id}>{aiOrigin ? <BrainCircuit size={18} /> : <Highlighter size={18} />}{aiOrigin && <span className="clipping-origin" title="Generated by the AI tutor and saved by you; verify before relying on it">{clip.title || "AI tutor answer"} · AI draft</span>}<blockquote>{clip.text}</blockquote><textarea value={clip.note || ""} maxLength={4_000} onChange={(event) => onUpdateClipping(clip.id, event.target.value)} placeholder="Add why this matters, a question, or an interview connection…" aria-label="Comment on this clipping" /><div>{doc || !aiOrigin ? <button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button> : <span className="clipping-no-source">No linked lecture</span>}<span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(clip)} aria-label={linked ? "Create another review card from clipping" : "Create review card from clipping"} title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyClipping(clip)} aria-label="Copy clipping" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteClipping(clip.id)} aria-label="Delete clipping" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div></section>}
+      {(visibleClippings.length > 0 || removedClipping) && <section ref={clippingSectionRef} className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved excerpts</span><h2>Clippings</h2></div></div>{removedClipping && <UndoStrip key={removedClipping.clip.id} message={`Clipping deleted: “${removedClipping.clip.text.slice(0, 60)}${removedClipping.clip.text.length > 60 ? "…" : ""}”`} onUndo={undoRemoveClipping} onExpire={() => setRemovedClipping(null)} />}<div className="clipping-grid">{visibleClippings.map((clip) => { const doc = allDocuments.find((item) => item.id === clip.documentId); const linked = profile.reviewItems.some((item) => item.sourceClippingId === clip.id); const aiOrigin = clip.origin === "ai-tutor"; return <article className={`clipping-card${aiOrigin ? " clipping-card--ai" : ""}`} data-clipping-id={clip.id} key={clip.id}>{aiOrigin ? <BrainCircuit size={18} /> : <Highlighter size={18} />}{aiOrigin && <span className="clipping-origin" title="Generated by the AI tutor and saved by you; verify before relying on it">{clip.title || "AI tutor answer"} · AI draft</span>}<blockquote>{clip.text}</blockquote><ClippingNoteField clip={clip} onCommit={onUpdateClipping} /><div>{doc || !aiOrigin ? <button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button> : <span className="clipping-no-source">No linked lecture</span>}<span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(clip)} aria-label={linked ? "Create another review card from clipping" : "Create review card from clipping"} title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyClipping(clip)} aria-label="Copy clipping" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => removeClipping(clip)} aria-label="Delete clipping" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div></section>}
       {profile.annotations.length > 0 && <section className="notebook-section"><div className="section-heading annotation-section-heading"><div><span className="eyebrow">Source anchored</span><h2>Highlights</h2></div><div className="annotation-heading-actions"><label>Purpose<select value={annotationPurpose} onChange={(event) => setAnnotationPurpose(event.target.value)}><option value="all">All</option><option value="important">Important</option><option value="definition">Definitions</option><option value="question">Questions</option><option value="interview">Interview</option></select></label><button className="button ghost" onClick={() => onExportAnnotations(visibleAnnotations)} aria-label="Export the listed highlights as Markdown" type="button"><Download size={15} /> Export</button></div></div>{visibleAnnotations.length ? <div className="notebook-annotation-grid">{visibleAnnotations.map((annotation) => { const doc = allDocuments.find((item) => item.id === annotation.documentId); return <article className={`notebook-annotation-card ${annotation.color}`} key={annotation.id}><span className="annotation-purpose">{annotation.purpose}</span><blockquote>{annotation.quote}</blockquote>{annotation.comment && <p>{annotation.comment}</p>}{annotation.tags?.length > 0 && <div className="annotation-tags">{annotation.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}<div><button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button><span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(annotation)} aria-label="Create review card from highlight" title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyAnnotation(annotation)} aria-label="Copy highlight" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteAnnotation(annotation.id)} aria-label="Delete highlight" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div> : <div className="empty-state compact"><Search size={24} /><h2>No matching highlights</h2><p>Choose another purpose or clear the notebook search.</p></div>}</section>}
       {normalizedQuery && visibleMistakes.length > 0 && <section className="notebook-section notebook-mistakes" aria-label="Matching mistakes"><div className="section-heading"><div><span className="eyebrow">From your error log</span><h2>Mistakes</h2></div><button className="text-button" onClick={onOpenReview} type="button">Review center <ChevronRight size={16} /></button></div><div className="notebook-mistake-list">{visibleMistakes.slice(0, 6).map((mistake) => <button className="notebook-mistake-row" onClick={onOpenReview} key={mistake.id} type="button"><Flame size={15} /><span className="notebook-mistake-copy"><strong>{mistake.prompt}</strong><small>{mistake.correctedAt ? "Corrected" : `Open · ×${mistake.occurrences || 1}`}{mistake.correction ? ` — ${mistake.correction}` : ""}</small></span></button>)}</div></section>}
       {visibleBookmarked.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved</span><h2>Bookmarks</h2></div></div><div className="document-list">{visibleBookmarked.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={onOpen} compact />)}</div></section>}
@@ -2412,9 +2452,14 @@ export default function App() {
   };
 
 
+  // Deletion is immediate (and syncs as a normal removal); the notebook's
+  // inline Undo strip calls restoreClipping with the same record (REV-11).
   const deleteClipping = (id) => {
     setProfile((current) => ({ ...current, clippings: current.clippings.filter((clip) => clip.id !== id) }));
-    notify("Clipping deleted.");
+  };
+
+  const restoreClipping = (clip, index) => {
+    setProfile((current) => ({ ...current, clippings: reinsertRecord(current.clippings, clip, index, 2_000) }));
   };
 
   const updateClipping = (id, note) => {
@@ -2677,10 +2722,14 @@ export default function App() {
     setProfile((current) => ({ ...current, mistakes: updateMistake(current.mistakes, id, patch) }));
   }, []);
 
+  // The review center shows its own Undo strip for this deletion (REV-11).
   const deleteMistake = useCallback((id) => {
     setProfile((current) => ({ ...current, mistakes: (current.mistakes || []).filter((mistake) => mistake.id !== id) }));
-    notify("Mistake removed.");
-  }, [notify]);
+  }, []);
+
+  const restoreMistake = useCallback((mistake, index) => {
+    setProfile((current) => ({ ...current, mistakes: reinsertRecord(current.mistakes || [], mistake, index) }));
+  }, []);
 
   const askAiAboutSelection = useCallback((text) => {
     const excerpt = String(text || "").replace(/\s+/g, " ").trim().slice(0, 2_000);
@@ -2826,15 +2875,19 @@ export default function App() {
   }, [notify]);
 
   const toggleReviewSuspend = useCallback((id) => {
+    const target = profileRef.current.reviewItems.find((item) => item.id === id);
     setProfile((current) => ({ ...current, reviewItems: current.reviewItems.map((item) => item.id === id ? { ...item, suspended: !item.suspended, updatedAt: new Date().toISOString() } : item) }));
-  }, []);
+    if (target) notify(target.suspended ? "Card resumed; it returns to the queue when due." : "Card paused; it stays out of the queue until resumed.");
+  }, [notify]);
 
   const toggleReviewArchive = useCallback((id) => {
+    const target = profileRef.current.reviewItems.find((item) => item.id === id);
     setProfile((current) => ({
       ...current,
       reviewItems: current.reviewItems.map((item) => item.id === id ? { ...item, archived: !item.archived, suspended: item.archived ? item.suspended : false, updatedAt: new Date().toISOString() } : item),
     }));
-  }, []);
+    if (target) notify(target.archived ? "Card restored to the active deck." : "Card archived. Find it under Archived.");
+  }, [notify]);
 
   const deleteReviewItem = useCallback((id) => {
     if (!window.confirm("Delete this review card and its review history?")) return;
@@ -3292,11 +3345,11 @@ export default function App() {
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
           {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} autoNarrate={autoNarrateDocId === currentDocument.id} onAutoNarrateHandled={() => setAutoNarrateDocId("")} onOpenBoard={() => changeView("board")} onAskAi={profile.settings.aiFeaturesEnabled !== false ? askAiAboutSelection : undefined} onNotify={notify} /></Suspense>)}
           {view === "device-evidence" && <Suspense fallback={<div className="view-loading" role="status">Preparing device checks…</div>}><DeviceEvidence onNotify={notify} /></Suspense>}
-          {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} />}
+          {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onRestoreClipping={restoreClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onInsertConsumed={consumeAiInsert} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} /></Suspense>}
+          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onRestoreMistake={restoreMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
           </ErrorBoundary>
         </main>

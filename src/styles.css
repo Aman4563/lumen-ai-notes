@@ -2774,7 +2774,7 @@ input[type="range"] {
 .review-flashcard h1 { max-width: 650px; margin: 16px 0; color: var(--ink); font-family: "Manrope", sans-serif; font-size: clamp(1.55rem, 4vw, 2.55rem); line-height: 1.2; letter-spacing: -0.055em; white-space: pre-wrap; }
 .review-source-link { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-faint); cursor: pointer; font-size: 0.67rem; }
 .review-answer { width: 100%; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--line); text-align: left; }
-.review-answer span { color: var(--teal-text); font-size: 0.68rem; font-weight: 850; letter-spacing: 0.1em; text-transform: uppercase; }
+.review-answer > span { color: var(--teal-text); font-size: 0.68rem; font-weight: 850; letter-spacing: 0.1em; text-transform: uppercase; }
 .review-answer p { margin: 9px 0 0; color: var(--ink-soft); font-size: 1rem; line-height: 1.72; white-space: pre-wrap; }
 .review-session-actions { display: flex; align-items: center; justify-content: center; gap: 9px; margin-top: 18px; }
 .review-session-actions .review-reveal { margin-top: 0; }
@@ -8174,6 +8174,42 @@ input[type="range"] {
 .assessment-numeric label { display: flex; flex-direction: column; gap: 5px; font-size: 0.85rem; }
 .assessment-missed { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 4px; }
 .assessment-missed-link { display: inline-flex; align-items: center; gap: 6px; text-align: left; }
+
+/* Review, readiness-check, and notebook repairs (issue #54). */
+.assessment-choice-list { display: grid; gap: 8px; }
+.assessment-rubric button { min-height: 44px; }
+.assessment-leave p { color: var(--ink-soft); font-size: 0.82rem; line-height: 1.55; }
+.assessment-dialog h2:focus:not(:focus-visible),
+.review-title h1:focus:not(:focus-visible),
+.review-deck-heading h2:focus:not(:focus-visible) { outline: none; }
+.undo-strip { display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 8px 8px 8px 14px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--paper-2); color: var(--ink-soft); font-size: 0.76rem; }
+.undo-strip > span { min-width: 0; flex: 1; }
+.undo-strip .button { flex: 0 0 auto; min-height: 40px; white-space: nowrap; }
+.notebook-heading-actions .button,
+.review-mistakes .mistake-controls .button { white-space: nowrap; }
+.notebook-search input { border: 0; }
+.link-report li .text-button { justify-content: flex-start; text-align: left; }
+.notebook-search:focus-within { border-color: var(--ink-soft); }
+.notebook-document-row:has(> .batch-check) { grid-template-columns: auto minmax(0, 1fr) auto; }
+.interview-track-strip label { min-width: 0; max-width: 100%; }
+.interview-track-strip select,
+.review-settings-strip select { min-width: 0; max-width: 100%; }
+@media (max-width: 740px) {
+  .review-mistakes .section-heading,
+  .notebook-section .section-heading { align-items: stretch; flex-direction: column; gap: 10px; }
+  .notebook-heading-actions { flex-wrap: wrap; }
+  .review-settings-strip label { min-width: 0; max-width: 100%; white-space: normal; }
+  /* Row actions move under the card so titles keep the full row (REV-20). */
+  .notebook-document-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .notebook-document-row:has(> .batch-check) { grid-template-columns: auto minmax(0, 1fr); }
+  .notebook-document-row > .notebook-row-actions { grid-column: -2 / -1; justify-content: flex-end; }
+  .notebook-document-row .document-card.compact .document-card-copy > strong { display: -webkit-box; overflow: hidden; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+}
+/* iOS Safari zooms into any focused field under 16px (REV-10). */
+@media (max-width: 740px), (pointer: coarse) {
+  :is(.review-center-page, .review-session-page, .notebook-page, .review-card-dialog, .assessment-dialog) :is(input, select, textarea),
+  .review-mistakes .mistake-controls select { font-size: max(16px, 1rem); }
+}
 
 /* Assisted evidence checks (issue #7): machine-verified, one tap to run. */
 .evidence-assisted-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

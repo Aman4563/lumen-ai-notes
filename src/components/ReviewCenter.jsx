@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { exportReviewCards } from "../lib/cardInterchange.js";
 import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound } from "../lib/interview.js";
 import { ROUND_TYPES, buildTrackRound, normalizeTrackBank } from "../lib/interviewTracks.js";
@@ -51,6 +52,30 @@ import {
 
 const FOCUSABLE = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
 const REVIEW_DECK_PAGE_SIZE = 24;
+const SHELL_REGIONS = ".app-sidebar, .app-topbar, .view-container, .bottom-nav, .update-banner";
+
+/**
+ * Background isolation for dialogs the review center opens itself (REV-8).
+ * It applies the app's modal convention (inert + aria-hidden on the shell
+ * regions) but restores each region's previous state on close, so a closed
+ * phone drawer stays inert. The dialog must render outside .view-container
+ * (see MistakeDialog's portal) or it would inert itself.
+ */
+function useInertShell(active) {
+  useEffect(() => {
+    if (!active) return undefined;
+    const regions = [...document.querySelectorAll(SHELL_REGIONS)].map((region) => ({ region, inert: region.inert, hidden: region.getAttribute("aria-hidden") }));
+    regions.forEach(({ region }) => {
+      region.inert = true;
+      region.setAttribute("aria-hidden", "true");
+    });
+    return () => regions.forEach(({ region, inert, hidden }) => {
+      region.inert = inert;
+      if (hidden === null) region.removeAttribute("aria-hidden");
+      else region.setAttribute("aria-hidden", hidden);
+    });
+  }, [active]);
+}
 
 export function ReviewCardDialog({ draft, onClose, onSave }) {
   const [front, setFront] = useState("");
@@ -156,6 +181,7 @@ export function MistakeDialog({ open, onClose, onLog }) {
   const dialogRef = useRef(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  useInertShell(open);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -206,7 +232,8 @@ export function MistakeDialog({ open, onClose, onLog }) {
     });
   };
 
-  return (
+  // Portaled out of .view-container so the shell can be inert behind it.
+  return createPortal(
     <div className="modal-layer review-dialog-layer">
       <button className="modal-scrim" onClick={onClose} aria-label="Close mistake dialog" type="button" />
       <form ref={dialogRef} className="review-card-dialog mistake-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="mistake-dialog-title">
@@ -225,6 +252,32 @@ export function MistakeDialog({ open, onClose, onLog }) {
         <label><span>Tags <small>optional, comma separated</small></span><input className="text-input" value={tags} maxLength={500} onChange={(event) => setTags(event.target.value)} placeholder="softmax, derivations" /></label>
         <div className="modal-actions"><button className="button ghost" onClick={onClose} type="button">Cancel</button><button className="button primary" disabled={!prompt.trim() || !expected.trim()} type="submit">Log mistake</button></div>
       </form>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * Short-lived undo for a deletion the learner may regret (REV-11). The strip
+ * takes focus (the deleted row's button is gone), describes what was removed,
+ * and expires after `timeout` unless it holds focus or the pointer.
+ */
+export function UndoStrip({ message, onUndo, onExpire, timeout = 10_000 }) {
+  const undoRef = useRef(null);
+  const expireRef = useRef(onExpire);
+  expireRef.current = onExpire;
+  const [paused, setPaused] = useState(false);
+  const messageId = useId();
+  useEffect(() => { undoRef.current?.focus({ preventScroll: true }); }, []);
+  useEffect(() => {
+    if (paused) return undefined;
+    const timer = setTimeout(() => expireRef.current?.(), timeout);
+    return () => clearTimeout(timer);
+  }, [paused, timeout]);
+  return (
+    <div className="undo-strip" role="status" onFocus={() => setPaused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(false); }} onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}>
+      <span id={messageId}>{message}</span>
+      <button ref={undoRef} className="button secondary" onClick={onUndo} aria-describedby={messageId} type="button"><Undo2 size={15} /> Undo</button>
     </div>
   );
 }
@@ -430,6 +483,7 @@ export default function ReviewCenter({
   mistakes = [],
   onEditMistake,
   onDeleteMistake,
+  onRestoreMistake,
   onScheduleCorrective,
   onLogMistake,
   onImportCards,
@@ -442,6 +496,8 @@ export default function ReviewCenter({
   const [roundTypeChoice, setRoundTypeChoice] = useState("");
   const [activeLab, setActiveLab] = useState(null);
   const [showCorrectedMistakes, setShowCorrectedMistakes] = useState(false);
+  const [removedMistake, setRemovedMistake] = useState(null);
+  const mistakeSectionRef = useRef(null);
   const [revealed, setRevealed] = useState(false);
   const [currentId, setCurrentId] = useState("");
   const [confidence, setConfidence] = useState(3);
@@ -681,6 +737,23 @@ export default function ReviewCenter({
     (start && !start.disabled ? start : titleRef.current)?.focus();
   }, [session]);
 
+  const removeMistake = (mistake) => {
+    const index = mistakes.findIndex((entry) => entry.id === mistake.id);
+    onDeleteMistake?.(mistake.id);
+    setRemovedMistake(onRestoreMistake ? { mistake, index } : null);
+  };
+  const undoRemoveMistake = () => {
+    if (!removedMistake) return;
+    const { mistake, index } = removedMistake;
+    onRestoreMistake?.(mistake, index);
+    setRemovedMistake(null);
+    requestAnimationFrame(() => {
+      const section = mistakeSectionRef.current;
+      const restored = [...(section?.querySelectorAll(".mistake-card") || [])].find((card) => card.dataset.mistakeId === mistake.id);
+      (restored?.querySelector('button[aria-label="Delete this mistake entry"]') || [...(section?.querySelectorAll(".mistake-controls button") || [])].at(-1))?.focus();
+    });
+  };
+
   // Archive/delete remove the focused row: hand focus to the row that takes
   // its place, or the deck heading when the list is empty (REV-7).
   const actOnDeckCard = (action, id) => {
@@ -802,7 +875,7 @@ export default function ReviewCenter({
         if (!curve.seededCount) return null;
         return <section className="review-workload-strip" aria-label="Retention versus workload"><div><strong>Workload planner</strong><span>Steady-state daily reviews for your {curve.seededCount} scheduled card{curve.seededCount === 1 ? "" : "s"}{curve.unseededCount ? ` (${curve.unseededCount} not FSRS-scheduled yet)` : ""}.</span></div><div className="review-workload-options">{curve.rows.map((row) => <button className={Math.abs((profile.reviewSettings.requestRetention ?? 0.9) - row.retention) < 0.001 ? "active" : ""} key={row.retention} onClick={() => onSettingsChange({ requestRetention: row.retention })} title={`Average interval ${row.averageIntervalDays} days`} type="button"><strong>{Math.round(row.retention * 100)}%</strong><span>~{row.dailyReviews}/day</span></button>)}</div></section>;
       })()}
-      {(mistakes.length > 0 || onLogMistake) && <section className="review-mistakes" aria-label="Mistake notebook">
+      {(mistakes.length > 0 || onLogMistake) && <section ref={mistakeSectionRef} className="review-mistakes" aria-label="Mistake notebook">
         <div className="section-heading"><div><span className="eyebrow">Learn from failures</span><h2>Mistake notebook</h2></div><div className="mistake-controls"><label>Category<select value={mistakeFilter} onChange={(event) => setMistakeFilter(event.target.value)}><option value="all">All</option>{MISTAKE_CATEGORIES.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label><label className="mistake-corrected-toggle"><input type="checkbox" checked={showCorrectedMistakes} onChange={(event) => setShowCorrectedMistakes(event.target.checked)} /> Show corrected</label>{mistakes.length > 0 && <button className="button ghost" onClick={exportMistakes} type="button"><Download size={15} /> Export</button>}{onLogMistake && <button className="button ghost" onClick={() => setMistakeDialogOpen(true)} type="button"><Flame size={15} /> Log mistake</button>}</div></div>
         <p className="microcopy">Grading a card “Again” logs or reopens its mistake automatically; repeats merge into one entry. Write the correction in your own words, then schedule a corrective review.</p>
         {(() => {
@@ -815,6 +888,7 @@ export default function ReviewCenter({
             {summary.mostRepeated.length > 0 && <span className="mistake-summary-repeats">Most repeated: {summary.mostRepeated.map((entry) => `“${entry.prompt.slice(0, 40)}${entry.prompt.length > 40 ? "…" : ""}” ×${entry.occurrences}`).join(" · ")}</span>}
           </div>;
         })()}
+        {removedMistake && <UndoStrip key={removedMistake.mistake.id} message={`Mistake removed: “${removedMistake.mistake.prompt.slice(0, 60)}${removedMistake.mistake.prompt.length > 60 ? "…" : ""}”`} onUndo={undoRemoveMistake} onExpire={() => setRemovedMistake(null)} />}
         {mistakes.length === 0 && <div className="empty-state compact"><Flame size={24} /><h2>No mistakes logged yet</h2><p>Grade a card “Again” or log one manually — captured errors become your highest-value review material.</p></div>}
         <div className="mistake-list">
           {mistakes
@@ -823,7 +897,7 @@ export default function ReviewCenter({
             .map((mistake) => {
               const doc = documents.find((item) => item.id === mistake.documentId);
               const categoryLabel = MISTAKE_CATEGORIES.find((category) => category.id === mistake.category)?.label || mistake.category;
-              return <article className={`mistake-card${mistake.correctedAt ? " is-corrected" : ""}`} key={mistake.id}>
+              return <article className={`mistake-card${mistake.correctedAt ? " is-corrected" : ""}`} data-mistake-id={mistake.id} key={mistake.id}>
                 <div className="mistake-meta"><span className="mistake-category">{categoryLabel}</span>{mistake.occurrences > 1 && <span className="mistake-count">×{mistake.occurrences}</span>}{mistake.correctedAt && <span className="mistake-corrected">Corrected</span>}<span className="mistake-when">{new Date(mistake.lastSeenAt).toLocaleDateString()}</span></div>
                 <p className="mistake-prompt">{mistake.prompt}</p>
                 {mistake.expected && <p className="mistake-expected"><strong>Expected:</strong> {mistake.expected}</p>}
@@ -833,7 +907,7 @@ export default function ReviewCenter({
                   <span>
                     <button className="button ghost" onClick={() => onScheduleCorrective?.(mistake)} type="button">Schedule corrective review</button>
                     <button className="button ghost" onClick={() => onEditMistake?.(mistake.id, { correctedAt: mistake.correctedAt ? "" : new Date().toISOString() })} type="button">{mistake.correctedAt ? "Reopen" : "Mark corrected"}</button>
-                    <button className="icon-button small danger" onClick={() => onDeleteMistake?.(mistake.id)} aria-label="Delete this mistake entry" title="Delete" type="button"><Trash2 size={15} /></button>
+                    <button className="icon-button small danger" onClick={() => removeMistake(mistake)} aria-label="Delete this mistake entry" title="Delete" type="button"><Trash2 size={15} /></button>
                   </span>
                 </div>
               </article>;

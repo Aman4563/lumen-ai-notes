@@ -135,7 +135,9 @@ try {
   await page.$eval('button[aria-label="Edit review card"]', (node) => node.click());
   await page.waitForSelector(".review-card-dialog");
   await page.focus(".review-card-dialog textarea");
-  await page.keyboard.press("End");
+  // Place the caret at the end of the text: at the 16px phone field size the
+  // prompt wraps, and End only reaches the end of the first visual line.
+  await page.$eval(".review-card-dialog textarea", (node) => node.setSelectionRange(node.value.length, node.value.length));
   await page.keyboard.type(" [edited]");
   await clickByText(page, ".review-card-dialog button", "Save changes");
   await page.waitForSelector(".review-deck-card");
@@ -234,8 +236,14 @@ try {
 
   // Manual capture: the Log-mistake dialog records a categorized entry, and
   // repeating the same prompt merges instead of duplicating.
+  // The closed phone drawer is inert (React's prop); earlier App-level dialogs
+  // can clear that, so re-establish it to prove this dialog restores it.
+  await page.$eval(".app-sidebar", (node) => { node.inert = true; });
   await clickByText(page, ".review-mistakes button", "Log mistake");
   await page.waitForSelector(".mistake-dialog");
+  // Issue #54 (REV-8): the dialog renders outside the view and makes the app
+  // shell inert while open.
+  assert.deepEqual(await page.evaluate(() => [document.querySelector(".mistake-dialog").closest(".view-container") === null, ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "the mistake dialog must inert the background it covers");
   const manualFields = await page.$$(".mistake-dialog textarea");
   await manualFields[0].type("Wrote the softmax gradient with the wrong sign");
   await manualFields[1].type("The Jacobian diagonal is p_i(1 - p_i); off-diagonals are -p_i p_j.");
@@ -249,6 +257,8 @@ try {
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await clickByText(page, ".mistake-dialog button", "Log mistake");
   await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("Formula")), { timeout: 5_000 });
+  await page.waitForFunction(() => !document.querySelector(".mistake-dialog"));
+  assert.deepEqual(await page.evaluate(() => [".app-sidebar", ".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)), [true, false, false, false], "closing the dialog must restore the shell and keep the closed phone drawer inert");
   await clickByText(page, ".review-mistakes button", "Log mistake");
   await page.waitForSelector(".mistake-dialog");
   const repeatFields = await page.$$(".mistake-dialog textarea");
@@ -275,11 +285,22 @@ try {
     assert.match(exported, /# Mistake notebook/);
     assert.ok(exported.includes("softmax gradient") && exported.includes("Category: Formula") && exported.includes("×2"), "the export is missing the merged mistake's details");
   }
-  await page.evaluate(() => {
-    const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("softmax gradient"));
-    card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
-  });
-  await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient")), { timeout: 5_000 });
+  const deleteSoftmaxMistake = async () => {
+    await page.evaluate(() => {
+      const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("softmax gradient"));
+      card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
+    });
+    await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient")), { timeout: 5_000 });
+  };
+  await deleteSoftmaxMistake();
+  // Issue #54 (REV-11): a deleted mistake offers a focused Undo that restores
+  // the same merged entry.
+  await page.waitForFunction(() => document.activeElement?.closest(".undo-strip") && document.activeElement.textContent.includes("Undo"), { timeout: 5_000 })
+    .catch(() => assert.fail("deleting a mistake must focus an Undo control"));
+  await clickByText(page, ".undo-strip button", "Undo");
+  await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("×2")), { timeout: 5_000 })
+    .catch(() => assert.fail("Undo did not restore the deleted mistake"));
+  await deleteSoftmaxMistake();
 
   // INTERVIEW-002 slice: a timed interview round runs prep → answer → reveal,
   // and a missed question lands in the mistake notebook under Interview.
@@ -424,6 +445,47 @@ try {
   });
   await new Promise((resolve) => setTimeout(resolve, 400));
 
+  // Issue #54 (REV-19/REV-11): burst typing into a clipping note keeps every
+  // character with several clippings, and a deleted clipping can be undone.
+  await page.goto(`${baseUrl}manifest.webmanifest`, { waitUntil: "load" });
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction("study-data", "readwrite");
+      const store = transaction.objectStore("study-data");
+      const get = store.get("profile");
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => {
+        const profile = get.result;
+        const stamp = new Date().toISOString();
+        profile.clippings = [1, 2].map((index) => ({ id: `audit-clip-${index}`, documentId: "notes/part-01-foundations/01-ai-ml-mental-model.md", text: `Audit clipping ${index}: attention weighs every token against every other token.`, note: "", createdAt: stamp, updatedAt: stamp }));
+        store.put(profile, "profile");
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    };
+  }));
+  await page.goto(`${baseUrl}#/notebook`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector('.clipping-card[data-clipping-id="audit-clip-1"] textarea');
+  const burst = "Attention cost grows quadratically with sequence length, which is why long contexts need tricks.";
+  await page.focus('.clipping-card[data-clipping-id="audit-clip-1"] textarea');
+  await page.keyboard.type(burst, { delay: 0 });
+  assert.equal(await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] textarea', (node) => node.value), burst, "burst typing dropped characters from the clipping note");
+  await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] textarea', (node) => node.blur());
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal((await readProfile(page)).clippings.find((clip) => clip.id === "audit-clip-1")?.note, burst, "the clipping note must persist in full");
+  await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] button[aria-label="Delete clipping"]', (node) => node.click());
+  await page.waitForFunction(() => !document.querySelector('.clipping-card[data-clipping-id="audit-clip-1"]') && document.querySelector(".undo-strip"), { timeout: 5_000 });
+  await clickByText(page, ".undo-strip button", "Undo");
+  await page.waitForSelector('.clipping-card[data-clipping-id="audit-clip-1"]', { timeout: 5_000 });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const restoredClippings = (await readProfile(page)).clippings;
+  assert.deepEqual(restoredClippings.map((clip) => clip.id), ["audit-clip-1", "audit-clip-2"], "Undo must restore the clipping in its original place");
+  assert.equal(restoredClippings[0].note, burst, "the restored clipping keeps its note");
+  await page.evaluate(() => { location.hash = "#/review"; });
+  await page.waitForSelector(".review-center-page");
+
   // Exercise the maximum persisted deck size. The center must keep the DOM
   // bounded on an iPhone instead of rendering 10,000 Markdown cards at once.
   await page.evaluate(() => new Promise((resolve, reject) => {
@@ -470,7 +532,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, inert mistake dialog, mistake and clipping undo, burst-typed clipping notes, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
