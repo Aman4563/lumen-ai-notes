@@ -387,6 +387,13 @@ Source scopes are:
 A learner can ask a free question without opening an article. The old “only opened article
 is usable” behavior is no longer the default.
 
+Library first also reserves up to six passages of the open lesson when the request is about
+it (“this lesson”, “the selected material”, an unedited mode default, or a Reader Ask AI
+excerpt), because such wording never matches the lesson lexically. Reserved passages lead
+the evidence, go through the same byte fit and `[S#]` labelling, and do not recommend web
+fallback. **Choose sources** lists the whole catalog; a lecture's text loads through the
+Reader's cache only when ticked, still capped at eight.
+
 ### 5.3 What “Library first, then web” actually means
 
 This phrase has a precise implementation meaning:
@@ -728,7 +735,14 @@ GFM headings, emphasis, lists, blockquotes, tables, links, code, code-copy contr
 `$...$`, display `$$...$$`, and compatible fenced Mermaid. Model HTML is never trusted.
 
 Structured Quiz/Flashcard/Study-plan results use dedicated validated React components.
-They are not general Markdown/KaTeX/Mermaid surfaces. Keep documentation scoped accordingly.
+Each string field renders through a sanitized inline variant of the tutor renderer: KaTeX
+math, emphasis, code spans and citation controls, but never blocks, fences or Mermaid.
+
+Tutor answers shift Markdown headings to h4–h6 below the tutor's h2 and a per-message h3
+(classes keep the visual size). Wide tables and display equations sit in `.ai-tutor__scroll`
+wrappers that become named, focusable groups only when they overflow. Copy and conversation
+export produce the Markdown source (structured results as readable Markdown), a per-answer
+`Sources:` list resolving `[S#]`/`[W#]`, and an incomplete-answer marker.
 
 Mermaid is lazy-loaded only when a completed surface actually contains a supported fence.
 One shared serialized renderer is used by Reader, Teaching Mode, Mac tutor, and phone tutor

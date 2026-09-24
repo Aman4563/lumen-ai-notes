@@ -463,3 +463,44 @@ and Contrast. It also fails on any `var(--token)` that no stylesheet defines.
   fade now lifts while a Part has keyboard focus. `audit:a11y` clicks lecture
   text and asserts that focus stays on the body and PageDown scrolls. It also
   tabs through the Parts and asserts that no focused row sits under the fade.
+
+## Bugs reproduced on 2026-09-24: AI tutor defects (#56)
+
+A strict AI tutor audit (issue #56) reproduced these against mocked and real
+`qwen3.5:4b` requests. Each fix has a regression in the named audit.
+
+- One tab saved a cloned user turn (`sync-conflict-*`) and warned about a
+  "concurrent tab change" after Library-first requests: a second quick save
+  read its merge base before the first had committed. Saves now read base and
+  local state when their turn runs. `audit:ai-ui` sends three turns with slowed
+  IndexedDB commits and expects one user and one answer per turn, no conflict
+  record and no warning; `audit:sync` still merges real concurrent tabs.
+- Library first answered "Explain the key ideas in this lesson" from other
+  chapters. Requests about the open lesson now reserve its passages.
+  `audit:ai-ui` expects the open lesson to lead the evidence; unit tests pin
+  the reservation and the deictic-wording check.
+- Choose sources listed only lessons opened this session. It lists the whole
+  catalog and loads a lesson when ticked; an empty filter says so.
+- Copy stripped every `_`, `*` and `~`; quiz, card and plan answers copied and
+  exported as raw JSON with unresolved `[S#]` labels. Copy and export now use
+  the Markdown source, readable structured results and a source list.
+- A sent Ask AI excerpt came back over the learner's draft on every tutor
+  remount and landed unfocused far above the composer. Inserts are consumed
+  once, name the lecture, keep an unsent draft and focus the composer.
+- Leaving mid-answer left an unanswered question; the engine choice reset on
+  every visit; a second flashcard add reported failure although the cards were
+  saved; Refresh silently unticked the web-fallback permission. All four are
+  covered by the lifecycle scenario in `audit:ai-ui`.
+- Quiz, card and plan fields showed raw `$TeX$`, and a quiz citation rendered
+  one character per line. Structured fields render KaTeX inline.
+- A hidden copy-status element extended the page by thousands of pixels;
+  `audit:responsive` now seeds a completed turn before checking the composer
+  at the page bottom.
+- Focus fell to `<body>` after Generate, completion, Stop, Check answer, Save
+  and Clear; the elapsed counter was re-announced every second while
+  completion was silent; the grounding radiogroup ignored arrow keys; Clear
+  used `window.confirm`; a learner's own Stop showed as a red error. The
+  keyboard scenario in `audit:ai-ui` covers each.
+- Streaming scrolled the whole page back down after the learner scrolled away,
+  and completion showed the end of a grounded answer. Following now scrolls
+  only the conversation, and completion reveals the answer's start.
