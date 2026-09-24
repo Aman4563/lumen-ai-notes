@@ -520,6 +520,9 @@ uppercase `[W1]`, `[W2]`, … labels. Current guards:
 - searched responses must cite retained W evidence;
 - structured strings are included in validation;
 - one buffered structured citation-placement repair is allowed, then failure is terminal;
+- grouped or spaced labels the model wrote (`[S1, S2]`, `[S 1]`) are normalized to `[S1] [S2]`
+  outside code; no label is ever added to uncited text and lowercase labels still fail;
+- a Markdown answer that is a bare JSON object gets one format-recovery turn, then fails;
 - code like `x[1]` is not reinterpreted as a web citation.
 
 These are syntax/provenance integrity checks, not claim-level entailment. One valid citation
@@ -584,7 +587,12 @@ When both Library-first insufficiency/time sensitivity and learner authorization
 6. evidence is fitted to the synthesis context, and only retained/relabelled evidence can
    validate or be returned;
 7. a missing result, bad terminal, invalid schema, unresolved citation, or ungrounded answer
-   fails closed.
+   fails closed, with one exception (2026-09-24, #58): an authorized search that retains no
+   usable web evidence for a Markdown request that already carries `[S#]` library evidence
+   returns a library-only answer. It must cite `[S#]`, any `[W#]` fails, a fixed notice is
+   prepended, and the envelope reports `webSearch.requested && !used` with `rounds > 0` and no
+   sources. Without library evidence, or for structured tasks, the request still fails closed
+   with `WEB_SEARCH_NO_RESULTS`.
 
 ### 6.3 Phone orchestration
 
