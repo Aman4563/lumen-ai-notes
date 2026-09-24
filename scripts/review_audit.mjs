@@ -76,11 +76,41 @@ try {
   await page.waitForFunction(() => !document.querySelector(".review-card-dialog"));
   assert.equal(await page.$eval(".review-hero strong", (node) => node.textContent), "1", "a duplicate card must not grow the deck");
 
+  // Issue #54 (REV-5): Home's due widget and Review button use the same
+  // actionable count as the review queue.
+  await page.evaluate(() => { location.hash = "#/home"; });
+  await page.waitForSelector(".today-widgets");
+  assert.equal(await page.$eval(".today-widget strong", (node) => node.textContent), "1", "Home's due widget must match the review queue");
+  assert.ok((await page.$eval(".dashboard-method-actions .button.primary", (node) => node.textContent)).includes("Review 1 due"), "Home's Review button must match the review queue");
+  await page.evaluate(() => { location.hash = "#/review"; });
+  await page.waitForSelector(".review-hero");
+
   await clickByText(page, ".review-hero button", "Start review");
   await page.waitForSelector(".review-session-page");
+  // Issue #54 (REV-6/REV-7): the progress bar starts empty with progressbar
+  // semantics, and focus follows the prompt and then the revealed answer.
+  await page.waitForFunction(() => document.activeElement?.classList.contains("review-question"), { timeout: 5_000 })
+    .catch(() => assert.fail("starting a session must focus the card prompt"));
+  assert.deepEqual(await page.$eval(".review-progress", (node) => [node.getAttribute("role"), node.getAttribute("aria-valuenow"), node.getAttribute("aria-valuemax"), node.querySelector("span").style.width]), ["progressbar", "0", "1", "0%"], "an ungraded session must show an empty progressbar");
   await clickByText(page, ".review-session-page button", "Show answer");
   await page.waitForSelector(".review-answer");
   assert.ok((await page.$eval(".review-answer", (node) => node.textContent)).includes("overestimates production generalization"));
+  await page.waitForFunction(() => document.activeElement?.classList.contains("review-answer"), { timeout: 5_000 })
+    .catch(() => assert.fail("revealing must move focus to the answer"));
+  // Issue #54 (REV-2): on an iPhone SE-sized screen every grade button stays
+  // above the fixed bottom navigation without scrolling.
+  await page.setViewport({ width: 375, height: 667, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  await page.waitForSelector(".toast", { hidden: true, timeout: 10_000 });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const gradeReach = await page.evaluate(() => {
+    const navTop = document.querySelector(".bottom-nav").getBoundingClientRect().top;
+    return [...document.querySelectorAll(".review-rating")].map((button) => {
+      const box = button.getBoundingClientRect();
+      return box.bottom <= navTop && button.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+    });
+  });
+  assert.deepEqual(gradeReach, [true, true, true, true], "grade buttons must be visible above the bottom navigation at 375x667");
+  await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
   await clickByText(page, ".review-rating", "Good");
   try {
     await page.waitForSelector(".review-center-page", { timeout: 5_000 });
@@ -89,6 +119,7 @@ try {
     throw error;
   }
   await page.waitForFunction(() => document.querySelector(".review-hero strong")?.textContent === "0");
+  assert.ok((await page.$eval(".review-center-page [role='status']", (node) => node.textContent)).includes("Rated Good: next review in 1 day"), "the grade outcome must be announced");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("1 day interval"), "Good rating did not schedule a one-day interval");
   assert.ok((await page.$eval(".review-stat-grid", (node) => node.textContent)).includes("100%"), "recall rate was not updated");
 
@@ -439,7 +470,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, keyboard deck import with duplicate and malformed-file feedback, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

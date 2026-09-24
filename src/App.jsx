@@ -85,7 +85,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
 import { downloadBlob } from "./lib/download.js";
 import {
-  buildReviewQueue,
+  actionableReviewCount,
   createReviewItem,
   currentTimeZone,
   gradeReviewItem,
@@ -524,7 +524,7 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
 
       <section className="today-widgets" aria-label="Today at a glance">
         {(() => {
-          const dueCount = profile.reviewItems.filter((item) => !item.suspended && !item.archived && Date.parse(item.dueAt) <= Date.now()).length;
+          const dueCount = actionableReviewCount(profile);
           const openMistakes = (profile.mistakes || []).filter((mistake) => !mistake.correctedAt).length;
           return (
             <>
@@ -686,7 +686,7 @@ function Dashboard({ profile, allDocuments, onOpen, onLibrary, onNotebook, onRev
         <div className="method-icon"><GraduationCap size={26} /></div>
         <div><span className="eyebrow">Better than passive reading</span><h2>Read → recall → explain → implement</h2><p>Use narration during review, personal notes for retrieval practice, teaching mode to explain aloud, and the whiteboard for derivations.</p></div>
         <div className="dashboard-method-actions"><button className="button ghost" onClick={onNotebook} type="button">Open notebook</button><button className="button primary" onClick={onReview} type="button"><Brain size={17} /> {(() => {
-          const due = profile.reviewItems.filter((item) => !item.suspended && Date.parse(item.dueAt) <= Date.now()).length;
+          const due = actionableReviewCount(profile);
           return due ? `Review ${due} due` : "Open reviews";
         })()}</button></div>
       </section>
@@ -1672,7 +1672,7 @@ export default function App() {
     notify(`Continuing narration: ${next.title}`, "success", 4000);
   };
   const currentOriginalSource = currentDocument.source === "custom" ? currentDocument.raw : (builtInSources[currentDocument.id] || "");
-  const reviewDueCount = buildReviewQueue(profile.reviewItems, profile.reviewSettings, new Date(), profile.reviewSessions).length;
+  const reviewDueCount = actionableReviewCount(profile);
   const aiFeaturesEnabled = profile.settings.aiFeaturesEnabled !== false;
   const aiHistoryRetention = [0, 10, 25, 50].includes(profile.settings.aiHistoryRetention) ? profile.settings.aiHistoryRetention : 50;
 

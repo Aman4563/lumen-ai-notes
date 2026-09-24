@@ -7,6 +7,7 @@ import { MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles } from "../src/lib/uploads
 import { createId } from "../src/lib/id.js";
 import { selectInterviewRound } from "../src/lib/interview.js";
 import {
+  actionableReviewCount,
   buildReviewQueue,
   classifyReviewItem,
   hasClozeMarkup,
@@ -263,6 +264,10 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   const settings = { dailyNewLimit: 10, dailyReviewLimit: 10 };
   const dailyQueue = buildReviewQueue([eligible, buried, suspendedCard, archivedCard], settings, queueNow, [], { timeZone: "UTC" });
   assert.deepEqual(dailyQueue.map((item) => item.id), ["eligible"], "buried, suspended, and archived cards must never enter the daily queue");
+  assert.equal(actionableReviewCount({ reviewItems: [eligible, buried, suspendedCard, archivedCard], reviewSettings: settings, reviewSessions: [] }, queueNow, "UTC"), 1, "the shared due count must match the daily queue");
+  const forecastNow = new Date("2026-08-21T20:00:00.000Z");
+  const forecastCards = [mk("tonight", { dueAt: "2026-08-21T23:00:00.000Z" }), mk("tomorrow-morning", { dueAt: "2026-08-22T06:00:00.000Z" }), mk("in-24h", { dueAt: "2026-08-22T20:00:00.000Z" }), mk("past", { dueAt: "2026-08-21T19:00:00.000Z" })];
+  assert.deepEqual(reviewAnalytics([], forecastCards, forecastNow, "UTC").forecast, [1, 2, 0, 0, 0, 0, 0], "the forecast buckets upcoming reviews by local calendar day");
 
   const weak = mk("weak", { reviewCount: 5, lastReviewedAt: "2026-08-01T00:00:00.000Z", lapses: 4, ease: 1.6, dueAt: "2026-09-30T00:00:00.000Z" });
   const strong = mk("strong", { reviewCount: 5, lastReviewedAt: "2026-08-01T00:00:00.000Z", lapses: 0, ease: 2.8, dueAt: "2026-09-30T00:00:00.000Z" });

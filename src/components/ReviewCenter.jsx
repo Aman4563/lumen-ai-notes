@@ -451,7 +451,15 @@ export default function ReviewCenter({
   const [showArchived, setShowArchived] = useState(false);
   const [deckPage, setDeckPage] = useState(1);
   const [clock, setClock] = useState(() => new Date());
+  const [sessionDone, setSessionDone] = useState(0);
+  const [announcement, setAnnouncement] = useState("");
   const startedAt = useRef(Date.now());
+  const promptRef = useRef(null);
+  const answerRef = useRef(null);
+  const startButtonRef = useRef(null);
+  const titleRef = useRef(null);
+  const deckHeadingRef = useRef(null);
+  const wasInSessionRef = useRef(false);
   const deckSectionRef = useRef(null);
   const importInputRef = useRef(null);
   const timeZone = useMemo(() => currentTimeZone(), []);
@@ -546,6 +554,8 @@ export default function ReviewCenter({
   const usage = useMemo(() => getTodayReviewUsage(profile.reviewSessions, queueNow, timeZone), [profile.reviewSessions, queueNow.getTime(), timeZone]);
   const documentMap = useMemo(() => new Map(documents.map((document) => [document.id, document])), [documents]);
   const current = queue.find((item) => item.id === currentId) || queue[0];
+  const queueLengthRef = useRef(0);
+  queueLengthRef.current = queue.length;
   const lastAttempt = profile.reviewAttempts.at(-1);
   const normalizedDeckQuery = deckQuery.trim().toLocaleLowerCase();
   const deckItems = useMemo(() => profile.reviewItems.filter((item) => (
@@ -585,18 +595,27 @@ export default function ReviewCenter({
 
   const grade = useCallback((rating) => {
     if (!current) return;
+    const { scheduler, requestRetention, fsrsWeights } = profile.reviewSettings;
+    const interval = previewReviewIntervals(current, { scheduler, requestRetention, weights: fsrsWeights })[rating];
+    const label = REVIEW_RATINGS.find((entry) => entry.id === rating)?.label || rating;
+    const left = Math.max(0, queueLengthRef.current - 1);
     onGrade(current.id, rating, Date.now() - startedAt.current, { confidence, crunch, timeZone });
     if (crunch) setSessionSeen((seen) => [...seen, current.id]);
+    setSessionDone((done) => done + 1);
+    // Graded outcomes have no toast, so this polite status line is the only
+    // announcement; focus then moves to the next prompt.
+    setAnnouncement(`Rated ${label}: next review in ${formatInterval(interval)}. ${left ? `${left} card${left === 1 ? "" : "s"} left.` : "Session complete."}`);
     setRevealed(false);
     setCurrentId("");
     setConfidence(3);
     startedAt.current = Date.now();
-  }, [confidence, crunch, current, onGrade, timeZone]);
+  }, [confidence, crunch, current, onGrade, profile.reviewSettings, timeZone]);
 
   const bury = useCallback(() => {
     if (!current) return;
     onBury(current.id, timeZone);
     setSessionSeen((seen) => [...seen, current.id]);
+    setSessionDone((done) => done + 1);
     setCurrentId("");
   }, [current, onBury, timeZone]);
 
@@ -604,6 +623,7 @@ export default function ReviewCenter({
     if (!lastAttempt) return;
     onUndo();
     setSessionSeen((seen) => seen.filter((id) => id !== lastAttempt.reviewItemId));
+    setSessionDone((done) => Math.max(0, done - 1));
     setCurrentId(lastAttempt.reviewItemId);
   }, [lastAttempt, onUndo]);
 
@@ -627,8 +647,51 @@ export default function ReviewCenter({
   const startSession = (useCrunch = false) => {
     setCrunch(useCrunch);
     setSessionSeen([]);
+    setSessionDone(0);
+    setAnnouncement("");
     setSession(true);
     setCurrentId("");
+  };
+
+  // Focus follows the session (REV-7): each new card focuses its prompt, a
+  // reveal focuses the answer, and leaving the session returns to Start.
+  const sessionCardId = session ? current?.id || "" : "";
+  useEffect(() => {
+    if (!sessionCardId) return;
+    if (!revealed) {
+      if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: "auto" });
+      promptRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const answer = answerRef.current;
+    if (!answer) return;
+    answer.focus({ preventScroll: true });
+    // Scroll only when the answer starts under the (possibly sticky) grading
+    // panel, so the prompt stays in view whenever both fit.
+    const top = answer.getBoundingClientRect().top;
+    const panelTop = document.querySelector(".review-rating-panel")?.getBoundingClientRect().top ?? window.innerHeight;
+    if (top > Math.min(panelTop, window.innerHeight) - 48) window.scrollBy({ top: top - window.innerHeight * 0.3, behavior: "auto" });
+  }, [revealed, sessionCardId]);
+
+  useEffect(() => {
+    if (session) { wasInSessionRef.current = true; return; }
+    if (!wasInSessionRef.current) return;
+    wasInSessionRef.current = false;
+    const start = startButtonRef.current;
+    (start && !start.disabled ? start : titleRef.current)?.focus();
+  }, [session]);
+
+  // Archive/delete remove the focused row: hand focus to the row that takes
+  // its place, or the deck heading when the list is empty (REV-7).
+  const actOnDeckCard = (action, id) => {
+    const index = visibleDeckItems.findIndex((item) => item.id === id);
+    action(id);
+    requestAnimationFrame(() => {
+      const rows = [...(deckSectionRef.current?.querySelectorAll(".review-deck-card") || [])];
+      if (rows.some((row) => row.dataset.cardId === id)) return;
+      const next = rows[Math.min(Math.max(index, 0), rows.length - 1)];
+      (next?.querySelector(".review-card-actions button") || deckHeadingRef.current)?.focus();
+    });
   };
 
   if (activeLab) {
@@ -642,15 +705,17 @@ export default function ReviewCenter({
   if (session && current) {
     const source = documentMap.get(current.documentId);
     const intervals = previewReviewIntervals(current, { scheduler: profile.reviewSettings.scheduler, requestRetention: profile.reviewSettings.requestRetention, weights: profile.reviewSettings.fsrsWeights });
+    const sessionTotal = sessionDone + queue.length;
     return (
       <div className="page review-session-page">
+        <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
         <header className="review-session-header">
           <button className="button ghost" onClick={() => setSession(false)} type="button"><ArrowLeft size={17} /> End session</button>
           <div><strong>{queue.length}</strong><span>{crunch ? "practice cards left" : "remaining today"}</span></div>
           <button className="button ghost" onClick={undo} disabled={!lastAttempt} title={!lastAttempt ? "Grade a card before using undo" : "Undo the most recent grade"} type="button"><Undo2 size={16} /> Undo</button>
         </header>
-        <div className="review-stage" aria-live="polite">
-          <div className="review-progress" aria-label={`${queue.length} cards remaining`}><span style={{ width: `${Math.max(8, 100 / Math.max(queue.length, 1))}%` }} /></div>
+        <div className="review-stage">
+          <div className="review-progress" role="progressbar" aria-label="Session progress" aria-valuemin={0} aria-valuemax={sessionTotal} aria-valuenow={sessionDone} aria-valuetext={`${sessionDone} of ${sessionTotal} reviewed`}><span style={{ width: `${sessionTotal ? (sessionDone / sessionTotal) * 100 : 0}%` }} /></div>
           {crunch && <p className="review-crunch-notice"><Flame size={15} /> Extra practice mode prioritizes weak cards and records attempts separately from daily limits.</p>}
           <article className={revealed ? "review-flashcard revealed" : "review-flashcard"}>
             <span className="eyebrow">{(() => {
@@ -662,17 +727,17 @@ export default function ReviewCenter({
                     : `Review · ${formatInterval(current.intervalDays)} interval`;
               return label;
             })()} · {REVIEW_CARD_TYPES.find((type) => type.id === current.type)?.label || "Basic Q&A"}</span>
-            <div className="review-markdown review-question" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.type === "cloze" && hasClozeMarkup(current.front) ? renderClozePrompt(current.front, revealed) : current.front) }} />
+            <div ref={promptRef} className="review-markdown review-question" tabIndex={-1} role="region" aria-label="Prompt" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.type === "cloze" && hasClozeMarkup(current.front) ? renderClozePrompt(current.front, revealed) : current.front) }} />
             {source && <button className="review-source-link" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={15} /> {source.title}</button>}
-            {revealed && <div className="review-answer"><span>Answer</span><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.back) }} /></div>}
+            {revealed && <div ref={answerRef} className="review-answer" tabIndex={-1} role="region" aria-label="Answer"><span aria-hidden="true">Answer</span><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.back) }} /></div>}
           </article>
           {!revealed ? (
             <div className="review-session-actions"><button className="button ghost" onClick={bury} type="button"><TimerReset size={17} /> Bury today</button><button className="button primary large review-reveal" onClick={() => setRevealed(true)} type="button"><Eye size={19} /> Show answer <kbd>Space</kbd></button></div>
           ) : (
             <div className="review-rating-panel">
-              <div className="review-confidence"><span>Retrieval confidence</span><div role="group" aria-label="Retrieval confidence">{[1, 2, 3, 4, 5].map((value) => <button className={confidence === value ? "active" : ""} onClick={() => setConfidence(value)} aria-label={`Confidence ${value} of 5`} aria-pressed={confidence === value} key={value} type="button">{value}</button>)}</div></div>
-              <p>How well did you retrieve the answer?</p>
-              <div className="review-ratings">{REVIEW_RATINGS.map((rating) => <button className={`review-rating ${rating.id}`} onClick={() => grade(rating.id)} aria-label={`Rate ${rating.label}`} key={rating.id} type="button"><strong>{rating.label}</strong><span>{formatInterval(intervals[rating.id])} · {rating.key}</span></button>)}</div>
+              <div className="review-confidence"><span aria-hidden="true">Confidence</span><div role="group" aria-label="Retrieval confidence">{[1, 2, 3, 4, 5].map((value) => <button className={confidence === value ? "active" : ""} onClick={() => setConfidence(value)} aria-label={`Confidence ${value} of 5`} aria-pressed={confidence === value} key={value} type="button">{value}</button>)}</div></div>
+              <p id="review-ratings-label">How well did you retrieve the answer?</p>
+              <div className="review-ratings" role="group" aria-labelledby="review-ratings-label">{REVIEW_RATINGS.map((rating) => <button className={`review-rating ${rating.id}`} onClick={() => grade(rating.id)} aria-label={`Rate ${rating.label}`} key={rating.id} type="button"><strong>{rating.label}</strong><span>{formatInterval(intervals[rating.id])} · {rating.key}</span></button>)}</div>
             </div>
           )}
         </div>
@@ -680,19 +745,40 @@ export default function ReviewCenter({
     );
   }
 
+  const activeCardCount = profile.reviewItems.length - stats.archived - stats.suspended;
+  // Fresh profiles, paused decks, spent limits, and a truly clear queue each
+  // get their own copy (REV-14): "caught up" is wrong when no cards exist.
+  const heroStatus = baseQueue.length
+    ? `${stats.due} total due; workload is capped by today’s remaining limits.`
+    : !profile.reviewItems.length
+      ? "No cards yet. Create one, or turn a highlight or clipping into a card, to start reviewing."
+      : activeCardCount <= 0
+        ? "Every card is paused or archived. Resume or restore one below to review again."
+        : stats.due > 0
+          ? `Today’s limits are complete; ${stats.due} due card${stats.due === 1 ? " waits" : "s wait"} for tomorrow. Raise the daily limits below to keep going.`
+          : "You are caught up: nothing is due right now.";
+  const forecastTotal = analytics.forecast.reduce((sum, value) => sum + value, 0);
+  const forecastMax = Math.max(...analytics.forecast, 1);
+  const forecastDay = (index) => new Date(queueNow.getTime() + index * 86_400_000);
+  const forecastLabel = (index) => (index === 0 ? "Today" : index === 1 ? "Tomorrow" : forecastDay(index).toLocaleDateString(undefined, { weekday: "long" }));
+  const forecastTick = (index) => forecastDay(index).toLocaleDateString(undefined, { weekday: "narrow" });
+  const trendHasData = analytics.retentionTrend.some((week) => week.percent !== null);
+  const weeksAgo = (index) => (index === 11 ? "This week" : `${11 - index} week${11 - index === 1 ? "" : "s"} ago`);
+
   return (
     <div className="page review-center-page">
-      <header className="page-title review-title"><div><span className="eyebrow">Remember what you learn</span><h1>Review center</h1><p>Source-linked active recall with durable daily limits, scheduling history, and explicit confidence.</p></div><button className="button primary" onClick={() => onCreate(null)} type="button"><FilePlus2 size={17} /> New card</button></header>
+      <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
+      <header className="page-title review-title"><div><span className="eyebrow">Remember what you learn</span><h1 ref={titleRef} tabIndex={-1}>Review center</h1><p>Source-linked active recall with durable daily limits, scheduling history, and explicit confidence.</p></div><button className="button primary" onClick={() => onCreate(null)} type="button"><FilePlus2 size={17} /> New card</button></header>
       <section className="review-overview">
-        <article className="review-hero"><div><span className="eyebrow">Today’s queue</span><strong>{baseQueue.length}</strong><p>{baseQueue.length ? `${stats.due} total due; workload is capped by today’s remaining limits.` : "You are caught up or today’s limits are complete."}</p><small>{usage.newIntroduced}/{profile.reviewSettings.dailyNewLimit} new · {usage.reviewCompleted}/{profile.reviewSettings.dailyReviewLimit} reviews · {usage.crunchCompleted} extra{stats.overdue > 0 ? ` · ${stats.overdue} overdue` : ""}{stats.suspended > 0 ? ` · ${stats.suspended} suspended` : ""}</small></div><div className="review-hero-actions"><button className="button primary large" onClick={() => startSession(false)} disabled={!baseQueue.length} title={!baseQueue.length ? "No cards remain within today’s limits" : "Start today’s scheduled queue"} type="button"><Play size={19} /> Start review</button><button className="button ghost" onClick={() => startSession(true)} disabled={!profile.reviewItems.some((item) => !item.suspended && !item.archived)} title="Practice up to 20 weak cards beyond the daily queue" type="button"><Flame size={17} /> Crunch weak cards</button><button className="button ghost" onClick={undo} disabled={!lastAttempt?.previousState} title={!lastAttempt?.previousState ? "No reversible grade is available" : "Restore the card and today’s allowance"} type="button"><Undo2 size={16} /> Undo last grade</button><button className="button ghost" onClick={() => setInterviewCards(selectInterviewRound(profile.reviewItems))} disabled={!interviewPool.length} title={interviewPool.length ? "Timed prep/answer practice; misses feed the mistake notebook" : "Tag cards with “interview” or use scenario/compare/debugging types to unlock timed rounds"} type="button"><Clock3 size={16} /> Interview round</button></div></article>
+        <article className="review-hero"><div><span className="eyebrow">Today’s queue</span><strong>{baseQueue.length}</strong><p id="review-hero-status">{heroStatus}</p><small>{usage.newIntroduced}/{profile.reviewSettings.dailyNewLimit} new · {usage.reviewCompleted}/{profile.reviewSettings.dailyReviewLimit} reviews · {usage.crunchCompleted} extra{stats.overdue > 0 ? ` · ${stats.overdue} overdue` : ""}{stats.suspended > 0 ? ` · ${stats.suspended} suspended` : ""}</small></div><div className="review-hero-actions"><button ref={startButtonRef} className="button primary large" onClick={() => startSession(false)} disabled={!baseQueue.length} aria-describedby="review-hero-status" type="button"><Play size={19} /> Start review</button>{activeCardCount > 0 && <button className="button ghost" onClick={() => startSession(true)} title="Practice up to 20 weak cards beyond the daily queue" type="button"><Flame size={17} /> Crunch weak cards</button>}{lastAttempt?.previousState && <button className="button ghost" onClick={undo} title="Restore the card and today’s allowance" type="button"><Undo2 size={16} /> Undo last grade</button>}{interviewPool.length > 0 && <button className="button ghost" onClick={() => setInterviewCards(selectInterviewRound(profile.reviewItems))} title="Timed prep/answer practice; misses feed the mistake notebook" type="button"><Clock3 size={16} /> Interview round</button>}{activeCardCount > 0 && !interviewPool.length && <p className="review-hero-hint">Tag a card “interview”, or use a scenario, compare, or debugging card, to unlock timed interview rounds.</p>}</div></article>
         <div className="review-stat-grid"><article><CalendarClock size={20} /><strong>{stats.due}</strong><span>Due now</span></article><article><RotateCcw size={20} /><strong>{stats.learning}</strong><span>Learning</span></article><article><CheckCircle2 size={20} /><strong>{stats.mastered}</strong><span>Mastered</span></article><article><Brain size={20} /><strong>{analytics.retention30 === null ? "—" : `${analytics.retention30}%`}</strong><span>30-day recall</span></article></div>
       </section>
       <section className="review-analytics" aria-label="Review analytics">
         <article><Flame size={18} /><div><strong>{analytics.streak} day{analytics.streak === 1 ? "" : "s"}</strong><span>Current streak</span></div></article>
         <article><Gauge size={18} /><div><strong>{analytics.retention7 === null ? "—" : `${analytics.retention7}%`}</strong><span>7-day recall</span></div></article>
         <article><History size={18} /><div><strong>{formatLatency(analytics.medianLatencyMs)}</strong><span>Median answer time</span></div></article>
-        <article className="review-forecast"><div><strong>Next 7 days</strong><span>Scheduled forecast</span></div><div className="forecast-bars" aria-label={`Seven-day review forecast: ${analytics.forecast.join(", ")}`}>{analytics.forecast.map((value, index) => <span key={index} style={{ height: `${Math.max(8, (value / Math.max(...analytics.forecast, 1)) * 100)}%` }} title={`Day ${index}: ${value} reviews`} />)}</div></article>
-        <article className="review-forecast review-retention-trend"><div><strong>12-week recall</strong><span>Weekly retention trend</span></div><div className="forecast-bars" aria-label={`Twelve-week retention trend: ${analytics.retentionTrend.map((week) => week.percent === null ? "no reviews" : `${week.percent}%`).join(", ")}`}>{analytics.retentionTrend.map((week, index) => <span key={index} className={week.percent === null ? "is-empty" : ""} style={{ height: `${week.percent === null ? 8 : Math.max(8, week.percent)}%` }} title={week.percent === null ? `Week ${index - 11}: no reviews` : `Week ${index - 11}: ${week.percent}% retained over ${week.count} attempts`} />)}</div></article>
+        <article className="review-forecast"><div><strong>Next 7 days</strong><span>{forecastTotal ? `${forecastTotal} review${forecastTotal === 1 ? "" : "s"} scheduled` : "Nothing scheduled yet"}</span></div>{forecastTotal ? <div className="forecast-chart" role="img" aria-label={`Seven-day review forecast: ${analytics.forecast.map((value, index) => `${forecastLabel(index)} ${value}`).join(", ")}`}><div className="forecast-bars">{analytics.forecast.map((value, index) => <span key={index} className={value ? "" : "is-empty"} style={{ height: `${value ? Math.max(10, (value / forecastMax) * 100) : 0}%` }} title={`${forecastLabel(index)}: ${value} review${value === 1 ? "" : "s"}`} />)}</div><div className="forecast-ticks" aria-hidden="true">{analytics.forecast.map((_, index) => <span className={index === 0 ? "is-today" : undefined} key={index}>{forecastTick(index)}</span>)}</div></div> : <p className="forecast-empty">Graded cards appear here once their next reviews are scheduled.</p>}</article>
+        <article className="review-forecast review-retention-trend"><div><strong>12-week recall</strong><span>Weekly retention trend</span></div>{trendHasData ? <div className="forecast-chart" role="img" aria-label={`Twelve-week retention trend, oldest first: ${analytics.retentionTrend.map((week) => week.percent === null ? "no reviews" : `${week.percent}%`).join(", ")}`}><div className="forecast-bars">{analytics.retentionTrend.map((week, index) => <span key={index} className={week.percent === null ? "is-empty" : ""} style={{ height: `${week.percent === null ? 0 : Math.max(10, week.percent)}%` }} title={week.percent === null ? `${weeksAgo(index)}: no reviews` : `${weeksAgo(index)}: ${week.percent}% retained over ${week.count} attempts`} />)}</div><div className="forecast-ticks forecast-ticks--ends" aria-hidden="true"><span>12 wk</span><span>Now</span></div></div> : <p className="forecast-empty">Your weekly recall trend appears after your first graded reviews.</p>}</article>
       </section>
       {trackBank.tracks.length > 0 && <section className="interview-track-strip" aria-label="Structured interview practice">
         <div><strong>Interview tracks</strong><span>Authored role tracks with rubrics; misses feed the mistake notebook.</span></div>
@@ -756,8 +842,8 @@ export default function ReviewCenter({
       </section>}
       <MistakeDialog open={mistakeDialogOpen} onClose={() => setMistakeDialogOpen(false)} onLog={(draft) => { onLogMistake?.(draft); setMistakeDialogOpen(false); }} />
       <section className="review-deck-section" ref={deckSectionRef}>
-        <div className="section-heading review-deck-heading"><div><span className="eyebrow">Your knowledge deck</span><h2>{deckItems.length} {showArchived ? "archived" : "active"} card{deckItems.length === 1 ? "" : "s"}</h2></div><div className="review-deck-tools"><label><Search size={16} /><input value={deckQuery} onChange={(event) => setDeckQuery(event.target.value)} aria-label="Search review cards" placeholder="Search cards or tags" /></label><button className="button ghost" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived} type="button">{showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />} {showArchived ? "Show active" : `Archived (${stats.archived})`}</button><button className="button ghost" onClick={exportDeck} disabled={!profile.reviewItems.some((item) => !item.archived)} title="Download the deck as a shareable JSON file (authoring fields only — no schedule)" type="button"><Download size={16} /> Export deck</button><input ref={importInputRef} type="file" accept=".json,application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onImportCards?.(file); }} /><button className="button ghost" onClick={() => importInputRef.current?.click()} disabled={!onImportCards} title="Import a lumen.cards.v1 JSON file; duplicates are skipped and imported cards start as new" type="button"><Upload size={16} /> Import</button></div></div>
-        {deckItems.length ? <><p className="review-deck-range">Showing {deckPageStart + 1}–{deckPageStart + visibleDeckItems.length} of {deckItems.length}</p><div className="review-deck-list">{visibleDeckItems.map((item) => { const source = documentMap.get(item.documentId); return <article className={item.suspended ? "review-deck-card suspended" : "review-deck-card"} key={item.id}><div className="review-card-state"><Brain size={18} /><span>{item.suspended ? "Paused" : isNewReviewItem(item) ? "New" : `${formatInterval(item.intervalDays)} interval`}</span><small>{REVIEW_CARD_TYPES.find((type) => type.id === item.type)?.label}</small></div><div className="review-card-copy"><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.front) }} /><div className="review-deck-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.back) }} />{item.tags?.length > 0 && <div className="review-tags">{item.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}{source && <button className="text-button" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={14} /> {source.title}</button>}</div><div className="review-card-actions"><button className="icon-button" onClick={() => onEdit(item)} aria-label="Edit review card" title="Edit" type="button"><Edit3 size={17} /></button><button className="icon-button" onClick={() => onToggleSuspend(item.id)} aria-label={item.suspended ? "Resume review card" : "Pause review card"} title={item.suspended ? "Resume" : "Pause"} type="button">{item.suspended ? <Play size={17} /> : <Pause size={17} />}</button><button className="icon-button" onClick={() => onToggleArchive(item.id)} aria-label={item.archived ? "Restore review card" : "Archive review card"} title={item.archived ? "Restore" : "Archive"} type="button">{item.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</button><button className="icon-button danger" onClick={() => onDelete(item.id)} aria-label="Delete review card" title="Delete permanently" type="button"><Trash2 size={17} /></button></div></article>; })}</div>{deckPageCount > 1 && <nav className="review-deck-pagination" aria-label="Review card pages"><span aria-live="polite" aria-atomic="true">Page {visibleDeckPage} of {deckPageCount}</span><div><button className="button ghost" onClick={() => changeDeckPage(1)} disabled={visibleDeckPage === 1} aria-label="First review card page" type="button">First</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage - 1)} disabled={visibleDeckPage === 1} aria-label="Previous review card page" type="button">Previous</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage + 1)} disabled={visibleDeckPage === deckPageCount} aria-label="Next review card page" type="button">Next</button><button className="button ghost" onClick={() => changeDeckPage(deckPageCount)} disabled={visibleDeckPage === deckPageCount} aria-label="Last review card page" type="button">Last</button></div></nav>}</> : <div className="empty-state review-empty"><Brain size={34} /><h2>{normalizedDeckQuery ? "No matching review card" : showArchived ? "No archived cards" : "Build your first recall prompt"}</h2><p>{normalizedDeckQuery ? "Try a broader prompt, answer, type, or tag." : "Create one manually, or turn any clipping or highlight into a source-linked card."}</p>{!normalizedDeckQuery && !showArchived && <button className="button primary" onClick={() => onCreate(null)} type="button">Create first card</button>}</div>}
+        <div className="section-heading review-deck-heading"><div><span className="eyebrow">Your knowledge deck</span><h2 ref={deckHeadingRef} tabIndex={-1}>{deckItems.length} {showArchived ? "archived" : "active"} card{deckItems.length === 1 ? "" : "s"}</h2></div><div className="review-deck-tools"><label className="review-deck-search"><Search size={16} aria-hidden="true" /><input value={deckQuery} onChange={(event) => setDeckQuery(event.target.value)} aria-label="Search review cards" placeholder="Search cards or tags" /></label><button className="button ghost" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived} type="button">{showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />} {showArchived ? "Show active" : `Archived (${stats.archived})`}</button><button className="button ghost" onClick={exportDeck} disabled={!profile.reviewItems.some((item) => !item.archived)} title="Download the deck as a shareable JSON file (authoring fields only — no schedule)" type="button"><Download size={16} /> Export deck</button><input ref={importInputRef} type="file" accept=".json,application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onImportCards?.(file); }} /><button className="button ghost" onClick={() => importInputRef.current?.click()} disabled={!onImportCards} title="Import a lumen.cards.v1 JSON file; duplicates are skipped and imported cards start as new" type="button"><Upload size={16} /> Import</button></div></div>
+        {deckItems.length ? <><p className="review-deck-range">Showing {deckPageStart + 1}–{deckPageStart + visibleDeckItems.length} of {deckItems.length}</p><div className="review-deck-list">{visibleDeckItems.map((item) => { const source = documentMap.get(item.documentId); return <article className={item.suspended ? "review-deck-card suspended" : "review-deck-card"} data-card-id={item.id} key={item.id}><div className="review-card-state"><Brain size={18} /><span>{item.suspended ? "Paused" : isNewReviewItem(item) ? "New" : `${formatInterval(item.intervalDays)} interval`}</span><small>{REVIEW_CARD_TYPES.find((type) => type.id === item.type)?.label}</small></div><div className="review-card-copy"><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.front) }} /><div className="review-deck-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.back) }} />{item.tags?.length > 0 && <div className="review-tags">{item.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}{source && <button className="text-button" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={14} /> {source.title}</button>}</div><div className="review-card-actions"><button className="icon-button" onClick={() => onEdit(item)} aria-label="Edit review card" title="Edit" type="button"><Edit3 size={17} /></button><button className="icon-button" onClick={() => onToggleSuspend(item.id)} aria-label={item.suspended ? "Resume review card" : "Pause review card"} title={item.suspended ? "Resume" : "Pause"} type="button">{item.suspended ? <Play size={17} /> : <Pause size={17} />}</button><button className="icon-button" onClick={() => actOnDeckCard(onToggleArchive, item.id)} aria-label={item.archived ? "Restore review card" : "Archive review card"} title={item.archived ? "Restore" : "Archive"} type="button">{item.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</button><button className="icon-button danger" onClick={() => actOnDeckCard(onDelete, item.id)} aria-label="Delete review card" title="Delete permanently" type="button"><Trash2 size={17} /></button></div></article>; })}</div>{deckPageCount > 1 && <nav className="review-deck-pagination" aria-label="Review card pages"><span aria-live="polite" aria-atomic="true">Page {visibleDeckPage} of {deckPageCount}</span><div><button className="button ghost" onClick={() => changeDeckPage(1)} disabled={visibleDeckPage === 1} aria-label="First review card page" type="button">First</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage - 1)} disabled={visibleDeckPage === 1} aria-label="Previous review card page" type="button">Previous</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage + 1)} disabled={visibleDeckPage === deckPageCount} aria-label="Next review card page" type="button">Next</button><button className="button ghost" onClick={() => changeDeckPage(deckPageCount)} disabled={visibleDeckPage === deckPageCount} aria-label="Last review card page" type="button">Last</button></div></nav>}</> : <div className="empty-state review-empty"><Brain size={34} /><h2>{normalizedDeckQuery ? "No matching review card" : showArchived ? "No archived cards" : "Build your first recall prompt"}</h2><p>{normalizedDeckQuery ? "Try a broader prompt, answer, type, or tag." : "Create one manually, or turn any clipping or highlight into a source-linked card."}</p>{!normalizedDeckQuery && !showArchived && <button className="button primary" onClick={() => onCreate(null)} type="button">Create first card</button>}</div>}
       </section>
     </div>
   );
