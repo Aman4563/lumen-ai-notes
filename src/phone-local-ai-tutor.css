@@ -189,7 +189,9 @@
 .phone-tutor__cautions ul { margin-bottom: 0; padding-left: 20px; }
 
 @media (max-width: 860px) {
-  .phone-tutor__layout { grid-template-columns: 1fr; }
+  /* minmax(0, …): a plain 1fr track grows to its widest word, which overflows
+     360px phones at 200% text with wider fallback fonts. */
+  .phone-tutor__layout { grid-template-columns: minmax(0, 1fr); }
   .phone-tutor__sources { position: static; }
   .phone-tutor__source-list { max-height: 310px; }
 }
