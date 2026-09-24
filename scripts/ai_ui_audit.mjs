@@ -106,6 +106,13 @@ const quizData = Object.freeze({
   }],
 });
 
+const flashcardData = Object.freeze({
+  cards: [
+    { front: "Why must the test split stay untouched? [S1]", back: "Using it for choices leaks evaluation information. [S1]", hint: "Think about selection bias", tags: ["evaluation"] },
+    { front: "What does a final holdout estimate?", back: "Generalization after every choice is frozen.", hint: null, tags: [] },
+  ],
+});
+
 const jsonResponse = (payload, status = 200) => ({
   status,
   contentType: "application/json; charset=utf-8",
@@ -178,9 +185,12 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
       return;
     }
     if (url.pathname === "/api/ai/respond" || url.pathname === "/api/ai/respond/stream") {
+      // A request the page abandoned (for example by leaving the tutor) can
+      // no longer be answered; that is expected, not an audit failure.
       const reply = (response) => {
-        if (responseDelayMs) setTimeout(() => { void request.respond(response); }, responseDelayMs);
-        else void request.respond(response);
+        const respond = () => { request.respond(response).catch(() => {}); };
+        if (responseDelayMs) setTimeout(respond, responseDelayMs);
+        else respond();
       };
       let body = {};
       try { body = JSON.parse(request.postData() || "{}"); } catch { body = {}; }
@@ -197,7 +207,19 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         }, 503));
         return;
       }
-      if (body.task === "quiz") {
+      if (body.task === "flashcards") {
+        reply(jsonResponse({
+          ok: true,
+          requestId: "audit-flashcards-request",
+          outputText: JSON.stringify(flashcardData),
+          data: flashcardData,
+          status: "completed",
+          model: "audit-local-model",
+          usage: { inputTokens: 300, outputTokens: 120, totalTokens: 420 },
+          webSearch: { requested: false, used: false, rounds: 0 },
+          sources: [],
+        }));
+      } else if (body.task === "quiz") {
         reply(jsonResponse({
           ok: true,
           requestId: "audit-quiz-request",
@@ -859,6 +881,161 @@ try {
     assert.match(await page.$eval(".ai-tutor__empty-filter", (node) => node.textContent), /No lessons match/, "an empty source filter showed no message");
   } finally {
     await singleTabContext.close();
+  }
+
+  // Tutor lifecycle (issue #56). A Reader "Ask AI" excerpt is applied once,
+  // never overwrites an unsent draft, and lands focused in view; the draft and
+  // the engine choice survive route changes; leaving mid-answer leaves a
+  // visible incomplete turn that never reaches model memory; flashcard adds
+  // report duplicates honestly; a configuration refresh keeps the learner's
+  // one-request web permission.
+  const lifecycleContext = await browser.createBrowserContext();
+  try {
+    const page = await lifecycleContext.newPage();
+    await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    attachDiagnostics(page, "tutor-lifecycle");
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+    });
+    const calls = await installAiMocks(page, () => secureConfig, { responseDelayMs: 1_200 });
+    const lessonId = "notes/part-05-supervised-learning/01-linear-regression.md";
+    const promptValue = () => page.$eval(".ai-tutor__composer textarea", (field) => field.value);
+    const setPrompt = (value) => page.$eval(".ai-tutor__composer textarea", (field, text) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+    const waitForAnswers = (count) => page.waitForFunction((expected) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= expected
+      && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 }, count);
+    const visit = async (hash, selector) => {
+      await page.evaluate((target) => { window.location.hash = target; }, hash);
+      await page.waitForSelector(selector, { timeout: 15_000 });
+    };
+    const askAiFromLesson = async () => {
+      await visit(`#/read/${encodeURIComponent(lessonId)}`, ".markdown-body p");
+      await page.$eval(".markdown-body", (article) => {
+        const paragraph = [...article.querySelectorAll("p")].find((node) => node.textContent.trim().length > 80);
+        const range = document.createRange();
+        range.selectNodeContents(paragraph);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      await page.waitForFunction(() => [...document.querySelectorAll(".document-tools button")].some((button) => button.classList.contains("selection-ready") && button.textContent.includes("Ask AI")), { timeout: 5_000 });
+      await clickByText(page, ".document-tools button", "Ask AI");
+      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 15_000 });
+      await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea")?.value.includes("Explain this excerpt"), { timeout: 5_000 });
+    };
+
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+
+    await askAiFromLesson();
+    assert.match(await promptValue(), /^Explain this excerpt from my lecture “[^”]+” in context:/, "Ask AI did not name the source lecture");
+    await page.waitForFunction(() => {
+      const field = document.querySelector(".ai-tutor__composer textarea");
+      const box = field?.getBoundingClientRect();
+      return document.activeElement === field && box.top >= 0 && box.bottom <= innerHeight;
+    }, { timeout: 5_000 }).catch(() => assert.fail("Ask AI did not reveal and focus the composer"));
+    assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /excerpt from “[^”]+”/, "Ask AI did not tell the learner which lecture the excerpt came from");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(1);
+    await visit("#/library", ".library-page");
+    await visit("#/ai", ".ai-tutor__connection--ready");
+    assert.doesNotMatch(await promptValue(), /Explain this excerpt/, "a sent Ask AI excerpt came back after the tutor remounted");
+
+    // An unsent draft, its mode and its grounding survive a route change.
+    await clickByText(page, ".ai-tutor__mode-tabs button", "Quiz");
+    await page.click(".ai-tutor__source-panel-toggle");
+    await clickByText(page, ".ai-tutor__source-modes button", "No library");
+    const draft = "My unsent draft about ridge penalties";
+    await setPrompt(draft);
+    await visit("#/library", ".library-page");
+    await visit("#/ai", ".ai-tutor__connection--ready");
+    assert.equal(await promptValue(), draft, "an unsent draft was lost on a route change");
+    assert.equal(await page.$eval(".ai-tutor__mode-tabs button[aria-pressed='true']", (button) => button.textContent.trim()), "Quiz", "the draft's mode was lost on a route change");
+    assert.match(await page.$eval(".ai-tutor__source-panel-toggle small", (node) => node.textContent), /^No library/, "the draft's grounding was lost on a route change");
+
+    // A new excerpt is added below the learner's draft, not over it.
+    await askAiFromLesson();
+    const combined = await promptValue();
+    assert.ok(combined.startsWith(draft) && combined.includes("Explain this excerpt from my lecture"), `Ask AI overwrote the learner's draft: ${combined.slice(0, 200)}`);
+    assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /unsent question was kept/i);
+
+    // Leaving mid-answer records the interrupted turn visibly; it is never
+    // sent back to the model as memory. No library shows the source-free wait.
+    await clickByText(page, ".ai-tutor__mode-tabs button", "Explain");
+    const interruptedPrompt = "Lifecycle check: explain weight decay.";
+    await setPrompt(interruptedPrompt);
+    const answersBefore = await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.length);
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForSelector(".ai-tutor__message--streaming", { timeout: 5_000 });
+    assert.match(await page.$eval(".ai-tutor__stream-actions", (node) => node.textContent), /Waiting for the first token/, "a No-library request did not show the source-free waiting text");
+    await visit("#/library", ".library-page");
+    const interruptDeadline = Date.now() + 8_000;
+    let interruptedStored = null;
+    while (Date.now() < interruptDeadline && !interruptedStored) {
+      interruptedStored = (await readProfile(page))?.aiTutorHistory?.find((message) => message.role === "assistant" && message.incomplete === true) || null;
+      if (!interruptedStored) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(interruptedStored, "leaving mid-answer did not record the interrupted turn");
+    await visit("#/ai", ".ai-tutor__connection--ready");
+    await page.waitForFunction((count) => document.querySelectorAll(".ai-tutor__message--assistant").length > count, { timeout: 5_000 }, answersBefore);
+    const roles = await page.$$eval(".ai-tutor__messages > .ai-tutor__message", (nodes) => nodes.map((node) => node.classList.contains("ai-tutor__message--user") ? "user" : "assistant"));
+    assert.equal(roles.filter((role) => role === "user").length, roles.filter((role) => role === "assistant").length, `leaving mid-answer left an unanswered question: ${roles.join(",")}`);
+    assert.match(await page.$eval(".ai-tutor__messages > .ai-tutor__message:last-child", (node) => node.textContent), /Stopped early/, "the interrupted answer was not marked incomplete");
+    await setPrompt("Lifecycle follow-up: what does weight decay penalize?");
+    const requestsBefore = calls.respond.length;
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(answersBefore + 2);
+    const followUp = calls.respond[requestsBefore]?.body;
+    assert.ok(followUp, "the follow-up request was not sent");
+    assert.equal(JSON.stringify(followUp.history).includes("interrupted"), false, "an interrupted placeholder was sent to the model as memory");
+    assert.equal(followUp.history.some((message) => message.content.includes(interruptedPrompt)), false, "an unanswered question was sent to the model as memory");
+
+    // Flashcards: success is reflected on the button; duplicates are reported
+    // as already in Review, never as a failure.
+    await clickByText(page, ".ai-tutor__mode-tabs button", "Flashcards");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(answersBefore + 3);
+    await page.waitForSelector(".ai-tutor__flashcards", { timeout: 8_000 });
+    const addCards = () => page.$$eval(".ai-tutor__flashcards", (nodes) => [...nodes.at(-1).querySelectorAll("button")].find((button) => /to review|in review/i.test(button.textContent))?.click());
+    await addCards();
+    await page.waitForSelector(".ai-tutor__draft-status.is-saved", { timeout: 8_000 });
+    assert.match(await page.$$eval(".ai-tutor__flashcards", (nodes) => nodes.at(-1).querySelector(".ai-tutor__button--primary").textContent), /Added to Review/, "the add button did not reflect success");
+    await addCards();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(await page.$(".ai-tutor__draft-status.is-error"), null, "a repeated add reported a failure");
+    await setPrompt("Create the same flashcards again.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(answersBefore + 4);
+    await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__flashcards").length >= 2, { timeout: 8_000 });
+    await addCards();
+    await page.waitForSelector(".ai-tutor__draft-status.is-exists", { timeout: 8_000 });
+    assert.match(await page.$eval(".ai-tutor__draft-status.is-exists", (node) => node.textContent), /Already in Review/, "duplicate cards were not reported as already in Review");
+    assert.equal(await page.$(".ai-tutor__draft-status.is-error"), null, "duplicate cards were reported as a failure");
+    assert.equal((await readProfile(page)).reviewItems.filter((item) => (item.tags || []).includes("ai-draft")).length, flashcardData.cards.length, "duplicate flashcards were saved twice");
+
+    // A configuration refresh keeps the armed one-request web permission.
+    await clickByText(page, ".ai-tutor__mode-tabs button", "Explain");
+    await clickByText(page, ".ai-tutor__source-modes button", "Library first");
+    await page.locator(".ai-tutor__web-search input").click();
+    const configChecks = calls.config.length;
+    await clickByText(page, ".ai-tutor__connection button", "Refresh");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__connection--ready"), { timeout: 8_000 });
+    assert.ok(calls.config.length > configChecks, "Refresh did not recheck the server");
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), true, "a configuration refresh silently withdrew the learner's web permission");
+    await page.locator(".ai-tutor__web-search input").click();
+
+    // The engine choice is remembered across route changes.
+    await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-learning-studio")?.dataset.aiEngine === "phone-local");
+    await visit("#/library", ".library-page");
+    await visit("#/ai", ".ai-learning-studio");
+    assert.equal(await page.$eval(".ai-learning-studio", (node) => node.dataset.aiEngine), "phone-local", "the engine choice reset on a route change");
+    await page.$eval('[data-ai-engine-option="mac-local"]', (button) => button.click());
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  } finally {
+    await lifecycleContext.close();
   }
 
   let modelOnline = false;

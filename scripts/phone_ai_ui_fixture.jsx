@@ -23,6 +23,8 @@ class AuditPhoneEngine {
     this.planNumber = 0;
     this.cancelCalls = 0;
     this.unloadCalls = 0;
+    // Shortens the production release grace period so the audit stays fast.
+    this.releaseDelayMs = 80;
     this.interactionStates = [];
     this.lifecycleListeners = new Set();
     this.generationActive = false;

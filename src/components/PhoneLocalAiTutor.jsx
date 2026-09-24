@@ -80,6 +80,34 @@ const sourceText = (source) => cleanText(source?.text ?? source?.content ?? sour
 const sourceId = (source, index) => cleanText(source?.id ?? source?.documentId ?? source?.slug, 240) || `phone-source-${index}`;
 const createId = () => globalThis.crypto?.randomUUID?.() || `phone-ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+// Leaving On-device Lite releases its ~880 MB of GPU memory, but not at once:
+// coming back within the grace period (a quick look at a lesson, or toggling
+// engines) keeps the loaded model instead of reloading it. Hiding or leaving
+// the page releases it immediately. An injected engine may shorten the delay.
+const MODEL_RELEASE_DELAY_MS = 45_000;
+let pendingModelRelease = null;
+
+const cancelModelRelease = (engine) => {
+  if (!pendingModelRelease || pendingModelRelease.engine !== engine) return;
+  clearTimeout(pendingModelRelease.timer);
+  globalThis.removeEventListener?.("pagehide", pendingModelRelease.releaseNow);
+  globalThis.document?.removeEventListener("visibilitychange", pendingModelRelease.releaseWhenHidden);
+  pendingModelRelease = null;
+};
+
+const scheduleModelRelease = (engine) => {
+  if (pendingModelRelease) pendingModelRelease.releaseNow();
+  const releaseNow = () => {
+    cancelModelRelease(engine);
+    void engine.unload?.().catch(() => {});
+  };
+  const releaseWhenHidden = () => { if (globalThis.document?.visibilityState === "hidden") releaseNow(); };
+  const delay = Number.isFinite(engine.releaseDelayMs) ? Math.max(0, engine.releaseDelayMs) : MODEL_RELEASE_DELAY_MS;
+  pendingModelRelease = { engine, releaseNow, releaseWhenHidden, timer: setTimeout(releaseNow, delay) };
+  globalThis.addEventListener?.("pagehide", releaseNow);
+  globalThis.document?.addEventListener("visibilitychange", releaseWhenHidden);
+};
+
 const writeClipboard = async (value) => {
   const text = String(value || "");
   if (!text) return false;
@@ -446,9 +474,10 @@ const AssistantResult = ({ message, onCreateFlashcardDrafts, onNavigateSource, o
 const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HISTORY_MESSAGES)
   .map((message) => ({ ...message, content: cleanText(message.content, 600) }));
 
-export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange }) {
+export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, onInsertConsumed, retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange }) {
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
   const promptId = useId();
+  const promptFieldRef = useRef(null);
   const controllerRef = useRef(null);
   const pendingSearchRef = useRef(null);
   const lastRequestRef = useRef(null);
@@ -577,9 +606,32 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
       onHistoryChange?.(historyRef.current.filter((message) => message.id !== activeUserMessageId));
       activeUserMessageIdRef.current = null;
     }
-    void engine.unload?.().catch(() => {});
+    scheduleModelRelease(engine);
     onInteractionChange?.(false);
   }, [engine, onInteractionChange]);
+
+  // Returning within the release grace period keeps the loaded model.
+  useEffect(() => { cancelModelRelease(engine); }, [engine]);
+
+  // Reader "Ask AI" excerpts reach this engine too; each is applied once and
+  // is added below an unsent question the learner wrote rather than over it.
+  const consumedInsertRef = useRef(null);
+  useEffect(() => {
+    if (!insertPrompt?.text || consumedInsertRef.current === insertPrompt.nonce) return;
+    consumedInsertRef.current = insertPrompt.nonce;
+    const lecture = cleanText(insertPrompt.title, 200);
+    const inserted = `Explain this excerpt from my lecture${lecture ? ` “${lecture}”` : ""} in context:\n\n"${insertPrompt.text}"`;
+    setPrompt((current) => {
+      const draft = current.trim();
+      const keepDraft = Boolean(draft) && !PHONE_TUTOR_MODES.some((mode) => mode.prompt === draft) && !draft.startsWith("Explain this excerpt from my lecture");
+      return cleanText(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS);
+    });
+    onInsertConsumed?.(insertPrompt.nonce);
+    globalThis.setTimeout?.(() => {
+      promptFieldRef.current?.scrollIntoView?.({ block: "center" });
+      promptFieldRef.current?.focus({ preventScroll: true });
+    }, 0);
+  }, [insertPrompt]);
 
   const finalize = useCallback((result, spec) => {
     const citations = sanitizePhoneCitations(result.citations);
@@ -944,7 +996,7 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
         <div className="phone-tutor__composer-head"><div><label><span>Depth</span><select value={depth} disabled={interactionLocked} onChange={(event) => setDepth(event.target.value)}>{DEPTHS.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label><span>Answer length</span><select value={responseLength} disabled={interactionLocked || currentMode.structured} onChange={(event) => setResponseLength(event.target.value)}>{RESPONSE_LENGTHS.map((item) => <option value={item.id} key={item.id}>{item.label} · {item.tokens} tokens</option>)}</select></label></div><span>{PHONE_LOCAL_MODEL.label}</span></div>
         <label className={`phone-tutor__search-toggle ${allowSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={allowSearch} disabled={interactionLocked || sourceMode !== "library-first" || typeof retrieveLibrary !== "function"} onChange={(event) => setAllowSearch(event.target.checked)} /><span><strong>Allow current-web fallback</strong><small>{sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "You approve the exact query before it is sent." : "Select Library first to use web fallback."}</small></span></label>
         <label className="phone-tutor__prompt-label" htmlFor={promptId}>What should the on-device tutor help you learn?</label>
-        <textarea id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} />
+        <textarea ref={promptFieldRef} id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} />
         <div className="phone-tutor__composer-foot"><span>{prompt.trim().length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}</span><span>{sourceMode === "library-first" ? "Up to 2 passages retrieved at send time" : `${buildPhoneContext(selectedSources).length.toLocaleString()} pre-fit source characters`}</span></div>
         <div className="phone-tutor__send-row"><div><strong>Runs locally after the model is loaded.</strong><small>{currentMode.structured ? "Structured output is validated before it is shown; it does not stream partial JSON." : "The answer streams from the phone model as tokens arrive."}</small></div><button className="phone-tutor__primary" type="submit" disabled={!ready}><Send size={17} aria-hidden="true" /> Generate {currentMode.label}</button></div>
         {!engineStatus.loaded && <p className="phone-tutor__disabled-reason">Load the model above to start.</p>}

@@ -157,6 +157,28 @@ const rememberLocalDisclosureAcknowledgement = (acknowledged) => {
   }
 };
 
+// An unsent question and its settings survive route changes and engine
+// switches for this tab only. It is never written to the profile, backups or
+// localStorage, and web-fallback permission is deliberately not part of it.
+const TUTOR_DRAFT_KEY = "lumen.ai.tutor-draft.v1";
+
+const readTutorDraft = () => {
+  try {
+    const draft = JSON.parse(globalThis.sessionStorage?.getItem(TUTOR_DRAFT_KEY) || "null");
+    return draft && typeof draft === "object" && !Array.isArray(draft) ? draft : null;
+  } catch {
+    return null;
+  }
+};
+
+const rememberTutorDraft = (draft) => {
+  try {
+    globalThis.sessionStorage?.setItem(TUTOR_DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    // Without session storage a remount simply starts from the mode default.
+  }
+};
+
 const createId = () => globalThis.crypto?.randomUUID?.()
   || `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 
@@ -941,6 +963,8 @@ export default function AiTutor({
   initialMode = "explain",
   initialPrompt = "",
   insertPrompt = null,
+  onInsertConsumed,
+  onUseOnDevice,
   initialDifficulty = "intermediate",
   initialHistory = [],
   historyTombstones = [],
@@ -967,27 +991,52 @@ export default function AiTutor({
   const promptRef = useRef(null);
   const activeResponseRef = useRef(null);
   const streamFrameRef = useRef(0);
-  const initialModeOption = modeById(initialMode);
+  const [storedDraft] = useState(readTutorDraft);
+  const initialModeOption = modeById(MODE_OPTIONS.some((mode) => mode.id === storedDraft?.modeId) ? storedDraft.modeId : initialMode);
   const [modeId, setModeId] = useState(initialModeOption.id);
-  const [difficulty, setDifficulty] = useState(DIFFICULTIES.some((item) => item.id === initialDifficulty) ? initialDifficulty : "intermediate");
-  const [responseProfile, setResponseProfile] = useState("balanced");
+  const [difficulty, setDifficulty] = useState(() => [storedDraft?.difficulty, initialDifficulty].find((id) => DIFFICULTIES.some((item) => item.id === id)) || "intermediate");
+  const [responseProfile, setResponseProfile] = useState(() => RESPONSE_PROFILES.some((item) => item.id === storedDraft?.responseProfile) ? storedDraft.responseProfile : "balanced");
   const [pairingCode, setPairingCode] = useState("");
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState("");
-  const [prompt, setPrompt] = useState(() => asTrimmedString(initialPrompt, MAX_PROMPT_CHARS) || initialModeOption.prompt);
+  const [prompt, setPrompt] = useState(() => asTrimmedString(initialPrompt, MAX_PROMPT_CHARS)
+    || asTrimmedString(storedDraft?.prompt, MAX_PROMPT_CHARS)
+    || initialModeOption.prompt);
+  const latestPromptRef = useRef(prompt);
+  latestPromptRef.current = prompt;
+  const onInsertConsumedRef = useRef(onInsertConsumed);
+  onInsertConsumedRef.current = onInsertConsumed;
+  const onHistoryChangeRef = useRef(onHistoryChange);
+  onHistoryChangeRef.current = onHistoryChange;
+  const inFlightRef = useRef(null);
+  const [composerNotice, setComposerNotice] = useState("");
 
-  // Quick-insert (Reader selection → prompt): a fresh nonce replaces the
-  // draft prompt with the passed excerpt, ready to edit before sending.
-  const insertNonceRef = useRef(0);
+  // Quick-insert (Reader selection → prompt). Each insert is applied once and
+  // then consumed by the host, so a remount never brings back an excerpt that
+  // was already sent. An unsent question the learner wrote is kept, the
+  // lecture is named, and the composer is revealed and focused.
+  const consumedInsertRef = useRef(null);
   useEffect(() => {
-    if (!insertPrompt?.text || insertPrompt.nonce === insertNonceRef.current) return;
-    insertNonceRef.current = insertPrompt.nonce;
-    setPrompt(asTrimmedString(`Explain this excerpt from my lecture in context:\n\n"${insertPrompt.text}"`, MAX_PROMPT_CHARS));
+    if (!insertPrompt?.text || consumedInsertRef.current === insertPrompt.nonce) return;
+    consumedInsertRef.current = insertPrompt.nonce;
+    const lecture = asTrimmedString(insertPrompt.title, 200);
+    const inserted = `Explain this excerpt from my lecture${lecture ? ` “${lecture}”` : ""} in context:\n\n"${insertPrompt.text}"`;
+    const draft = latestPromptRef.current.trim();
+    const keepDraft = Boolean(draft)
+      && !MODE_OPTIONS.some((mode) => mode.prompt === draft)
+      && !draft.startsWith("Explain this excerpt from my lecture");
+    setPrompt(asTrimmedString(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS));
+    setComposerNotice(`${keepDraft ? "Your unsent question was kept, and the" : "The"} selected excerpt from ${lecture ? `“${lecture}”` : "your lecture"} was added below. Review it, then send.`);
+    onInsertConsumedRef.current?.(insertPrompt.nonce);
+    window.setTimeout(() => {
+      promptRef.current?.scrollIntoView?.({ behavior: scrollBehavior(), block: "center" });
+      promptRef.current?.focus({ preventScroll: true });
+    }, 0);
   }, [insertPrompt]);
   const initialTombstones = new Set((Array.isArray(historyTombstones) ? historyTombstones : []).filter((id) => typeof id === "string"));
   const [history, setHistory] = useState(() => normalizeHistory(initialHistory).filter((message) => !initialTombstones.has(message.id)));
   const [selectedSourceIds, setSelectedSourceIds] = useState(() => initiallySelectedSourceIds(sources));
-  const [sourceMode, setSourceMode] = useState("library-first");
+  const [sourceMode, setSourceMode] = useState(() => SOURCE_MODES.some((item) => item.id === storedDraft?.sourceMode) ? storedDraft.sourceMode : "library-first");
   const [sourcePanelOpen, setSourcePanelOpen] = useState(false);
   const [sourceQuery, setSourceQuery] = useState("");
   const [catalogSources, setCatalogSources] = useState([]);
@@ -1000,9 +1049,11 @@ export default function AiTutor({
   const [requestState, setRequestState] = useState({ status: "idle", error: null });
   const [activeResponse, setActiveResponse] = useState(null);
   const [requestElapsed, setRequestElapsed] = useState(0);
-  const [composerNotice, setComposerNotice] = useState("");
   const [sourceWarning, setSourceWarning] = useState("");
   const currentMode = modeById(modeId);
+  useEffect(() => {
+    rememberTutorDraft({ prompt, modeId, sourceMode, difficulty, responseProfile });
+  }, [difficulty, modeId, prompt, responseProfile, sourceMode]);
   useLayoutEffect(() => {
     onInteractionChange?.(requestState.status === "loading");
     return () => onInteractionChange?.(false);
@@ -1116,9 +1167,17 @@ export default function AiTutor({
     return () => clearTimeout(timer);
   }, [configState.status, configState.config, configAttempt, requestState.status]);
 
+  // Web fallback stays a one-request permission. A refresh or tab return
+  // re-checks the server without dropping it; it is withdrawn, visibly, only
+  // when a completed check says web search is unavailable.
+  const webSearchRef = useRef(webSearch);
+  webSearchRef.current = webSearch;
   useEffect(() => {
-    if (configState.config?.webSearch?.macToolAvailable !== true) setWebSearch(false);
-  }, [configState.config?.webSearch?.macToolAvailable]);
+    if (configState.status === "checking" || configState.config?.webSearch?.macToolAvailable === true) return;
+    if (!webSearchRef.current) return;
+    setWebSearch(false);
+    setComposerNotice("Current-web fallback was switched off because web search is not available on the server right now.");
+  }, [configState.status, configState.config?.webSearch?.macToolAvailable]);
 
   useEffect(() => {
     // A configured model without attested thinking support must not keep an
@@ -1128,9 +1187,38 @@ export default function AiTutor({
     }
   }, [configState.status, configState.config?.service?.thinkingCapable]);
 
+  // Leaving the tutor aborts an in-flight answer. Record that visibly as an
+  // incomplete answer (keeping any streamed text) instead of leaving an
+  // unanswered question behind. Incomplete answers are shown but never sent
+  // back to the model as conversation memory.
   useEffect(() => () => {
+    const inFlight = inFlightRef.current;
+    inFlightRef.current = null;
     requestControllerRef.current?.abort();
     if (streamFrameRef.current) cancelAnimationFrame(streamFrameRef.current);
+    if (!inFlight || typeof onHistoryChangeRef.current !== "function") return;
+    const snapshot = inFlight.snapshot();
+    const interrupted = {
+      id: inFlight.responseId,
+      role: "assistant",
+      content: snapshot.partial || "This answer was interrupted because you left the tutor before it finished. Ask again, or use Edit & reuse on your question.",
+      mode: inFlight.mode,
+      createdAt: new Date().toISOString(),
+      requestId: null,
+      data: null,
+      citationSources: snapshot.partial ? snapshot.citationSources : [],
+      webSources: snapshot.partial ? snapshot.webSources : [],
+      webFallbackStatus: "off",
+      responseProfile: inFlight.responseProfile,
+      durationMs: null,
+      incomplete: true,
+      truncated: snapshot.truncated,
+    };
+    const current = historyRef.current.filter((message) => message.id !== interrupted.id);
+    const withQuestion = inFlight.userMessage && !current.some((message) => message.id === inFlight.userMessage.id)
+      ? [...current, inFlight.userMessage]
+      : current;
+    onHistoryChangeRef.current(normalizeHistory([...withQuestion, interrupted]));
   }, []);
 
   useEffect(() => {
@@ -1403,6 +1491,18 @@ export default function AiTutor({
       responseProfile: requestSpec.responseProfile,
     };
     if (appendUser) publishHistory((current) => [...current, userMessage]);
+    inFlightRef.current = {
+      responseId,
+      mode: requestSpec.mode.id,
+      responseProfile: requestSpec.responseProfile,
+      userMessage: appendUser ? userMessage : null,
+      snapshot: () => ({
+        partial: boundResponseText(streamedText).text,
+        citationSources,
+        webSources: streamedWebSources,
+        truncated: streamTruncated,
+      }),
+    };
     setRequestState({ status: "loading", error: null });
     followStreamRef.current = true;
     setComposerNotice("");
@@ -1633,6 +1733,7 @@ export default function AiTutor({
       setRequestState({ status: "success", error: null });
       lastRequestRef.current = null;
       setPrompt((current) => current.trim() === requestSpec.displayPrompt ? "" : current);
+      if (requestSpec.webSearch) setComposerNotice("Current-web fallback covered that one request only. Tick it again to allow it for your next question.");
       requestAnimationFrame(() => responseEndRef.current?.scrollIntoView?.({ behavior: scrollBehavior(), block: "nearest" }));
     } catch (error) {
       const clientError = error instanceof AiClientError
@@ -1705,6 +1806,7 @@ export default function AiTutor({
       });
     } finally {
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
+      if (inFlightRef.current?.responseId === responseId) inFlightRef.current = null;
     }
   }, [buildFittedRequest, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary]);
 

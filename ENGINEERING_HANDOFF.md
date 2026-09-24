@@ -337,7 +337,13 @@ Critical history distinction:
 - Mac tutor history is automatically retained as disclosed local profile data, capped at
   50 messages, clearable, and included in backups;
 - phone tutor history is App/React session memory, survives route/engine switches, but is
-  cleared by a full reload and excluded from backups.
+  cleared by a full reload and excluded from backups;
+- an unsent Mac tutor question with its mode, scope, depth and profile is kept per tab in
+  sessionStorage (`lumen.ai.tutor-draft.v1`) so route and engine switches do not lose it;
+  it never enters the profile or backups and never includes web-fallback permission;
+- leaving the Mac tutor mid-answer saves the question with a visible `incomplete` answer
+  (partial text, or an interrupted notice). Incomplete answers are never sent back to the
+  model as conversation memory.
 
 ## 5. AI product behavior: exact current semantics
 
@@ -692,6 +698,13 @@ Unload is single-flight. A graceful WebLLM unload has a bounded grace period, af
 worker termination is authoritative. Cancellation can terminate an unresponsive worker,
 clear engine state, update status, and require an explicit reload. Retry is gated so it
 cannot silently reload a model whose status became unloaded.
+
+Leaving On-device Lite (another route, or switching to Mac local) cancels in-flight work at
+once but schedules the unload: returning within 45 seconds keeps the loaded model instead
+of reloading roughly 879 MiB. `pagehide` or the page becoming hidden releases it
+immediately. Tests inject a shorter `releaseDelayMs` on the engine. The chosen engine is a
+per-browser UI preference (`lumen.ai.engine.v1` in localStorage), never profile or backup
+data.
 
 These behaviors are strongly mocked/tested but have not been accepted under actual iOS
 suspend, GPU reset, memory pressure, storage eviction, or long generation.
