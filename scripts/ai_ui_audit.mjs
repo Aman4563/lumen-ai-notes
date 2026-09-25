@@ -1864,6 +1864,48 @@ try {
     }
   }
 
+  // Large text (#57 review): at 200% text on a 320px phone a dock holding a
+  // Socratic session's strip would be taller than the room above the bottom
+  // navigation and hide the whole tutor, header included; it stays in the
+  // page flow then, and docks again at normal size. A long draft alone never
+  // undocks it, so typing does not move the question box.
+  const largeTextContext = await browser.createBrowserContext();
+  try {
+    const page = await largeTextContext.newPage();
+    await page.setViewport({ width: 320, height: 640, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    attachDiagnostics(page, "large-text");
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+    });
+    await installAiMocks(page, () => secureConfig);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await chooseMode(page, "Socratic");
+    await setComposerPrompt(page, "Teach me ridge regression one question at a time.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    await page.waitForSelector(".ai-tutor__composer .ai-tutor__session", { timeout: 5_000 });
+    // The dock is re-measured a frame after the composer resizes.
+    const dockBecomes = (position, message) => page.waitForFunction((expected) => getComputedStyle(document.querySelector(".ai-tutor__composer")).position === expected, { timeout: 3_000 }, position).catch(() => assert.fail(message));
+    const settleFrames = () => page.evaluate(() => new Promise((resolve) => { let frames = 6; const tick = () => (frames -= 1) ? requestAnimationFrame(tick) : resolve(); requestAnimationFrame(tick); }));
+    await settleFrames();
+    await dockBecomes("sticky", "the composer was not docked at normal text size");
+    await setComposerPrompt(page, Array.from({ length: 8 }, (_, index) => `Line ${index + 1} of a long answer about ridge penalties.`).join("\n"));
+    await settleFrames();
+    await dockBecomes("sticky", "typing a long draft undocked the composer");
+    await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+    await dockBecomes("relative", "at 200% text the composer stayed docked over the tutor");
+    await settleFrames();
+    assert.equal(await page.evaluate(() => document.documentElement.style.getPropertyValue("--ai-composer-space")), "0px", "an undocked composer still reserved dock space");
+    await page.evaluate(() => { window.scrollTo(0, document.querySelector(".ai-tutor__header").getBoundingClientRect().top + window.scrollY - 70); });
+    assert.equal(await page.evaluate(() => document.querySelector(".ai-tutor__composer").getBoundingClientRect().top > document.querySelector(".ai-tutor__message--assistant").getBoundingClientRect().bottom), true, "at 200% text the composer covered the conversation");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320, "200% text scrolled the page sideways");
+    await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
+    await dockBecomes("sticky", "the composer did not dock again at normal text size");
+  } finally {
+    await largeTextContext.close();
+  }
+
   // Keyboard sending with a mouse or trackpad (TFEAT-10): Enter sends and
   // Shift+Enter starts a new line; Code review keeps Enter for code and
   // sends with Cmd/Ctrl+Enter; Enter never sends while an input method is

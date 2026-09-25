@@ -2964,6 +2964,14 @@
   }
 }
 
+/* Large text on a small screen: a dock that would take most of the room
+   above the bottom navigation stays in the page flow (AiTutor sets
+   data-dock); "Jump to latest" stays just above it. */
+.ai-tutor__composer[data-dock="off"] {
+  position: relative;
+  bottom: auto;
+}
+
 @media (max-width: 719px) {
   .ai-tutor__header { padding: 10px 12px 10px 14px; }
   .ai-tutor__header .ai-tutor__eyebrow { display: none; }

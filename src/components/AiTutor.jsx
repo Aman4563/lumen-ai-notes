@@ -1722,6 +1722,23 @@ export default function AiTutor({
     let frame = 0;
     const measure = () => {
       frame = 0;
+      // Large text on a small screen can make the dock taller than the room
+      // between the top bar and the bottom navigation, hiding the whole
+      // conversation behind it. Past about 60% of that room it stays in the
+      // page flow instead (back above 50%, so it does not flicker). The
+      // question box's own growth is left out, so typing never moves it.
+      const field = promptRef.current;
+      const fieldStyle = field ? getComputedStyle(field) : null;
+      const px = (value) => Number.parseFloat(value) || 0;
+      const oneLine = fieldStyle ? Math.max(px(fieldStyle.minHeight), px(fieldStyle.lineHeight) + px(fieldStyle.paddingTop) + px(fieldStyle.paddingBottom) + px(fieldStyle.borderTopWidth) + px(fieldStyle.borderBottomWidth)) : 0;
+      const growth = field ? Math.max(0, field.offsetHeight - oneLine) : 0;
+      const top = Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0);
+      const nav = document.querySelector(".bottom-nav");
+      const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : window.innerHeight;
+      const share = (composer.offsetHeight - growth) / Math.max(1, bottom - top);
+      const undocked = composer.dataset.dock === "off";
+      if (!undocked && share > 0.6) composer.dataset.dock = "off";
+      else if (undocked && share < 0.5) delete composer.dataset.dock;
       const style = getComputedStyle(composer);
       const offset = style.position === "sticky" ? Number.parseFloat(style.bottom) || 0 : 0;
       const space = style.position === "sticky" ? Math.ceil(composer.offsetHeight + offset) : 0;
