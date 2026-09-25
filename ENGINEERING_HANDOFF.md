@@ -877,12 +877,16 @@ and incomplete-build cases. A failed dynamic import stays failed for that docume
 actions reload or go Home rather than retry in place. Storage health has its own boundary
 so Settings and backup export survive. Manual repair first proves a
 fresh HTML shell is reachable with a no-store probe, then removes only Lumen shell caches,
-updates the worker, and reloads. IndexedDB, localStorage, and WebLLM caches survive.
+unregisters the worker, and reloads. `update()` would not reinstall an unchanged worker URL,
+so the route screens would stay uncached; the reload registers the build afresh and install
+refills the cache. IndexedDB, localStorage, and WebLLM caches survive.
 
 `audit:chunks` deliberately reproduces both reported asset classes and verifies recovery
 plus localStorage preservation. With the service worker bypassed, it also covers the
 in-shell offline, missing-file, and Storage-health cases. `audit:visual` covers the cached
-path: it stops its own servers after a Home-only visit and opens every primary screen.
+path: it stops its own servers after a Home-only visit and opens every primary screen. It
+clears Chrome's HTTP cache after each stop, because the immutable assets would otherwise be
+answered from it and hide a worker that never serves its own cache.
 
 ### 10.3 Deployment invariants
 

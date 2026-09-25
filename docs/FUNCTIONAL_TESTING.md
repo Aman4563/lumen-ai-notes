@@ -578,11 +578,30 @@ confirmed against the preceding build:
   service-worker fetches, and it opened the lecture online first.
   `audit:visual` now starts its own servers and stops them. After a Home-only
   visit, Read, AI Tutor (both engines), Whiteboard, Review, Device evidence, and
-  Settings must open. Read shows the undownloaded lecture's message there, so
-  the audit also evaluates every route screen's module from the cache. A
-  visited lecture must reload. Against the foundation build the check reports
-  the fatal screen on Read, AI Tutor, and Settings. The main visual pass runs
-  the optional cleanup and asserts that the visited lecture is gone and every
-  route file remains. `audit:chunks` bypasses the service worker and adds an
-  offline screen, a missing file after its one bounded reload, and Settings
-  without Storage health.
+  Settings must open. Read mounts the Reader there only because Home loaded
+  the first lecture into memory, so the audit also evaluates every route
+  screen's module from the cache. A visited lecture must reload. Against the
+  foundation build the check reports the fatal screen on Read, AI Tutor, and
+  Settings. The main visual pass runs the optional cleanup and asserts that
+  the visited lecture is gone and every route file remains. `audit:chunks`
+  bypasses the service worker and adds an offline screen, a missing file after
+  its one bounded reload, and Settings without Storage health.
+- Review found that the server-stopped checks still passed with a worker that
+  never answered from Cache Storage. Assets are served `immutable`, and the
+  worker's install fetches had filled Chrome's HTTP cache, which answered them
+  after the server stopped. The visited-lecture step also navigated to the URL
+  it was already on, a same-document fragment change that never reloaded. The
+  audit now clears the HTTP cache after each stop, proves the server no longer
+  answers, and reloads the lecture. With the same mutated worker it now fails
+  on every screen and on the lecture reload.
+- Repair app files deleted the caches and then called `update()`, which does
+  not reinstall an unchanged worker URL. The route screens stayed uncached
+  until the next release: after Repair, AI Tutor with the server stopped showed
+  "Lumen's server cannot be reached". Repair could also promote a waiting
+  worker whose cache it had just deleted. Repair now unregisters the worker,
+  and the reload installs the build again with all 22 listed files; AI Tutor
+  then opens offline. `audit:visual` runs the sequence and waits for every
+  route file.
+- When Home itself failed, the in-shell panel's primary Go to Home did
+  nothing because the view did not change. Reload is the primary action there
+  now.

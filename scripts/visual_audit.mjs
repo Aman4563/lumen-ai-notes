@@ -125,9 +125,10 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     shell = await shellState(page);
     assert(!shell.fatal, `offline Settings replaced the app: ${shell.fatal}`);
 
-    // Read shows an in-page message for a lecture that was never downloaded,
-    // so the Reader screen itself never mounts above. Evaluate every route
-    // screen's module (and its static imports) from the offline cache.
+    // Read above mounts the Reader only because Home already loaded the first
+    // lecture into memory; another lecture would show the in-page message.
+    // Evaluate every route screen's module (and its static imports) from the
+    // offline cache, whichever screens the steps above happened to mount.
     const screens = await page.evaluate(async () => {
       const list = await (await caches.match(new URL("./offline-routes.json", location.href).href)).json();
       const failed = [];
