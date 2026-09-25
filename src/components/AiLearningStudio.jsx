@@ -96,6 +96,7 @@ export default function AiLearningStudio(props) {
             onNavigateSource={props.onNavigateSource}
             onCreateFlashcardDrafts={props.onCreateFlashcardDrafts}
             onSaveAnswerNote={props.onSaveAnswerNote}
+            speech={props.speech}
             onNotify={props.onNotify}
             onInteractionChange={setInteractionLocked}
           />

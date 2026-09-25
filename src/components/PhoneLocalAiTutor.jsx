@@ -12,12 +12,16 @@ import {
   ExternalLink,
   LoaderCircle,
   NotebookPen,
+  Pause,
+  Play,
   RefreshCw,
   RotateCcw,
   Search,
   Send,
   ShieldCheck,
+  Square,
   Trash2,
+  Volume2,
   WifiOff,
 } from "lucide-react";
 import PhoneLocalAiSettings from "./PhoneLocalAiSettings";
@@ -36,6 +40,7 @@ import {
   selectCompletedPhoneHistory,
 } from "../lib/phoneLocalAi.js";
 import { renderPhoneTutorInlineMarkdown, renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
+import { tutorSpeechText } from "../lib/tutorMarkdown.js";
 import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { ANSWER_FOLLOW_UPS, withoutCitationLabels } from "../lib/tutorFollowUps.js";
@@ -78,6 +83,8 @@ const MAX_PROMPT_CHARS = 1_800;
 const MAX_SESSION_MESSAGES = 30;
 const MAX_HISTORY_MESSAGES = 2;
 // The small model gets three of the Mac tutor's follow-ups (TFEAT-02).
+// Shared with the Mac tutor: the app's one speech session reading an answer.
+const TUTOR_SPEECH_LABEL = "Tutor answer";
 const PHONE_FOLLOW_UPS = ANSWER_FOLLOW_UPS.filter((item) => ["simpler", "quiz", "flashcards"].includes(item.id));
 
 const cleanText = (value, maximum = 20_000) => String(value ?? "")
@@ -475,7 +482,7 @@ const AssistantResult = ({ message, onCreateFlashcardDrafts, onNavigateSource, o
 const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HISTORY_MESSAGES)
   .map((message) => ({ ...message, content: cleanText(message.content, 600) }));
 
-export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, onInsertConsumed, retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange }) {
+export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, onInsertConsumed, retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange, speech = null }) {
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
   const promptId = useId();
   const modeDescriptionId = useId();
@@ -514,6 +521,18 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   const [savedNoteMessageIds, setSavedNoteMessageIds] = useState(() => new Set());
   const [streamingSources, setStreamingSources] = useState([]);
   const historyRef = useRef(history);
+  // Listen (TFEAT-09): which answer the app's speech engine is reading.
+  const speechRef = useRef(speech);
+  speechRef.current = speech;
+  const [speakingMessageId, setSpeakingMessageId] = useState("");
+  const tutorSpeechState = speech?.activeLabel === TUTOR_SPEECH_LABEL && ["speaking", "paused"].includes(speech?.status) ? speech.status : "idle";
+  useEffect(() => {
+    if (tutorSpeechState === "idle" && speakingMessageId) setSpeakingMessageId("");
+  }, [speakingMessageId, tutorSpeechState]);
+  const stopTutorSpeech = useCallback(() => {
+    if (speechRef.current?.activeLabel === TUTOR_SPEECH_LABEL) speechRef.current.stop();
+  }, []);
+  useEffect(() => stopTutorSpeech, [stopTutorSpeech]);
   // The end of the conversation, observed so a learner reading elsewhere
   // can jump to a streaming answer or one that just landed (TFEAT-08).
   const conversationEndRef = useRef(null);
@@ -740,6 +759,8 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     if (controllerRef.current) return;
     const controller = new AbortController();
     controllerRef.current = controller;
+    // A new question stops an answer being read aloud.
+    stopTutorSpeech();
     let effectiveSpec = spec;
     const previousActiveUserMessageId = activeUserMessageIdRef.current;
     // Ordinary submissions/retries own an unanswered user turn and may remove
@@ -845,7 +866,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
     }
-  }, [clearStreaming, engine, finalize, normalizedSources, queueStreamingText, retrieveLibrary]);
+  }, [clearStreaming, engine, finalize, normalizedSources, queueStreamingText, retrieveLibrary, stopTutorSpeech]);
 
   // A follow-up overrides the prompt, mode and retrieval words; it never
   // arms the web.
@@ -1071,6 +1092,25 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     });
   };
 
+  // Completed prose answers can be heard; speak() runs inside the click so
+  // iOS treats it as the learner's gesture.
+  const listenControls = (message) => {
+    if (!speech || speech.status === "unsupported" || message.data) return null;
+    const state = speakingMessageId === message.id ? tutorSpeechState : "idle";
+    if (state === "idle") {
+      return <button type="button" onClick={() => {
+        const spoken = tutorSpeechText(message.content);
+        const started = spoken.text && speech.speak(spoken.text, { label: TUTOR_SPEECH_LABEL, sections: spoken.sections });
+        setSpeakingMessageId(started ? message.id : "");
+        if (!started) onNotify?.("This answer could not be read aloud on this device.", "error");
+      }}><Volume2 size={14} aria-hidden="true" />Listen<span className="visually-hidden"> to this answer</span></button>;
+    }
+    return <>
+      <button type="button" onClick={() => speech.togglePause()}>{state === "paused" ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{state === "paused" ? "Resume" : "Pause"}<span className="visually-hidden"> reading this answer</span></button>
+      <button type="button" onClick={() => { speech.stop(); setSpeakingMessageId(""); }}><Square size={12} aria-hidden="true" />Stop<span className="visually-hidden"> reading</span></button>
+    </>;
+  };
+
   return (
     <section className="phone-tutor" aria-labelledby="phone-tutor-title" onKeyDown={stopOnEscape}>
       <header className="phone-tutor__header">
@@ -1118,7 +1158,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
               {history.map((message, index) => (
                 <article className={`phone-tutor__message is-${message.role}`} key={message.id} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined}>
                   <h3 className="visually-hidden">{message.role === "assistant" ? "On-device answer" : "Your question"}, {PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</h3>
-                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{typeof onSaveAnswerNote === "function" && <button type="button" aria-label={savedNoteMessageIds.has(message.id) ? "Saved to notes" : "Save to notes: this answer becomes a labeled AI note in your notebook"} disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Regenerate</button>}</div>}</div>
+                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{typeof onSaveAnswerNote === "function" && <button type="button" aria-label={savedNoteMessageIds.has(message.id) ? "Saved to notes" : "Save to notes: this answer becomes a labeled AI note in your notebook"} disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Regenerate</button>}{listenControls(message)}</div>}</div>
                   {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
                   {message.role === "assistant" && <EvidenceDetails message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onNavigateSource={onNavigateSource} />}
                   {message.role === "assistant" && index === history.length - 1 && !message.data && !busy && !streamingText && (
@@ -1166,6 +1206,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
         onConfirm={() => {
           setConfirmClearOpen(false);
           activeUserMessageIdRef.current = null;
+          stopTutorSpeech();
           setHistory([]);
           lastRequestRef.current = null;
           setRequestState({ status: "idle", message: "" });

@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import PhoneLocalAiTutor from "../src/components/PhoneLocalAiTutor.jsx";
+import { useSpeech } from "../src/hooks/useSpeech.js";
 import {
   makeDeterministicPhoneSearchPlan,
   PHONE_LOCAL_AI_DISCLOSURE,
@@ -9,6 +10,29 @@ import "katex/dist/katex.min.css";
 import "../src/styles.css";
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+// A recording speech engine, so Listen runs through the app's real speech
+// hook without audio (TFEAT-09).
+window.__PHONE_SPEECH_LOG__ = [];
+class AuditUtterance {
+  constructor(text) { this.text = text; this.rate = 1; this.pitch = 1; this.volume = 1; this.lang = ""; this.voice = null; }
+}
+Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: AuditUtterance });
+Object.defineProperty(window, "speechSynthesis", {
+  configurable: true,
+  value: {
+    current: null,
+    paused: false,
+    speaking: false,
+    getVoices: () => [{ name: "Samantha", lang: "en-US", voiceURI: "samantha-en-us", default: true, localService: true }],
+    speak(utterance) { this.current = utterance; this.paused = false; this.speaking = true; window.__PHONE_SPEECH_LOG__.push(["speak", utterance.text]); utterance.onstart?.(); },
+    cancel() { this.current = null; this.paused = false; this.speaking = false; window.__PHONE_SPEECH_LOG__.push(["cancel"]); },
+    pause() { this.paused = true; this.current?.onpause?.(); },
+    resume() { this.paused = false; this.current?.onresume?.(); },
+    addEventListener() {},
+    removeEventListener() {},
+  },
+});
 
 class AuditPhoneEngine {
   constructor() {
@@ -242,8 +266,17 @@ const retrieveLibrary = async (query, options = {}) => {
   };
 };
 
+// Stable callbacks, as the app passes them: the host re-renders with the
+// speech hook's state.
+const navigateSource = (target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor });
+const saveAnswerNote = (payload) => { engine.savedNotes.push(payload); return true; };
+const interactionChange = (locked) => engine.interactionStates.push(locked);
+
+function AuditHost() {
+  const speech = useSpeech({});
+  return <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} speech={speech} onNavigateSource={navigateSource} onSaveAnswerNote={saveAnswerNote} onInteractionChange={interactionChange} />;
+}
+
 const root = createRoot(document.getElementById("root"));
-root.render(
-  <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} onNavigateSource={(target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor })} onSaveAnswerNote={(payload) => { engine.savedNotes.push(payload); return true; }} onInteractionChange={(locked) => engine.interactionStates.push(locked)} />,
-);
+root.render(<AuditHost />);
 window.__UNMOUNT_PHONE_AI_AUDIT__ = () => root.unmount();

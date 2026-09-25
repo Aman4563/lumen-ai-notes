@@ -28,6 +28,10 @@ import {
   Sparkles,
   Download,
   Trash2,
+  Pause,
+  Play,
+  Square,
+  Volume2,
   X,
 } from "lucide-react";
 import {
@@ -36,7 +40,7 @@ import {
   aiRequestUtf8Bytes,
   aiClient,
 } from "../lib/aiClient";
-import { renderTutorInlineMarkdown, renderTutorMarkdown } from "../lib/tutorMarkdown";
+import { renderTutorInlineMarkdown, renderTutorMarkdown, tutorSpeechText } from "../lib/tutorMarkdown";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
@@ -183,6 +187,9 @@ const RESPONSE_PROFILES = Object.freeze([
 ]);
 
 const MAX_SELECTED_SOURCES = 8;
+// The app's one speech session is labelled so the tutor can tell its own
+// reading from a lecture's (TFEAT-09).
+const TUTOR_SPEECH_LABEL = "Tutor answer";
 // Of the eight Library-first passages, a request about the open lesson
 // reserves most for that lesson; the rest still come from the whole library.
 const OPEN_LESSON_RESERVED_PASSAGES = 6;
@@ -1102,7 +1109,7 @@ const ResponseApproach = ({ message }) => {
   );
 };
 
-const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReusePrompt, onSaveAnswerNote, requestBusy = false }) => {
+const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReusePrompt, onSaveAnswerNote, requestBusy = false, listen = null }) => {
   const saveHintId = useId();
   const [panel, setPanel] = useState("");
   const [copyStatus, setCopyStatus] = useState("idle");
@@ -1143,9 +1150,16 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
         {canSaveNote && <button type="button" aria-disabled={noteStatus === "saved" || undefined} aria-describedby={saveHintId} onClick={saveNote}>{noteStatus === "saved" ? <Check size={15} aria-hidden="true" /> : <NotebookPen size={15} aria-hidden="true" />} {noteStatus === "saved" ? "Saved to notes" : "Save to notes"}</button>}
         {message.role === "assistant" && hasEvidence && <button type="button" aria-expanded={panel === "sources"} onClick={() => togglePanel("sources")}><BookOpen size={15} aria-hidden="true" /> Sources <span className="ai-tutor__action-count">{message.citationSources.length + message.webSources.length}</span></button>}
         {message.role === "assistant" && <button type="button" aria-expanded={panel === "approach"} onClick={() => togglePanel("approach")}><Sparkles size={15} aria-hidden="true" /> Approach</button>}
+        {/* Listen, then Pause/Resume and Stop while this answer is read. */}
+        {listen && (listen.state === "idle"
+          ? <button type="button" className="ai-tutor__listen" onClick={listen.onListen}><Volume2 size={15} aria-hidden="true" /> Listen<span className="visually-hidden"> to this answer</span></button>
+          : <>
+            <button type="button" className="ai-tutor__listen is-active" onClick={listen.onTogglePause}>{listen.state === "paused" ? <Play size={15} aria-hidden="true" /> : <Pause size={15} aria-hidden="true" />} {listen.state === "paused" ? "Resume" : "Pause"}<span className="visually-hidden"> reading this answer</span></button>
+            <button type="button" className="ai-tutor__listen-stop" onClick={listen.onStop}><Square size={13} aria-hidden="true" /> Stop<span className="visually-hidden"> reading</span></button>
+          </>)}
       </div>
       {canSaveNote && <span className="visually-hidden" id={saveHintId}>{noteStatus === "saved" ? "This answer is in your Notebook as a labeled AI note." : "Saves this answer to your Notebook as a labeled AI note."}</span>}
-      <span className="ai-tutor__copy-status" role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : ""}</span>
+      <span className="ai-tutor__copy-status" role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : listen?.error || ""}</span>
       {panel === "sources" && <ResponseEvidence message={message} onNavigateSource={onNavigateSource} />}
       {panel === "approach" && <ResponseApproach message={message} />}
     </>
@@ -1178,6 +1192,7 @@ const FollowUps = ({ items, disabled = false, onChoose }) => (
  * - onSaveQuizMisses(drafts): records quiz misses in the mistake notebook and
  *   returns { added, merged }
  * - retrieveLibrary(query, options): optional local retrieval adapter
+ * - speech: the app's speech engine (useSpeech), to read answers aloud
  * - studyContext: { recent, last, next, mistakes, reviewItems } for the
  *   suggested starts shown while the conversation is empty
  * - onClose: optional close action for hosts that show the tutor as a panel
@@ -1205,6 +1220,7 @@ export default function AiTutor({
   onInteractionChange,
   retrieveLibrary,
   studyContext = null,
+  speech = null,
   onClose,
   className = "",
 }) {
@@ -1364,6 +1380,21 @@ export default function AiTutor({
   })), []);
   // Moving focus to a message on request needs a render to apply it.
   const [, setFocusRequest] = useState(0);
+  // Listen (TFEAT-09): which answer the app's speech engine is reading.
+  const speechRef = useRef(speech);
+  speechRef.current = speech;
+  const [speakingMessageId, setSpeakingMessageId] = useState("");
+  const [listenError, setListenError] = useState({ id: "", text: "" });
+  const tutorSpeechState = speech?.activeLabel === TUTOR_SPEECH_LABEL && ["speaking", "paused"].includes(speech?.status) ? speech.status : "idle";
+  useEffect(() => {
+    if (tutorSpeechState === "idle" && speakingMessageId) setSpeakingMessageId("");
+  }, [speakingMessageId, tutorSpeechState]);
+  // Stops the tutor's own reading, never a lecture's.
+  const stopTutorSpeech = useCallback(() => {
+    const engine = speechRef.current;
+    if (engine?.activeLabel === TUTOR_SPEECH_LABEL) engine.stop();
+  }, []);
+  useEffect(() => stopTutorSpeech, [stopTutorSpeech]);
   const currentMode = modeById(modeId);
   useEffect(() => {
     rememberTutorDraft({ prompt, modeId, sourceMode, difficulty, responseProfile });
@@ -1941,6 +1972,8 @@ export default function AiTutor({
     const controller = new AbortController();
     const requestStartedAt = globalThis.performance?.now?.() ?? Date.now();
     requestControllerRef.current = controller;
+    // A new question stops an answer being read aloud.
+    stopTutorSpeech();
     let citationSources = requestSpec.sources;
     let payload = requestSpec.payload;
     // Every re-fit uses the request's own mode, depth, profile and config
@@ -2331,7 +2364,7 @@ export default function AiTutor({
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
       if (inFlightRef.current?.responseId === responseId) inFlightRef.current = null;
     }
-  }, [announce, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd, setFollowing]);
+  }, [announce, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd, setFollowing, stopTutorSpeech]);
 
   /**
    * The one way a request is prepared, for Send and for tutor actions
@@ -2702,6 +2735,7 @@ export default function AiTutor({
     setConfirmClearOpen(false);
     publishHistory([]);
     setQuizStates({});
+    stopTutorSpeech();
     lastRequestRef.current = null;
     retrievalHintRef.current = "";
     setRequestState({ status: "idle", error: null });
@@ -2861,6 +2895,27 @@ export default function AiTutor({
       || (Array.isArray(serverStructuredTasks) && !serverStructuredTasks.includes("answer_feedback")))
     ? "This AI server cannot check quiz answers."
     : "";
+  // Completed prose answers can be heard; speak() runs inside the click so
+  // iOS treats it as the learner's gesture. Unsupported speech hides it.
+  const listenFor = (message) => {
+    if (!speech || speech.status === "unsupported" || message.role !== "assistant" || message.incomplete || message.data) return null;
+    const state = speakingMessageId === message.id ? tutorSpeechState : "idle";
+    return {
+      state,
+      error: listenError.id === message.id ? listenError.text : "",
+      onListen: () => {
+        const spoken = tutorSpeechText(message.content);
+        const started = spoken.text && speech.speak(spoken.text, { label: TUTOR_SPEECH_LABEL, sections: spoken.sections });
+        setSpeakingMessageId(started ? message.id : "");
+        setListenError(started ? { id: "", text: "" } : { id: message.id, text: "This answer could not be read aloud on this device." });
+      },
+      onTogglePause: () => speech.togglePause(),
+      onStop: () => {
+        speech.stop();
+        setSpeakingMessageId("");
+      },
+    };
+  };
   const studyFor = (message) => (message.mode === "quiz" ? {
     quizState: quizStates[message.id],
     onQuizStateChange: updateQuizState,
@@ -3150,7 +3205,7 @@ export default function AiTutor({
                     {message.role === "assistant"
                       ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} study={studyFor(message)} />
                       : <p className="ai-tutor__user-prompt">{message.content}</p>}
-                    <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, reuseNotice)} onSaveAnswerNote={onSaveAnswerNote} />
+                    <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, reuseNotice)} onSaveAnswerNote={onSaveAnswerNote} listen={listenFor(message)} />
                     {(() => {
                       const followUps = followUpsForMessage(message, { isLast: index === history.length - 1 });
                       return followUps.length > 0 && <FollowUps items={followUps} disabled={requestState.status === "loading"} onChoose={(item) => runFollowUp(message, item)} />;

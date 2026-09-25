@@ -480,6 +480,24 @@ try {
   assert.match(await page.$$eval(".phone-tutor__message.is-user .phone-tutor__user-text", (nodes) => nodes.at(-1).textContent), /^Explain your previous answer more simply/, "the On-device follow-up was not a visible question");
   await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("focus did not move to the On-device follow-up's answer"));
 
+  // Listen (TFEAT-09): an On-device answer is read by the app's speech
+  // hook without code, math or labels; Pause/Stop follow it, and the next
+  // question stops it.
+  const phoneListen = () => page.$$eval(".phone-tutor__message.is-assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".phone-tutor__message-actions button")].map((node) => node.textContent.trim()).filter((text) => /^(Listen|Pause|Resume|Stop)/.test(text)));
+  assert.deepEqual(await phoneListen(), ["Listen to this answer"], "an On-device answer offered no Listen");
+  await page.$$eval(".phone-tutor__message.is-assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".phone-tutor__message-actions button")].find((node) => node.textContent.startsWith("Listen")).click());
+  await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message-actions button")].some((node) => node.textContent.startsWith("Pause")), { timeout: 3_000 });
+  assert.deepEqual(await phoneListen(), ["Pause reading this answer", "Stop reading"]);
+  const firstSpoken = await page.evaluate(() => window.__PHONE_SPEECH_LOG__.find(([type]) => type === "speak")?.[1] || "");
+  assert.match(firstSpoken, /^Gradient descent\. Gradient descent follows the negative loss gradient\./, `On-device Listen read: ${firstSpoken}`);
+  assert.equal(/\[S\d|\$|\\theta/.test(firstSpoken), false, "On-device Listen read math or a citation label");
+  const phoneCancels = () => page.evaluate(() => window.__PHONE_SPEECH_LOG__.filter(([type]) => type === "cancel").length);
+  const cancelsBeforeNext = await phoneCancels();
+  await clickByText(page, ".phone-tutor__follow-ups button", "Simpler");
+  await page.waitForFunction((before) => window.__PHONE_SPEECH_LOG__.filter(([type]) => type === "cancel").length > before, { timeout: 5_000 }, cancelsBeforeNext).catch(() => assert.fail("a new On-device question did not stop the answer being read"));
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__working"), { timeout: 10_000 });
+  assert.deepEqual(await phoneListen(), ["Listen to this answer"], "Listen did not reset after reading stopped");
+
   // A long answer streams while the learner reads elsewhere (TFEAT-08):
   // "Jump to latest" brings its newest text into view at once under reduced
   // motion, and an answer that lands out of view is offered as "Answer

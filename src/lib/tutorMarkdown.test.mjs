@@ -5,6 +5,7 @@ import {
   renderTutorInlineMarkdownUnsanitized,
   renderTutorMarkdownUnsanitized,
   tutorMarkdownPlainText,
+  tutorSpeechText,
 } from "./tutorMarkdown.js";
 
 const sources = [{ citationNumber: 1, title: 'Library "source"' }];
@@ -320,4 +321,67 @@ test("a model diagram in a tutor answer never names an address Mermaid would fet
   assert.match(hostile, /<code class="language-mermaid">/u);
   const directive = render(fence('%%{init: {"fontFamily": "Comic Sans MS"}}%%\nflowchart LR\n  A --> B'));
   assert.match(directive, /<div class="mermaid" data-diagram-status="pending"[^>]*data-diagram-author="model">/u);
+});
+
+test("an answer is read aloud without code, math or citation labels", () => {
+  const spoken = tutorSpeechText([
+    "## Ridge regression",
+    "",
+    "Ridge adds a **penalty** $\\lambda \\|w\\|^2$ to the loss [S1] and keeps `for _ in` loops working [W2].",
+    "",
+    "```python",
+    "for _ in range(3):",
+    "    w -= lr * grad",
+    "```",
+    "",
+    "$$",
+    "\\hat{w} = (X^T X + \\lambda I)^{-1} X^T y",
+    "$$",
+    "",
+    "## When to use it",
+    "",
+    "- Many correlated features",
+    "- A [small](https://example.com) data set",
+    "",
+    "| Penalty | Effect |",
+    "| --- | --- |",
+    "| L2 | Shrinks |",
+    "",
+    "```mermaid",
+    "flowchart LR",
+    "  A --> B",
+    "```",
+    "<script>alert(1)</script>Done.",
+  ].join("\n"));
+  assert.equal(spoken.text, [
+    "Ridge regression.",
+    "",
+    "Ridge adds a penalty equation to the loss and keeps for _ in loops working.",
+    "",
+    "Code example shown on screen.",
+    "",
+    "equation.",
+    "",
+    "When to use it.",
+    "",
+    "Many correlated features.",
+    "A small data set.",
+    "",
+    "Penalty, Effect.",
+    "L2, Shrinks.",
+    "",
+    "Diagram shown on screen.",
+    "alert(1)Done.",
+  ].join("\n"));
+  assert.deepEqual(spoken.sections.map((section) => section.label), ["Ridge regression", "When to use it"]);
+  assert.match(spoken.sections[1].text, /^When to use it\.\n\nMany correlated features\./);
+  assert.equal(/\[[SW]\d|\$|```|\\lambda/.test(spoken.text), false);
+});
+
+test("a short answer is one section", () => {
+  const spoken = tutorSpeechText("Weights are learned; the learning rate is chosen. [S3]");
+  assert.deepEqual(spoken, { text: "Weights are learned; the learning rate is chosen.", sections: [] });
+  assert.deepEqual(tutorSpeechText(""), { text: "", sections: [] });
+  // An unclosed fence at the end of a stream is silent after its label.
+  assert.equal(tutorSpeechText("Intro\n\n```js\nconst a = 1;").text, "Intro\n\nCode example shown on screen.");
 });

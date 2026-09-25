@@ -2075,6 +2075,12 @@
   box-shadow: none;
 }
 
+/* Listen shows which answer is being read. */
+.ai-tutor__message-actions .ai-tutor__listen.is-active {
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+}
+
 .ai-tutor__message-actions .ai-tutor__action-count {
   display: grid;
   min-width: 18px;

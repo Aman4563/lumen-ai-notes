@@ -2047,6 +2047,11 @@ try {
   const startersScenario = await newIsolatedPage("starters");
   try {
     const { page, calls } = startersScenario;
+    // This browser has no speech engine: answers offer no Listen.
+    await page.evaluateOnNewDocument(() => {
+      delete Window.prototype.speechSynthesis;
+      delete window.speechSynthesis;
+    });
     const starterLabels = () => page.$$eval(".ai-tutor__starter", (nodes) => nodes.map((node) => [node.querySelector(".ai-tutor__starter-mode").textContent, node.querySelector(".ai-tutor__starter-title").textContent]));
     await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
@@ -2113,6 +2118,7 @@ try {
     await waitForAnswers(page, 1);
     assert.ok(String(calls.respond[0].body.context).includes(starterChapter.title), "the starter's lesson was not retrieved for it");
     assert.equal(await page.$(".ai-tutor__starters"), null, "starters stayed after the conversation began");
+    assert.equal(await page.$(".ai-tutor__listen"), null, "Listen was offered without a speech engine");
 
     // Clearing the conversation brings the starters back; wider screens
     // show six in two columns.
@@ -2301,6 +2307,90 @@ try {
     assert.match(await page.$eval(".mistake-card", (node) => node.textContent), /Which of these is learned during training\?/, "the confident miss was not first in the mistake notebook");
   } finally {
     await quizScenario.context.close();
+  }
+
+  // Listen (TFEAT-09): a completed prose answer is read by the app's speech
+  // engine, headings as sections, without code, diagrams, math or citation
+  // labels; Pause/Resume and Stop follow it; a new question and leaving the
+  // tutor stop it.
+  const listenScenario = await newIsolatedPage("listen");
+  try {
+    const { page } = listenScenario;
+    await page.evaluateOnNewDocument(() => {
+      window.__lumenSpeechLog = [];
+      class TestUtterance {
+        constructor(text) { this.text = text; this.rate = 1; this.pitch = 1; this.volume = 1; this.lang = ""; this.voice = null; }
+      }
+      const synthesis = {
+        current: null,
+        paused: false,
+        speaking: false,
+        getVoices: () => [{ name: "Samantha", lang: "en-US", voiceURI: "samantha-en-us", default: true, localService: true }],
+        speak(utterance) { this.current = utterance; this.paused = false; this.speaking = true; window.__lumenSpeechLog.push(["speak", utterance.text]); utterance.onstart?.(); },
+        cancel() { this.current = null; this.paused = false; this.speaking = false; window.__lumenSpeechLog.push(["cancel"]); },
+        pause() { this.paused = true; this.current?.onpause?.(); },
+        resume() { this.paused = false; this.current?.onresume?.(); },
+        addEventListener() {},
+        removeEventListener() {},
+      };
+      Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: TestUtterance });
+      Object.defineProperty(window, "speechSynthesis", { configurable: true, value: synthesis });
+    });
+    const listenButtons = () => page.$$eval(".ai-tutor__message--assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".ai-tutor__listen, .ai-tutor__listen-stop")].map((node) => node.textContent.trim()));
+    const cancels = () => page.evaluate(() => window.__lumenSpeechLog.filter(([type]) => type === "cancel").length);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await setComposerPrompt(page, "Why does repeated holdout inspection leak information?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    assert.deepEqual(await listenButtons(), ["Listen to this answer"], "a completed answer offered no Listen");
+    assert.ok(await page.$eval(".ai-tutor__listen", (node) => node.getBoundingClientRect().height >= 44), "Listen was under 44px on a phone");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Pause"), { timeout: 3_000 });
+    assert.deepEqual(await listenButtons(), ["Pause reading this answer", "Stop reading"]);
+    assert.match(await page.evaluate(() => window.__lumenSpeechLog.find(([type]) => type === "speak")?.[1]), /^Holdout evaluation\. A final holdout/, "reading did not start at the answer's first heading");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Resume"), { timeout: 3_000 });
+    assert.equal(await page.evaluate(() => speechSynthesis.paused), true, "Pause did not pause the speech engine");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Pause"), { timeout: 3_000 });
+    // Let the engine read to the end: the whole answer, in order.
+    const spoken = await page.evaluate(async () => {
+      for (let step = 0; step < 60 && speechSynthesis.current; step += 1) {
+        speechSynthesis.current.onend?.();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      return window.__lumenSpeechLog.filter(([type]) => type === "speak").map(([, text]) => text).join(" ");
+    });
+    assert.match(spoken, /^Holdout evaluation\. A final holdout remains useful only when development decisions cannot adapt to it\./);
+    assert.match(spoken, /The mean loss is equation\./);
+    assert.match(spoken, /Code example shown on screen\./);
+    assert.match(spoken, /Diagram shown on screen\./);
+    assert.equal(/\[[SW]\d+\]|\$|evaluate\(frozen_model|flowchart|\\frac/.test(spoken), false, `code, math or citation labels were read aloud: ${spoken}`);
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Listen"), { timeout: 3_000 });
+    // Stop, then a new question, then leaving the tutor: each stops reading.
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    let before = await cancels();
+    await page.$eval(".ai-tutor__listen-stop", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Listen"), { timeout: 3_000 });
+    assert.ok(await cancels() > before, "Stop did not cancel speech");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    before = await cancels();
+    await setComposerPrompt(page, "And what about cross-validation?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 2);
+    assert.ok(await cancels() > before, "a new question did not stop the answer being read");
+    assert.equal(await page.$(".ai-tutor__listen-stop"), null);
+    await page.$$eval(".ai-tutor__listen", (nodes) => nodes.at(-1).click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    before = await cancels();
+    await page.evaluate(() => { window.location.hash = "#/home"; });
+    await page.waitForSelector(".ai-tutor", { hidden: true, timeout: 10_000 });
+    assert.ok(await cancels() > before, "leaving the tutor did not stop the answer being read");
+  } finally {
+    await listenScenario.context.close();
   }
 
   let modelOnline = false;
