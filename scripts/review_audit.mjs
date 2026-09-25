@@ -307,11 +307,25 @@ try {
     });
     await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient")), { timeout: 5_000 });
   };
+  const softmaxSlot = await page.$$eval(".mistake-list > *", (nodes) => nodes.findIndex((node) => node.textContent.includes("softmax gradient")));
   await deleteSoftmaxMistake();
   // Issue #54 (REV-11): a deleted mistake offers a focused Undo that restores
   // the same merged entry.
   await page.waitForFunction(() => document.activeElement?.closest(".undo-strip") && document.activeElement.textContent.includes("Undo"), { timeout: 5_000 })
     .catch(() => assert.fail("deleting a mistake must focus an Undo control"));
+  // The strip takes the deleted entry's place in the list and scrolls on
+  // screen (smoothly), not at the top of the notebook out of sight.
+  assert.deepEqual(await page.evaluate(() => {
+    const strip = document.querySelector(".undo-strip");
+    return [[...strip.parentElement.children].indexOf(strip), strip.parentElement.classList.contains("mistake-list")];
+  }), [softmaxSlot, true], "the mistake Undo strip must take the deleted entry's place");
+  await page.waitForFunction(() => {
+    const box = document.querySelector(".undo-strip")?.getBoundingClientRect();
+    const top = document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0;
+    const nav = document.querySelector(".bottom-nav");
+    const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+    return box && box.top >= top && box.bottom <= bottom;
+  }, { timeout: 5_000 }).catch(() => assert.fail("the mistake Undo strip must scroll into view, clear of the top bar and bottom navigation"));
   // The strip must not expire while Undo holds focus, even after the pointer
   // passes over it and leaves (hover and focus pause it independently).
   await page.$eval(".undo-strip", (node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
@@ -518,6 +532,7 @@ try {
   assert.equal((await readProfile(page)).clippings.find((clip) => clip.id === "audit-clip-1")?.note, burst, "the clipping note must persist in full");
   await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] button[aria-label="Delete clipping"]', (node) => node.click());
   await page.waitForFunction(() => !document.querySelector('.clipping-card[data-clipping-id="audit-clip-1"]') && document.querySelector(".undo-strip"), { timeout: 5_000 });
+  assert.ok(await page.evaluate(() => document.querySelector(".clipping-grid")?.firstElementChild?.classList.contains("undo-strip")), "the clipping Undo strip must take the deleted card's place");
   await clickByText(page, ".undo-strip button", "Undo");
   await page.waitForSelector('.clipping-card[data-clipping-id="audit-clip-1"]', { timeout: 5_000 });
   await new Promise((resolve) => setTimeout(resolve, 700));

@@ -259,10 +259,12 @@ export function MistakeDialog({ open, onClose, onLog }) {
 
 /**
  * Short-lived undo for a deletion the learner may regret (REV-11). The strip
- * takes focus (the deleted row's button is gone), describes what was removed,
- * and expires after `timeout` unless it holds focus or the pointer.
+ * takes the removed row's place (see withUndoSlot) and its focus, scrolling
+ * into view if needed, describes what was removed, and expires after
+ * `timeout` unless it holds focus or the pointer.
  */
 export function UndoStrip({ message, onUndo, onExpire, timeout = 10_000 }) {
+  const stripRef = useRef(null);
   const undoRef = useRef(null);
   const expireRef = useRef(onExpire);
   expireRef.current = onExpire;
@@ -272,19 +274,38 @@ export function UndoStrip({ message, onUndo, onExpire, timeout = 10_000 }) {
   const [hovered, setHovered] = useState(false);
   const paused = focused || hovered;
   const messageId = useId();
-  useEffect(() => { undoRef.current?.focus({ preventScroll: true }); }, []);
+  // A plain focus() scroll stops at the viewport edge, under the sticky top
+  // bar; scrolling the strip itself honours its scroll margins (styles.css).
+  useEffect(() => {
+    undoRef.current?.focus({ preventScroll: true });
+    stripRef.current?.scrollIntoView({ block: "nearest" });
+  }, []);
   useEffect(() => {
     if (paused) return undefined;
     const timer = setTimeout(() => expireRef.current?.(), timeout);
     return () => clearTimeout(timer);
   }, [paused, timeout]);
   return (
-    <div className="undo-strip" role="status" onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+    <div ref={stripRef} className="undo-strip" role="status" onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
       <span id={messageId}>{message}</span>
       <button ref={undoRef} className="button secondary" onClick={onUndo} aria-describedby={messageId} type="button"><Undo2 size={15} /> Undo</button>
     </div>
   );
 }
+
+/**
+ * Puts an Undo strip where the removed record was listed, so it appears under
+ * the learner's finger rather than at the top of a long list. `nodes` are the
+ * rendered entries in order, `listIndexes` their records' positions in the
+ * full collection, and `removedIndex` the removed record's old position: the
+ * strip goes before the first entry that followed it.
+ */
+export const withUndoSlot = (nodes, listIndexes, removedIndex, strip) => {
+  if (!strip) return nodes;
+  const at = listIndexes.findIndex((index) => index >= removedIndex);
+  const slot = at === -1 ? nodes.length : at;
+  return [...nodes.slice(0, slot), strip, ...nodes.slice(slot)];
+};
 
 /**
  * Buffered text fields commit before the page is hidden or unloaded. The
@@ -766,6 +787,11 @@ export default function ReviewCenter({
 
   // Leaving an interview round or a lab returns focus to the center.
   const practiceOpen = Boolean(activeLab || interviewCards);
+  // A pending mistake Undo belongs to the list the learner just edited; it
+  // must not reappear (and take focus) after a session or practice round.
+  useEffect(() => {
+    if (session || practiceOpen) setRemovedMistake(null);
+  }, [practiceOpen, session]);
   const wasPracticingRef = useRef(false);
   useEffect(() => {
     if (practiceOpen) { wasPracticingRef.current = true; return; }
@@ -927,13 +953,15 @@ export default function ReviewCenter({
             {summary.mostRepeated.length > 0 && <span className="mistake-summary-repeats">Most repeated: {summary.mostRepeated.map((entry) => `“${entry.prompt.slice(0, 40)}${entry.prompt.length > 40 ? "…" : ""}” ×${entry.occurrences}`).join(" · ")}</span>}
           </div>;
         })()}
-        {removedMistake && <UndoStrip key={removedMistake.mistake.id} message={`Mistake removed: “${removedMistake.mistake.prompt.slice(0, 60)}${removedMistake.mistake.prompt.length > 60 ? "…" : ""}”`} onUndo={undoRemoveMistake} onExpire={() => setRemovedMistake(null)} />}
         {mistakes.length === 0 && <div className="empty-state compact"><Flame size={24} /><h2>No mistakes logged yet</h2><p>Grade a card “Again” or log one manually — captured errors become your highest-value review material.</p></div>}
         <div className="mistake-list">
-          {mistakes
-            .filter((mistake) => (mistakeFilter === "all" || mistake.category === mistakeFilter) && (showCorrectedMistakes || !mistake.correctedAt))
-            .slice(0, 100)
-            .map((mistake) => {
+          {(() => {
+            const visibleMistakes = mistakes
+              .filter((mistake) => (mistakeFilter === "all" || mistake.category === mistakeFilter) && (showCorrectedMistakes || !mistake.correctedAt))
+              .slice(0, 100);
+            const position = removedMistake ? new Map(mistakes.map((mistake, index) => [mistake.id, index])) : null;
+            const strip = removedMistake && <UndoStrip key={`undo-${removedMistake.mistake.id}`} message={`Mistake removed: “${removedMistake.mistake.prompt.slice(0, 60)}${removedMistake.mistake.prompt.length > 60 ? "…" : ""}”`} onUndo={undoRemoveMistake} onExpire={() => setRemovedMistake(null)} />;
+            return withUndoSlot(visibleMistakes.map((mistake) => {
               const doc = documents.find((item) => item.id === mistake.documentId);
               const categoryLabel = MISTAKE_CATEGORIES.find((category) => category.id === mistake.category)?.label || mistake.category;
               return <article className={`mistake-card${mistake.correctedAt ? " is-corrected" : ""}`} data-mistake-id={mistake.id} key={mistake.id}>
@@ -950,7 +978,8 @@ export default function ReviewCenter({
                   </span>
                 </div>
               </article>;
-            })}
+            }), position ? visibleMistakes.map((mistake) => position.get(mistake.id)) : [], removedMistake?.index ?? 0, strip);
+          })()}
         </div>
       </section>}
       <MistakeDialog open={mistakeDialogOpen} onClose={() => setMistakeDialogOpen(false)} onLog={(draft) => { onLogMistake?.(draft); setMistakeDialogOpen(false); }} />
