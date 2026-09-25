@@ -55,8 +55,9 @@ const TASK_INSTRUCTIONS = Object.freeze({
 //             or "Ask me the next question"), or any turn that does not
 //             follow a question of the tutor's;
 //   answer:   a reply to the tutor's question: the tutor's last turn ends by
-//             asking one (an offer such as "Want to see an example?" does
-//             not count), or it was a hint and the learner tries again; or
+//             asking one (an offer such as "Want to see an example?" or a
+//             "Does that make sense?" does not count), or it was a hint and
+//             the learner tries again; or
 //             the learner answers a question quoted in the message itself
 //             ("My answer: …", as an answer check's prefilled question).
 // The markers are the visible wording of the tutor's own action prompts
@@ -70,7 +71,10 @@ const MISTAKE_WALKTHROUGH_MARKER = /^\s*Work through this mistake\b/i;
 const HINT_MARKER = /\bhint for your (?:last|previous) question\b/i;
 const NOT_ANSWERING_MARKER = /\bI have not answered\b|^\s*Ask me the next question\b/i;
 const OWN_ANSWER_MARKER = /(?:^|\n)\s*My answer:\s*\S/i;
-const OFFER_MARKER = /\b(?:would you like|do you want|want (?:me )?to|shall I|should I|would it help)\b/i;
+// An offer or a comprehension check opens its closing sentence; the same
+// words later in a sentence ("which quantity do you want to minimize?") are
+// part of a real question.
+const OFFER_MARKER = /^(?:would you like|do you want|want (?:me )?to|shall I|should I|would it help|does (?:that|this) make sense)\b/i;
 
 /** The question a tutor turn ends by asking, or "" when it ends otherwise. */
 const closingQuestion = (content) => {
@@ -81,7 +85,8 @@ const closingQuestion = (content) => {
     // Emphasis, quotes and brackets may close a question: "**Why?**".
     .replace(/[\s*_~"'”’)\]]+$/u, "");
   if (!text.endsWith("?")) return "";
-  return text.match(/[^.!?]*\?+$/u)?.[0].trim() || "";
+  // The closing sentence, without the list, heading or emphasis marks it opens with.
+  return (text.match(/[^.!?]*\?+$/u)?.[0] || "").replace(/^[^\p{L}\p{N}]+/u, "");
 };
 
 const SOCRATIC_TURN_INSTRUCTIONS = Object.freeze({

@@ -5,7 +5,8 @@ import { afterEach, test } from "node:test";
 import { requestAi, requestAiStream } from "../../src/lib/aiClient.js";
 import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
 import { createApplicationServer, silentLogger } from "../server.mjs";
-import { readAiServerConfig } from "./config.mjs";
+import { publicAiConfig, readAiServerConfig } from "./config.mjs";
+import { validateAiRequest } from "./contracts.mjs";
 import { buildOllamaRequest, createOllamaResponse, createOllamaStreamingResponse, socraticTurnFraming, WEB_EVIDENCE_UNAVAILABLE_NOTICE } from "./ollama.mjs";
 import { mistakeTutorRequest } from "../../src/lib/tutorBridge.js";
 import { ANSWER_FOLLOW_UPS, withoutCitationLabels } from "../../src/lib/tutorFollowUps.js";
@@ -141,6 +142,7 @@ const tutorRequest = ({ task = "socratic", prompt, history = [], sources = ridge
   mode: { task },
   prompt,
   sources,
+  config: publicAiConfig(config),
   history: tutorConversationWindow(
     history.map((message) => ({ role: message.role, content: unlabelled ? withoutCitationLabels(message.content) : message.content })),
     { prompt, sources: sources.length > 0 },
@@ -178,7 +180,10 @@ const SOCRATIC_TURNS = [
   ["an answer to a question in bold", "answer", { prompt: "They shrink toward zero.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: "Ridge adds a penalty on the weights.\n\n**As λ grows, what happens to the coefficients?** [S1]" }] }],
   ["an answer to an answer check's own question", "answer", { prompt: "What does λ control in ridge?\n\nMy answer: The strength of the penalty on the weights.", history: [{ role: "user", content: "Check my answer." }, { role: "assistant", content: "Not quite: ridge keeps every feature. [S1]" }] }],
   ["free text after an explanation that asked nothing", "open", { prompt: "Now question me on ridge.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: EXPLANATION }] }],
+  ["an answer to a question with offer-like words mid-sentence", "answer", { prompt: "The penalized squared error.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: "Ridge penalizes large weights. When fitting ridge, which quantity do you want to minimize, and why? [S1]" }] }],
   ["free text after an offer of an example", "open", { prompt: "Yes, then quiz me on it.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: `${EXPLANATION}\n\nWould you like to see a worked example?` }] }],
+  ["free text after an offer in bold", "open", { prompt: "Yes, then quiz me on it.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: `${EXPLANATION}\n\n**Want to see a worked example?**` }] }],
+  ["free text after a reveal that asks whether it made sense", "open", { prompt: "Yes, it does.", history: [{ role: "user", content: REVEAL_PROMPT }, { role: "assistant", content: REVEAL_ANSWER }] }],
   ["free text after a rhetorical question mid-answer", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: "Why does ridge help? Correlated features stop fighting over one weight. [S1]" }] }],
   ["free text after a question that is only a heading", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: "## Why does ridge shrink?\n\nThe penalty grows with the weights. [S1]" }] }],
   ["free text after a question inside code only", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Show code." }, { role: "assistant", content: "Use this:\n\n```python\nok = input('ready?')\n```" }] }],
@@ -198,7 +203,12 @@ test("the framing reads history as the client's window sends it", () => {
 test("each tutor action's Socratic request lands in its own framing", () => {
   assert.ok(socraticStarter, "the starters offered no Socratic start");
   for (const [name, framing, turn] of SOCRATIC_TURNS) {
-    assert.equal(socraticTurnFraming(tutorRequest(turn)), framing, name);
+    const payload = tutorRequest(turn);
+    assert.equal(socraticTurnFraming(payload), framing, name);
+    // The server frames the request as its validation passes it on.
+    const validated = validateAiRequest(payload, config);
+    assert.equal(validated.ok, true, `${name}: ${validated.errors?.join("; ")}`);
+    assert.equal(socraticTurnFraming(validated.value), framing, `${name}, after validation`);
   }
 });
 
