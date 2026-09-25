@@ -2381,6 +2381,11 @@ export default function AiTutor({
   // Nothing can be generated until the server is set up or this browser is
   // paired, so those states show a focused card instead of the full composer.
   const setupRequired = configState.status === "disabled" || configState.status === "pairing";
+  // Losing the server or its pairing closes the options sheet for good; it
+  // must not reopen by itself once the tutor is available again.
+  useEffect(() => {
+    if (setupRequired) setOptionsOpen(false);
+  }, [setupRequired]);
 
   // Conversation export (Markdown) and session statistics (AI-002/PERF-002).
   const sessionStats = (() => {
