@@ -122,6 +122,13 @@ try {
   assert.ok((await page.$eval(".review-center-page [role='status']", (node) => node.textContent)).includes("Rated Good: next review in 1 day"), "the grade outcome must be announced");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("1 day interval"), "Good rating did not schedule a one-day interval");
   assert.ok((await page.$eval(".review-stat-grid", (node) => node.textContent)).includes("100%"), "recall rate was not updated");
+  // Issue #54 (REV-5): ending a crunch practice session returns the hero to
+  // today's queue; it used to keep counting the weak-card practice pool.
+  await clickByText(page, ".review-hero-actions button", "Crunch weak cards");
+  await page.waitForFunction(() => document.querySelector(".review-session-header")?.textContent.includes("practice cards left"), { timeout: 5_000 });
+  await clickByText(page, ".review-session-header button", "End session");
+  await page.waitForSelector(".review-center-page");
+  assert.equal(await page.$eval(".review-hero strong", (node) => node.textContent), "0", "after crunch practice the hero must count today's queue, not the practice pool");
 
   await clickByText(page, ".review-hero-actions button", "Undo last grade");
   await page.waitForFunction(() => document.querySelector(".review-hero strong")?.textContent === "1");

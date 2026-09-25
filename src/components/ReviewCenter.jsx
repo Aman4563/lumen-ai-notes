@@ -690,7 +690,7 @@ export default function ReviewCenter({
     setRevealed(false);
     setConfidence(3);
     startedAt.current = Date.now();
-    if (!queue.length) setSession(false);
+    if (!queue.length) endSession();
   // Queue arrays can be recomputed when the wall clock advances even when
   // membership is unchanged. Keying this transition to IDs prevents an
   // unrelated render (or the 30-second clock tick) from hiding an answer the
@@ -747,6 +747,13 @@ export default function ReviewCenter({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [bury, grade, revealed, session, undo]);
+
+  // Crunch mode ends with its session: left on, it kept the hero showing the
+  // weak-card practice pool instead of today's queue (REV-5).
+  const endSession = () => {
+    setSession(false);
+    setCrunch(false);
+  };
 
   const startSession = (useCrunch = false) => {
     setCrunch(useCrunch);
@@ -846,7 +853,7 @@ export default function ReviewCenter({
       <div className="page review-session-page">
         <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
         <header className="review-session-header">
-          <button className="button ghost" onClick={() => setSession(false)} type="button"><ArrowLeft size={17} /> End session</button>
+          <button className="button ghost" onClick={endSession} type="button"><ArrowLeft size={17} /> End session</button>
           <div><strong>{queue.length}</strong><span>{crunch ? "practice cards left" : "remaining today"}</span></div>
           <button className="button ghost" onClick={undo} disabled={!lastAttempt} title={!lastAttempt ? "Grade a card before using undo" : "Undo the most recent grade"} type="button"><Undo2 size={16} /> Undo</button>
         </header>
