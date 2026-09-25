@@ -303,7 +303,7 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
     <div
       ref={responseRef}
       className="phone-tutor__safe-response"
-      // renderPhoneTutorMarkdown sanitizes model-authored HTML with DOMPurify.
+      // renderPhoneTutorMarkdown shows model-authored HTML as text, then sanitizes with DOMPurify.
       dangerouslySetInnerHTML={htmlMarkup}
       onClick={handleClick}
     />
@@ -377,7 +377,7 @@ const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSo
       : null;
     if (source) onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor });
   };
-  // renderPhoneTutorInlineMarkdown sanitizes model-authored HTML with DOMPurify.
+  // renderPhoneTutorInlineMarkdown shows model-authored HTML as text, then sanitizes with DOMPurify.
   return <span className="phone-tutor__inline-md" onClick={handleClick} dangerouslySetInnerHTML={markup} />;
 };
 

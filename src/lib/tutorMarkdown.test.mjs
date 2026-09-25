@@ -1,19 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decorateTutorCitations, normalizeTutorMathDelimiters, tutorMarkdownPlainText } from "./tutorMarkdown.js";
+import {
+  normalizeTutorMathDelimiters,
+  renderTutorInlineMarkdownUnsanitized,
+  renderTutorMarkdownUnsanitized,
+  tutorMarkdownPlainText,
+} from "./tutorMarkdown.js";
 
 const sources = [{ citationNumber: 1, title: 'Library "source"' }];
 const web = [{ title: "Official docs", url: "https://example.com/docs" }];
+const render = (markdown, library = sources, webSources = web) => renderTutorMarkdownUnsanitized(markdown, library, webSources);
 
-test("decorates known library and web citations", () => {
-  const result = decorateTutorCitations("Evidence [S1] and current facts [W1].", sources, web);
-  assert.match(result, /data-ai-citation="S1"/);
-  assert.match(result, /href="https:\/\/example\.com\/docs"/);
+// Escaped model markup starts with "&lt;", so a literal "<" begins a real tag.
+const liveTags = (html) => html.match(/<[a-z][^>]*>/giu) || [];
+const liveCitationAttributes = (html) => (html.match(/data-ai-citation="/gu) || []).length;
+const APP_LIBRARY_CITATION = /<button class="ai-tutor__citation" type="button" data-ai-citation="S\d+" aria-label="Open citation \[S\d+\]: [^"]*">\[S\d+\]<\/button>/gu;
+// Every live tag other than the renderer's own citation buttons.
+const tagsBesideAppCitations = (html) => liveTags(html.replace(APP_LIBRARY_CITATION, ""));
+
+test("renders known library and web citations as the renderer's own controls", () => {
+  const result = render("Evidence [S1] and current facts [W1].");
+  assert.match(result, /<button class="ai-tutor__citation" type="button" data-ai-citation="S1"/);
+  assert.match(result, /<a class="ai-tutor__citation" href="https:\/\/example\.com\/docs"/);
   assert.match(result, /Library &quot;source&quot;/);
 });
 
-test("decorates a sparse retained library label without renumbering it", () => {
-  const result = decorateTutorCitations("Evidence [S2]; unavailable [S1].", [
+test("renders a sparse retained library label without renumbering it", () => {
+  const result = render("Evidence [S2]; unavailable [S1].", [
     { citationNumber: 2, title: "Second retained excerpt" },
   ], []);
   assert.match(result, /data-ai-citation="S2"/);
@@ -21,36 +34,40 @@ test("decorates a sparse retained library label without renumbering it", () => {
 });
 
 test("preserves sparse explicit web indexes and fails closed on duplicate labels", () => {
-  const sparse = decorateTutorCitations("Latest [W2]; unavailable [W1].", [], [
+  const sparse = render("Latest [W2]; unavailable [W1].", [], [
     { index: 2, title: "Second result", url: "https://example.com/two" },
   ]);
   assert.match(sparse, /href="https:\/\/example\.com\/two"[^>]*>\[W2\]<\/a>/);
   assert.match(sparse, /citation--missing[^>]*>\[W1\]<\/span>/);
 
-  const duplicate = decorateTutorCitations("Conflict [W2].", [], [
+  const duplicate = render("Conflict [W2].", [], [
     { index: 2, title: "First claimant", url: "https://example.com/first" },
     { index: 2, title: "Second claimant", url: "https://example.com/second" },
   ]);
   assert.match(duplicate, /citation--missing/);
   assert.doesNotMatch(duplicate, /href=/);
 
-  const invalid = decorateTutorCitations("Invalid [W1].", [], [
+  const invalid = render("Invalid [W1].", [], [
     { index: 0, title: "Invalid index", url: "https://example.com/invalid" },
   ]);
   assert.match(invalid, /citation--missing/);
 });
 
-test("does not decorate citations inside code", () => {
-  const result = decorateTutorCitations("`[S1]`\n\n```js\nconst ref = '[W1]';\n```\n\n[S1]", sources, web);
-  assert.equal((result.match(/data-ai-citation/g) || []).length, 1);
-  assert.match(result, /`\[S1\]`/);
+test("does not render citations inside code", () => {
+  const result = render("`[S1]`\n\n```js\nconst ref = '[W1]';\n```\n\n    indented [S1]\n\n[S1]");
+  assert.equal(liveCitationAttributes(result), 1);
+  assert.match(result, /<code>\[S1\]<\/code>/);
   assert.match(result, /const ref = '\[W1\]'/);
+  assert.match(result, /indented \[S1\]/);
+  assert.doesNotMatch(result, /ai-tutor__citation" href/);
 });
 
-test("keeps incomplete Markdown available during streaming", () => {
-  const result = decorateTutorCitations("## Partial\n\n```python\nprint('[S1]')", sources, web);
-  assert.match(result, /```python/);
-  assert.doesNotMatch(result, /data-ai-citation/);
+test("keeps incomplete Markdown readable during streaming", () => {
+  const result = render("## Partial\n\n```python\nprint('[S1]')");
+  assert.match(result, /<h4 class="ai-tutor__md-h2">Partial<\/h4>/);
+  assert.match(result, /class="code-shell"/);
+  assert.match(result, /print\('\[S1\]'\)/);
+  assert.equal(liveCitationAttributes(result), 0);
 });
 
 test("normalizes one-line model display math without rewriting code or partial streams", () => {
@@ -60,9 +77,148 @@ test("normalizes one-line model display math without rewriting code or partial s
 });
 
 test("rejects unsafe web citation URLs", () => {
-  const result = decorateTutorCitations("[W1]", sources, [{ title: "Unsafe", url: "javascript:alert(1)" }]);
+  const result = render("[W1]", sources, [{ title: "Unsafe", url: "javascript:alert(1)" }]);
   assert.match(result, /citation--missing/);
   assert.doesNotMatch(result, /href=/);
+});
+
+test("shows a model-authored citation button as text, never as a control", () => {
+  const forged = render('Read this. <button class="ai-tutor__citation" type="button" data-ai-citation="S1" aria-label="Open citation S1">Open the lecture</button>');
+  assert.equal(liveCitationAttributes(forged), 0, "a forged citation control survived rendering");
+  assert.deepEqual(liveTags(forged), ["<p>"]);
+  assert.match(forged, /&lt;button class=&quot;ai-tutor__citation&quot; type=&quot;button&quot; data-ai-citation=&quot;S1&quot;/);
+  assert.match(forged, /Open the lecture&lt;\/button&gt;/);
+
+  // A valid marker inside forged markup is still the renderer's citation;
+  // the markup around it stays text.
+  const wrapped = render('Claim. <button data-ai-citation="S1">[S1]</button>');
+  assert.equal(liveCitationAttributes(wrapped), 1);
+  assert.deepEqual(tagsBesideAppCitations(wrapped), ["<p>"]);
+  assert.match(wrapped, /&lt;button data-ai-citation=&quot;S1&quot;&gt;<button class="ai-tutor__citation"/);
+
+  const block = render('<button class="ai-tutor__citation" data-ai-citation="S1">\nOpen\n</button>\n\nAfter [S1]');
+  assert.equal(liveCitationAttributes(block), 1);
+  assert.deepEqual(tagsBesideAppCitations(block), ["<p>", "<p>"]);
+});
+
+test("keeps model-authored data-ai-* attributes on other elements as text", () => {
+  const result = render([
+    '<span data-ai-citation="S1">span</span> and <a href="#/read/notes" data-ai-citation="S1">anchor</a>',
+    "",
+    '<div data-ai-citation="S1" data-ai-source="notes">',
+    "",
+    "**Inside** a forged block [S1]",
+    "",
+    "</div>",
+    "",
+    '<p data-ai-citation="S1">paragraph</p>',
+  ].join("\n"));
+  assert.equal(liveCitationAttributes(result), 1, "only the renderer's [S1] control may carry data-ai-citation");
+  assert.doesNotMatch(tagsBesideAppCitations(result).join(""), /data-ai-/);
+  assert.match(result, /<strong>Inside<\/strong>/, "Markdown inside a forged block should still render");
+  assert.match(result, /&lt;div data-ai-citation=&quot;S1&quot; data-ai-source=&quot;notes&quot;&gt;/);
+});
+
+test("renders scripts, frames, event handlers and forms as text", () => {
+  const result = render([
+    "<script>window.__TUTOR_XSS__ = true</script>",
+    "",
+    '<iframe src="https://example.com"></iframe> <img src="x" onerror="alert(1)"> <a href="#" onclick="alert(1)">click</a>',
+    "",
+    '<form action="https://example.com"><input name="password"><button>Sign in</button></form>',
+    "",
+    '<style>.ai-tutor { display: none }</style> <div style="position:fixed;inset:0">overlay</div>',
+    "",
+    "<!-- hidden instructions -->",
+  ].join("\n"));
+  const tags = liveTags(result);
+  assert.deepEqual(tags.filter((tag) => /^<(?:script|iframe|img|form|input|button|style|div)\b/iu.test(tag)), []);
+  assert.deepEqual(tags.filter((tag) => /\s(?:on\w+|style|data-[\w-]+)=/iu.test(tag)), []);
+  // The text is still Markdown: `__x__` is bold, a bare URL is a link.
+  assert.match(result, /&lt;script&gt;window\.<strong>TUTOR_XSS<\/strong> = true&lt;\/script&gt;/);
+  assert.match(result, /&lt;img src=&quot;x&quot; onerror=&quot;alert\(1\)&quot;&gt;/);
+  assert.match(result, /&lt;!-- hidden instructions --&gt;/);
+});
+
+test("raw HTML cannot re-enter through links, titles, fence info strings or raw-text tags", () => {
+  const label = render('[<button data-ai-citation="S1">open</button>](https://example.com/page)');
+  assert.deepEqual(liveTags(label), ["<p>", '<a href="https://example.com/page" target="_blank" rel="noopener noreferrer">']);
+
+  const title = render('[docs](https://example.com "x\\" data-ai-citation=\\"S1")');
+  assert.equal(liveCitationAttributes(title), 0);
+  assert.match(title, /title="x&quot; data-ai-citation=&quot;S1"/);
+
+  const fence = render('~~~js" data-ai-citation="S1" style="position:fixed\nconst a = 1;\n~~~');
+  assert.equal(liveCitationAttributes(fence), 0);
+  assert.doesNotMatch(fence, /style=/);
+  assert.match(fence, /<code class="language-js">const a = 1;<\/code>/);
+
+  // After a raw <kbd>/<pre> tag, marked would pass later text through
+  // unescaped; a browser reads <button/data-ai-citation=…> as a button.
+  const rawText = render('<kbd>Ctrl</kbd> <button/data-ai-citation="S1">open</button> <pre>x</pre> <button/data-ai-citation="S1">b</button>');
+  assert.equal(liveCitationAttributes(rawText), 0);
+  assert.deepEqual(liveTags(rawText), ["<p>"]);
+});
+
+test("keeps a [S#]: line visible instead of treating it as a link definition", () => {
+  // A one-word or URL remainder would otherwise make a valid definition.
+  const result = render("Sources:\n\n[S1]: Evaluation\n\n[W1]: https://example.com/docs");
+  assert.equal(liveCitationAttributes(result), 1);
+  assert.match(result, /<\/button>: Evaluation<\/p>/);
+  assert.match(result, /\[W1\]<\/a>: <a href="https:\/\/example\.com\/docs"/);
+});
+
+test("keeps a bare line break and nothing else from model HTML", () => {
+  const result = render("| Step | Detail |\n| --- | --- |\n| One | first<br>second<br/>third<br />fourth |\n\nBad <br data-ai-citation=\"S1\"> break");
+  assert.equal((result.match(/<br>/gu) || []).length, 3);
+  assert.equal(liveCitationAttributes(result), 0);
+  assert.match(result, /&lt;br data-ai-citation=&quot;S1&quot;&gt;/);
+});
+
+test("still renders headings, math, tables, code, diagrams and links", () => {
+  const result = render([
+    "## Holdout [S1]",
+    "",
+    "Loss $L = \\frac{1}{n}\\sum_i \\ell_i$ and [PyTorch](https://pytorch.org \"Release notes\").",
+    "",
+    "$$\\hat{w} = \\arg\\min_w \\lVert y - Xw \\rVert^2$$",
+    "",
+    "| Signal | Risk |",
+    "| --- | --- |",
+    "| Inspection [S1] | *Optimistic* |",
+    "",
+    "```python",
+    "score = evaluate(model, holdout)  # [S1]",
+    "```",
+    "",
+    "```mermaid",
+    "flowchart LR",
+    "  A[Train] --> B[Holdout]",
+    "```",
+  ].join("\n"));
+  assert.match(result, /<h4 class="ai-tutor__md-h2">Holdout <button class="ai-tutor__citation"/);
+  assert.match(result, /<span class="katex">/);
+  assert.match(result, /class="ai-tutor__scroll ai-tutor__scroll--math"/);
+  assert.match(result, /<div class="ai-tutor__scroll" data-scroll-label="Table"><table>/);
+  assert.match(result, /<td><em>Optimistic<\/em><\/td>/);
+  assert.match(result, /<button class="code-copy" type="button" aria-label="Copy python code">Copy<\/button>/);
+  assert.match(result, /score = evaluate\(model, holdout\)  # \[S1\]<\/code>/);
+  assert.match(result, /<div class="mermaid" data-diagram-status="pending"[^>]*>flowchart LR\n {2}A\[Train\] --&gt; B\[Holdout\]<\/div>/);
+  assert.match(result, /<a href="https:\/\/pytorch\.org" title="Release notes" target="_blank" rel="noopener noreferrer">PyTorch<\/a>/);
+  assert.equal(liveCitationAttributes(result), 2, "the heading and table citations render; the code comment does not");
+});
+
+test("structured fields render math and citations but keep model HTML as text", () => {
+  const result = renderTutorInlineMarkdownUnsanitized(
+    'Option with $\\hat{R}(f)$ [S1] <button data-ai-citation="S1">forged</button> <img src=x onerror="alert(1)">\n\n**bold**',
+    sources,
+    web,
+  );
+  assert.equal(liveCitationAttributes(result), 1);
+  assert.match(result, /<span class="katex">/);
+  assert.match(result, /<strong>bold<\/strong>/);
+  assert.doesNotMatch(result, /<p>|<img|<button data-ai/);
+  assert.match(result, /&lt;button data-ai-citation=&quot;S1&quot;&gt;forged&lt;\/button&gt;/);
 });
 
 test("creates useful plain text for copy controls", () => {

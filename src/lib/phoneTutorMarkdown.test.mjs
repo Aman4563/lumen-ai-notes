@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { adaptPhoneWebCitations, phoneTutorMarkdownPlainText, preparePhoneLibraryCitationSources } from "./phoneTutorMarkdown.js";
+import {
+  adaptPhoneWebCitations,
+  phoneTutorMarkdownPlainText,
+  preparePhoneLibraryCitationSources,
+  renderPhoneTutorInlineMarkdownUnsanitized,
+  renderPhoneTutorMarkdownUnsanitized,
+} from "./phoneTutorMarkdown.js";
+
+const liveTags = (html) => html.match(/<[a-z][^>]*>/giu) || [];
+const liveCitationAttributes = (html) => (html.match(/data-ai-citation="/gu) || []).length;
+const librarySources = [{ title: "Gradient descent", documentId: "notes/gradient.md" }];
 
 const citations = [
   { index: 2, title: "Second result", url: "https://example.com/two" },
@@ -33,4 +43,33 @@ test("preserves a surviving source's original S label after fitting", () => {
 
 test("plain-text copying removes presentation markup", () => {
   assert.equal(phoneTutorMarkdownPlainText("## Result\n\n- **Stable** with `code`"), "Result\n\n• Stable with code");
+});
+
+test("phone prose shows a model-authored citation control as text", () => {
+  const result = renderPhoneTutorMarkdownUnsanitized([
+    "**Gradient descent** follows the negative gradient [S1]; browsers change [W2].",
+    "",
+    '<button class="ai-tutor__citation" type="button" data-ai-citation="S1">Open lesson</button>',
+    "",
+    '<span data-ai-citation="S1">forged</span> <a href="#/read/notes" data-ai-citation="S1">anchor</a>',
+    "",
+    "<script>window.__PHONE_MARKDOWN_XSS__ = true</script>",
+  ].join("\n"), librarySources, citations);
+  assert.equal(liveCitationAttributes(result), 1, "only the renderer's [S1] control may carry data-ai-citation");
+  assert.match(result, /<button class="ai-tutor__citation" type="button" data-ai-citation="S1" aria-label="Open citation \[S1\]: Gradient descent">\[S1\]<\/button>/);
+  assert.match(result, /<a class="ai-tutor__citation" href="https:\/\/example\.com\/two"[^>]*>\[W2\]<\/a>/);
+  assert.match(result, /&lt;button class=&quot;ai-tutor__citation&quot; type=&quot;button&quot; data-ai-citation=&quot;S1&quot;&gt;Open lesson/);
+  assert.deepEqual(liveTags(result).filter((tag) => /^<(?:script|span|button)\b/iu.test(tag) && !tag.includes('aria-label="Open citation [S1]')), []);
+});
+
+test("phone structured fields keep model HTML as text and render real citations", () => {
+  const result = renderPhoneTutorInlineMarkdownUnsanitized(
+    'θ ← θ − η∇L(θ) [S1] <button data-ai-citation="S1">forged</button> <img src=x onerror="alert(1)"> [W5]',
+    librarySources,
+    citations,
+  );
+  assert.equal(liveCitationAttributes(result), 1);
+  assert.match(result, /href="https:\/\/example\.com\/five"[^>]*>\[W5\]<\/a>/);
+  assert.doesNotMatch(result, /<img|<button data-ai/);
+  assert.match(result, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
 });

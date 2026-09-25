@@ -581,7 +581,7 @@ const InlineRichText = ({ text, citationSources = [], webSources = [], onNavigat
     const source = match && citationSources.find((item) => item.citationNumber === Number(match[1]));
     if (source) onNavigateSource?.(source.original, { citation: `[S${source.citationNumber}]`, sourceId: source.id });
   }, [citationSources, onNavigateSource]);
-  // renderTutorInlineMarkdown sanitizes provider output through DOMPurify.
+  // renderTutorInlineMarkdown shows provider HTML as text, then sanitizes through DOMPurify.
   return <span className={`ai-tutor__inline-md ${className}`.trim()} onClick={handleClick} dangerouslySetInnerHTML={markup} />;
 };
 
@@ -647,7 +647,7 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
       ref={responseRef}
       className={`ai-tutor__response-text markdown-body ${streaming ? "is-streaming" : ""}`}
       onClick={handleClick}
-      // renderTutorMarkdown sanitizes provider output through DOMPurify.
+      // renderTutorMarkdown shows provider HTML as text, then sanitizes through DOMPurify.
       dangerouslySetInnerHTML={htmlMarkup}
     />
   );
