@@ -407,6 +407,10 @@ try {
   // keyboard-operable Import button, reports its counts, and never throws.
   const deckCount = async () => Number((await page.$eval(".review-deck-heading h2", (node) => node.textContent)).match(/^(\d+)/)?.[1]);
   await page.waitForFunction(() => ![...document.querySelectorAll(".review-deck-card")].some((card) => card.textContent.includes("Which split tunes hyperparameters?")), { timeout: 5_000 });
+  // Deleting hands focus to the next row a frame later (REV-7). Wait for it,
+  // or it can land between focusing Import and pressing Enter below.
+  await page.waitForFunction(() => document.activeElement?.closest(".review-card-actions") || document.activeElement === document.querySelector(".review-deck-heading h2"), { timeout: 5_000 })
+    .catch(() => assert.fail("deleting a card must move focus to the next row or the deck heading"));
   const cardsBefore = await deckCount();
   const deckFile = join(fixtureDirectory, "import-deck.json");
   await writeFile(deckFile, JSON.stringify({ format: "lumen.cards.v1", exportedAt: new Date().toISOString(), cards: [
