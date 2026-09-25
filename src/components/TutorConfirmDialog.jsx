@@ -25,6 +25,12 @@ export default function TutorConfirmDialog({ open, title, body, confirmLabel, ca
     restoreFocusRef.current = true;
     cancelRef.current?.focus();
     const onKeyDown = (event) => {
+      // The app's "?" shortcut sheet would open underneath this dialog and
+      // take focus there, out of sight.
+      if (event.key === "?") {
+        event.stopPropagation();
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();

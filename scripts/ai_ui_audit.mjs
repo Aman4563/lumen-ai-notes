@@ -520,6 +520,11 @@ try {
   // Options button; the armed permission stays visible on the composer.
   for (let step = 0; step < 14; step += 1) await page.keyboard.press("Tab");
   assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest(".tutor-sheet"))), true, "Tab escaped the options sheet");
+  // The app's "?" shortcut sheet must not open underneath and take focus.
+  await page.$eval(".tutor-sheet__done", (button) => button.focus());
+  await page.keyboard.type("?");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(await page.evaluate(() => ({ shortcuts: Boolean(document.querySelector(".shortcuts-dialog")), inSheet: Boolean(document.activeElement?.closest(".tutor-sheet")) })), { shortcuts: false, inSheet: true }, "“?” opened the shortcut sheet under the options sheet");
   await page.keyboard.press("Escape");
   await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
   assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("ai-tutor__options-toggle")), true, "closing the options sheet did not return focus to Options");
@@ -1731,6 +1736,10 @@ try {
     await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     assert.equal((await activeElement()).text, "Cancel", "Tab escaped the confirmation dialog");
+    await page.keyboard.type("?");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(await page.$(".shortcuts-dialog"), null, "“?” opened the shortcut sheet under the New topic dialog");
+    assert.equal((await activeElement()).text, "Cancel", "“?” moved focus out of the New topic dialog");
     await page.keyboard.press("Escape");
     await page.waitForSelector(".tutor-dialog", { hidden: true });
     assert.equal((await activeElement()).text, "New topic", "cancelling did not return focus to New topic");

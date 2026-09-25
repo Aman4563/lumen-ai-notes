@@ -27,6 +27,12 @@ export default function TutorSheet({ open, title, description, onClose, children
     const onKeyDown = (event) => {
       const panel = panelRef.current;
       if (!panel) return;
+      // The app's "?" shortcut sheet would open underneath this one and take
+      // focus there, out of sight.
+      if (event.key === "?") {
+        event.stopPropagation();
+        return;
+      }
       if (event.key === "Escape") {
         // Nothing behind the sheet (the tutor's Stop shortcut, the app's
         // sidebar) may also act on this Escape.
