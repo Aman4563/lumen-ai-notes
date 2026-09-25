@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 
+import { socraticTurnFraming } from "../server/ai/ollama.mjs";
+import { createApplicationServer, silentLogger } from "../server/server.mjs";
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { buildTrackRound, normalizeTrackBank } from "../src/lib/interviewTracks.js";
 import { createMistake } from "../src/lib/mistakes.js";
 import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
+import { HINT_PROMPT, NEXT_QUESTION_PROMPT } from "../src/lib/tutorSession.js";
 import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
@@ -251,7 +254,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData, streamFrom = null } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -284,6 +287,10 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
       calls.respond.push({ method: request.method(), url: request.url(), headers: request.headers(), body });
       if (abortFirstResponse && calls.respond.length === 1) {
         void request.abort("connectionfailed");
+        return;
+      }
+      if (streamFrom && url.pathname.endsWith("/stream")) {
+        streamFrom(body).then(reply, () => { request.abort("failed").catch(() => {}); });
         return;
       }
       if (failFirstResponse && calls.respond.length === 1) {
@@ -372,6 +379,57 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
     void request.continue();
   });
   return calls;
+};
+
+// The integrated server's own stream for a browser request (issue #82): the
+// real request validation, prompt framing, grounding check and phase events,
+// in front of a scripted Ollama that answers with the request's first
+// supplied [S#] label. The whole NDJSON body reaches the page in one piece,
+// as a buffered grounded answer does live: validating, every delta and the
+// completion in the same read.
+const startScriptedServer = async () => {
+  const { server } = createApplicationServer({
+    // The page fits its request to the mocked config's profile limits, so
+    // the server allows at least as much.
+    env: {
+      HOST: "127.0.0.1",
+      PORT: "0",
+      AI_ENABLED: "true",
+      OLLAMA_MODEL: "audit-local-model",
+      AI_STREAM_HEARTBEAT_MS: "30000",
+      AI_MAX_OUTPUT_TOKENS: String(secureConfig.limits.maxOutputTokens),
+      AI_FAST_OUTPUT_TOKENS: String(secureConfig.responseProfiles.outputTokens.fast),
+      AI_BALANCED_OUTPUT_TOKENS: String(secureConfig.responseProfiles.outputTokens.balanced),
+      AI_DEEP_OUTPUT_TOKENS: String(secureConfig.responseProfiles.outputTokens.deep),
+      OLLAMA_CONTEXT_WINDOW_TOKENS: "32768",
+    },
+    logger: silentLogger,
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const label = body.messages.at(-1).content.match(/exact labels: (\[S\d+\])/)?.[1] || "";
+      const parts = ["## Holdout evaluation\n\n", "A final holdout stays untouched until the last estimate, ", `so repeated inspection cannot leak into model choices. ${label}`];
+      const lines = [
+        ...parts.map((content) => ({ model: "audit-local-model", done: false, message: { role: "assistant", content } })),
+        { model: "audit-local-model", done: true, done_reason: "stop", message: { role: "assistant", content: "" }, prompt_eval_count: 400, eval_count: 40 },
+      ];
+      return new Response(`${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, { headers: { "Content-Type": "application/x-ndjson" } });
+    },
+  });
+  server.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  return {
+    stream: async (body) => {
+      const response = await fetch(`${origin}/api/ai/respond/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      return {
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        headers: Object.fromEntries(["x-request-id", "x-lumen-stream-protocol", "cache-control"].flatMap((name) => (response.headers.get(name) ? [[name, response.headers.get(name)]] : []))),
+        body: await response.text(),
+      };
+    },
+    close: () => new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); }),
+  };
 };
 
 // An in-page stream that delivers deltas over time, armed per request with
@@ -2065,6 +2123,56 @@ try {
     await desktopKeysContext.close();
   }
 
+  // Checking citations (issue #82). Live, the server reported validating in
+  // the same read as the held answer and its completion, and the step never
+  // drew. Here the integrated server's own stream arrives in one piece; the
+  // step must be on screen, announced once, from that validating event.
+  const scriptedServer = await startScriptedServer();
+  const checkingScenario = await newIsolatedPage("checking-step", { mocks: { streamFrom: scriptedServer.stream } });
+  try {
+    const { page, calls } = checkingScenario;
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.evaluate(() => {
+      // One sample per drawn frame: what the step list showed, and the stage
+      // line under it (the server's own phase message).
+      window.__lumenAuditFrames = [];
+      window.__lumenAuditAnnouncements = [];
+      const region = document.querySelector(".ai-tutor > p.visually-hidden[role='status']");
+      new MutationObserver(() => window.__lumenAuditAnnouncements.push(region.textContent.trim())).observe(region, { childList: true, characterData: true, subtree: true });
+      const sample = () => {
+        const streaming = document.querySelector(".ai-tutor__message--streaming");
+        window.__lumenAuditFrames.push(streaming ? {
+          active: streaming.querySelector(".ai-tutor__progress li.is-active")?.textContent.replace(/, in progress$/, "") || "",
+          stage: streaming.querySelector(".ai-tutor__stream-status span")?.textContent || "",
+        } : { done: document.querySelectorAll(".ai-tutor__message--assistant").length > 0 });
+        if (window.__lumenAuditFrames.length < 4_000) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await setComposerPrompt(page, "Why must a final holdout stay untouched until the end?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const sent = calls.respond.at(-1).body;
+    assert.ok(sent.contextCitations.length > 0, "the checking scenario attached no library passage");
+    const replayed = await scriptedServer.stream(sent);
+    const phases = replayed.body.trim().split("\n").map((line) => JSON.parse(line)).filter((event) => event.type === "phase");
+    const validating = phases.find((event) => event.phase === "validating");
+    assert.ok(validating, `the server's stream had no validating phase: ${JSON.stringify(phases)}`);
+    const frames = await page.evaluate(() => window.__lumenAuditFrames);
+    const checking = frames.findIndex((frame) => frame.active === "Checking citations");
+    assert.ok(checking >= 0, `Checking citations was never on screen: ${JSON.stringify([...new Set(frames.map((frame) => frame.active ?? "done"))])}`);
+    assert.equal(frames[checking].stage, validating.message, "the Checking step did not come from the server's validating event");
+    assert.ok(frames.slice(checking).filter((frame) => frame.active === "Checking citations").length >= 2, "Checking citations was drawn for a single frame only");
+    assert.equal(frames.slice(0, checking).some((frame) => frame.done), false, "the answer finished before Checking citations was shown");
+    const announced = (await page.evaluate(() => window.__lumenAuditAnnouncements)).filter(Boolean);
+    assert.equal(announced.filter((text) => text === "Checking citations…").length, 1, `Checking citations was not announced exactly once: ${JSON.stringify(announced)}`);
+    assert.match(await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.at(-1).textContent), /A final holdout stays untouched/, "the server's answer did not render");
+  } finally {
+    await checkingScenario.context.close();
+    await scriptedServer.close();
+  }
+
   // One-tap follow-ups (TFEAT-02): one group, under the newest complete
   // answer only. A chip sends a visible question in a listed mode with only
   // the answer it follows as memory (up to 3,000 characters of it, not the
@@ -2365,7 +2473,10 @@ try {
     await page.$$eval(".ai-tutor__feedback button", (nodes) => nodes.find((node) => node.textContent.includes("Answer this")).click());
     await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
     assert.equal(await activeMode(page), "Socratic");
-    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /Is the number of layers a parameter or a hyperparameter\?\n\nMy answer: $/);
+    const answerCheckDraft = await page.$eval(".ai-tutor__composer textarea", (field) => field.value);
+    assert.match(answerCheckDraft, /Is the number of layers a parameter or a hyperparameter\?\n\nMy answer: $/);
+    // Issue #82: the learner's answer to the check's own question is assessed.
+    assert.equal(socraticTurnFraming({ prompt: `${answerCheckDraft}A hyperparameter.`, history: [] }), "answer", "an answer to the check's question would not be assessed");
     await setComposerPrompt(page, "");
 
     // An answer check that breaks its schema is shown as an error and kept
@@ -2622,7 +2733,7 @@ try {
         if (body.task === "summarize") return "## Session recap\n\n**Right:** the penalty shrinks the weights.\n\n**Missed:** why that lowers variance.";
         if (body.prompt.startsWith("Reveal the answer")) return `## The answer\n\nAs λ grows, ridge shrinks every weight toward zero, trading a little bias for lower variance. [${citation}]`;
         if (body.task === "explain") return `## Ridge regression\n\nRidge adds an L2 penalty to the loss, so large weights cost more. [${citation}]`;
-        if (body.prompt.startsWith("Give me one hint")) return `Think about what the penalty does to a large weight. What happens to it as λ grows? [${citation}]`;
+        if (body.prompt.startsWith(HINT_PROMPT)) return `Think about what the penalty does to a large weight. What happens to it as λ grows? [${citation}]`;
         return `Let's check. What happens to the ridge regression weights as the penalty λ grows? [${citation}]`;
       },
     },
@@ -2668,6 +2779,9 @@ try {
     await page.$eval(sendSelector, (button) => button.click());
     await waitForAnswers(page, 3);
     assert.equal(calls.respond.at(-1).body.task, "socratic", "the learner's answer left the session's task");
+    // Issue #82: only the learner's own reply is framed as an answer.
+    assert.equal(socraticTurnFraming(calls.respond.at(-2).body), "open", "Check my understanding was framed as an answer to assess");
+    assert.equal(socraticTurnFraming(calls.respond.at(-1).body), "answer", "the learner's reply was not framed as an answer");
     assert.equal((await strip()).status, "Socratic session · question 2");
     const stripLayout = await page.evaluate(() => {
       const nav = document.querySelector(".bottom-nav");
@@ -2693,7 +2807,8 @@ try {
     await waitForAnswers(page, 4);
     const hint = calls.respond.at(-1).body;
     assert.equal(hint.task, "socratic");
-    assert.equal(hint.prompt.startsWith("Give me one hint for your last question without revealing the answer."), true);
+    assert.equal(hint.prompt.startsWith(HINT_PROMPT), true);
+    assert.equal(socraticTurnFraming(hint), "hint", "the server would not frame the Hint action as a hint request (issue #82)");
     assert.equal(hint.webSearch, false, "a hint used the web");
     assert.ok(hint.history.length >= 4, `a hint forgot the session: ${hint.history.length} messages`);
     assert.match(hint.history.at(-1).content, /What happens to the ridge regression weights/, "the hint's memory did not end with the question it is about");
@@ -2726,6 +2841,8 @@ try {
     await clickStrip("Next question");
     await waitForAnswers(page, 6);
     assert.equal(calls.respond.at(-1).body.task, "socratic");
+    assert.equal(calls.respond.at(-1).body.prompt.startsWith(NEXT_QUESTION_PROMPT), true);
+    assert.equal(socraticTurnFraming(calls.respond.at(-1).body), "open", "Next question was framed as an answer after the reveal");
     const long = await strip();
     assert.equal(long.status, "Socratic session · question 3 · time to wrap up", "a ten-message session did not suggest Wrap up");
     assert.deepEqual(long.suggested, ["Wrap up"]);
@@ -2997,6 +3114,7 @@ try {
     const workedThrough = calls.respond.at(-1).body;
     assert.equal(workedThrough.task, "socratic");
     assert.equal(workedThrough.prompt.startsWith(request.prompt), true);
+    assert.equal(socraticTurnFraming(workedThrough), "diagnose", "a worked-through mistake would not start with a diagnostic question (issue #82)");
     assert.equal(workedThrough.webSearch, false);
     assert.match(workedThrough.context, /Regularization|Regression/, `the mistake's topic was not retrieved: ${workedThrough.documentTitle}`);
     await setComposerPrompt(page, "");

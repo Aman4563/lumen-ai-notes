@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { progressAnnouncement, progressPhase, tutorProgressSteps } from "./tutorProgress.js";
+import { CHECKING_STEP_VISIBLE_MS, checkingStepHoldMs, holdStep, progressAnnouncement, progressPhase, tutorProgressSteps } from "./tutorProgress.js";
 
 const summary = (steps) => steps.map((step) => `${step.id}:${step.state}`).join(" ");
 
@@ -50,4 +50,28 @@ test("hand-picked sources are already in place; source-free answers show no step
   assert.deepEqual(tutorProgressSteps({}), []);
   const structured = tutorProgressSteps({ sourceMode: "current", phase: "drafting", passages: 1, structured: true });
   assert.deepEqual(structured.map((step) => step.label), ["Using 1 source", "Building the result", "Checking the result", "Done"]);
+});
+
+test("a validating phase holds the stream only while a visible step list can show it (issue #82)", () => {
+  assert.equal(CHECKING_STEP_VISIBLE_MS, 300);
+  assert.equal(checkingStepHoldMs({ phase: "validating", stepsShown: true }), 300);
+  assert.equal(checkingStepHoldMs({ phase: "validating", stepsShown: true, hidden: true }), 0, "a hidden page waited to paint");
+  assert.equal(checkingStepHoldMs({ phase: "validating", stepsShown: false }), 0, "a source-free answer without steps waited");
+  for (const phase of ["preparing", "generating", "searching", ""]) assert.equal(checkingStepHoldMs({ phase, stepsShown: true }), 0, phase);
+});
+
+test("the hold ends after its time, or at once when the request stops", async () => {
+  const started = Date.now();
+  await holdStep(40);
+  assert.ok(Date.now() - started >= 35, "the hold ended early");
+  const controller = new AbortController();
+  const held = holdStep(60_000, controller.signal);
+  controller.abort();
+  const stoppedAt = Date.now();
+  await held;
+  assert.ok(Date.now() - stoppedAt < 1_000, "a stopped request kept waiting");
+  const aborted = new AbortController();
+  aborted.abort();
+  await holdStep(60_000, aborted.signal);
+  await holdStep(0);
 });

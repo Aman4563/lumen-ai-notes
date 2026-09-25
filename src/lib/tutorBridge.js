@@ -45,6 +45,13 @@ const fitPrompt = (build, budgets) => {
 const withBlanks = (value) => String(value ?? "").replace(/\{\{[^{}]+\}\}/g, "___");
 
 /**
+ * The first line of a worked-through mistake. The server recognizes its
+ * opening words and asks a diagnostic question before explaining anything
+ * (issue #82); live, the model otherwise corrected the old answer first.
+ */
+export const MISTAKE_WALKTHROUGH_LEAD = "Work through this mistake with me, one question at a time. First ask me what I think went wrong, and do not explain it or give me the answer until I reply.";
+
+/**
  * A mistake-notebook entry, worked through Socratically: the question, the
  * expected answer and what the learner answered, each at most 600
  * characters and together within TUTOR_BRIDGE_PROMPT_CHARS. The mistake's
@@ -55,7 +62,7 @@ export const mistakeTutorRequest = (mistake) => {
   const response = clip(mistake?.response, 20);
   const answered = Boolean(response) && response !== "self-graded";
   const prompt = fitPrompt((budget) => [
-    "Work through this mistake with me, one question at a time. Start by asking what I think went wrong, and do not give me the answer straight away.",
+    MISTAKE_WALKTHROUGH_LEAD,
     "",
     `Question: ${clip(withBlanks(mistake?.prompt), budget.question)}`,
     `Expected answer: ${clip(mistake?.expected, budget.expected)}`,

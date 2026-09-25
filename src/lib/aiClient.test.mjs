@@ -339,6 +339,41 @@ test("requestAiStream keeps caller cancellation active while the body is stalled
   await assert.rejects(pending, (error) => error instanceof AiClientError && error.code === "AI_CANCELLED");
 });
 
+test("a Stop while a callback holds the stream is not overtaken by the buffered answer", async () => {
+  // Issue #82: the tutor holds a validating phase on screen, and the answer
+  // and its completion usually arrive in the same read.
+  const events = streamEvents({ sources: [] });
+  events.splice(3, 0, { type: "phase", requestId: "stream-request-1", phase: "validating", message: "Checking the answer's citations against the supplied sources." });
+  globalThis.fetch = async () => ndjsonResponse(events);
+  const controller = new AbortController();
+  const seen = [];
+  const pending = requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }, {
+    signal: controller.signal,
+    onDelta: (text) => seen.push(`delta:${text}`),
+    onEvent: async (event) => {
+      seen.push(event.type === "phase" ? event.phase : event.type);
+      if (event.phase === "validating") {
+        controller.abort(new Error("learner stopped"));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    },
+  });
+  await assert.rejects(pending, (error) => error instanceof AiClientError && error.code === "AI_CANCELLED");
+  assert.deepEqual(seen, ["start", "approach", "generating", "validating"], "buffered events ran after the Stop");
+
+  // Without a Stop the same held stream completes normally.
+  globalThis.fetch = async () => ndjsonResponse(events);
+  const phases = [];
+  const response = await requestAiStream({ contract: AI_REQUEST_CONTRACT_ID, task: "explain", prompt: "Explain." }, {
+    onEvent: async (event) => {
+      if (event.type === "phase") phases.push(event.phase);
+      if (event.phase === "validating") await new Promise((resolve) => setTimeout(resolve, 10));
+    },
+  });
+  assert.equal(response.outputText, "Hello world");
+  assert.deepEqual(phases, ["generating", "validating"]);
+});
+
 test("requestAiStream surfaces a typed terminal stream error", async () => {
   const requestId = "stream-request-1";
   globalThis.fetch = async () => ndjsonResponse([

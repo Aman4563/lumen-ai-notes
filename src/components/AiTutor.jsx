@@ -41,7 +41,7 @@ import { renderTutorInlineMarkdown, renderTutorMarkdown, tutorSpeechText } from 
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
-import { progressAnnouncement, tutorProgressSteps } from "../lib/tutorProgress.js";
+import { checkingStepHoldMs, holdStep, progressAnnouncement, tutorProgressSteps } from "../lib/tutorProgress.js";
 import { isPageReadBack } from "../lib/scrollIntent.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import TutorSheet from "./TutorSheet.jsx";
@@ -85,6 +85,7 @@ import {
   NEXT_QUESTION_PROMPT,
   REVEAL_PROMPT,
   SESSION_MODES,
+  SOCRATIC_START_PROMPT,
   sessionRetrievalQuery,
   sessionWrapUp,
   tutorSession,
@@ -113,7 +114,7 @@ const MODE_OPTIONS = Object.freeze([
     id: "socratic",
     label: "Socratic",
     task: "socratic",
-    prompt: "Teach the selected material using one focused Socratic question at a time. Start by checking my current understanding.",
+    prompt: SOCRATIC_START_PROMPT,
     description: "Learn through guided questions without receiving the solution too early.",
   },
   {
@@ -1483,11 +1484,20 @@ export default function AiTutor({
   }) : [];
   const progressMessage = progressAnnouncement(progressSteps);
   const announcementKey = progressSteps.length ? progressMessage : activeStage;
+  // Each step or stage is announced once per answer: a draft that fails its
+  // citation check goes back to Drafting and is checked again, and saying
+  // both steps twice would only repeat them (issue #82).
+  const announcedRef = useRef({ responseId: "", keys: new Set() });
   useEffect(() => {
     // Effects, and the state updaters behind them, can run after the request
     // ended. Only the request still in flight (a ref written in program
     // order) may announce, so a stale phase never follows its outcome.
-    if (announcementKey && activeResponseId && inFlightRef.current?.responseId === activeResponseId) announce(announcementKey);
+    if (!announcementKey || !activeResponseId || inFlightRef.current?.responseId !== activeResponseId) return;
+    const announced = announcedRef.current;
+    if (announced.responseId !== activeResponseId) announcedRef.current = { responseId: activeResponseId, keys: new Set() };
+    if (announcedRef.current.keys.has(announcementKey)) return;
+    announcedRef.current.keys.add(announcementKey);
+    announce(announcementKey);
   }, [activeResponseId, announcementKey, announce]);
   useEffect(() => {
     if (requestState.status === "loading" && inFlightRef.current && requestElapsed > 0 && requestElapsed % 30 === 0) announce(`Still working, ${requestElapsed} seconds so far.`);
@@ -2034,6 +2044,14 @@ export default function AiTutor({
             searched: current.searched || phase === "searching",
           }));
         }
+        // The stream client awaits this: the answer and its completion wait
+        // until the Checking step has been on screen (issue #82).
+        const holdMs = checkingStepHoldMs({
+          phase,
+          stepsShown: tutorProgressSteps({ sourceMode: requestSpec.sourceMode, phase, web: requestSpec.webSearch }).length > 0,
+          hidden: document.visibilityState === "hidden",
+        });
+        if (holdMs) return holdStep(holdMs, controller.signal);
       } else if (["source", "sources", "web_sources"].includes(event.type)) {
         const incoming = event.type === "source" ? [event.source || event] : event.sources;
         streamedWebSources = [...new Map(normalizeWebSources([...streamedWebSources, ...(Array.isArray(incoming) ? incoming : [])]).map((source) => [source.url, source])).values()];

@@ -5,7 +5,9 @@ import { ANSWER_FOLLOW_UPS } from "./tutorFollowUps.js";
 import {
   HINT_PROMPT,
   NEXT_QUESTION_PROMPT,
+  REVEAL_PROMPT,
   SESSION_WRAP_UP_AFTER,
+  SOCRATIC_START_PROMPT,
   sessionAnswerCount,
   sessionRetrievalQuery,
   sessionWrapUp,
@@ -113,4 +115,25 @@ test("a recap with no answer of the learner's credits nothing", () => {
   assert.match(recap.prompt, /^Recap this practice session: I have not answered any of your questions yet, so do not credit me with anything\./);
   assert.equal(wrapUpLabel(recap.prompt), "Session recap");
   assert.equal(sessionWrapUp([...unanswered, turn("user", "socratic", "The customers who stay anyway.")], { inputLimit: 8_740 }).prompt, "Recap this practice session: what I got right in my own answers, what I missed or needed revealed, and 3 things to review.");
+});
+
+test("session actions say in words when the learner has not answered (issue #82)", () => {
+  // The server frames a Socratic turn from this wording: without it, a hint
+  // request was assessed as "your hint" and a session start was praised.
+  assert.equal(SOCRATIC_START_PROMPT, "Teach the selected material using one focused Socratic question at a time. I have not answered anything yet, so start by asking a question that checks my current understanding.");
+  assert.equal(HINT_PROMPT, "Give me one hint for your last question without revealing the answer. I have not answered it yet.");
+  assert.equal(NEXT_QUESTION_PROMPT, "Ask me the next question in this session. I have not answered anything since your last reply.");
+  assert.equal(REVEAL_PROMPT, "Reveal the answer to your last question and explain it step by step.");
+  for (const prompt of [SOCRATIC_START_PROMPT, HINT_PROMPT, NEXT_QUESTION_PROMPT]) assert.match(prompt, /\bI have not answered\b/);
+  // Stored conversations keep the earlier Next question wording, which is
+  // still not an answer of the learner's.
+  const stored = [
+    turn("user", "socratic", SOCRATIC_START_PROMPT),
+    turn("assistant", "socratic", "What does λ control? [S1]"),
+    turn("user", "reveal", REVEAL_PROMPT),
+    turn("assistant", "reveal", "It sets the penalty strength."),
+    turn("user", "socratic", "Ask me the next question in this session."),
+    turn("assistant", "socratic", "Why does ridge keep every feature? [S1]"),
+  ];
+  assert.equal(sessionAnswerCount(stored), 0, "the earlier Next question wording counted as an answer");
 });

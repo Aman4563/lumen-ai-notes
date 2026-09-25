@@ -59,6 +59,34 @@ export const tutorProgressSteps = ({ sourceMode, phase, passages = null, web = f
 };
 
 /**
+ * How long a `validating` phase holds the stream so its Checking step is
+ * seen (issue #82). The server reports validating just before it releases a
+ * held grounded answer, usually in the same network read as the answer and
+ * its completion, so without a hold the step was never drawn. Only a request
+ * that shows steps waits, and never on a hidden page.
+ */
+export const CHECKING_STEP_VISIBLE_MS = 300;
+
+export const checkingStepHoldMs = ({ phase, stepsShown = false, hidden = false } = {}) => (
+  progressPhase(phase) === "checking" && stepsShown && !hidden ? CHECKING_STEP_VISIBLE_MS : 0
+);
+
+/** Resolves after `ms`, or at once when `signal` aborts. */
+export const holdStep = (ms, signal) => new Promise((resolve) => {
+  if (!(ms > 0) || signal?.aborted) {
+    resolve();
+    return;
+  }
+  const finish = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", finish);
+    resolve();
+  };
+  const timer = setTimeout(finish, ms);
+  signal?.addEventListener("abort", finish, { once: true });
+});
+
+/**
  * One polite announcement per step change, never per second: the step now
  * running, preceded by what retrieval found when drafting begins.
  */

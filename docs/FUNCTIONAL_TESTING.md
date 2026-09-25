@@ -1163,3 +1163,210 @@ Evidence:
   entry: 816,282 bytes.
 - Gate: `npm run check` passed (`audit:ai` 459/459). `npm run check:browser`
   passed all 13 suites on the first attempt with no retries.
+
+## Bugs reproduced on 2026-09-25: tutor session framing (#82)
+
+Endpoint probes streamed tutor requests through the real browser client
+(`requestAiStream`, `fitTutorRequest` and the tutor's own action builders)
+into a freshly started integrated server (`startApplicationServer`, the
+`.env` values with loopback overrides and `AI_AUTH=open`) and the local
+`qwen3.5:4b`. "Before" is main (1f6dcaf, same AI code as 87ad04d); "after"
+is this branch. Each scenario ran once unless a count is given. The topic was
+ridge regression, with 8 library passages retrieved per request.
+
+| Scenario | Before (main) | After (this branch) |
+| --- | --- | --- |
+| Session start (Socratic mode prompt) | "Your previous assessment correctly identified that Ridge regression applies an L2 penalty…" before any question (7.4 s) | One cited question with no praise, 4 of 4 runs (2.9–8.7 s). Framing `open`. |
+| Session start after an explanation | "Your explanation correctly identifies…" (4.5 s) | One cited question (9.6 s) |
+| Check my understanding | "Your answer correctly identifies that Ridge regression shrinks coefficients…" (5.7 s) | One cited question (4.1 s) |
+| Hint | "Your hint correctly identifies that the L2 penalty shrinks weights…", then a new question (4.8 s) | 6 of 6 gave one cited hint and "Try answering your previous question again", with no praise and no new question (1.4–9.4 s). Framing `hint`. |
+| Next question after a reveal | "Your assessment that Ridge shrinks weights continuously… is correct" (9.0 s) | One cited question (8.5 s). Framing `open`. |
+| Worked-through mistake | "Your answer contains a fundamental misconception: Ridge regression does **not** set coefficients to exactly zero…", then a geometric explanation (247 tokens, 8.7 s) | 6 of 6 asked one diagnostic question and nothing else, e.g. "When you said ridge regression sets coefficients to exactly zero, what part of your reasoning led you to that conclusion? [S1]" (27–33 tokens, 0.9–8.3 s). None stated or hinted at the expected answer. Framing `diagnose`. |
+| Reply to the diagnostic question | Assessed, then asked (9.3 s) | "Your answer is a **misconception** because you described the behavior of Lasso…", then one question (5.0 s). Framing `answer`: the explanation comes after the learner replies. |
+| Answer to the tutor's question | "Your understanding is partly correct…" (6.3 s) | Assessed as a misconception with the reason, then one question, 3 of 3 (4.3–10.1 s). Framing `answer`. |
+| Answer after a hint | "Your assessment is correct…" (8.2 s) | "Your understanding is correct…", then one question, 2 of 2 (2.5–8.2 s). Framing `answer`. |
+| Reveal (Explain task) | Step-by-step answer (17.2 s, 519 tokens) | Step-by-step answer (24.1 s, 569 tokens). Reveals get no Socratic framing. |
+| Wrap-up (Summarize task, no sources) | Recap that credits nothing (15.2 s) | Recap with "What I revealed" that credits nothing (19.0 s). No Socratic framing. |
+| Grounded Explain, stream | `validating` ("Checking completion and grounding before finalizing the answer.") at 9,880 ms, reported after the check had passed; first delta at 9,880 ms | Order `start > approach > preparing > generating > validating > delta > complete`. `validating` ("Checking the answer's citations against the supplied sources.") at 9,302 ms, reported before the check; first delta at 9,302 ms |
+| Grounded Explain, JSON | 10.8 s | 14.4 s. The response keys did not change. |
+
+- The Socratic task instruction told the model to assess "when the learner
+  has just answered your previous question", on every Socratic turn. The
+  4B model applied it to turns where the learner had answered nothing. The
+  server now chooses one framing per turn, so the model never gets that
+  condition.
+  - `diagnose`: the message opens with "Work through this mistake".
+  - `hint`: the message asks for a "hint for your last question".
+  - `open`: the message says "I have not answered", or does not follow a
+    question from the tutor.
+  - `answer`: the tutor's last turn ends by asking a question (a closing
+    sentence that opens as an offer, such as "Want to see an example?", or
+    with "Does that make sense?" does not count), the learner is trying
+    again after a hint, or the message answers a question it quotes
+    (`My answer: …`).
+- The tutor's action prompts now say it in words: the Socratic mode prompt,
+  the lesson starters, Check my understanding, Hint and Next question all say
+  "I have not answered…". The notebook bridge asks the tutor to first ask
+  what went wrong and not to explain until the learner replies. Wording saved
+  in older conversations still maps to the same framing and still does not
+  count as an answer in a session.
+- The first version of the rule looked at the tutor turn's last paragraph.
+  But the client's conversation window collapses whitespace, and ordinary
+  sends keep `[S#]` labels. So a question whose label sat on its own line,
+  or a hint turn ending "Try answering your previous question again", would
+  not have counted as a question. The rule now reads the history as the
+  client sends it: code and labels are removed, and the text must end with a
+  question. A reply after a hint is always an answer. The deterministic tests
+  build each request through `tutorConversationWindow`.
+- Remaining model limits: 4 of 6 hints stated most of the mechanism ("the
+  smooth curvature of the L2 ball prevents this exact alignment") even
+  though the prompt says not to reveal the answer. A fifth came close. Three
+  of the four session starts stated the ridge and lasso contrast before
+  asking about it.
+- Checking citations was never shown. The server reported `validating` only
+  after a grounded draft passed, never for a failed draft and never on the
+  JSON transport. It also came in the same read as the held answer and
+  `complete`, so the step was never drawn. Both transports now report
+  `validating` before each terminal draft is checked. A draft that fails its
+  check returns to `generating` and is checked again, bounded by the
+  one-shot recoveries.
+- The check takes milliseconds, so the server-side gap is still about
+  0 ms. The fix that makes the step visible is on the client. The tutor
+  waits 300 ms on a `validating` event while its step list is visible (not
+  on a hidden page; Stop ends the wait). `requestAiStream` stops with
+  `AI_CANCELLED` or `AI_CLIENT_TIMEOUT` if the request ended during that
+  wait, instead of applying the buffered answer. Each step is announced once
+  per answer, even when a failed draft makes the tutor go through Drafting
+  and Checking twice.
+- Live UI in headless Chrome at 393 px, with each server and the real model:
+
+  | Question | Main | This branch |
+  | --- | --- | --- |
+  | "Explain the bias-variance trade-off in ridge regression, in under 150 words." | Checking citations never drawn; not announced (11.7 s) | Drawn for 18 frames (283 ms) with the server's message; "Checking citations…" announced once (17.1 s) |
+  | "Why must a final holdout set stay untouched until the end of model development?" | Drawn for 1 frame (0 ms); not announced (23.5 s) | Drawn for 18 frames (283 ms); announced once (46.0 s, 1,195 tokens) |
+
+Evidence:
+
+- `server/ai/quality.test.mjs` pins the framing of 25 tutor turns, before
+  and after the server's own request validation. Each turn
+  is built by the client's own builders (Socratic mode prompt, lesson
+  starter, Check my understanding, Hint, Next question, notebook bridge,
+  answer-check draft), including their older wording. It also pins each
+  framing's system and format text, and the absence of any assessment
+  wording on turns without an answer. It also pins that reveals and
+  wrap-ups get no Socratic framing, that a hint's grounding repair asks for
+  a cited hint, and the phase order on both transports: grounded, failed
+  then regenerated, failed twice (never released, `validating` twice),
+  structured and source-free. A final test checks the real stream endpoint's
+  event order and that the JSON envelope keys did not change.
+- Client tests pin the action prompts, the earlier wording still being
+  recognized, the 300 ms hold rule, and a Stop during the hold beating the
+  answer and `complete` buffered behind it.
+- `audit:ai-ui` checks that the requests of a real Socratic session, hint,
+  next question, notebook bridge and answer check get their framing. It also
+  sends a tutor question to the integrated server's own stream, in front of
+  a scripted Ollama, delivered in one piece. "Checking citations" must be
+  drawn for at least 2 frames, come from that `validating` event, show
+  before the answer, and be announced exactly once.
+- Mutations: with the hold removed, `audit:ai-ui` fails with "Checking
+  citations was never on screen". With `validating` moved back after the
+  check, 6 stream tests fail. Without the after-hint rule, 2 framing tests
+  fail. With the paragraph rule restored, 3 fail. With offer phrases matched
+  anywhere in the closing sentence, 2 fail: "which quantity do you want to
+  minimize?" was treated as an offer, so the answer to it went unassessed.
+  An earlier draft of this branch had that bug; offers now count only at the
+  start of the sentence.
+- Startup script: 715,643 bytes (budget 750,000; the same as main). Route
+  screens beyond the entry: 891,828 bytes (budget 900,000; main 890,629).
+- Gate on the final code: `npm run check` passed (`audit:ai` 542/542,
+  `audit:ai-eval` passed with no fixture change). `npm run check:browser`
+  passed all 13 suites on the first attempt with no retries. In an earlier
+  gate run, before the offer fix, `workflow` passed only on its retry. Its
+  first attempt timed out waiting for the Reader after a Library search, a
+  path this branch does not touch. Two standalone reruns with retries off
+  both passed.
+
+## Review follow-up on 2026-09-25: tutor session framing (#82)
+
+An adversarial review re-ran the tutor through the real client
+(`requestAiStream`, `fitTutorRequest`, `tutorConversationWindow` and the
+tutor's action builders) against this worktree's own integrated server
+(`startApplicationServer` with the `.env` values, loopback overrides and
+`AI_AUTH=open`) and `qwen3.5:4b`. Unlike the probes above, each session was
+chained: the model's own replies became the history of the next turn, as in
+the app. "Before" is the branch as submitted (73aa5da); "after" is the
+review fix. 73 generations in all.
+
+| Scenario | Before (73aa5da) | After |
+| --- | --- | --- |
+| "Give me a hint." typed after the tutor's question | Framed `answer`: "Your answer is **partly correct**: while the continuous nature of the L2 penalty prevents exact zeros…" (10.4 s) | Framed `hint`, 2 of 2: one cited hint and a nudge to try again, no assessment (11.3–11.9 s) |
+| Notebook mistake with "Hi, can you help with this one?" typed above it | Framed `answer`, from the bridge's own `My answer:` line: "Your answer is a misconception because Ridge regression (L2) shrinks coefficients continuously…" (89 tokens, 9.8 s) | Framed `diagnose`, 2 of 2: one diagnostic question only, e.g. "When you said ridge regression sets coefficients to exactly zero, what part of your reasoning led you to that conclusion? [S1]" (27–36 tokens, 7.1–7.7 s) |
+| "Next question, please." typed mid-session | Framed `answer` (not run live) | Framed `open`: one cited question, no praise (12.4 s) |
+| Assessed Socratic turn that ends with a task, not a question | 3 of 20 assessed turns across all runs ended with a task such as "…consider how the choice of λ balances…", so the learner's reply to it was framed `open` and not assessed | Counted as asking. Even with the new "make that question the end of your reply" instruction, 1 of 4 assessed turns in the final chain ended "Consider why the geometric shape…"; the reply after it is now framed `answer` |
+| Session in order: start, answer, Hint, answer after the hint, reveal, Next question, answer, Wrap up | Each framed as expected | Each framed as expected; every Socratic turn cited only supplied labels |
+| Grounded Explain | `validating` before the answer's text | Same: `start > approach > preparing > generating > validating > delta > complete`, labels [S1, S2, S3, S5] all supplied (8.3 s) |
+| Quiz (structured) | Validated, citations resolved | Same: `generating > validating > complete`, every label supplied (22.8 s) |
+
+Found and fixed:
+
+- A learner who types a hint request ("Give me a hint.", "Can I get
+  another hint?", "hint please") after a question was assessed as if the
+  request were an answer, the same symptom as the Hint action before #82.
+  Short typed hint requests are now framed `hint`, and the reply after one
+  is an answer. A short "Next question, please." or "Skip this one" is
+  framed `open`. Both are matched only in the learner's own first paragraph
+  (the client appends its grounding sentence as a paragraph of its own) and
+  only up to 120 characters, so a longer answer that mentions a hint is
+  still assessed.
+- The notebook bridge is placed in the question box for the learner to
+  review. Anything written above it hid the `Work through this mistake`
+  opening, and its own `My answer:` line then made the request an answer to
+  assess and correct. The bridge is now also recognized by its `Question:`
+  and `Expected answer:` lines.
+- The live model ended some assessed turns with a task ("To deepen your
+  intuition…, consider how the geometry changes…") instead of a question,
+  in 3 of 20 assessed turns across the reviewer's and the implementer's
+  runs. The reply to such a turn was framed `open`, so a real answer was
+  not assessed. A closing "consider / think about / try to / explain why /
+  predict" task now counts as asking, as do `? [S1].` and a full-width
+  `？`. The answer and open formats also ask the model to make the question
+  the end of the reply.
+- The Socratic start, lesson starter and Check my understanding prompts in
+  their earlier wording (a stale app shell or a restored draft) said nothing
+  about an answer, so after an explanation ending with a real question they
+  were framed `answer`. Their opening words are now framed `open`.
+- The `open` instruction said the learner "has not answered a question of
+  yours in this line of questioning", which is false for Next question
+  mid-session. It now says the latest message is not an answer and asks for
+  no comment on earlier answers.
+
+Remaining model limit: after a reveal in a long session, Next question
+still opened by crediting the learner's earlier answers ("You correctly
+identified that Lasso…") in about 1 of 4 runs with either wording (old 1 of
+4, new 1 of 4; a third wording that told the model how to begin did no
+better, 2 of 6, and was dropped). The framing is `open` in every run.
+Session starts (0 of 8) and Check my understanding (0 of 8) were not
+praised.
+
+Evidence:
+
+- `server/ai/quality.test.mjs` adds 16 framing cases through the client's
+  own window: the prefixed and reworded bridge, typed hint and move-on
+  requests with and without a prior question, an answer that mentions a
+  hint, an answer that opens with "Next", the earlier start and check
+  wording after a real question, a closing "consider how" task, a period
+  after the label, a full-width question mark, and an explanation that ends
+  with a suggestion (still `open`). It also pins the new open wording and
+  the end-with-the-question instruction. Mutations: dropping the bridge's
+  field match, the typed hint or move-on match, the earlier wording, the
+  period or full-width handling, the closing-task rule (or its lead clause,
+  or matching it anywhere), or the end-with-the-question instruction each
+  fail 2 tests; restoring the old open wording fails 1.
+- Probe scripts and raw results: `chain_probe.mjs` and `open_probe.mjs`
+  with `chain-head.json`, `chain-fixed.json`, `chain-final.json` and
+  `open-wording{A,B,C}.json` in the reviewer's scratch directory.
+- Gate on the review fix: `npm run check` passed (`audit:ai` 542/542,
+  `audit:ai-eval` 27 cases, hit@1 0.913, no fixture change). Startup entry
+  715,643 bytes and route screens 891,828 bytes, unchanged by this
+  server-only fix. `npm run check:browser` passed all 13 suites on the first
+  attempt.

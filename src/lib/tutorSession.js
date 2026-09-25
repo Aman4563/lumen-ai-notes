@@ -18,9 +18,17 @@ export const SESSION_TURN_MODES = Object.freeze([...SESSION_MODES, "hint", "reve
 /** Messages after which Wrap up is suggested, while a recap still covers them all. */
 export const SESSION_WRAP_UP_AFTER = 10;
 
-export const HINT_PROMPT = "Give me one hint for your last question without revealing the answer.";
+// A hint and the next question say in words that the learner has not
+// answered: the server frames a Socratic turn from that wording and from
+// whether the tutor's last turn asked something (issue #82). Without it, the
+// model called a hint request "your hint" and praised it.
+export const SOCRATIC_START_PROMPT = "Teach the selected material using one focused Socratic question at a time. I have not answered anything yet, so start by asking a question that checks my current understanding.";
+export const HINT_PROMPT = "Give me one hint for your last question without revealing the answer. I have not answered it yet.";
 export const REVEAL_PROMPT = "Reveal the answer to your last question and explain it step by step.";
-export const NEXT_QUESTION_PROMPT = "Ask me the next question in this session.";
+export const NEXT_QUESTION_PROMPT = "Ask me the next question in this session. I have not answered anything since your last reply.";
+// Earlier wording, still in stored conversations.
+const LEGACY_NEXT_QUESTION_PROMPTS = Object.freeze(["Ask me the next question in this session."]);
+const NEXT_QUESTION_PROMPTS = new Set([NEXT_QUESTION_PROMPT, ...LEGACY_NEXT_QUESTION_PROMPTS]);
 // Credit goes to the learner's own answers: a hint or a revealed answer is
 // the tutor's work, not something the learner got right.
 const WRAP_UP_ASK = "what I got right in my own answers, what I missed or needed revealed, and 3 things to review.";
@@ -96,7 +104,7 @@ export const sessionAnswerCount = (messages) => {
   if (firstQuestion < 0) return 0;
   return list.slice(firstQuestion + 1).filter((message) => message?.role === "user"
     && SESSION_MODES.includes(message.mode)
-    && clean(message.content) !== NEXT_QUESTION_PROMPT
+    && !NEXT_QUESTION_PROMPTS.has(clean(message.content))
     && !isFollowUpPrompt(message.content)).length;
 };
 

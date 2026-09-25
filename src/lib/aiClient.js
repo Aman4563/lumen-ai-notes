@@ -488,6 +488,12 @@ export const requestAiStream = async (payload, {
         controller.abort(error);
         throw new AiClientError("AI_STREAM_CALLBACK_ERROR", "The app could not process an AI stream update.", { cause: error });
       }
+      // A callback may wait (the tutor keeps its Checking step on screen
+      // briefly), and the rest of the answer may already be buffered in the
+      // same read. A cancellation or deadline during that wait ends the stream
+      // here instead of letting the buffered events complete the answer.
+      if (timedOut) throw new AiClientError("AI_CLIENT_TIMEOUT", "The AI request timed out. Please try again.");
+      if (signal?.aborted) throw new AiClientError("AI_CANCELLED", "The AI request was cancelled.");
     };
 
     const processEvent = async (event) => {

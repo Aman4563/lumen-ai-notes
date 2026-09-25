@@ -305,6 +305,9 @@ start -> approach -> phase/heartbeat/source* -> delta* -> complete
 - `approach` contains disclosure-safe, server-derived orchestration steps. It
   never contains provider thinking.
 - `phase` reports preparing, searching, generating, or validating status.
+  `validating` comes before each terminal draft is checked (a draft that
+  fails returns to `generating` for its one bounded regeneration), so held
+  grounded text always follows it.
 - `heartbeat` prevents an active but temporarily quiet tool/model turn from
   looking disconnected.
 - `source` adds one validated public web source in order.
@@ -413,10 +416,40 @@ Tasks: `tutor`, `explain`, `socratic`, `quiz`, `flashcards`, `interview`,
 
 Task instructions describe the expected answer shape rather than giving a
 literal template, because the small local model copies examples verbatim.
-A Socratic turn that follows a tutor question first assesses the learner's
-answer in one or two sentences (correct, partly correct, or a misconception),
-then asks exactly one new question that cites the supplied source motivating
-it. Code review labels each finding as a Defect (traced to a concrete failing
+The server frames each Socratic turn itself instead of leaving the model a
+condition ("if the learner answered…") it does not reliably follow:
+
+- **answer**: the tutor's last turn ends by asking a question (a closing
+  sentence that opens as an offer, such as "Want to see an example?", or
+  with "Does that make sense?" does not count) or by setting a task
+  ("…, consider how…"), the learner tries again after a hint, or the
+  message answers a question it quotes (`My answer: …`). The reply assesses
+  that answer in one or two sentences (correct, partly correct, or a
+  misconception), then asks exactly one new cited question and ends with it.
+- **hint**: the tutor's Hint action ("hint for your last question"), or a
+  short typed request after a tutor question ("Give me a hint.", "Can I get
+  another hint?"). One cited hint, no assessment, and the same question
+  again.
+- **diagnose**: a mistake from the notebook ("Work through this mistake…",
+  or its `Question:` and `Expected answer:` lines when the learner wrote
+  something above them). One diagnostic question about what went wrong,
+  with no explanation and no hint at the expected answer until the learner
+  replies.
+- **open**: anything else, including a message that says "I have not
+  answered" (session start, Check my understanding, Next question), the
+  opening words of those prompts in their earlier wording, and a short
+  typed "Next question, please." or "Skip this one". One new cited question
+  that ends the reply, with no praise, no assessment and no comment on
+  earlier answers.
+
+The markers are the visible wording of the tutor's own action prompts; the
+request contract does not change. Typed requests are matched only in the
+learner's own first paragraph (the client appends its grounding sentence as
+a paragraph of its own) and only when short, so a longer answer that
+mentions a hint is still assessed. `server/ai/quality.test.mjs` pins each
+client prompt and typed request to its framing through the client's own
+conversation window.
+Code review labels each finding as a Defect (traced to a concrete failing
 input) or a Convention/alternative, and does not state a library default unless
 certain. Grounded prose is asked to end every source-backed paragraph or list
 item with its `[S#]` label.

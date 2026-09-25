@@ -29,7 +29,9 @@ Safety and grounding rules:
 const TASK_INSTRUCTIONS = Object.freeze({
   tutor: "Answer as an adaptive tutor. Explain, check understanding, and end with one useful next action.",
   explain: "Follow the learner's requested scope and length exactly. Within that bound, explain the concept in layers: intuition, mechanics, example, failure modes, and interview-level takeaways. End when the requested final item is complete.",
-  socratic: "Use the Socratic method. When the learner has just answered your previous question, first assess that answer in one or two sentences: say whether it is correct, partly correct, or a misconception, and why. Then ask exactly one focused question; do not reveal the full solution unless the learner asks. When curriculum sources are supplied, cite the source that motivates your question using its exact [S#] label, even when you make no factual claim. Place the label after the question without revealing the answer.",
+  // The turn-specific part of a Socratic instruction comes from
+  // `socraticTurnFraming` (see SOCRATIC_TURN_INSTRUCTIONS below).
+  socratic: "Use the Socratic method: guide the learner with one focused question at a time, and do not reveal the full solution unless the learner asks. When curriculum sources are supplied, cite the source that motivates your question using its exact [S#] label, even when you make no factual claim. Place the label after the question without revealing the answer.",
   quiz: "Create a discriminating quiz that tests recall, application, and misconceptions. Every answer explanation must teach why alternatives fail. Silently remove any question whose keyed answer is not directly supported by the supplied context.",
   flashcards: "Create atomic active-recall cards. Avoid vague prompts, oversized answers, and simple copy-completion cues. Each front must unambiguously ask for a claim supported by the supplied context; silently remove any card whose back contradicts or exceeds that context.",
   interview: "Act as a senior technical interviewer. Follow the learner's requested scope and length. When asked for a question, ask one focused question and wait for the learner's answer; do not supply the answer or a full interview guide. Probe assumptions, trade-offs, failure handling, measurement, and production constraints where relevant.",
@@ -38,6 +40,146 @@ const TASK_INSTRUCTIONS = Object.freeze({
   answer_feedback: "Evaluate the learner answer against the question and supplied context. Be precise, constructive, and calibration-aware.",
   code_review: "Review the supplied code as a rigorous senior engineer. Report findings in priority order: correctness defects first, then complexity/performance, edge cases and failure handling, API/idiom quality, and missing tests. Label every finding as either a Defect or a Convention/alternative. A Defect gives a wrong result, crash, or data/security problem for a concrete input that you have traced through the code, including edge cases such as empty or single-element input. A Convention/alternative covers style, idiom, naming, and valid alternative definitions or designs (for example population versus sample variance); never present one as a defect. Quote the exact fragment each finding concerns, explain the concrete failure it can cause, and propose a specific fix (a short corrected snippet where useful) that is itself correct and numerically stable (for example, never replace a two-pass variance with the cancellation-prone E[x^2] - E[x]^2 shortcut). Do not state a library's default behavior, version, or API contract unless you are certain; otherwise tell the learner to confirm it in the official documentation. Say clearly when the code looks correct. If no code was actually supplied, say so and ask for it instead of inventing code to review.",
 });
+
+// A Socratic turn is framed by the server instead of by a conditional the
+// small model cannot hold (issue #82): with "when the learner has just
+// answered…" in every Socratic prompt, qwen3.5:4b praised a "previous answer"
+// on session starts, called a hint request "your hint", and corrected a
+// bridged mistake before asking anything. The learner's latest message is
+//   diagnose: a mistake brought from the notebook ("Work through this
+//             mistake…", or its "Question:" and "Expected answer:" lines
+//             when the learner wrote something above them), worked through
+//             from a diagnostic question;
+//   hint:     a hint request for the tutor's last question (the Hint action's
+//             "hint for your last question", or a short typed request such
+//             as "Give me a hint." after a question of the tutor's);
+//   open:     a turn that says it is not an answer ("I have not answered", as
+//             in a session start, Check my understanding and Next question,
+//             or the opening words of those prompts in their older wording;
+//             a short typed "Next question" or "Skip this one"), or any turn
+//             that does not follow a question of the tutor's;
+//   answer:   a reply to the tutor's question: the tutor's last turn ends by
+//             asking one (an offer such as "Want to see an example?" or a
+//             "Does that make sense?" does not count) or by setting a task
+//             ("Consider how…"), or it was a hint and the learner tries
+//             again; or
+//             the learner answers a question quoted in the message itself
+//             ("My answer: …", as an answer check's prefilled question).
+// The markers are the visible wording of the tutor's own action prompts
+// (src/lib/tutorSession.js, tutorFollowUps.js, tutorBridge.js,
+// tutorStarters.js, AiTutor.jsx), older wording included;
+// server/ai/quality.test.mjs pins each of those prompts to its branch. The
+// history arrives as the client's conversation window sends it: whitespace
+// collapsed to single spaces, long turns clipped, and citation labels kept
+// on ordinary sends.
+const MISTAKE_WALKTHROUGH_MARKER = /^\s*Work through this mistake\b/i;
+// The bridge's own fields: a learner who writes above the prepared question
+// (the tutor places it in the question box to review) keeps them, and its
+// "My answer:" line must not make it an answer to assess.
+const MISTAKE_FIELDS_MARKER = /(?:^|\n)\s*Question:[^\n]*\n\s*Expected answer:/i;
+const HINT_MARKER = /\bhint for your (?:last|previous) question\b/i;
+// A short typed request, "Give me a hint." or "Can I get another hint?";
+// live, "Give me a hint." after a question was assessed as a partly correct
+// answer. A longer message that mentions a hint is an answer.
+const TYPED_HINT_MARKER = /^(?:(?:ok(?:ay)?|hmm+|um+|so|please|pls|sorry)[\s,.!]+)*(?:(?:can|could|may) (?:i|you)(?: please)? (?:get|have|give me)|(?:please )?give me|i(?:'d| would)? (?:like|need|want)|i could use|need)?\s*(?:(?:a|an|another|one|one more|some|more|any)\s+)?(?:(?:small|little|quick|tiny|further|bigger|second)\s+)?hints?\b[^.?!\n]{0,40}[\s.?!]*$/i;
+// What the learner typed: the client appends its fixed grounding sentence to
+// every question as a paragraph of its own.
+const typedOpening = (text) => String(text || "").split(/\n\s*\n/, 1)[0].trim();
+const isHintRequest = (text) => {
+  const typed = typedOpening(text);
+  return HINT_MARKER.test(text) || (typed.length <= 120 && TYPED_HINT_MARKER.test(typed));
+};
+// "I have not answered" is in every current action prompt; the opening words
+// cover the Socratic start, lesson starter and Check my understanding in
+// their earlier wording (a stale app shell, a restored draft), which said
+// nothing about an answer.
+const NOT_ANSWERING_MARKER = /\bI have not answered\b|^\s*Ask me the next question\b|^\s*Ask me one question that checks whether I understood\b|^\s*Teach (?:me|the selected material)\b[^\n]*\bone focused (?:Socratic )?question at a time\b/i;
+// A typed "Next question, please." or "Skip this one" asks to move on.
+const TYPED_SKIP_MARKER = /^(?:(?:ok(?:ay)?|please|pls|sorry)[\s,.!]+)*(?:(?:can|could) (?:i|you)(?: please)? (?:have|get|ask me) |(?:please )?(?:ask me|give me|go to|move on to) )?(?:(?:the|a)\s+)?(?:next(?: one| question)?|(?:new|different|another) (?:question|one)|skip(?: (?:this|it|that)(?: one)?)?|move on)(?:[\s,]+(?:please|pls))?[\s.?!]*$/i;
+const OWN_ANSWER_MARKER = /(?:^|\n)\s*My answer:\s*\S/i;
+// An offer or a comprehension check opens its closing sentence; the same
+// words later in a sentence ("which quantity do you want to minimize?") are
+// part of a real question.
+const OFFER_MARKER = /^(?:would you like|do you want|want (?:me )?to|shall I|should I|would it help|does (?:that|this) make sense)\b/i;
+
+// A closing sentence that sets the learner a task instead of a question.
+// Live, 3 of 20 assessed Socratic turns ended "To deepen your intuition…,
+// consider how the geometry changes when we add the w² term…" with no
+// question mark.
+const PROMPTING_CLOSE = /^(?:[^,]{1,160},\s+)?(?:consider|think about|try (?:to|answering|explaining)|explain (?:why|how|what)|predict)\b/i;
+
+/**
+ * Whether a tutor turn ends by asking the learner something: a closing
+ * question that is not an offer, or a closing "Consider how…" task.
+ */
+const endsByAsking = (content) => {
+  const text = withoutMarkdownCode(content)
+    .replace(/\[[SW][1-9]\d*\]/g, " ")
+    // Full-width marks end a CJK question or sentence.
+    .replace(/？/g, "?").replace(/[。！]/g, ".")
+    .replace(/\s+/g, " ")
+    .trim()
+    // Emphasis, quotes and brackets may close a question ("**Why?**"), and a
+    // period may follow its label ("…zero? [S1].").
+    .replace(/[\s*_~"'”’)\].]+$/u, "");
+  // The closing sentence, without the list, heading or emphasis marks it opens with.
+  const closing = (text.match(text.endsWith("?") ? /[^.!?]*\?+$/u : /[^.!?]*$/u)?.[0] || "").replace(/^[^\p{L}\p{N}]+/u, "");
+  if (!closing) return false;
+  return text.endsWith("?") ? !OFFER_MARKER.test(closing) : PROMPTING_CLOSE.test(closing);
+};
+
+const SOCRATIC_TURN_INSTRUCTIONS = Object.freeze({
+  answer: "The learner has just answered your previous question: first assess that answer in one or two sentences, saying whether it is correct, partly correct, or a misconception, and why. Then ask exactly one new focused question.",
+  hint: "The learner has not answered your previous question yet and asks for a hint, so there is no learner answer to assess, praise, or correct. Give one hint that does not reveal the answer, then ask them to try that same question again; do not ask a new question.",
+  diagnose: "The learner brings back a question they got wrong earlier. Its expected answer and their earlier answer are reference for you, not a reply to assess. Do not explain the idea, state or hint at the expected answer or any fact from the sources, or say whether their earlier answer was right yet: first ask one diagnostic question about what they think went wrong, and explain only after they reply.",
+  // Mid-session (Next question after a reveal) the learner has answered
+  // earlier questions, so this says only that the latest message is not an
+  // answer. Live, either wording still drew "You correctly identified…" in
+  // about 1 of 4 such runs.
+  open: "The learner's latest message is not an answer to a question of yours, so there is nothing in it to assess, praise, or correct. Do not comment on their earlier answers or on what they got right, and do not treat your own earlier turns as their answers. Open directly with one focused question.",
+});
+
+export const socraticTurnFraming = (request) => {
+  const prompt = String(request?.prompt || "");
+  if (MISTAKE_WALKTHROUGH_MARKER.test(prompt) || MISTAKE_FIELDS_MARKER.test(prompt)) return "diagnose";
+  if (HINT_MARKER.test(prompt)) return "hint";
+  if (NOT_ANSWERING_MARKER.test(prompt) || TYPED_SKIP_MARKER.test(typedOpening(prompt))) return "open";
+  if (OWN_ANSWER_MARKER.test(prompt)) return "answer";
+  const history = Array.isArray(request?.history) ? request.history : [];
+  const previous = history.at(-1);
+  if (previous?.role !== "assistant") return "open";
+  if (isHintRequest(prompt)) return "hint";
+  // After a hint the learner tries the hinted question again.
+  const asked = history.at(-2);
+  if (asked?.role === "user" && isHintRequest(String(asked.content || ""))) return "answer";
+  // Only what the tutor's turn ends with (outside code) counts: an
+  // explanation with a question as a heading, or a rhetorical question
+  // mid-answer, did not ask the learner anything.
+  return endsByAsking(previous.content) ? "answer" : "open";
+};
+
+const socraticQuestionFormat = (framing, sourceLabels) => {
+  const cite = (what) => (sourceLabels.length
+    ? ` grounded in the context above, and end ${what} with the exact label of the supplied source that motivates it (one of ${sourceLabels.join(", ")})`
+    : "");
+  const noHeading = "do not put a heading or a label word in front of it";
+  // The learner's next message is framed as an answer only when this turn
+  // ends by asking (see socraticTurnFraming).
+  const lastSentence = `Make that question${sourceLabels.length ? " and its label" : ""} the end of your reply, with nothing after it.`;
+  if (framing === "hint") {
+    return `\nRequired response format: this is a hint request, not an answer. Do not praise, assess, or correct anything. Give exactly one short hint${cite("the hint")}. Then ask the learner to try your previous question again. Do not reveal the answer, do not ask a new question, and ${noHeading}.`;
+  }
+  if (framing === "diagnose") {
+    const label = sourceLabels.length
+      ? ` End it with the exact label of the supplied source that covers the original question (one of ${sourceLabels.join(", ")}), without saying what that source states.`
+      : "";
+    return `\nRequired response format: reply with exactly one short diagnostic question and nothing else, at most two sentences, asking what the learner was thinking when they gave their earlier answer or what they now think went wrong.${label} Do not explain the concept, do not state, paraphrase, or hint at the expected answer or any fact from the sources, and do not say whether their earlier answer was right or wrong until they reply. ${noHeading[0].toUpperCase()}${noHeading.slice(1)}.`;
+  }
+  if (framing === "answer") {
+    return `\nRequired response format: open with a one- or two-sentence assessment of the learner's answer to your previous question that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question${cite("it")}. ${lastSentence} Do not answer your new question, and ${noHeading}.`;
+  }
+  return `\nRequired response format: the learner's latest message is not an answer, so do not praise, assess, or correct anything, and do not comment on their earlier answers or say what they got right. Ask exactly one new focused question${cite("it")}. ${lastSentence} Do not answer your new question, and ${noHeading}.`;
+};
 
 const FAST_PROFILE_INSTRUCTION = "Fast profile: keep the answer brief, about 150 words or fewer unless the learner explicitly asks for more detail or a specific length. Lead with the direct answer, prefer a short list to long paragraphs, include only the most important formula or example, and skip optional background.";
 
@@ -92,7 +234,11 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
   const profileInstruction = responseProfile === "fast" && request.responseFormat !== "structured"
     ? `\n${FAST_PROFILE_INSTRUCTION}`
     : "";
-  const system = `${BASE_INSTRUCTIONS}\n\nCurrent server date: ${currentDate}.\nTask-specific instruction: ${TASK_INSTRUCTIONS[request.task]}\n${completionInstruction}${profileInstruction}\n${searchInstruction}${schemaInstruction}`;
+  const socraticFraming = request.task === "socratic" ? socraticTurnFraming(request) : null;
+  const taskInstruction = socraticFraming
+    ? `${TASK_INSTRUCTIONS.socratic} ${SOCRATIC_TURN_INSTRUCTIONS[socraticFraming]}`
+    : TASK_INSTRUCTIONS[request.task];
+  const system = `${BASE_INSTRUCTIONS}\n\nCurrent server date: ${currentDate}.\nTask-specific instruction: ${taskInstruction}\n${completionInstruction}${profileInstruction}\n${searchInstruction}${schemaInstruction}`;
   const sourceLabels = (request.contextCitations || []).map((number) => `[S${number}]`);
   const citationRequirement = !sourceLabels.length
     ? ""
@@ -101,12 +247,7 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
       : `\n\nRequired citations: cite the supplied sources with these exact labels: ${sourceLabels.join(", ")}. Write each label on its own in square brackets exactly as shown, never inside code. End every paragraph or list item that uses the sources with the label of the source that supports it, and include at least one label in your first paragraph. Cite only source-supported text. A question must cite the source that motivates it, even without a factual claim.`;
   // Describe the Socratic shape instead of showing a literal template: the
   // 4B model copied an "Output pattern: Your question?" example verbatim.
-  // A prior assistant turn means the learner's message is probably an answer
-  // that deserves a brief assessment before the next question.
-  const learnerMayBeAnswering = (request.history || []).some((message) => message?.role === "assistant");
-  const questionFormat = request.task === "socratic"
-    ? `\nRequired response format: ${learnerMayBeAnswering ? "if the learner's latest message answers your previous question, open with a one- or two-sentence assessment of that answer that says whether it is correct, partly correct, or a misconception, and why; then " : ""}ask exactly one new focused question${sourceLabels.length ? ` grounded in the context above, and end it with the exact label of the supplied source that motivates it (one of ${sourceLabels.join(", ")})` : ""}. Do not answer your new question, and do not put a heading or a label word in front of it.`
-    : "";
+  const questionFormat = socraticFraming ? socraticQuestionFormat(socraticFraming, sourceLabels) : "";
   const learnerRequest = `Learner level: ${request.difficulty}\nTask: ${request.prompt}${conversationMemory}${contextBlock}${citationRequirement}${questionFormat}`;
   const messages = messagesOverride || [
     { role: "system", content: system },
@@ -742,7 +883,11 @@ const addGroundingRecoveryInstruction = (messages, request, errorCode, hasWebEvi
     hasWebEvidence ? "Use at least one exact uppercase [W#] label from the supplied web-result IDs for web-supported claims." : "",
     webEvidenceUnavailable ? "The approved web search returned no usable public evidence, so use no [W#] label and answer only from the supplied library sources." : "",
     "Do not invent or lowercase citation labels, and keep citation text outside code spans.",
-    request.task === "socratic" ? "Your question itself must cite the supplied source that motivates it, even without an answer or factual claim." : "",
+    request.task === "socratic"
+      ? socraticTurnFraming(request) === "hint"
+        ? "Your hint itself must cite the supplied source that supports it, without revealing the answer."
+        : "Your question itself must cite the supplied source that motivates it, even without an answer or factual claim."
+      : "",
   ].filter(Boolean).join(" ");
   const structuredPlacement = request.responseFormat === "structured"
     ? "Keep citations inside schema string values (for flashcards, put them in each supported back); emit no text outside the JSON."
@@ -923,6 +1068,21 @@ const assertContextBudget = (initialBody, request, config) => {
 };
 
 /**
+ * The `validating` phase message for one terminal draft. Both transports
+ * report it before `prepareFinalAnswer` runs, once per draft, so a grounded
+ * answer's "Checking citations" step starts when checking starts, not after
+ * it has already passed (issue #82). Drafts are bounded by the one-shot
+ * recoveries, so the phase is too.
+ */
+const validatingPhaseMessage = ({ request, evidenceSources, webEvidenceUnavailable }) => {
+  if (webEvidenceUnavailable) return "No usable current-web evidence was found. Checking a library-only answer instead.";
+  if (request.responseFormat === "structured") return "Checking the structured result against its schema and citations.";
+  return evidenceSources.length + suppliedCurriculumCitations(request).size > 0
+    ? "Checking the answer's citations against the supplied sources."
+    : "Checking that the answer is complete before finalizing it.";
+};
+
+/**
  * Validates one terminal draft for both transports. Returns `{ outputText }`
  * when it may be released, or `{ retry }` (a phase message) after scheduling
  * one bounded recovery turn. `mayRewrite` is false once any text of this turn
@@ -962,7 +1122,16 @@ const prepareFinalAnswer = ({ draft, request, messages, evidenceSources, require
   return { outputText: webEvidenceUnavailable ? `${WEB_EVIDENCE_UNAVAILABLE_NOTICE}${outputText.trimStart()}` : outputText };
 };
 
-export const createOllamaResponse = async ({ request, config, fetchImpl = fetch, requestId, signal }) => {
+/**
+ * The buffered JSON transport. It runs the same phases as the stream
+ * (`generating`, `searching`, one `validating` per terminal draft) through the
+ * optional `onPhase`; the JSON endpoint has no event channel, so its response
+ * shape is unchanged.
+ */
+export const createOllamaResponse = async ({ request, config, fetchImpl = fetch, requestId, signal, onPhase }) => {
+  const emitPhase = async (phase, message) => {
+    if (typeof onPhase === "function") await onPhase({ phase, message });
+  };
   const overallController = new AbortController();
   let overallTimedOut = false;
   const abortFromCaller = () => overallController.abort(signal?.reason || new Error("Caller aborted the AI request"));
@@ -988,6 +1157,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
   const recovery = { format: false, grounding: false };
 
   try {
+    await emitPhase("generating", "Generating the answer with the local model.");
     while (true) {
       // Once the configured search budget is consumed, remove the tool from
       // the next model turn. This gives the model one final evidence-grounded
@@ -1019,6 +1189,9 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         if (payload.done === true && (payload.done_reason === "length" || thinkingOnly) && !completionRecoveryUsed
           && addCompletionRecoveryInstruction(messages, request)) {
           completionRecoveryUsed = true;
+          await emitPhase("generating", body.think
+            ? "Writing the detailed answer…"
+            : "The first draft reached its limit. Regenerating a shorter complete answer locally.");
           continue;
         }
         throw new OllamaProxyError(
@@ -1031,6 +1204,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
       const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
       if (!toolCalls.length) {
         if (request.webSearch && searchRounds === 0) {
+          await emitPhase("searching", "The local model skipped its required tool call; searching the authorized learner question instead.");
           const searchResult = await runApprovedSearch({
             query: fallbackWebSearchQuery(request),
             config,
@@ -1049,10 +1223,12 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         // generation from the accumulated evidence.
         if (request.webSearch && request.responseFormat === "structured" && !applyStructuredFormat) {
           forceStructuredFinal = true;
+          await emitPhase("generating", "Creating the validated structured result from the gathered evidence.");
           continue;
         }
         const draft = typeof message.content === "string" ? message.content.trim() : "";
         if (!draft) throw new OllamaProxyError("AI_EMPTY_RESPONSE", "The local model returned no usable learning content.", 502);
+        await emitPhase("validating", validatingPhaseMessage({ request, evidenceSources: fittedEvidence.sources, webEvidenceUnavailable }));
         const prepared = prepareFinalAnswer({
           draft,
           request,
@@ -1063,7 +1239,10 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
           recovery,
           mayRewrite: true,
         });
-        if (prepared.retry) continue;
+        if (prepared.retry) {
+          await emitPhase("generating", prepared.retry);
+          continue;
+        }
         const { outputText } = prepared;
 
         let data = null;
@@ -1091,6 +1270,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
       if (!allowSearchTool || !request.webSearch) {
         if (!toolRecoveryUsed && addToolRecoveryInstruction(messages)) {
           toolRecoveryUsed = true;
+          await emitPhase("generating", "The model tried to call a tool it does not have. Regenerating a direct answer.");
           continue;
         }
         if (!allowSearchTool) {
@@ -1110,6 +1290,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         throw new OllamaProxyError("AI_TOOL_ARGUMENT_ERROR", "The local model produced invalid web-search arguments.", 502);
       }
 
+      await emitPhase("searching", "Searching approved public sources for current evidence.");
       const searched = await runApprovedSearchWithQuestionFallback({
         query: args.query,
         request,
@@ -1117,10 +1298,12 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         config,
         fetchImpl,
         signal: overallController.signal,
+        onFallback: () => emitPhase("searching", "The first public query returned no usable evidence; retrying the authorized learner question."),
       });
       const { searchResult } = searched;
       searchRounds += searched.roundsUsed;
       appendSearchTurn({ messages, sources, searchResult, request, modelContent: message.content });
+      await emitPhase("generating", "Synthesizing the answer from the gathered evidence.");
     }
   } catch (error) {
     if (overallTimedOut) {
@@ -1287,9 +1470,9 @@ export const createOllamaStreamingResponse = async ({
         }
         const draft = typeof message.content === "string" ? message.content : "";
         if (!draft.trim()) throw new OllamaProxyError("AI_EMPTY_RESPONSE", "The local model returned no usable learning content.", 502);
-        if (webEvidenceUnavailable) {
-          await emitPhase("validating", "No usable current-web evidence was found. Checking a library-only answer instead.");
-        }
+        // Checking is announced before it runs; grounded prose is still held
+        // until it passes, then released below.
+        await emitPhase("validating", validatingPhaseMessage({ request, evidenceSources: fittedEvidence.sources, webEvidenceUnavailable }));
         const prepared = prepareFinalAnswer({
           draft,
           request,
@@ -1318,7 +1501,6 @@ export const createOllamaStreamingResponse = async ({
           }
         }
 
-        await emitPhase("validating", "Checking completion and grounding before finalizing the answer.");
         if (request.webSearch && typeof onSource === "function") {
           for (let index = 0; index < fittedEvidence.sources.length; index += 1) {
             await onSource({ index: index + 1, source: fittedEvidence.sources[index] });
