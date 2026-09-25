@@ -877,22 +877,26 @@ it attempts at most one reload per tab/cooldown and requires a durable session m
 avoid loops. Before reloading it probes `/api/health` (never service-worker cached); an
 unreachable server gets no reload, because a reload would only boot the same cached shell.
 Repeated failure reaches an in-shell boundary around the view container: the top bar and
-navigation stay usable, navigation clears it, and it distinguishes offline, unreachable,
-and incomplete-build cases. A failed dynamic import stays failed for that document, so its
+navigation stay usable, navigation clears it, and it distinguishes offline, unreachable, and
+incomplete-build cases. A failed dynamic import stays failed for that document, so its
 actions reload or go Home rather than retry in place. The boundary sits inside
 `<main id="main-content">`, so the landmark, skip link, App-level `inert`, and route heading
-focus are unchanged; the panel's `h1` is the heading that focus lands on. The lazy review
+focus are unchanged. Returning to a screen that already failed in this document shows the
+panel at once, so route focus lands on its `h1`; a first failure renders after focus has
+moved to the main landmark, and the panel's `role="alert"` announces it. The lazy review
 card editor and readiness check render outside the view container, so a chunk that still
 fails there reaches the app-level boundary; both are in the route list. Storage health has
-its own boundary so Settings and backup export survive. Manual repair first proves a
-fresh HTML shell is reachable with a no-store probe, then removes only Lumen shell caches,
+its own boundary so Settings and backup export survive. Manual repair first proves a fresh
+HTML shell is reachable with a no-store probe, then removes only Lumen shell caches,
 unregisters the worker, and reloads. `update()` would not reinstall an unchanged worker URL,
 so the route screens would stay uncached; the reload registers the build afresh and install
 refills the cache. IndexedDB, localStorage, and WebLLM caches survive.
 
 `audit:chunks` deliberately reproduces both reported asset classes and verifies recovery
 plus localStorage preservation. With the service worker bypassed, it also covers the
-in-shell offline, missing-file, and Storage-health cases. `audit:visual` covers the cached
+in-shell offline, missing-file, and Storage-health cases, and asserts that the offline panel
+stays inside the single `#main-content` landmark and takes route focus when the learner
+returns to the failed screen. `audit:visual` covers the cached
 path: it stops its own servers after a Home-only visit and opens every primary screen. It
 clears Chrome's HTTP cache after each stop, because the immutable assets would otherwise be
 answered from it and hide a worker that never serves its own cache.

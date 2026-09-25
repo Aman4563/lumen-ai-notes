@@ -617,3 +617,15 @@ confirmed against the preceding build:
   editor and readiness check render outside the view container; a chunk that
   still fails there reaches the app-level boundary. `audit:app` and
   `audit:visual` now name all four.
+- The same rebase kept the in-shell boundary inside the accessibility
+  foundation's `<main id="main-content">`. With the network off and both the
+  service worker and the HTTP cache bypassed, an ad-hoc check at 393 and
+  1280 px found one main landmark with the skip link targeting it, `main`
+  inert and `aria-hidden` while Settings was open and restored after it
+  closed, Home's heading focused after Go to Home, no console errors, and no
+  axe violations on the panel in Paper, Night, or Contrast. A first failure
+  renders after route focus has moved to the main landmark, and the panel's
+  alert announces it. Returning to the failed screen shows the panel at once,
+  and focus lands on its `h1`. `audit:chunks` now asserts the single landmark
+  and the return-visit focus; it fails when route focus is mutated to skip the
+  panel's heading.

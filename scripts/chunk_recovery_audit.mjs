@@ -99,6 +99,10 @@ try {
     actions: [...document.querySelectorAll(".route-error button")].map((button) => button.textContent.trim()),
     bottomNav: Boolean(document.querySelector(".bottom-nav button")),
     fatal: Boolean(document.querySelector(".fatal-error")),
+    // The panel lives inside the one <main id="main-content"> landmark.
+    inMain: Boolean(document.querySelector("#main-content .route-error")),
+    mains: document.querySelectorAll("main, [role='main']").length,
+    headingFocused: document.activeElement === document.querySelector(".route-error h1"),
   }));
   const goHomeFromRouteError = async () => {
     await page.$$eval(".route-error button", (buttons) => buttons.find((button) => button.textContent.includes("Go to Home")).click());
@@ -116,6 +120,14 @@ try {
   assert.equal(offlineScreen.bottomNav, true, "an offline chunk failure removed the bottom navigation");
   assert.equal(offlineScreen.fatal, false, "an offline chunk failure replaced the whole app");
   assert.ok(offlineScreen.actions.some((label) => label.includes("Go to Home")), "the offline screen has no way back to Home");
+  assert.equal(offlineScreen.inMain && offlineScreen.mains === 1, true, `the failed screen left the single main landmark (${offlineScreen.mains} mains, inside #main-content: ${offlineScreen.inMain})`);
+  await goHomeFromRouteError();
+  // React.lazy rethrows the failed import at once, so on a second visit the
+  // panel is present when route focus runs and its heading takes focus.
+  await page.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Read").click());
+  await page.waitForSelector(".route-error h1", { timeout: 15_000 });
+  await page.waitForFunction(() => document.activeElement === document.querySelector(".route-error h1"), { timeout: 5_000 }).catch(() => {});
+  assert.equal((await routeError()).headingFocused, true, "returning to a failed screen did not move route focus to its heading");
   await goHomeFromRouteError();
   await page.setOfflineMode(false);
 
