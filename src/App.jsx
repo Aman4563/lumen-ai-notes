@@ -79,7 +79,7 @@ import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
 import { actionableDueCount, buildDailySession, planPace, resumeTarget, SESSION_LENGTHS } from "./lib/plan.js";
 import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
-import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
+import { aiClippingIds, isAiAuthoredClipping, isAiAuthoredReviewItem, materializeAiCardProvenance, materializeAiFlashcard, withAiDraftTag } from "./lib/aiProvenance.js";
 import { lectureLoadMessage, recoverableImport } from "./lib/chunkRecovery.js";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
@@ -2555,10 +2555,15 @@ export default function App() {
     }
     const source = allDocumentMap.get(sourceItem.documentId);
     const isAnnotation = typeof sourceItem.quote === "string";
+    // A card made from a saved AI answer keeps its provenance (issue #81):
+    // the ai-draft tag makes Review render it as untrusted text.
+    const aiAuthored = !isAnnotation && isAiAuthoredClipping(sourceItem);
+    const tags = source?.partNumber ? [`part-${source.partNumber}`] : [];
     setReviewDraft({
       front: (isAnnotation ? sourceItem.comment : sourceItem.note)?.trim() || `Explain this excerpt from “${source?.title || "your notes"}” in your own words.`,
       back: isAnnotation ? sourceItem.quote : sourceItem.text,
-      tags: source?.partNumber ? [`part-${source.partNumber}`] : [],
+      tags: aiAuthored ? withAiDraftTag(tags) : tags,
+      aiAuthored,
       documentId: sourceItem.documentId,
       sourceClippingId: isAnnotation ? "" : sourceItem.id,
       sourceAnnotationId: isAnnotation ? sourceItem.id : "",
@@ -2571,7 +2576,7 @@ export default function App() {
   const editReviewCard = useCallback((item) => {
     rememberDialogOpener();
     const source = allDocumentMap.get(item.documentId);
-    setReviewDraft({ ...item, sourceTitle: source?.title || "" });
+    setReviewDraft({ ...item, aiAuthored: isAiAuthoredReviewItem(item, aiClippingIds(profileRef.current.clippings)), sourceTitle: source?.title || "" });
   }, [allDocumentMap]);
 
   const saveReviewCard = useCallback((draft) => {
@@ -2580,6 +2585,9 @@ export default function App() {
       notify("An identical prompt and answer already exist in your review deck.", "warning", 5000);
       return;
     }
+    // AI provenance survives an edit: removing the tag in the dialog does not
+    // make model text trusted (issue #81).
+    const tagsFor = (item) => (draft.aiAuthored || isAiAuthoredReviewItem(item) ? withAiDraftTag(draft.tags) : draft.tags);
     if (draft.id) {
       setProfile((current) => ({
         ...current,
@@ -2588,7 +2596,7 @@ export default function App() {
           type: draft.type,
           front: draft.front,
           back: draft.back,
-          tags: draft.tags,
+          tags: tagsFor(item),
           updatedAt: new Date().toISOString(),
         } : item),
       }));
@@ -2596,7 +2604,7 @@ export default function App() {
       notify("Review card updated without resetting its schedule.");
       return;
     }
-    const item = createReviewItem(draft);
+    const item = createReviewItem({ ...draft, tags: tagsFor(null) });
     setProfile((current) => ({ ...current, reviewItems: [item, ...current.reviewItems].slice(0, 10_000) }));
     setReviewDraft(null);
     notify("Review card added to today’s queue.");
@@ -2646,7 +2654,7 @@ export default function App() {
       const fingerprint = fingerprintOf(front, back);
       if (seen.has(fingerprint)) return;
       seen.add(fingerprint);
-      fresh.push({ front, back, tags: [...(card.tags || []), "ai-draft"] });
+      fresh.push({ front, back, tags: withAiDraftTag(card.tags) });
     });
     const skipped = candidates.length - fresh.length;
     const room = Math.max(0, 10_000 - profileRef.current.reviewItems.length);

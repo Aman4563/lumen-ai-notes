@@ -13,6 +13,7 @@ import {
   ArrowLeft,
   BookOpen,
   Brain,
+  BrainCircuit,
   CalendarClock,
   CheckCircle2,
   Clock3,
@@ -34,6 +35,8 @@ import {
   X,
 } from "lucide-react";
 import { renderMarkdown } from "../lib/markdown";
+import { renderUntrustedMarkdown } from "../lib/untrustedMarkdown.js";
+import { AI_DRAFT_TAG, aiClippingIds, isAiAuthoredReviewItem } from "../lib/aiProvenance.js";
 import { retentionWorkloadCurve } from "../lib/retentionPlanner.js";
 import {
   buildReviewQueue,
@@ -53,6 +56,11 @@ import {
 } from "../lib/review";
 
 const FOCUSABLE = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+
+// A card the tutor wrote renders as untrusted text (issue #81): model HTML
+// stays text, images do not load and links to the app stay text. Learner
+// cards keep the Reader's renderer.
+const cardHtml = (text, aiAuthored) => ({ __html: aiAuthored ? renderUntrustedMarkdown(text) : renderMarkdown(text) });
 const REVIEW_DECK_PAGE_SIZE = 24;
 
 export function ReviewCardDialog({ draft, onClose, onSave }) {
@@ -103,11 +111,13 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
   }, [draft]);
 
   if (!draft) return null;
+  const aiAuthored = Boolean(draft.aiAuthored) || (draft.tags || []).includes(AI_DRAFT_TAG);
   const submit = (event) => {
     event.preventDefault();
     if (!front.trim() || !back.trim()) return;
     onSave({
       ...draft,
+      aiAuthored,
       type,
       front: front.trim(),
       back: back.trim(),
@@ -131,8 +141,8 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
         </div>
         {preview ? (
           <div className="review-markdown-preview" aria-label="Review card Markdown preview">
-            <span>Prompt</span><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(front || "*No prompt yet*") }} />
-            <span>Answer</span><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(back || "*No answer yet*") }} />
+            <span>Prompt</span><div className="review-markdown" dangerouslySetInnerHTML={cardHtml(front || "*No prompt yet*", aiAuthored)} />
+            <span>Answer</span><div className="review-markdown" dangerouslySetInnerHTML={cardHtml(back || "*No answer yet*", aiAuthored)} />
           </div>
         ) : (
           <>
@@ -142,6 +152,7 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
         )}
         <label><span>Tags <small>optional, comma separated</small></span><input className="text-input" value={tags} maxLength={500} onChange={(event) => setTags(event.target.value)} placeholder="transformers, interview, fundamentals" /></label>
         {draft.sourceTitle && <p className="review-source-note"><BookOpen size={15} /> Linked to {draft.sourceTitle}</p>}
+        {aiAuthored && <p className="review-source-note review-ai-note"><BrainCircuit size={15} /> AI draft: HTML shows as text, images as links, and the ai-draft tag stays.</p>}
         <div className="modal-actions"><button className="button ghost" onClick={onClose} type="button">Cancel</button><button className="button primary" disabled={!front.trim() || !back.trim()} type="submit">{editing ? "Save changes" : "Add to review"}</button></div>
       </form>
     </div>
@@ -349,7 +360,7 @@ function LabBench({ lab, onClose, onLogMistake, onOpenSource }) {
  * bounded weak-first selection. Practice-only — the scheduler is untouched —
  * and a miss logs an interview-category mistake.
  */
-function InterviewRound({ cards, onClose, onLogMistake }) {
+function InterviewRound({ cards, isAiCard, onClose, onLogMistake }) {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState("prep");
   const [secondsLeft, setSecondsLeft] = useState(INTERVIEW_PREP_SECONDS);
@@ -427,8 +438,8 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
       <div className="review-stage" aria-live="polite">
         <article className={phase === "revealed" ? "review-flashcard revealed" : "review-flashcard"}>
           <span className="eyebrow">{phase === "prep" ? "Structure your answer out loud" : phase === "answer" ? "Answer as if the interviewer is listening" : "Compare against the expected answer"}</span>
-          <div className="review-markdown review-question" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.front) }} />
-          {phase === "revealed" && <div className="review-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.back) }} />}
+          <div className="review-markdown review-question" dangerouslySetInnerHTML={cardHtml(card.front, isAiCard(card))} />
+          {phase === "revealed" && <div className="review-answer review-markdown" dangerouslySetInnerHTML={cardHtml(card.back, isAiCard(card))} />}
         </article>
         <div className="review-session-actions">
           {phase === "prep" && <button className="button primary large" onClick={() => { setPhase("answer"); setSecondsLeft(card?.answerSeconds || INTERVIEW_ANSWER_SECONDS); }} type="button">Start answering</button>}
@@ -560,6 +571,8 @@ export default function ReviewCenter({
     }, 2_000);
   };
   const interviewPool = useMemo(() => selectInterviewRound(profile.reviewItems), [profile.reviewItems]);
+  const aiClippingIdSet = useMemo(() => aiClippingIds(profile.clippings), [profile.clippings]);
+  const isAiCard = useCallback((item) => isAiAuthoredReviewItem(item, aiClippingIdSet), [aiClippingIdSet]);
   // The authored banks are sizeable JSON: load them lazily so they never
   // weigh on the startup bundle (the app audit gates entry size).
   const [trackBankRaw, setTrackBankRaw] = useState(null);
@@ -769,7 +782,7 @@ export default function ReviewCenter({
   }
 
   if (interviewCards) {
-    return <InterviewRound cards={interviewCards} onClose={() => setInterviewCards(null)} onLogMistake={onLogMistake} />;
+    return <InterviewRound cards={interviewCards} isAiCard={isAiCard} onClose={() => setInterviewCards(null)} onLogMistake={onLogMistake} />;
   }
 
   if (session && current) {
@@ -798,9 +811,9 @@ export default function ReviewCenter({
                     : `Review · ${formatInterval(current.intervalDays)} interval`;
               return label;
             })()} · {REVIEW_CARD_TYPES.find((type) => type.id === current.type)?.label || "Basic Q&A"}</span>
-            <div ref={promptRef} className="review-markdown review-question" tabIndex={-1} role="region" aria-label="Prompt" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.type === "cloze" && hasClozeMarkup(current.front) ? renderClozePrompt(current.front, revealed) : current.front) }} />
+            <div ref={promptRef} className="review-markdown review-question" tabIndex={-1} role="region" aria-label="Prompt" dangerouslySetInnerHTML={cardHtml(current.type === "cloze" && hasClozeMarkup(current.front) ? renderClozePrompt(current.front, revealed) : current.front, isAiCard(current))} />
             {source && <button className="review-source-link" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={15} /> {source.title}</button>}
-            {revealed && <div ref={answerRef} className="review-answer" tabIndex={-1} role="region" aria-label="Answer"><span aria-hidden="true">Answer</span><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.back) }} /></div>}
+            {revealed && <div ref={answerRef} className="review-answer" tabIndex={-1} role="region" aria-label="Answer"><span aria-hidden="true">Answer</span><div className="review-markdown" dangerouslySetInnerHTML={cardHtml(current.back, isAiCard(current))} /></div>}
           </article>
           {!revealed ? (
             <div className="review-session-actions"><button className="button ghost" onClick={bury} type="button"><TimerReset size={17} /> Bury today</button><button className="button primary large review-reveal" onClick={() => setRevealed(true)} type="button"><Eye size={19} /> Show answer <kbd>Space</kbd></button></div>
@@ -920,7 +933,7 @@ export default function ReviewCenter({
       <MistakeDialog open={mistakeDialogOpen} onClose={() => setMistakeDialogOpen(false)} onLog={(draft) => { onLogMistake?.(draft); setMistakeDialogOpen(false); }} onModalChange={onModalChange} />
       <section className="review-deck-section" ref={deckSectionRef}>
         <div className="section-heading review-deck-heading"><div><span className="eyebrow">Your knowledge deck</span><h2 ref={deckHeadingRef} tabIndex={-1}>{deckItems.length} {showArchived ? "archived" : "active"} card{deckItems.length === 1 ? "" : "s"}</h2></div><div className="review-deck-tools"><label className="review-deck-search"><Search size={16} aria-hidden="true" /><input value={deckQuery} onChange={(event) => setDeckQuery(event.target.value)} aria-label="Search review cards" placeholder="Search cards or tags" /></label><button className="button ghost" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived} type="button">{showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />} {showArchived ? "Show active" : `Archived (${stats.archived})`}</button><button className="button ghost" onClick={exportDeck} disabled={!profile.reviewItems.some((item) => !item.archived)} title="Download the deck as a shareable JSON file (authoring fields only — no schedule)" type="button"><Download size={16} /> Export deck</button><input ref={importInputRef} type="file" accept=".json,application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onImportCards?.(file); }} /><button className="button ghost" onClick={() => importInputRef.current?.click()} disabled={!onImportCards} title="Import a lumen.cards.v1 JSON file; duplicates are skipped and imported cards start as new" type="button"><Upload size={16} /> Import</button></div></div>
-        {deckItems.length ? <><p className="review-deck-range">Showing {deckPageStart + 1}–{deckPageStart + visibleDeckItems.length} of {deckItems.length}</p><div className="review-deck-list">{visibleDeckItems.map((item) => { const source = documentMap.get(item.documentId); return <article className={item.suspended ? "review-deck-card suspended" : "review-deck-card"} data-card-id={item.id} key={item.id}><div className="review-card-state"><Brain size={18} /><span>{item.suspended ? "Paused" : isNewReviewItem(item) ? "New" : `${formatInterval(item.intervalDays)} interval`}</span><small>{REVIEW_CARD_TYPES.find((type) => type.id === item.type)?.label}</small></div><div className="review-card-copy"><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.front) }} /><div className="review-deck-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.back) }} />{item.tags?.length > 0 && <div className="review-tags">{item.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}{source && <button className="text-button" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={14} /> {source.title}</button>}</div><div className="review-card-actions"><button className="icon-button" onClick={() => onEdit(item)} aria-label="Edit review card" title="Edit" type="button"><Edit3 size={17} /></button><button className="icon-button" onClick={() => onToggleSuspend(item.id)} aria-label={item.suspended ? "Resume review card" : "Pause review card"} title={item.suspended ? "Resume" : "Pause"} type="button">{item.suspended ? <Play size={17} /> : <Pause size={17} />}</button><button className="icon-button" onClick={() => actOnDeckCard(onToggleArchive, item.id)} aria-label={item.archived ? "Restore review card" : "Archive review card"} title={item.archived ? "Restore" : "Archive"} type="button">{item.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</button><button className="icon-button danger" onClick={() => actOnDeckCard(onDelete, item.id)} aria-label="Delete review card" title="Delete permanently" type="button"><Trash2 size={17} /></button></div></article>; })}</div>{deckPageCount > 1 && <nav className="review-deck-pagination" aria-label="Review card pages"><span aria-live="polite" aria-atomic="true">Page {visibleDeckPage} of {deckPageCount}</span><div><button className="button ghost" onClick={() => changeDeckPage(1)} disabled={visibleDeckPage === 1} aria-label="First review card page" type="button">First</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage - 1)} disabled={visibleDeckPage === 1} aria-label="Previous review card page" type="button">Previous</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage + 1)} disabled={visibleDeckPage === deckPageCount} aria-label="Next review card page" type="button">Next</button><button className="button ghost" onClick={() => changeDeckPage(deckPageCount)} disabled={visibleDeckPage === deckPageCount} aria-label="Last review card page" type="button">Last</button></div></nav>}</> : <div className="empty-state review-empty"><Brain size={34} /><h2>{normalizedDeckQuery ? "No matching review card" : showArchived ? "No archived cards" : "Build your first recall prompt"}</h2><p>{normalizedDeckQuery ? "Try a broader prompt, answer, type, or tag." : "Create one manually, or turn any clipping or highlight into a source-linked card."}</p>{!normalizedDeckQuery && !showArchived && <button className="button primary" onClick={() => onCreate(null)} type="button">Create first card</button>}</div>}
+        {deckItems.length ? <><p className="review-deck-range">Showing {deckPageStart + 1}–{deckPageStart + visibleDeckItems.length} of {deckItems.length}</p><div className="review-deck-list">{visibleDeckItems.map((item) => { const source = documentMap.get(item.documentId); return <article className={item.suspended ? "review-deck-card suspended" : "review-deck-card"} data-card-id={item.id} key={item.id}><div className="review-card-state"><Brain size={18} /><span>{item.suspended ? "Paused" : isNewReviewItem(item) ? "New" : `${formatInterval(item.intervalDays)} interval`}</span><small>{REVIEW_CARD_TYPES.find((type) => type.id === item.type)?.label}</small></div><div className="review-card-copy"><div className="review-markdown" dangerouslySetInnerHTML={cardHtml(item.front, isAiCard(item))} /><div className="review-deck-answer review-markdown" dangerouslySetInnerHTML={cardHtml(item.back, isAiCard(item))} />{item.tags?.length > 0 && <div className="review-tags">{item.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}{source && <button className="text-button" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={14} /> {source.title}</button>}</div><div className="review-card-actions"><button className="icon-button" onClick={() => onEdit(item)} aria-label="Edit review card" title="Edit" type="button"><Edit3 size={17} /></button><button className="icon-button" onClick={() => onToggleSuspend(item.id)} aria-label={item.suspended ? "Resume review card" : "Pause review card"} title={item.suspended ? "Resume" : "Pause"} type="button">{item.suspended ? <Play size={17} /> : <Pause size={17} />}</button><button className="icon-button" onClick={() => actOnDeckCard(onToggleArchive, item.id)} aria-label={item.archived ? "Restore review card" : "Archive review card"} title={item.archived ? "Restore" : "Archive"} type="button">{item.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</button><button className="icon-button danger" onClick={() => actOnDeckCard(onDelete, item.id)} aria-label="Delete review card" title="Delete permanently" type="button"><Trash2 size={17} /></button></div></article>; })}</div>{deckPageCount > 1 && <nav className="review-deck-pagination" aria-label="Review card pages"><span aria-live="polite" aria-atomic="true">Page {visibleDeckPage} of {deckPageCount}</span><div><button className="button ghost" onClick={() => changeDeckPage(1)} disabled={visibleDeckPage === 1} aria-label="First review card page" type="button">First</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage - 1)} disabled={visibleDeckPage === 1} aria-label="Previous review card page" type="button">Previous</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage + 1)} disabled={visibleDeckPage === deckPageCount} aria-label="Next review card page" type="button">Next</button><button className="button ghost" onClick={() => changeDeckPage(deckPageCount)} disabled={visibleDeckPage === deckPageCount} aria-label="Last review card page" type="button">Last</button></div></nav>}</> : <div className="empty-state review-empty"><Brain size={34} /><h2>{normalizedDeckQuery ? "No matching review card" : showArchived ? "No archived cards" : "Build your first recall prompt"}</h2><p>{normalizedDeckQuery ? "Try a broader prompt, answer, type, or tag." : "Create one manually, or turn any clipping or highlight into a source-linked card."}</p>{!normalizedDeckQuery && !showArchived && <button className="button primary" onClick={() => onCreate(null)} type="button">Create first card</button>}</div>}
       </section>
     </div>
   );
