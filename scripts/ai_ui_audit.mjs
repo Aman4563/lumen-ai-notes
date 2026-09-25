@@ -466,7 +466,11 @@ try {
     executablePath: chromePath,
     headless: true,
     userDataDir: profileDirectory,
-    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check"],
+    // Headless Chrome on Linux reports no mouse (hover: none, pointer: none)
+    // while macOS reports one. Give desktop pages an explicit fine, hovering
+    // pointer so the keyboard-send checks behave the same on every OS; phone
+    // viewports still emulate touch, which overrides this.
+    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check", "--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"],
   });
 
   const ready = await newAuditPage("ready", () => secureConfig);
