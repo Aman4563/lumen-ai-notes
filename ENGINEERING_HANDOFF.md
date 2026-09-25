@@ -409,6 +409,10 @@ This phrase has a precise implementation meaning:
 5. web is eligible only if the learner separately allowed it for that request;
 6. strong local evidence keeps web off even when permission was checked.
 
+When an authorized search ran but kept no usable web evidence, the server may answer from
+the library with an in-text notice and report `webSearch.requested && !used` with
+`rounds > 0`. The Mac tutor shows that as its failed-fallback badge, never as “not needed”.
+
 This is **pre-generation retrieval sufficiency**, not “generate an answer, have another
 judge decide it is inadequate, then browse.” If answer-level post-generation insufficiency
 routing is desired, specify and evaluate it as a new design rather than assuming it exists.
@@ -493,6 +497,12 @@ while it is generated. Buffering prevents a fluent unsupported draft from appear
 remaining after citation validation rejects it. The UI now says grounded text appears after
 completion/citation validation instead of misleadingly saying it is waiting for a first
 token.
+
+While text streams, the Mac tutor follows it inside the conversation only, never the page.
+Following only ever scrolls down, so any upward move by the learner stops it and scrolling
+back near the end resumes it; iOS rubber-band positions past either end are ignored. Phase
+announcements come only from the request still in flight, so a stale phase can never follow
+(and replace) the outcome announcement.
 
 If product leadership later wants provisional grounded drafts, design an explicit
 “unverified draft” state, removal behavior, accessibility announcement, persistence rule,

@@ -504,3 +504,27 @@ A strict AI tutor audit (issue #56) reproduced these against mocked and real
 - Streaming scrolled the whole page back down after the learner scrolled away,
   and completion showed the end of a grounded answer. Following now scrolls
   only the conversation, and completion reveals the answer's start.
+
+The adversarial review of the same branch reproduced six more, each first
+confirmed against the preceding build:
+
+- A learner who scrolled back up inside a streaming answer was snapped back to
+  its end: following ignored every scroll within 150 ms of its own, and deltas
+  arrive every frame. `audit:ai-ui` streams a long answer, scrolls the
+  conversation to its start and expects it to stay there.
+- On On-device Lite, Ask AI focused the question box before the device panel
+  above it finished loading, which pushed the box out of view; on phones the
+  old check also ignored the fixed top and bottom bars. `audit:ai-ui` checks
+  both engines against those bars, again a second later.
+- "The current state of the art" and "the open problems in RL" counted as
+  requests about the open lesson and reserved its passages. Unit tests pin
+  them as general questions.
+- A keyboard Stop landing as retrieval finished could announce the stale
+  "Library evidence ready…" after "Generation stopped." (1 of 100 probed
+  stops, and an intermittent `audit:ai-ui` failure). The audit re-reads the
+  status region 400 ms after the stop.
+- An approved web search that kept no usable evidence showed "Web fallback not
+  needed" beside the server's "Current-web evidence unavailable" notice.
+  `audit:ai-ui` mocks that response and expects the failed-fallback badge.
+- The Depth select and the source filter were 42px tall on phones.
+  `audit:ai-ui` now checks every Mac tutor control on a 393px phone.
