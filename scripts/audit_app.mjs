@@ -72,7 +72,7 @@ const routeFiles = Array.isArray(routeList.files) ? routeList.files : [];
 assert(typeof routeList.build === "string" && routeList.build.length > 0, "the offline route list must name its build so the worker can reject a mismatched release");
 assert(routeList.entry === entryScript, `the offline route list entry (${routeList.entry}) must match the HTML entry (${entryScript})`);
 for (const file of routeFiles) assert(exists(file), `the offline route list references a missing file: ${file}`);
-for (const screen of ["Reader", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "StorageHealth", "DeviceEvidence"]) {
+for (const screen of ["Reader", "markdownMath", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "ReviewCenter", "AssessmentDialog", "StorageHealth", "DeviceEvidence"]) {
   assert(routeFiles.some((file) => file.startsWith(`assets/${screen}-`) && file.endsWith(".js")), `the offline route list omits the ${screen} screen`);
 }
 for (const screen of ["AiLearningStudio", "AiTutor", "PhoneLocalAiTutor"]) {

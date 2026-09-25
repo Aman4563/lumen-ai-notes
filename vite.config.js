@@ -8,12 +8,18 @@ const buildId = process.env.LUMEN_BUILD_ID?.trim() || `local-${Date.now().toStri
 // worker precaches these chunks, their static imports, and their CSS at install
 // from the list below. Lecture bodies, the search corpus, Mermaid, the WebLLM
 // runtime, and fonts stay on-demand because they are dynamic imports or assets.
+// The review center (with its card editor) and the readiness check left the
+// startup bundle for its budget, and the reader's TeX renderer loads on first
+// math; all three are still app code every screen needs offline.
 const OFFLINE_ROUTE_MODULES = [
   "src/components/Reader.jsx",
+  "src/lib/markdownMath.js",
   "src/components/Whiteboard.jsx",
   "src/components/AiLearningStudio.jsx",
   "src/components/AiTutor.jsx",
   "src/components/PhoneLocalAiTutor.jsx",
+  "src/components/ReviewCenter.jsx",
+  "src/components/AssessmentDialog.jsx",
   "src/components/StorageHealth.jsx",
   "src/components/DeviceEvidence.jsx",
 ];

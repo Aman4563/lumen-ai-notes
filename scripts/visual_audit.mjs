@@ -132,10 +132,13 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     const screens = await page.evaluate(async () => {
       const list = await (await caches.match(new URL("./offline-routes.json", location.href).href)).json();
       const failed = [];
-      for (const name of ["Reader", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "StorageHealth", "DeviceEvidence"]) {
+      // Each module with the export the app renders from it.
+      const modules = [["Reader", "default"], ["markdownMath", "renderMarkdownWithMath"], ["Whiteboard", "default"], ["AiLearningStudio", "default"], ["AiTutor", "default"], ["PhoneLocalAiTutor", "default"], ["ReviewCenter", "default"], ["ReviewCenter", "ReviewCardDialog"], ["AssessmentDialog", "default"], ["StorageHealth", "default"], ["DeviceEvidence", "default"]];
+      for (const [name, exported] of modules) {
         const file = list.files.find((item) => item.startsWith(`assets/${name}-`) && item.endsWith(".js"));
         try {
-          if (typeof (await import(new URL(file, location.href).href)).default !== "function") failed.push(`${name}: no screen component`);
+          if (!file) failed.push(`${name}: not in the route list`);
+          else if (typeof (await import(new URL(file, location.href).href))[exported] !== "function") failed.push(`${name}: no ${exported} export`);
         } catch (error) {
           failed.push(`${name}: ${error.message}`);
         }
