@@ -529,6 +529,13 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   useEffect(() => {
     if (tutorSpeechState === "idle" && speakingMessageId) setSpeakingMessageId("");
   }, [speakingMessageId, tutorSpeechState]);
+  // A reading the speech engine stops by itself says why.
+  const onNotifyRef = useRef(onNotify);
+  onNotifyRef.current = onNotify;
+  const tutorSpeechError = speech?.activeLabel === TUTOR_SPEECH_LABEL && speech?.status === "error" ? String(speech?.error || "") : "";
+  useEffect(() => {
+    if (tutorSpeechError) onNotifyRef.current?.(tutorSpeechError, "error");
+  }, [tutorSpeechError]);
   const stopTutorSpeech = useCallback(() => {
     if (speechRef.current?.activeLabel === TUTOR_SPEECH_LABEL) speechRef.current.stop();
   }, []);

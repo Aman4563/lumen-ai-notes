@@ -1213,7 +1213,9 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
           </>)}
       </div>
       {canSaveNote && <span className="visually-hidden" id={saveHintId}>{noteStatus === "saved" ? "This answer is in your Notebook as a labeled AI note." : "Saves this answer to your Notebook as a labeled AI note."}</span>}
-      <span className="ai-tutor__copy-status" role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : listen?.error || ""}</span>
+      {/* One polite region for copy results and Listen problems; a Listen
+          problem is also shown, since nothing else says why reading stopped. */}
+      <span className={`ai-tutor__copy-status${copyStatus === "idle" && listen?.error ? " is-visible" : ""}`} role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : listen?.error || ""}</span>
       {panel === "sources" && <ResponseEvidence message={message} onNavigateSource={onNavigateSource} />}
       {panel === "approach" && <ResponseApproach message={message} />}
     </>
@@ -1466,9 +1468,12 @@ export default function AiTutor({
   const [speakingMessageId, setSpeakingMessageId] = useState("");
   const [listenError, setListenError] = useState({ id: "", text: "" });
   const tutorSpeechState = speech?.activeLabel === TUTOR_SPEECH_LABEL && ["speaking", "paused"].includes(speech?.status) ? speech.status : "idle";
+  // Why the engine stopped or paused a reading by itself (a synthesis
+  // error, or iOS interrupting it); shown with the answer being read.
+  const tutorSpeechError = speech?.activeLabel === TUTOR_SPEECH_LABEL && ["error", "paused"].includes(speech?.status) ? String(speech?.error || "") : "";
   useEffect(() => {
-    if (tutorSpeechState === "idle" && speakingMessageId) setSpeakingMessageId("");
-  }, [speakingMessageId, tutorSpeechState]);
+    if (tutorSpeechState === "idle" && speakingMessageId && !tutorSpeechError) setSpeakingMessageId("");
+  }, [speakingMessageId, tutorSpeechError, tutorSpeechState]);
   // Stops the tutor's own reading, never a lecture's.
   const stopTutorSpeech = useCallback(() => {
     const engine = speechRef.current;
@@ -3198,7 +3203,7 @@ export default function AiTutor({
     const state = speakingMessageId === message.id ? tutorSpeechState : "idle";
     return {
       state,
-      error: listenError.id === message.id ? listenError.text : "",
+      error: listenError.id === message.id ? listenError.text : speakingMessageId === message.id ? tutorSpeechError : "",
       onListen: () => {
         const spoken = tutorSpeechText(message.content);
         const started = spoken.text && speech.speak(spoken.text, { label: TUTOR_SPEECH_LABEL, sections: spoken.sections });

@@ -2284,6 +2284,22 @@
   white-space: nowrap;
 }
 
+/* A Listen problem (TFEAT-09) is shown under the answer's actions. */
+.ai-tutor__copy-status.is-visible {
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  margin-top: 6px;
+  overflow: visible;
+  clip: auto;
+  clip-path: none;
+  color: var(--ai-tutor-warn);
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: normal;
+}
+
 .ai-tutor__evidence,
 .ai-tutor__approach {
   margin-top: 8px;

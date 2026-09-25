@@ -2489,6 +2489,15 @@ try {
     await waitForAnswers(page, 2);
     assert.ok(await cancels() > before, "a new question did not stop the answer being read");
     assert.equal(await page.$(".ai-tutor__listen-stop"), null);
+    // A reading the speech engine stops by itself says why, under the answer.
+    await page.$$eval(".ai-tutor__listen", (nodes) => nodes.at(-1).click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    await page.evaluate(() => speechSynthesis.current?.onerror?.({ error: "synthesis-failed" }));
+    await page.waitForFunction(() => {
+      const note = [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)?.querySelector(".ai-tutor__copy-status.is-visible");
+      return Boolean(note?.textContent.trim()) && note.getBoundingClientRect().height > 1;
+    }, { timeout: 3_000 }).catch(() => assert.fail("a reading that failed part-way did not say why"));
+    assert.deepEqual(await listenButtons(), ["Listen to this answer"], "a failed reading left Pause and Stop behind");
     await page.$$eval(".ai-tutor__listen", (nodes) => nodes.at(-1).click());
     await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
     before = await cancels();
