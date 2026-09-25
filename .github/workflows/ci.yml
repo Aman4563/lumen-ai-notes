@@ -24,9 +24,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # Match the audited workspace (Node 26): the AI timeout/deadline
-          # suites depend on current test-runner timer semantics.
-          node-version: 26
+          # Node 26 (pinned in .nvmrc): the AI timeout/deadline suites depend
+          # on current test-runner timer semantics.
+          node-version-file: .nvmrc
           cache: npm
       - name: Install exactly from the lockfile
         run: npm ci

@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest an improvement to the app or the AI tutor.
+labels: ["enhancement", "type:enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Reader
+        - Library and search
+        - Home dashboard and study plan
+        - Review center, notebook and readiness checks
+        - Whiteboard
+        - AI tutor
+        - Settings, backup and sync
+        - Offline use and installation
+        - Accessibility
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: How it should work on a phone and on a desktop, including keyboard and screen-reader use if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Anything this must respect, for example privacy (no paid AI APIs, local-first data) or offline use.
