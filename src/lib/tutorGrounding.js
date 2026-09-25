@@ -1,4 +1,7 @@
-const OPEN_LESSON_REFERENCE = /\b(?:this|these|that|current|open|opened|selected|highlighted)\s+(?:lessons?|lectures?|chapters?|sections?|material|excerpts?|passages?|pages?|notes?|topics?|documents?|readings?|text)\b|\bthe\s+(?:current|open|opened|selected)\s+\w+/iu;
+// A deictic word must name lesson material itself: "the current state of the
+// art" or "the open problems in RL" are general questions, not requests
+// about the open lesson.
+const OPEN_LESSON_REFERENCE = /\b(?:this|these|that|current|open|opened|selected|highlighted)\s+(?:lessons?|lectures?|chapters?|sections?|material|excerpts?|passages?|pages?|notes?|topics?|documents?|readings?|text)\b/iu;
 
 /**
  * True when a Library-first request is about the lesson the learner has open

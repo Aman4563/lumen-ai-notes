@@ -47,6 +47,11 @@ test("recognizes requests about the open lesson", () => {
     "How does the PPO clipped surrogate objective limit policy updates?",
     "What is the chapter on transformers about?",
     "Review this code for bugs and suggest fixes.",
+    // General questions that happen to use "the current/open/selected".
+    "What is the current state of the art for image classification?",
+    "What are the open problems in reinforcement learning?",
+    "Why does the selected model overfit on small data?",
+    "How do I pick the current learning rate schedule?",
   ]) assert.equal(refersToOpenLesson(prompt), false, prompt);
 });
 
