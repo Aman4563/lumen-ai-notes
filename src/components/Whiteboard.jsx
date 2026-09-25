@@ -1096,7 +1096,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       selectPointerDown(event, point, geometry);
       return;
     }
-    // Text and sticky notes are placed by the click that ends this tap.
+    // Text and sticky notes are placed when this tap lifts (finishDrawing).
     if (tool === "text" || tool === "sticky") return;
     if (selectedIds.length) setSelectedIds([]);
     drawingRef.current = { id: createId(), tool, color, fill: "#fff1a8", fontSize: 24, text: "", width: (tool === "eraser" ? lineWidth * 5 : tool === "marker" ? lineWidth * 4 : lineWidth) * (event.pointerType === "pen" ? 0.72 + Math.max(event.pressure, 0.1) * 0.7 : 1), points: [shapeTools.has(tool) ? snapWorld(point, geometry.size) : point] };
@@ -1241,6 +1241,21 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
       return;
     }
     pinchRef.current.delete(event.pointerId);
+    // Text and sticky notes are placed when the tap lifts. Browsers do not
+    // reliably synthesize a click after a touch sequence whose pointerdown
+    // was handled (Chrome on Linux and Android can skip it), so pointerup is
+    // the only event a tap is sure to deliver.
+    const placementTap = tapRef.current;
+    if (event.type === "pointerup" && (tool === "text" || tool === "sticky") && placementTap?.pointerId === event.pointerId && !pinchStateRef.current) {
+      tapRef.current = null;
+      try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
+      if (placementTap.moved || placementTap.cancelled) return;
+      swallowCompatibilityClick(event.clientX, event.clientY);
+      const geometry = readGeometry();
+      setSelectedIds([]);
+      setPendingText({ mode: "create", tool, point: snapWorld(pointFromEvent(event, geometry), geometry.size) });
+      return;
+    }
     if (pinchStateRef.current) {
       if (pinchRef.current.size < 2) pinchStateRef.current = null;
       try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
@@ -1328,21 +1343,31 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     try { canvasRef.current?.releasePointerCapture?.(event.pointerId); } catch { /* Capture may already be released. */ }
   };
 
-  // The click that ends a tap places text/sticky notes (BOARD-1) and counts
-  // double-taps for editing (BOARD-EDIT). Click is the tap's last event, so
-  // the dialog it opens can never receive a stray compatibility click.
+  // A placing tap may still be followed by a compatibility click. Swallow it so
+  // it cannot land on the new dialog's scrim and close it (BOARD-1). Only a
+  // click at the tap's own position counts: when the browser sends none, the
+  // learner's next real click elsewhere must go through.
+  const swallowCompatibilityClick = (tapX, tapY) => {
+    const stop = () => window.removeEventListener("click", swallow, true);
+    const swallow = (clickEvent) => {
+      if (Math.hypot(clickEvent.clientX - tapX, clickEvent.clientY - tapY) > 16) return;
+      clickEvent.preventDefault();
+      clickEvent.stopPropagation();
+      stop();
+    };
+    window.addEventListener("click", swallow, true);
+    setTimeout(stop, 600);
+  };
+
+  // The click that ends a select-tool tap counts double-taps for editing
+  // (BOARD-EDIT); text and sticky placement happens on pointerup above.
   const handleCanvasClick = (event) => {
     const gesture = tapRef.current;
     tapRef.current = null;
     if (!gesture || gesture.moved || gesture.cancelled) return;
+    if (tool !== "select") return;
     const geometry = readGeometry();
     const point = pointFromEvent(event, geometry);
-    if (tool === "text" || tool === "sticky") {
-      setSelectedIds([]);
-      setPendingText({ mode: "create", tool, point: snapWorld(point, geometry.size) });
-      return;
-    }
-    if (tool !== "select") return;
     const hit = hitTest(point, geometry, gesture.pointerType);
     if (!hit || hit.locked || !["text", "sticky"].includes(hit.tool)) {
       lastTapRef.current = null;
