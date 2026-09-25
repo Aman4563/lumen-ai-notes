@@ -578,7 +578,8 @@
   line-clamp: 2;
 }
 
-.ai-tutor__starter-confirm {
+.ai-tutor__starter-confirm,
+.ai-tutor__prefill-confirm {
   margin-top: 10px;
   padding: 12px;
   background: var(--paper-2, #f7f2e8);
@@ -586,14 +587,21 @@
   border-radius: 14px;
 }
 
-.ai-tutor__starter-confirm p {
+.ai-tutor__composer .ai-tutor__prefill-confirm {
+  margin: 0 0 8px;
+  padding: 10px;
+}
+
+.ai-tutor__starter-confirm p,
+.ai-tutor__prefill-confirm p {
   margin: 0 0 10px;
   color: var(--ink, #172035);
   font-size: 0.84rem;
   line-height: 1.45;
 }
 
-.ai-tutor__starter-confirm div {
+.ai-tutor__starter-confirm div,
+.ai-tutor__prefill-confirm div {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -601,7 +609,8 @@
 
 @media (max-width: 719px) {
   .ai-tutor__starters ul { grid-template-columns: minmax(0, 1fr); }
-  .ai-tutor__starter-confirm .ai-tutor__button { flex: 1 1 auto; min-height: 44px; }
+  .ai-tutor__starter-confirm .ai-tutor__button,
+  .ai-tutor__prefill-confirm .ai-tutor__button { flex: 1 1 auto; min-height: 44px; }
 }
 
 .ai-tutor__messages {

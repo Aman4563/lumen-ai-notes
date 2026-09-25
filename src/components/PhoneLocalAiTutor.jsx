@@ -683,17 +683,22 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   // Returning within the release grace period keeps the loaded model.
   useEffect(() => { cancelModelRelease(engine); }, [engine]);
 
-  // Reader "Ask AI" excerpts reach this engine too; each is applied once and
-  // is added below an unsent question the learner wrote rather than over it.
+  // Reader "Ask AI" excerpts and prepared questions from other screens
+  // (TFEAT-07, kind "prompt") reach this engine too; each is applied once,
+  // never sent, and added below an unsent question the learner wrote rather
+  // than over it. A prepared question also sets its mode.
   const consumedInsertRef = useRef(null);
   useEffect(() => {
-    if (!insertPrompt?.text || consumedInsertRef.current === insertPrompt.nonce) return;
+    const prepared = insertPrompt?.kind === "prompt" ? cleanText(insertPrompt.prompt, MAX_PROMPT_CHARS) : "";
+    if ((!insertPrompt?.text && !prepared) || consumedInsertRef.current === insertPrompt.nonce) return;
     consumedInsertRef.current = insertPrompt.nonce;
     const lecture = cleanText(insertPrompt.title, 200);
-    const inserted = `Explain this excerpt from my lecture${lecture ? ` “${lecture}”` : ""} in context:\n\n"${insertPrompt.text}"`;
+    const inserted = prepared || `Explain this excerpt from my lecture${lecture ? ` “${lecture}”` : ""} in context:\n\n"${insertPrompt.text}"`;
+    const preparedMode = prepared ? PHONE_TUTOR_MODES.find((mode) => mode.id === insertPrompt.modeId) : null;
+    if (preparedMode) setModeId(preparedMode.id);
     setPrompt((current) => {
       const draft = current.trim();
-      const keepDraft = Boolean(draft) && !PHONE_TUTOR_MODES.some((mode) => mode.prompt === draft) && !draft.startsWith("Explain this excerpt from my lecture");
+      const keepDraft = Boolean(draft) && draft !== inserted && !PHONE_TUTOR_MODES.some((mode) => mode.prompt === draft) && !draft.startsWith("Explain this excerpt from my lecture");
       return cleanText(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS);
     });
     onInsertConsumed?.(insertPrompt.nonce);

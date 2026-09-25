@@ -553,6 +553,32 @@ try {
   });
   await page.keyboard.press("ArrowUp");
   assert.equal(await page.$eval(phoneField, (field) => field.value), lastQuestion, "Up arrow did not bring back the last On-device question");
+  // A prepared question from another screen (TFEAT-07) reaches On-device
+  // Lite too: applied once, in its mode, below a draft, and never sent.
+  const modeBeforeInsert = await activeMode(page);
+  const preparedQuestion = "Work through this mistake with me, one question at a time.\n\nQuestion: Why does gradient descent step against the gradient?";
+  const preparedCallsBefore = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length);
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "My phone draft");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate((prompt) => window.__PHONE_INSERT__({ kind: "prompt", prompt, modeId: "socratic", origin: "mistake notebook", label: "Why does gradient descent step against the gradient?", nonce: 4242 }), preparedQuestion);
+  await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.consumedInserts.includes(4242), { timeout: 5_000 });
+  assert.equal(await activeMode(page), "Socratic", "a prepared question did not set its On-device mode");
+  assert.equal(await page.$eval(phoneField, (field) => field.value), `My phone draft\n\n${preparedQuestion}`, "a prepared question replaced the On-device draft");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate((prompt) => window.__PHONE_INSERT__({ kind: "prompt", prompt, modeId: "socratic", nonce: 4242 }), preparedQuestion);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.$eval(phoneField, (field) => field.value), "", "a consumed prepared question was applied again");
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length), preparedCallsBefore, "a prepared question was sent");
+  await chooseMode(page, modeBeforeInsert);
+  await page.$eval(phoneField, (field, text) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }, lastQuestion);
   await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 60; });
   await page.click(sendButtonSelector);
   await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
@@ -580,7 +606,7 @@ try {
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.loaded), false, "leaving On-device Lite retained its hidden GPU model");
   assert.equal((await page.evaluate(() => window.__PHONE_AI_AUDIT__.interactionStates)).at(-1), false, "unmount left the parent engine picker locked");
   assert.equal(runtimeErrors.length, 0, `phone AI browser errors: ${runtimeErrors.join(" | ")}`);
-  console.log("Phone AI UI audit passed: library-first bounded retrieval, token-streamed sanitized GFM/KaTeX, citation and context-fit evidence, strict worker/model lifecycle, and one-shot web-search consent/decline/approval.");
+  console.log("Phone AI UI audit passed: library-first bounded retrieval, token-streamed sanitized GFM/KaTeX, citation and context-fit evidence, strict worker/model lifecycle, prepared questions from other screens applied once, and one-shot web-search consent/decline/approval.");
 } finally {
   await browser?.close();
   await vite?.close();

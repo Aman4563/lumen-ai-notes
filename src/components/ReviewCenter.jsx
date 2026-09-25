@@ -5,6 +5,7 @@ import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound 
 import { ROUND_TYPES, buildTrackRound, normalizeTrackBank } from "../lib/interviewTracks.js";
 import { checkLabAnswer, labMistakeDraft, normalizeLabBank } from "../lib/labs.js";
 import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
+import { mistakeTutorRequest } from "../lib/tutorBridge.js";
 import { UndoStrip, withUndoSlot } from "./UndoStrip.jsx";
 import { useCommitOnHide } from "../hooks/useCommitOnHide.js";
 import {
@@ -24,6 +25,7 @@ import {
   Flame,
   Gauge,
   History,
+  MessageCircleQuestion,
   Pause,
   Play,
   RotateCcw,
@@ -473,6 +475,7 @@ export default function ReviewCenter({
   onLogMistake,
   onImportCards,
   onModalChange,
+  onAskTutor,
 }) {
   const [session, setSession] = useState(false);
   const [mistakeFilter, setMistakeFilter] = useState("all");
@@ -920,6 +923,8 @@ export default function ReviewCenter({
                 <div className="mistake-actions">
                   {doc && <button className="text-button" onClick={() => onOpenSource(doc.id)} type="button">{doc.title}</button>}
                   <span>
+                    {/* Only with AI features on: the tutor gets the mistake as a question to review and send. */}
+                    {onAskTutor && <button className="button ghost mistake-tutor" onClick={() => onAskTutor(mistakeTutorRequest(mistake))} type="button"><MessageCircleQuestion size={15} /> Work through with tutor</button>}
                     <button className="button ghost" onClick={() => onScheduleCorrective?.(mistake)} type="button">Schedule corrective review</button>
                     <button className="button ghost" onClick={() => onEditMistake?.(mistake.id, { correctedAt: mistake.correctedAt ? "" : new Date().toISOString() })} type="button">{mistake.correctedAt ? "Reopen" : "Mark corrected"}</button>
                     <button className="icon-button small danger" onClick={() => removeMistake(mistake)} aria-label="Delete this mistake entry" title="Delete" type="button"><Trash2 size={15} /></button>

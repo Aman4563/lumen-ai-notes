@@ -2811,9 +2811,17 @@ export default function App() {
     if (!excerpt) return;
     // The tutor consumes the insert once (onInsertConsumed) and names the
     // lecture it came from; the composer itself announces the insertion.
-    setAiInsert({ text: excerpt, title: currentDocument.title, nonce: Date.now() });
+    setAiInsert({ kind: "selection", text: excerpt, title: currentDocument.title, nonce: Date.now() });
     changeView("ai");
   }, [changeView, currentDocument.title]);
+  // Other screens open the tutor with a prepared question (TFEAT-07). It is
+  // applied once like an excerpt and never sent: the learner reviews it.
+  const openTutorWith = useCallback(({ modeId, prompt, origin, label, documentId } = {}) => {
+    const text = String(prompt || "").trim().slice(0, 5_700);
+    if (!text) return;
+    setAiInsert({ kind: "prompt", prompt: text, modeId: String(modeId || "explain"), origin: String(origin || ""), label: String(label || ""), documentId: String(documentId || ""), nonce: Date.now() });
+    changeView("ai");
+  }, [changeView]);
   const consumeAiInsert = useCallback((nonce) => {
     setAiInsert((current) => current?.nonce === nonce ? null : current);
   }, []);
@@ -3424,7 +3432,7 @@ export default function App() {
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} studyContext={aiStudyContext} speech={speech} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveMistakes={saveTutorMistakes} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onInsertConsumed={consumeAiInsert} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onRestoreMistake={restoreMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} onModalChange={trackComponentModal} /></Suspense>}
+          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onRestoreMistake={restoreMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} onModalChange={trackComponentModal} onAskTutor={aiFeaturesEnabled ? openTutorWith : undefined} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
           </ErrorBoundary>
         </main>
@@ -3441,7 +3449,7 @@ export default function App() {
       <ManageDocumentDialog doc={manageDocument} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <EncryptedImportDialog pending={encryptedImport} onSubmit={unlockEncryptedImport} onCancel={() => setEncryptedImport(null)} />
-      {assessmentDraft && <Suspense fallback={null}><AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} /></Suspense>}
+      {assessmentDraft && <Suspense fallback={null}><AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} onAskTutor={aiFeaturesEnabled ? (request) => { setAssessmentDraft(null); openTutorWith(request); } : undefined} /></Suspense>}
       {reviewDraft && <Suspense fallback={null}><ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} /></Suspense>}
       {updateRegistration && <div className="update-banner" role="status" inert={appModalOpen} aria-hidden={hiddenBehindModal}><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={dismissToast} />

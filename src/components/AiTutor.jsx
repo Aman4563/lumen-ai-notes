@@ -1514,10 +1514,11 @@ export default function AiTutor({
   // Quick-insert (Reader selection → prompt). Each insert is applied once and
   // then consumed by the host, so a remount never brings back an excerpt that
   // was already sent. An unsent question the learner wrote is kept, the
-  // lecture is named, and the composer is revealed and focused.
+  // lecture is named, and the composer is revealed and focused. A prepared
+  // question from another screen (kind "prompt") is handled further down.
   const consumedInsertRef = useRef(null);
   useEffect(() => {
-    if (!insertPrompt?.text || consumedInsertRef.current === insertPrompt.nonce) return;
+    if (!insertPrompt?.text || insertPrompt.kind === "prompt" || consumedInsertRef.current === insertPrompt.nonce) return;
     consumedInsertRef.current = insertPrompt.nonce;
     const lecture = asTrimmedString(insertPrompt.title, 200);
     const inserted = `Explain this excerpt from my lecture${lecture ? ` “${lecture}”` : ""} in context:\n\n"${insertPrompt.text}"`;
@@ -3390,6 +3391,52 @@ export default function AiTutor({
   // waits, the question box is where the learner answers it.
   const sessionStrip = !setupRequired && session && SESSION_MODES.includes(currentMode.id) ? session : null;
   const answering = Boolean(sessionStrip && !sessionStrip.revealed);
+  // A prepared question from another screen, such as a mistake-notebook
+  // entry (TFEAT-07): consumed once and never sent. It sets its mode and
+  // keeps its lesson as the retrieval hint for the next Send; a draft the
+  // learner wrote is replaced only when they say so.
+  const [pendingPrefill, setPendingPrefill] = useState(null);
+  const keepPrefillDraftRef = useRef(null);
+  // "From mistake notebook: “Why …?”", ended as a sentence.
+  const prefillOrigin = (prefill) => {
+    const origin = `From ${prefill.origin || "another screen"}${prefill.label ? `: “${prefill.label}”` : ""}`;
+    return /[.?!…]$/.test(prefill.label) ? origin : `${origin}.`;
+  };
+  const applyPrefill = (prefill) => {
+    setPendingPrefill(null);
+    setPendingStarter(null);
+    setModeId(composerModeFor(prefill.modeId).id);
+    setPrompt(prefill.prompt);
+    outboundChanged();
+    retrievalHintRef.current = prefill.documentId;
+    setComposerNotice(`${prefillOrigin(prefill)} Review the question, then send.`);
+    window.setTimeout(focusComposer, 0);
+  };
+  const applyPrefillRef = useRef(applyPrefill);
+  applyPrefillRef.current = applyPrefill;
+  const isDefaultPromptRef = useRef(isDefaultPrompt);
+  isDefaultPromptRef.current = isDefaultPrompt;
+  useEffect(() => {
+    if (insertPrompt?.kind !== "prompt" || !insertPrompt.nonce || consumedInsertRef.current === insertPrompt.nonce) return;
+    consumedInsertRef.current = insertPrompt.nonce;
+    onInsertConsumedRef.current?.(insertPrompt.nonce);
+    const prefill = {
+      modeId: asTrimmedString(insertPrompt.modeId, 40),
+      prompt: asTrimmedString(insertPrompt.prompt, MAX_PROMPT_CHARS),
+      origin: asTrimmedString(insertPrompt.origin, 60),
+      label: asTrimmedString(insertPrompt.label, 100),
+      documentId: asTrimmedString(insertPrompt.documentId, 240),
+    };
+    if (!prefill.prompt) return;
+    const draft = latestPromptRef.current.trim();
+    if (draft && draft !== prefill.prompt && !isDefaultPromptRef.current(draft)) {
+      setPendingPrefill(prefill);
+      window.setTimeout(() => keepPrefillDraftRef.current?.focus(), 0);
+      return;
+    }
+    applyPrefillRef.current(prefill);
+  }, [insertPrompt]);
+
   const codeMode = currentMode.id === "code-review";
   const keyHint = setupRequired ? "" : composerKeyHint({ finePointer, codeMode, platform: currentPlatform() });
 
@@ -3692,6 +3739,15 @@ export default function AiTutor({
       <form className={`ai-tutor__composer${setupRequired ? " is-collapsed" : ""}`} onSubmit={submit} ref={composerRef} aria-label="Ask the tutor">
         {jumpLabel && <button className="ai-tutor__jump" type="button" onClick={jumpToLatest}><ArrowDown size={16} aria-hidden="true" /> {jumpLabel}</button>}
         {composerNotice && <p className="ai-tutor__composer-notice" role="status">{composerNotice}</p>}
+        {pendingPrefill && (
+          <div className="ai-tutor__prefill-confirm" role="group" aria-label="Replace your unsent question?">
+            <p>{prefillOrigin(pendingPrefill)} Your unsent question is in the box. Replace it?</p>
+            <div>
+              <button className="ai-tutor__button ai-tutor__button--secondary" type="button" ref={keepPrefillDraftRef} onClick={() => { setPendingPrefill(null); setComposerNotice(`Your draft was kept; the question from the ${pendingPrefill.origin || "other screen"} was not added.`); window.setTimeout(focusComposer, 0); }}>Keep my draft</button>
+              <button className="ai-tutor__button ai-tutor__button--primary" type="button" onClick={() => applyPrefill(pendingPrefill)}>Replace draft</button>
+            </div>
+          </div>
+        )}
         {/* The one-time local-model disclosure stays in the composer, never
             only in the options sheet, until it is acknowledged. */}
         {!setupRequired && !localDisclosureAcknowledged && (

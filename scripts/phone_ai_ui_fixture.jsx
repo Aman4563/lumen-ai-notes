@@ -227,6 +227,7 @@ class AuditPhoneEngine {
 const engine = new AuditPhoneEngine();
 engine.navigations = [];
 engine.savedNotes = [];
+engine.consumedInserts = [];
 window.__PHONE_AI_AUDIT__ = engine;
 
 const sources = [{
@@ -271,10 +272,20 @@ const retrieveLibrary = async (query, options = {}) => {
 const navigateSource = (target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor });
 const saveAnswerNote = (payload) => { engine.savedNotes.push(payload); return true; };
 const interactionChange = (locked) => engine.interactionStates.push(locked);
+// A host insert (a Reader excerpt or a prepared question), consumed once as
+// the app does (TFEAT-07).
+let setHostInsert = () => {};
+window.__PHONE_INSERT__ = (insert) => setHostInsert(insert);
+const insertConsumed = (nonce) => {
+  engine.consumedInserts.push(nonce);
+  setHostInsert((current) => (current?.nonce === nonce ? null : current));
+};
 
 function AuditHost() {
   const speech = useSpeech({});
-  return <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} speech={speech} onNavigateSource={navigateSource} onSaveAnswerNote={saveAnswerNote} onInteractionChange={interactionChange} />;
+  const [insert, setInsert] = React.useState(null);
+  setHostInsert = setInsert;
+  return <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} speech={speech} insertPrompt={insert} onInsertConsumed={insertConsumed} onNavigateSource={navigateSource} onSaveAnswerNote={saveAnswerNote} onInteractionChange={interactionChange} />;
 }
 
 const root = createRoot(document.getElementById("root"));

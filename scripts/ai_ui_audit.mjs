@@ -7,6 +7,7 @@ import puppeteer from "puppeteer-core";
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { buildTrackRound, normalizeTrackBank } from "../src/lib/interviewTracks.js";
 import { createMistake } from "../src/lib/mistakes.js";
+import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
 import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
@@ -2784,6 +2785,138 @@ try {
     await practiceScenario.context.close();
   }
 
+  // "Work through with tutor" (TFEAT-07). A mistake-notebook entry opens the
+  // tutor in Socratic with its question, expected answer and the learner's
+  // answer in the box, focused and in view, and sends nothing. The insert is
+  // applied once; a draft the learner wrote is replaced only on request; a
+  // finished readiness check's misses open as one Explain question; neither
+  // bridge exists while AI features are off.
+  const bridgeScenario = await newIsolatedPage("mistake-bridge");
+  try {
+    const { page, calls } = bridgeScenario;
+    const mistake = createMistake({ prompt: "Why does lasso produce sparse weights while ridge does not?", expected: "The L1 penalty has corners at zero, so the optimum often lands on an axis.", response: "Because lasso squares the weights.", documentId: starterChapter.id });
+    const request = mistakeTutorRequest(mistake);
+    const composerState = () => page.evaluate(() => {
+      const field = document.querySelector(".ai-tutor__composer textarea");
+      const rect = field.getBoundingClientRect();
+      const nav = document.querySelector(".bottom-nav");
+      const navTop = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+      return {
+        route: location.hash,
+        value: field.value,
+        focused: document.activeElement === field,
+        inView: rect.top >= (document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0) - 1 && rect.bottom <= navTop + 1,
+        notice: document.querySelector(".ai-tutor__composer-notice")?.textContent || "",
+      };
+    });
+    const openBridge = async () => {
+      await page.evaluate(() => { location.hash = "#/review"; });
+      await page.waitForSelector(".mistake-card", { timeout: 10_000 });
+      await clickByText(page, ".mistake-card button", "Work through with tutor");
+      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    };
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await patchStoredProfile(page, { mistakes: [mistake] });
+    await page.evaluate(() => { location.hash = "#/review"; });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".mistake-card", { timeout: 10_000 });
+    assert.ok(await page.$$eval(".mistake-card button", (nodes) => nodes.find((node) => node.textContent.includes("Work through with tutor"))?.getBoundingClientRect().height >= 44), "the bridge was missing or under 44px on a phone");
+    await clickByText(page, ".mistake-card button", "Work through with tutor");
+    await page.waitForFunction((text) => document.querySelector(".ai-tutor__composer textarea")?.value === text, { timeout: 10_000 }, request.prompt);
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    const opened = await composerState();
+    assert.deepEqual(opened, { route: "#/ai", value: request.prompt, focused: true, inView: true, notice: "From mistake notebook: “Why does lasso produce sparse weights while ridge does not?” Review the question, then send." }, "the mistake did not open as a reviewed, focused question");
+    assert.match(opened.value, /Expected answer: The L1 penalty[\s\S]*My answer: Because lasso squares the weights\.$/);
+    assert.equal(await activeMode(page), "Socratic", "the mistake did not open in Socratic");
+    assert.equal(calls.respond.length, 0, "the bridge sent a request");
+
+    // Consumed once: leaving and returning keeps what the learner typed.
+    await setComposerPrompt(page, "My own draft about dropout.");
+    await page.evaluate(() => { location.hash = "#/home"; });
+    await page.waitForSelector(".ai-tutor", { hidden: true, timeout: 10_000 });
+    await page.evaluate(() => { location.hash = "#/ai"; });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal((await composerState()).value, "My own draft about dropout.", "the bridge's question came back after a remount");
+    assert.equal(await page.$(".ai-tutor__prefill-confirm"), null);
+
+    // A draft is kept unless the learner replaces it.
+    await openBridge();
+    await page.waitForSelector(".ai-tutor__prefill-confirm", { timeout: 5_000 });
+    await page.waitForFunction(() => document.activeElement?.textContent === "Keep my draft", { timeout: 5_000 });
+    assert.equal((await composerState()).value, "My own draft about dropout.", "the bridge overwrote a draft");
+    await clickByText(page, ".ai-tutor__prefill-confirm button", "Keep my draft");
+    assert.equal(await page.$(".ai-tutor__prefill-confirm"), null);
+    assert.equal((await composerState()).value, "My own draft about dropout.");
+    await openBridge();
+    await page.waitForSelector(".ai-tutor__prefill-confirm", { timeout: 5_000 });
+    await clickByText(page, ".ai-tutor__prefill-confirm button", "Replace draft");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal((await composerState()).value, request.prompt, "Replace draft did not apply the mistake");
+    assert.equal(calls.respond.length, 0);
+    await setComposerPrompt(page, "");
+
+    // A readiness check's misses open as one Explain question.
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const open = indexedDB.open("lumen-ai-notes", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const transaction = open.result.transaction("study-data", "readwrite");
+        const store = transaction.objectStore("study-data");
+        const get = store.get("profile");
+        get.onsuccess = () => {
+          const profile = get.result;
+          const stamp = new Date().toISOString();
+          profile.reviewItems = [...profile.reviewItems, ...["chain rule", "learning rate", "batch normalization"].map((answer, index) => ({
+            id: `bridge-cloze-${index}`, type: "cloze", front: `Deep learning fact ${index}: the {{${answer}}} matters.`, back: answer,
+            documentId: "notes/part-07-deep-learning/01-neural-networks-and-backprop.md", tags: [], suspended: false, archived: false, buriedOnDay: "",
+            dueAt: stamp, intervalDays: 1, ease: 2.5, repetitions: 1, reviewCount: 1, lapses: 0, createdAt: stamp, updatedAt: stamp, lastReviewedAt: stamp,
+          }))];
+          store.put(profile, "profile");
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }));
+    await page.evaluate(() => { location.hash = "#/home"; });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".mastery-grid", { timeout: 10_000 });
+    await page.evaluate(() => [...document.querySelectorAll(".mastery-row")].find((node) => node.querySelector(".mastery-part")?.textContent === "07")?.querySelector(".mastery-check")?.click());
+    await page.waitForSelector(".assessment-dialog", { timeout: 5_000 });
+    await clickByText(page, ".assessment-dialog button", "Start");
+    for (let index = 0; index < 3; index += 1) {
+      await page.waitForSelector(".assessment-cloze input", { timeout: 5_000 });
+      await page.$eval(".assessment-cloze input", (input, text) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, text);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, `wrong ${index}`);
+      await clickByText(page, ".assessment-cloze button", "Submit answer");
+    }
+    await page.waitForSelector(".assessment-tutor", { timeout: 5_000 });
+    await page.$eval(".assessment-tutor", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea")?.value.startsWith("Explain the questions I missed in my readiness check"), { timeout: 10_000 });
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    const misses = await composerState();
+    assert.equal(misses.route, "#/ai");
+    assert.equal(await page.$(".assessment-dialog"), null, "the readiness check stayed open over the tutor");
+    assert.equal(await activeMode(page), "Explain");
+    assert.equal((misses.value.match(/^\d\. /gm) || []).length, 3, "the misses were not listed");
+    assert.match(misses.value, /Expected: chain rule[\s\S]*I answered: wrong 0/);
+    assert.equal(misses.value.includes("{{"), false, "a cloze answer leaked through its blank");
+    assert.equal(calls.respond.length, 0, "the readiness-check bridge sent a request");
+
+    // AI features off: no bridge on the notebook or the check result.
+    const stored = await readProfile(page);
+    await patchStoredProfile(page, { settings: { ...stored.settings, aiFeaturesEnabled: false } });
+    await page.evaluate(() => { location.hash = "#/review"; });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".mistake-card", { timeout: 10_000 });
+    assert.equal(await page.$$eval(".mistake-card button", (nodes) => nodes.some((node) => node.textContent.includes("Work through with tutor"))), false, "the bridge showed with AI features off");
+  } finally {
+    await bridgeScenario.context.close();
+  }
+
   let modelOnline = false;
   const recovery = await newAuditPage("service-recovers", () => modelOnline ? secureConfig : {
     ...secureConfig, service: { ...secureConfig.service, reachable: false },
@@ -2810,7 +2943,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, Work-through-with-tutor bridges from the mistake notebook and readiness checks, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

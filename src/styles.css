@@ -6623,6 +6623,10 @@ input[type="range"] {
   font-size: 0.76rem;
 }
 
+@media (max-width: 719px) {
+  .mistake-actions .button.ghost { min-height: 44px; }
+}
+
 .library-search .search-save {
   display: grid;
   place-items: center;
@@ -8181,6 +8185,7 @@ input[type="range"] {
 .assessment-numeric label { display: flex; flex-direction: column; gap: 5px; font-size: 0.85rem; }
 .assessment-missed { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 4px; }
 .assessment-missed-link { display: inline-flex; align-items: center; gap: 6px; text-align: left; }
+.assessment-tutor { margin-top: 12px; min-height: 44px; }
 
 /* Review, readiness-check, and notebook repairs (issue #54). */
 .assessment-choice-list { display: grid; gap: 8px; }
