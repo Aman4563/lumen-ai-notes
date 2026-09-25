@@ -67,15 +67,27 @@ try {
   ]);
   console.log("Cross-tab audit: concurrent creates submitted");
 
+  // Wait for both specific notes, not merely two records: on a slow runner the
+  // second debounced save can land well after the first.
+  const wanted = ["Concurrent note from tab A", "Concurrent note from tab B"];
+  const submittedAt = Date.now();
   let stored;
-  const deadline = Date.now() + 15_000;
   do {
     await delay(150);
     stored = await readProfile(pageA);
-  } while ((stored?.customDocuments?.length || 0) < 2 && Date.now() < deadline);
-  console.log("Cross-tab audit: durable merge observed");
+  } while (!wanted.every((title) => stored?.customDocuments?.some((document) => document.title === title)) && Date.now() - submittedAt < 45_000);
+  console.log(`Cross-tab audit: durable merge observed after ${Date.now() - submittedAt} ms`);
 
   const titles = new Set(stored.customDocuments.map((document) => document.title));
+  if (!wanted.every((title) => titles.has(title))) {
+    // Distinguish a lost update from a slow one: what is durable, what each tab
+    // still shows, and each tab's save state.
+    const tabState = (page) => page.evaluate(() => ({
+      saveStatus: document.querySelector(".save-status, [data-save-status]")?.textContent?.trim() || null,
+      visibleNotes: [...document.querySelectorAll(".notebook-document-row, .document-card")].map((node) => node.textContent.trim().slice(0, 40)).slice(0, 6),
+    })).catch((error) => ({ error: error.message }));
+    console.error(JSON.stringify({ waitedMs: Date.now() - submittedAt, storedTitles: [...titles], revision: stored?.syncMeta?.revision, tabA: await tabState(pageA), tabB: await tabState(pageB), errors }));
+  }
   assert.ok(titles.has("Concurrent note from tab A"), "tab A's unique note was overwritten");
   assert.ok(titles.has("Concurrent note from tab B"), "tab B's unique note was overwritten");
   assert.ok(stored.syncMeta.revision >= 2, "serialized cross-tab writes did not advance the profile revision");
