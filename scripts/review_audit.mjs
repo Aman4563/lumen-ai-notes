@@ -149,8 +149,13 @@ try {
   await clickByText(page, ".review-card-dialog button", "Save changes");
   await page.waitForSelector(".review-deck-card");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("[edited]"), "card edit was not saved");
-  await page.$eval('button[aria-label="Archive review card"]', (node) => node.click());
+  await page.$eval('button[aria-label="Archive review card"]', (node) => { node.focus(); node.click(); });
   await page.waitForFunction(() => [...document.querySelectorAll(".review-deck-tools button")].some((node) => node.textContent.includes("Archived (1)")), { timeout: 5_000 });
+  // Issue #54 (REV-7): the archived row's button is gone, so focus moves to
+  // the deck heading (the list is now empty) and a toast confirms the change.
+  await page.waitForFunction(() => document.activeElement === document.querySelector(".review-deck-heading h2"), { timeout: 5_000 })
+    .catch(() => assert.fail("archiving the last card must move focus to the deck heading"));
+  assert.ok((await page.$eval(".toast", (node) => node.textContent)).includes("Card archived"), "archiving must be confirmed");
   await clickByText(page, ".review-deck-tools button", "Archived (1)");
   await page.waitForSelector('button[aria-label="Restore review card"]');
   await page.$eval('button[aria-label="Restore review card"]', (node) => node.click());
@@ -522,6 +527,12 @@ try {
         const profile = get.result;
         const stamp = new Date().toISOString();
         profile.clippings = [1, 2].map((index) => ({ id: `audit-clip-${index}`, documentId: "notes/part-01-foundations/01-ai-ml-mental-model.md", text: `Audit clipping ${index}: attention weighs every token against every other token.`, note: "", createdAt: stamp, updatedAt: stamp }));
+        // Three cloze cards give Part 07 an all-cloze readiness check.
+        profile.reviewItems = [...profile.reviewItems, ...["chain rule", "learning rate", "batch normalization"].map((answer, index) => ({
+          id: `audit-cloze-${index}`, type: "cloze", front: `Deep learning fact ${index}: the {{${answer}}} matters.`, back: answer,
+          documentId: "notes/part-07-deep-learning/01-neural-networks-and-backprop.md", tags: [], suspended: false, archived: false, buriedOnDay: "",
+          dueAt: stamp, intervalDays: 1, ease: 2.5, repetitions: 1, reviewCount: 1, lapses: 0, createdAt: stamp, updatedAt: stamp, lastReviewedAt: stamp,
+        }))];
         store.put(profile, "profile");
       };
       transaction.oncomplete = () => resolve();
@@ -546,6 +557,25 @@ try {
   const restoredClippings = (await readProfile(page)).clippings;
   assert.deepEqual(restoredClippings.map((clip) => clip.id), ["audit-clip-1", "audit-clip-2"], "Undo must restore the clipping in its original place");
   assert.equal(restoredClippings[0].note, burst, "the restored clipping keeps its note");
+
+  // Issue #54 (REV-15): Enter in a cloze blank submits the answer and the
+  // next question takes focus; closing mid-check asks before discarding.
+  await page.evaluate(() => { location.hash = "#/home"; });
+  await page.waitForSelector(".mastery-grid");
+  await page.evaluate(() => [...document.querySelectorAll(".mastery-row")].find((node) => node.querySelector(".mastery-part")?.textContent === "07")?.querySelector(".mastery-check")?.click());
+  await page.waitForSelector(".assessment-dialog", { timeout: 5_000 });
+  await clickByText(page, ".assessment-dialog button", "Start");
+  await page.waitForSelector(".assessment-cloze input", { timeout: 5_000 });
+  await page.focus(".assessment-cloze input");
+  await page.keyboard.type("chain rule");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.activeElement?.id === "assessment-title" && document.activeElement.textContent.includes("Question 2 of 3"), { timeout: 5_000 })
+    .catch(() => assert.fail("Enter in a cloze blank must submit and focus the next question"));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".assessment-leave", { timeout: 5_000 });
+  await clickByText(page, ".assessment-leave button", "Leave and discard");
+  await page.waitForFunction(() => !document.querySelector(".assessment-dialog"), { timeout: 5_000 });
+
   await page.evaluate(() => { location.hash = "#/review"; });
   await page.waitForSelector(".review-center-page");
 
@@ -595,7 +625,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, session progress/focus/announcement and short-phone grade reach, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
