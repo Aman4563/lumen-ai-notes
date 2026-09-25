@@ -155,6 +155,46 @@ const clickByText = async (page, selector, text) => {
   assert.ok(clicked, `could not find ${selector} containing “${text}”`);
 };
 
+// Depth, response profile, web fallback and privacy live in the Request
+// options sheet (issue #57); the question box, Send and the armed-web badge
+// stay in the sticky composer.
+const openOptions = async (page) => {
+  if (await page.$(".tutor-sheet")) return;
+  await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
+  await page.waitForSelector(".tutor-sheet .ai-tutor__web-search input", { timeout: 5_000 });
+};
+
+const closeOptions = async (page) => {
+  if (!(await page.$(".tutor-sheet"))) return;
+  await page.$eval(".tutor-sheet__done", (button) => button.click());
+  await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+};
+
+const withOptions = async (page, action) => {
+  await openOptions(page);
+  try {
+    return await action();
+  } finally {
+    await closeOptions(page);
+  }
+};
+
+// Phones pick the mode from a native select; wider screens show chips.
+const chooseMode = async (page, label) => {
+  if (await page.$(".ai-tutor__mode-select select")) {
+    const value = await page.$$eval(".ai-tutor__mode-select option", (options, text) => options.find((option) => option.textContent.trim() === text)?.value || "", label);
+    assert.ok(value, `the mode select has no “${label}” option`);
+    await page.select(".ai-tutor__mode-select select", value);
+    return;
+  }
+  await clickByText(page, ".ai-tutor__mode-tabs button", label);
+};
+
+const activeMode = (page) => page.evaluate(() => {
+  const select = document.querySelector(".ai-tutor__mode-select select");
+  return (select ? select.selectedOptions[0]?.textContent : document.querySelector(".ai-tutor__mode-tabs button[aria-pressed='true']")?.textContent)?.trim() || "";
+});
+
 const readProfile = (page) => page.evaluate(() => new Promise((resolve, reject) => {
   const request = indexedDB.open("lumen-ai-notes", 1);
   request.onerror = () => reject(request.error);
@@ -323,13 +363,24 @@ try {
   assert.match(await page.$eval(".ai-tutor__connection--ready", (node) => node.textContent), /local Ollama model ready/i);
   assert.equal(calls.config.length, 1, "AI configuration was not checked exactly once on initial mount");
   assert.equal(new URL(calls.config[0].url).origin, new URL(baseUrl).origin, "configuration request was not same-origin");
+  await page.waitForSelector(".ai-tutor__source.is-selected", { timeout: 10_000 });
+  // Until acknowledged, the local-model disclosure is in the composer
+  // itself, never only inside the options sheet.
+  assert.equal(await page.$eval(".ai-tutor__composer .ai-tutor__consent-card", (node) => node.getBoundingClientRect().height > 0), true, "the unacknowledged disclosure was not shown in the composer");
+  const optionsFocus = await page.evaluate(() => {
+    const opener = document.querySelector(".ai-tutor__options-toggle");
+    opener.focus();
+    opener.click();
+    return { expanded: opener.getAttribute("aria-haspopup") };
+  });
+  assert.equal(optionsFocus.expanded, "dialog", "the Options button does not announce its dialog");
+  await page.waitForSelector(".tutor-sheet[role='dialog'][aria-modal='true']", { timeout: 5_000 });
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("tutor-sheet")), true, "opening Options did not move focus into the sheet");
   assert.equal(
     await page.$eval('.ai-tutor__response-profiles input[value="deep"]', (input) => input.disabled),
     false,
     "Deep profile was unavailable although the model attests thinking support",
   );
-
-  await page.waitForSelector(".ai-tutor__source.is-selected", { timeout: 10_000 });
   assert.equal(await page.$(".ai-tutor__privacy-body"), null, "request details should be collapsed by default");
   await page.click(".ai-tutor__privacy-toggle");
   const disclosure = await page.$eval(".ai-tutor__privacy-body", (node) => node.textContent.replace(/\s+/g, " "));
@@ -343,12 +394,29 @@ try {
   // Web egress is available only after the complete-library sufficiency
   // check. Moving to any narrower source scope must clear and disable it.
   await page.locator(".ai-tutor__web-search input").click();
+  // The sheet keeps Tab inside, closes with Escape and returns focus to the
+  // Options button; the armed permission stays visible on the composer.
+  for (let step = 0; step < 14; step += 1) await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest(".tutor-sheet"))), true, "Tab escaped the options sheet");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("ai-tutor__options-toggle")), true, "closing the options sheet did not return focus to Options");
+  assert.match(await page.$eval(".ai-tutor__composer .ai-tutor__web-status.is-armed", (node) => node.textContent), /armed for this request/i, "the armed web permission was not visible on the composer");
   await page.click(".ai-tutor__source-panel-toggle");
   await clickByText(page, ".ai-tutor__source-modes button", "No library");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "leaving Library first did not clear web fallback");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), true, "web fallback remained enabled without whole-library retrieval");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "leaving Library first did not clear web fallback");
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), true, "web fallback remained enabled without whole-library retrieval");
+  });
+  assert.equal(await page.$(".ai-tutor__composer .ai-tutor__web-status.is-armed"), null, "a withdrawn web permission still showed as armed");
   await clickByText(page, ".ai-tutor__source-modes button", "Library first");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), false, "Library first did not restore the eligible web-fallback control");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), false, "Library first did not restore the eligible web-fallback control");
+    const undersizedSheetControls = await page.$$eval(".tutor-sheet button, .tutor-sheet select", (nodes) => nodes
+      .map((node) => ({ name: (node.getAttribute("aria-label") || node.textContent || node.tagName).trim().slice(0, 40), height: Math.round(node.getBoundingClientRect().height) }))
+      .filter((control) => control.height > 0 && control.height < 44));
+    assert.deepEqual(undersizedSheetControls, [], `undersized options-sheet controls on a phone: ${JSON.stringify(undersizedSheetControls)}`);
+  });
   // Phone targets (TC-21): every tutor control on this 393px phone is at
   // least 44px tall, the source filter included. Inline citations extend
   // their hit area with a pseudo-element instead.
@@ -366,11 +434,13 @@ try {
     setter.call(field, "How does Double DQN reduce overestimation bias, and what is the latest implementation guidance?");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "web search was not off by default");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "web search was not off by default");
+  });
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), true, "send was enabled before explicit consent");
   await page.click(".ai-tutor__consent input");
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "one-time local disclosure acknowledgement did not enable a valid grounded request");
-  await page.locator(".ai-tutor__web-search input").click();
+  await withOptions(page, () => page.locator(".ai-tutor__web-search input").click());
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "the web-fallback checkbox did not act as its own one-request authorization");
   assert.match(await page.$eval(".ai-tutor__web-status.is-armed", (node) => node.textContent), /armed for this request/i);
   await page.$eval(sendSelector, (button) => button.click());
@@ -437,7 +507,9 @@ try {
   await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Approach");
   assert.match(await page.$eval(".ai-tutor__approach", (node) => node.textContent.replace(/\s+/g, " ")), /Library retrieval attached [1-9]/i, "whole-library retrieval trace was not visible in the Approach panel");
   assert.equal((await page.$$(".ai-tutor__consent input")).length, 0, "remembered local disclosure unexpectedly asked for every request");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "one-request web authorization was not consumed");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "one-request web authorization was not consumed");
+  });
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), true, "send stayed enabled after the completed prompt was cleared");
   await waitForStoredHistory(page, "nonempty");
 
@@ -508,8 +580,8 @@ try {
   await page.evaluate(() => { window.location.hash = "#/ai"; });
   await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
   await page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
-  await clickByText(page, ".ai-tutor__mode-tabs button", "Quiz");
-  assert.equal(await page.$eval(".ai-tutor__mode-tabs button[aria-pressed='true']", (button) => button.textContent.trim()), "Quiz");
+  await chooseMode(page, "Quiz");
+  assert.equal(await activeMode(page), "Quiz");
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "remembered local acknowledgement did not carry into a local-only follow-up");
   await page.$eval(sendSelector, (button) => button.click());
   await page.waitForSelector(".ai-tutor__quiz", { timeout: 10_000 });
@@ -607,7 +679,7 @@ try {
     setter.call(field, "What is the latest current guidance on evaluation leakage?");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await retryConsent.page.locator(".ai-tutor__web-search input").click();
+  await withOptions(retryConsent.page, () => retryConsent.page.locator(".ai-tutor__web-search input").click());
   await retryConsent.page.$eval(sendSelector, (button) => button.scrollIntoView({ block: "nearest", behavior: "instant" }));
   assert.equal(await retryConsent.page.$eval(sendSelector, (button) => {
     const box = button.getBoundingClientRect();
@@ -621,13 +693,15 @@ try {
   assert.equal(retryConsent.calls.respond.length, 1, "initial retry fixture request count was wrong");
   assert.match(await retryConsent.page.$eval(".ai-tutor__request-error .ai-tutor__web-status.is-failed", (node) => node.textContent), /fallback failed/i, "failed current-web request did not visibly identify the failed fallback");
   assert.equal(await retryConsent.page.$eval(".ai-tutor__request-error button", (button) => button.disabled), true, "web-search retry did not require renewed one-request authorization");
-  await retryConsent.page.locator(".ai-tutor__web-search input").click();
+  await withOptions(retryConsent.page, () => retryConsent.page.locator(".ai-tutor__web-search input").click());
   assert.equal(await retryConsent.page.$eval(".ai-tutor__request-error button", (button) => button.disabled), false, "renewed web authorization did not enable retry");
   await retryConsent.page.click(".ai-tutor__request-error button");
   await retryConsent.page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
   assert.equal(retryConsent.calls.respond.length, 2, "retry was not sent exactly once after renewed consent");
   assert.equal(retryConsent.calls.respond[1].body.webSearch, true, "retry lost the disclosed web-search scope");
-  assert.equal(await retryConsent.page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "retry web authorization was not consumed");
+  await withOptions(retryConsent.page, async () => {
+    assert.equal(await retryConsent.page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "retry web authorization was not consumed");
+  });
   await retryConsent.page.close();
 
   // An approved search that returns nothing usable degrades to a library-only
@@ -641,7 +715,7 @@ try {
     setter.call(field, "What is the latest current guidance on evaluation leakage?");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await webUnavailable.page.locator(".ai-tutor__web-search input").click();
+  await withOptions(webUnavailable.page, () => webUnavailable.page.locator(".ai-tutor__web-search input").click());
   // Earlier scenarios share this browser profile and its saved conversation.
   const answeredBefore = await webUnavailable.page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.length);
   await webUnavailable.page.locator(sendSelector).click();
@@ -716,6 +790,7 @@ try {
   const nonThinking = await newAuditPage("non-thinking", () => nonThinkingConfig);
   await nonThinking.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
   await nonThinking.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  await openOptions(nonThinking.page);
   assert.equal(
     await nonThinking.page.$eval('.ai-tutor__response-profiles input[value="deep"]', (input) => input.disabled),
     true,
@@ -1009,7 +1084,7 @@ try {
     describedByError: document.getElementById(input.getAttribute("aria-describedby") || "")?.classList.contains("ai-tutor__pairing-error") === true,
   })), { invalid: "true", describedByError: true }, "the rejected pairing code was not linked to its error");
   await pairing.page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__pairing input"), { timeout: 3_000 }).catch(() => assert.fail("a rejected pairing code did not return focus to the code field"));
-  assert.equal(await pairing.page.$$eval(".ai-tutor__composer :is(.ai-tutor__response-profiles, .ai-tutor__web-search, .ai-tutor__difficulty, .ai-tutor__consent)", (nodes) => nodes.length), 0, "the pairing state still showed the full composer");
+  assert.equal(await pairing.page.$$eval(":is(.ai-tutor__options-toggle, .ai-tutor__consent-card, .tutor-sheet)", (nodes) => nodes.length), 0, "the pairing state still offered request options or the disclosure");
   await pairing.page.$eval(".ai-tutor__pairing input", (input) => { input.value = ""; });
   await pairing.page.type(".ai-tutor__pairing input", "correct-horse-battery");
   await pairing.page.$eval(".ai-tutor__pairing button[type='submit']", (button) => button.click());
@@ -1043,8 +1118,8 @@ try {
   // A server without AI shows one focused card and a reason next to the
   // disabled Generate button instead of the whole composer.
   assert.match(await disabled.page.$eval(".ai-tutor__setup-card", (node) => node.textContent), /not set up on this server/i, "the AI-disabled state did not explain itself");
-  assert.deepEqual(await disabled.page.$$eval(".ai-tutor__composer :is(.ai-tutor__response-profiles, .ai-tutor__web-search, .ai-tutor__difficulty, .ai-tutor__consent)", (nodes) => nodes.length), 0, "the AI-disabled state still showed the full composer");
-  assert.equal(await disabled.page.$(".ai-tutor__mode-tabs"), null, "the AI-disabled state still offered study modes");
+  assert.deepEqual(await disabled.page.$$eval(":is(.ai-tutor__options-toggle, .ai-tutor__consent-card, .tutor-sheet)", (nodes) => nodes.length), 0, "the AI-disabled state still offered request options or the disclosure");
+  assert.equal(await disabled.page.$(":is(.ai-tutor__mode-tabs, .ai-tutor__mode-select)"), null, "the AI-disabled state still offered study modes");
   assert.match(await disabled.page.$eval(".ai-tutor__disabled-reason", (node) => node.textContent), /not set up on this server/i, "the disabled Generate button had no reason");
   await clickByText(disabled.page, ".ai-tutor__connection button", "Check again");
   await disabled.page.waitForFunction(() => document.querySelector(".ai-tutor__connection--disabled"), { timeout: 8_000 });
@@ -1214,7 +1289,7 @@ try {
     assert.doesNotMatch(await promptValue(), /Explain this excerpt/, "a sent Ask AI excerpt came back after the tutor remounted");
 
     // An unsent draft, its mode and its grounding survive a route change.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Quiz");
+    await chooseMode(page, "Quiz");
     await page.click(".ai-tutor__source-panel-toggle");
     await clickByText(page, ".ai-tutor__source-modes button", "No library");
     const draft = "My unsent draft about ridge penalties";
@@ -1222,7 +1297,7 @@ try {
     await visit("#/library", ".library-page");
     await visit("#/ai", ".ai-tutor__connection--ready");
     assert.equal(await promptValue(), draft, "an unsent draft was lost on a route change");
-    assert.equal(await page.$eval(".ai-tutor__mode-tabs button[aria-pressed='true']", (button) => button.textContent.trim()), "Quiz", "the draft's mode was lost on a route change");
+    assert.equal(await activeMode(page), "Quiz", "the draft's mode was lost on a route change");
     assert.match(await page.$eval(".ai-tutor__source-panel-toggle small", (node) => node.textContent), /^No library/, "the draft's grounding was lost on a route change");
 
     // A new excerpt is added below the learner's draft, not over it.
@@ -1233,7 +1308,7 @@ try {
 
     // Leaving mid-answer records the interrupted turn visibly; it is never
     // sent back to the model as memory. No library shows the source-free wait.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Explain");
+    await chooseMode(page, "Explain");
     const interruptedPrompt = "Lifecycle check: explain weight decay.";
     await setPrompt(interruptedPrompt);
     const answersBefore = await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.length);
@@ -1264,7 +1339,7 @@ try {
 
     // Flashcards: success is reflected on the button; duplicates are reported
     // as already in Review, never as a failure.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Flashcards");
+    await chooseMode(page, "Flashcards");
     await page.$eval(sendSelector, (button) => button.click());
     await waitForAnswers(answersBefore + 3);
     await page.waitForSelector(".ai-tutor__flashcards", { timeout: 8_000 });
@@ -1286,9 +1361,9 @@ try {
     assert.equal((await readProfile(page)).reviewItems.filter((item) => (item.tags || []).includes("ai-draft")).length, flashcardData.cards.length, "duplicate flashcards were saved twice");
 
     // A configuration refresh keeps the armed one-request web permission.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Explain");
+    await chooseMode(page, "Explain");
     await clickByText(page, ".ai-tutor__source-modes button", "Library first");
-    await page.$eval(".ai-tutor__web-search input", (input) => input.click());
+    await withOptions(page, () => page.$eval(".ai-tutor__web-search input", (input) => input.click()));
     const configChecks = calls.config.length;
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 8_000 }).catch(async (error) => {
       error.message += `\nPage: ${await page.evaluate(() => `${location.hash} ${document.querySelector(".ai-tutor__connection")?.className || "no tutor"} ${document.body.innerText.slice(0, 600)}`)}\nRuntime errors: ${runtimeErrors.join(" | ") || "none"}`;
@@ -1297,8 +1372,10 @@ try {
     await clickByText(page, ".ai-tutor__connection button", "Refresh");
     await page.waitForFunction(() => document.querySelector(".ai-tutor__connection--ready"), { timeout: 8_000 });
     assert.ok(calls.config.length > configChecks, "Refresh did not recheck the server");
-    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), true, "a configuration refresh silently withdrew the learner's web permission");
-    await page.$eval(".ai-tutor__web-search input", (input) => input.click());
+    await withOptions(page, async () => {
+      assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), true, "a configuration refresh silently withdrew the learner's web permission");
+      await page.$eval(".ai-tutor__web-search input", (input) => input.click());
+    });
 
     // The engine choice is remembered across route changes.
     await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
@@ -1434,8 +1511,11 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
 
-    // Inside the conversation, a learner who scrolls back up while text
-    // streams stays there; scrolling back to the end resumes following.
+    // Wider screens keep the conversation's own scroller (phones scroll the
+    // page). Inside it, a learner who scrolls back up while text streams
+    // stays there; scrolling back to the end resumes following. Touch and
+    // mobile emulation stay on, so the page is not reloaded.
+    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
     await setPrompt("Keyboard check: stream a longer answer.");
     await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
     await page.$eval(sendSelector, (button) => button.click());
@@ -1453,9 +1533,13 @@ try {
     const resumed = await page.$eval(".ai-tutor__conversation", (surface) => ({ gap: surface.scrollHeight - surface.scrollTop - surface.clientHeight, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
     assert.ok(!resumed.streaming || resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
+    await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
 
-    // A learner's own Stop is a neutral note that receives focus.
+    // A learner's own Stop is a neutral note that receives focus. The answer
+    // streams slowly so the Stop cannot race its completion on a busy host.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await setPrompt("Keyboard check: stop this one.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 40 }; });
     await page.$eval(sendSelector, (button) => button.focus());
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => /Stop generating/.test(document.activeElement?.textContent || ""), { timeout: 3_000 });
@@ -1490,6 +1574,75 @@ try {
     await waitForStoredHistory(page, "empty");
   } finally {
     await keyboardContext.close();
+  }
+
+  // Phone-first layout (issue #57): the docked composer keeps the question
+  // box and Send in view, above the bottom navigation, on first load, with a
+  // long draft, while an answer streams and after it; the page never scrolls
+  // sideways; below 981px the page is the only vertical scroller.
+  const layoutViewports = [
+    { name: "phone", width: 393, height: 852, isMobile: true, hasTouch: true },
+    { name: "small-phone", width: 320, height: 640, isMobile: true, hasTouch: true },
+    { name: "phone-se", width: 375, height: 667, isMobile: true, hasTouch: true },
+    { name: "tablet", width: 820, height: 1180, isMobile: true, hasTouch: true },
+    { name: "desktop", width: 1280, height: 800, isMobile: false, hasTouch: false },
+  ];
+  for (const viewport of layoutViewports) {
+    const layoutContext = await browser.createBrowserContext();
+    try {
+      const page = await layoutContext.newPage();
+      await page.setViewport({ ...viewport, deviceScaleFactor: 1 });
+      attachDiagnostics(page, `layout-${viewport.name}`);
+      await page.evaluateOnNewDocument(() => {
+        try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+      });
+      await installAiMocks(page, () => secureConfig, { responseDelayMs: 1_200 });
+      await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+      const setLayoutPrompt = (value) => page.$eval(".ai-tutor__composer textarea", (field, text) => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      }, value);
+      const checkLayout = async (state) => {
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const layout = await page.evaluate(() => {
+          const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+          const span = (rect) => [Math.round(rect.top), Math.round(rect.bottom)];
+          const nav = document.querySelector(".bottom-nav");
+          const conversation = document.querySelector(".ai-tutor__conversation");
+          return {
+            field: span(box(".ai-tutor__composer textarea")),
+            send: span(box(".ai-tutor__send")),
+            navTop: Math.round(nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight),
+            topbar: Math.round(Math.max(0, box(".app-topbar")?.bottom ?? 0)),
+            scrollWidth: document.documentElement.scrollWidth,
+            innerWidth,
+            narrow: matchMedia("(max-width: 980px)").matches,
+            nestedScroll: conversation.scrollHeight - conversation.clientHeight,
+          };
+        });
+        const inView = ([top, bottom]) => top >= layout.topbar - 1 && bottom <= layout.navTop + 1;
+        assert.ok(inView(layout.field) && inView(layout.send), `${viewport.name} ${state}: the question box or Send left the visible area: ${JSON.stringify(layout)}`);
+        assert.equal(layout.scrollWidth, layout.innerWidth, `${viewport.name} ${state}: the page scrolls sideways`);
+        if (layout.narrow) assert.ok(layout.nestedScroll <= 1, `${viewport.name} ${state}: the conversation became a nested scroller: ${JSON.stringify(layout)}`);
+      };
+      await checkLayout("first load");
+      await setLayoutPrompt(Array.from({ length: 8 }, (_, line) => `Line ${line + 1} of a long draft about ridge and lasso penalties.`).join("\n"));
+      await checkLayout("long draft");
+      await setLayoutPrompt("Layout check: why does repeated holdout inspection leak information?");
+      // A double tap on Send must not land on the Stop it turns into.
+      await page.click(".ai-tutor__send");
+      await page.click(".ai-tutor__send");
+      await page.waitForSelector(".ai-tutor__message--streaming", { timeout: 5_000 });
+      await checkLayout("streaming");
+      await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 10_000 });
+      assert.equal(await page.$(".ai-tutor__request-note"), null, `${viewport.name}: a double tap on Send stopped the answer`);
+      await checkLayout("answer");
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+      await checkLayout("answer, page top");
+    } finally {
+      await layoutContext.close();
+    }
   }
 
   let modelOnline = false;

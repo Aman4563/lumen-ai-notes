@@ -20,6 +20,22 @@ const clickByText = async (page, selector, text) => {
   assert.ok(clicked, `could not find ${selector} containing “${text}”`);
 };
 
+// Phones pick the mode from a native select; wider screens show chips.
+const chooseMode = async (page, label) => {
+  if (await page.$(".phone-tutor__mode-select select")) {
+    const value = await page.$$eval(".phone-tutor__mode-select option", (options, text) => options.find((option) => option.textContent.trim() === text)?.value || "", label);
+    assert.ok(value, `the On-device mode select has no “${label}” option`);
+    await page.select(".phone-tutor__mode-select select", value);
+    return;
+  }
+  await clickByText(page, ".phone-tutor__mode-tabs button", label);
+};
+
+const activeMode = (page) => page.evaluate(() => {
+  const select = document.querySelector(".phone-tutor__mode-select select");
+  return (select ? select.selectedOptions[0]?.textContent : document.querySelector(".phone-tutor__mode-tabs button[aria-pressed='true']")?.textContent)?.trim() || "";
+});
+
 const touchSize = (page, selector) => page.$$eval(selector, (nodes) => nodes.filter((node) => {
   const style = getComputedStyle(node);
   const rect = node.getBoundingClientRect();
@@ -282,7 +298,7 @@ try {
 
   // Structured-field citations (AI-001): [S#] labels inside flashcard fields
   // are the same navigable controls as prose citations, not inert text.
-  await clickByText(page, ".phone-tutor__mode-tabs button", "Flashcards");
+  await chooseMode(page, "Flashcards");
   await page.click(sendButtonSelector);
   await page.waitForSelector(".phone-tutor__flashcards", { timeout: 10_000 });
   const structuredCitationText = await page.$eval(".phone-tutor__flashcards button.ai-tutor__citation", (node) => node.textContent.trim());
@@ -295,8 +311,8 @@ try {
     { documentId: "notes/audit-gradient-descent.md", anchor: "optimization" },
     "structured [S1] citation did not resolve to its exact source anchor",
   );
-  await clickByText(page, ".phone-tutor__mode-tabs button", "Explain");
-  assert.match(await page.$eval(".phone-tutor__mode-tabs button[aria-pressed='true']", (node) => node.textContent), /Explain/, "mode did not return to Explain after the structured citation check");
+  await chooseMode(page, "Explain");
+  assert.match(await activeMode(page), /Explain/, "mode did not return to Explain after the structured citation check");
 
   await page.click(".phone-tutor__sources summary");
   await clickByText(page, ".phone-tutor__source-modes button", "No library");

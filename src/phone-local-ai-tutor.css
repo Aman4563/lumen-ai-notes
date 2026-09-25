@@ -19,10 +19,12 @@
 .phone-tutor__disclosure p { margin: 0; color: var(--ink-soft); font-size: .8rem; line-height: 1.5; }
 .phone-tutor__disclosure strong { color: var(--ink); }
 
-.phone-tutor__mode-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 2px 1px 6px; scrollbar-width: thin; }
+.phone-tutor__mode-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 1px 6px; }
 .phone-tutor__mode-tabs button { min-width: max-content; min-height: 44px; padding: 9px 14px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--ink-soft); background: var(--paper); font-size: .82rem; font-weight: 700; cursor: pointer; }
 .phone-tutor__mode-tabs button.is-selected { border-color: var(--teal); color: var(--ink); background: var(--teal-soft); }
 .phone-tutor__mode-description { margin: -9px 2px 0; color: var(--ink-soft); font-size: .8rem; }
+.phone-tutor__mode-select { display: flex; align-items: center; gap: 10px; color: var(--ink-soft); font-size: .82rem; font-weight: 750; }
+.phone-tutor__mode-select select { flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 8px 34px 8px 12px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--paper); font-size: 1rem; font-weight: 700; }
 
 .phone-tutor__layout { display: grid; grid-template-columns: minmax(230px, .7fr) minmax(0, 1.5fr); gap: 14px; align-items: start; }
 .phone-tutor__sources, .phone-tutor__conversation, .phone-tutor__composer { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper); box-shadow: var(--shadow-sm); }

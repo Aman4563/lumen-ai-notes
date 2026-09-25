@@ -23,6 +23,7 @@ import PhoneLocalAiSettings from "./PhoneLocalAiSettings";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { revealFocusedField } from "../lib/revealField.js";
+import { useMediaQuery } from "../lib/useMediaQuery.js";
 import {
   getPhoneLocalAiEngine,
   inspectPhoneLocalAiRequestFit,
@@ -471,6 +472,9 @@ const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HI
 export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, onInsertConsumed, retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange }) {
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
   const promptId = useId();
+  const modeDescriptionId = useId();
+  // Phones pick the mode from a native select; wider screens show chips.
+  const compactModes = useMediaQuery("(max-width: 719px)");
   const promptFieldRef = useRef(null);
   const headingRef = useRef(null);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
@@ -939,10 +943,19 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
 
       <PhoneLocalAiSettings engine={engine} onNotify={onNotify} onStatusChange={setEngineStatus} interactionBusy={interactionLocked} />
 
-      <div className="phone-tutor__mode-tabs" role="group" aria-label="On-device tutor mode">
-        {PHONE_TUTOR_MODES.map((mode) => <button type="button" aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-selected" : ""} disabled={interactionLocked} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
-      </div>
-      <p className="phone-tutor__mode-description">{currentMode.description}</p>
+      {compactModes ? (
+        <label className="phone-tutor__mode-select">
+          <span>Mode</span>
+          <select value={modeId} disabled={interactionLocked} aria-describedby={modeDescriptionId} onChange={(event) => selectMode(event.target.value)}>
+            {PHONE_TUTOR_MODES.map((mode) => <option value={mode.id} key={mode.id}>{mode.label}</option>)}
+          </select>
+        </label>
+      ) : (
+        <div className="phone-tutor__mode-tabs" role="group" aria-label="On-device tutor mode" aria-describedby={modeDescriptionId}>
+          {PHONE_TUTOR_MODES.map((mode) => <button type="button" aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-selected" : ""} disabled={interactionLocked} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
+        </div>
+      )}
+      <p className="phone-tutor__mode-description" id={modeDescriptionId}>{currentMode.description}</p>
 
       <div className="phone-tutor__layout">
         <aside className="phone-tutor__sources">

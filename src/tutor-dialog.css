@@ -64,3 +64,118 @@
 @media (forced-colors: active) {
   .tutor-dialog { border: 2px solid CanvasText; }
 }
+
+/* Settings sheet: docked to the bottom on phones, centred on wider screens. */
+.tutor-sheet__scrim {
+  position: fixed;
+  z-index: 1000;
+  display: grid;
+  align-items: end;
+  justify-items: center;
+  padding-top: calc(24px + env(safe-area-inset-top));
+  background: rgba(10, 14, 24, 0.52);
+  inset: 0;
+}
+
+.tutor-sheet {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 100%;
+  max-height: min(88svh, 760px);
+  color: var(--ink, #172035);
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  box-shadow: var(--shadow-lg, 0 28px 80px rgba(14, 24, 45, 0.2));
+  outline: none;
+  animation: tutor-sheet-in 200ms ease-out;
+}
+
+.tutor-sheet__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 10px;
+  border-bottom: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+}
+
+.tutor-sheet__head h2 {
+  margin: 8px 0 0;
+  font-size: 1.1rem;
+}
+
+.tutor-sheet__head p {
+  margin: 4px 0 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.tutor-sheet__close {
+  display: grid;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  color: var(--ink-soft, #566078);
+  background: transparent;
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 12px;
+  cursor: pointer;
+  place-items: center;
+}
+
+.tutor-sheet__body {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 14px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tutor-sheet__foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+}
+
+.tutor-sheet__done {
+  min-width: 120px;
+  min-height: 44px;
+  padding: 10px 18px;
+  color: var(--ink, #172035);
+  background: var(--paper-2, #f9f7f1);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 12px;
+  font: inherit;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.tutor-sheet__close:focus-visible,
+.tutor-sheet__done:focus-visible {
+  outline: 2px solid var(--focus-ring, color-mix(in srgb, var(--violet, #7467a8) 72%, var(--ink, #172035)));
+  outline-offset: 2px;
+}
+
+@keyframes tutor-sheet-in {
+  from { opacity: 0.4; transform: translateY(32px); }
+}
+
+@media (min-width: 720px) {
+  .tutor-sheet__scrim { align-items: center; padding: 24px; }
+  .tutor-sheet { width: min(100%, 560px); border-bottom: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18)); border-radius: 20px; }
+  .tutor-sheet__foot { padding-bottom: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tutor-sheet { animation: none; }
+}
+
+@media (forced-colors: active) {
+  .tutor-sheet { border: 2px solid CanvasText; }
+}
