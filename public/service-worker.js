@@ -2,7 +2,9 @@ const APP_CACHE_PREFIX = "lumen-ai-notes-v";
 // main.jsx registers this worker with a build-specific query. That changes the
 // worker script URL on every release and gives each release an isolated shell
 // cache, while keeping the public file host-path portable.
-const BUILD_ID = new URL(self.location.href).searchParams.get("build") || "legacy-10";
+const buildOf = (scriptUrl) => new URL(scriptUrl).searchParams.get("build") || "legacy-10";
+const VERSIONED = new URL(self.location.href).searchParams.has("build");
+const BUILD_ID = buildOf(self.location.href);
 const CACHE_NAME = `${APP_CACHE_PREFIX}${BUILD_ID.replace(/[^a-z0-9._-]/gi, "-").slice(0, 80)}`;
 const MAX_EXTERNAL_IMAGES = 40;
 const APP_SHELL = [
@@ -47,7 +49,7 @@ const fetchScripts = (urls) => Promise.all(urls.map(async (url) => {
 // never delete the cache the active worker is still serving from.
 const discardFailedInstall = async () => {
   const active = self.registration.active?.scriptURL;
-  if (!active || new URL(active).searchParams.get("build") !== BUILD_ID) await caches.delete(CACHE_NAME);
+  if (!active || buildOf(active) !== BUILD_ID) await caches.delete(CACHE_NAME);
 };
 
 self.addEventListener("install", (event) => {
@@ -55,7 +57,9 @@ self.addEventListener("install", (event) => {
     // Validate the release before writing anything: this worker's build must
     // match the route list, and the HTML must boot the same entry chunk the
     // route chunks import. Otherwise fail install and keep the working worker.
-    const routes = await readRouteList();
+    // Only a build-specific registration can match a route list; an unversioned
+    // worker (a legacy registration or the Vite dev server) installs entry-only.
+    const routes = VERSIONED ? await readRouteList() : null;
 
     // Vite fingerprints production assets. Discover those hashed files from
     // the built HTML so the first successful visit is sufficient for offline use.
@@ -64,8 +68,8 @@ self.addEventListener("install", (event) => {
     const htmlAssets = Array.from(html.matchAll(/(?:src|href)=["']([^"']+)["']/g))
       .map((match) => new URL(match[1], self.location.href).href)
       .filter((url) => url.startsWith(self.location.origin));
-    if (!htmlAssets.includes(routes.entry)) throw new Error("The app shell and offline route list come from different builds.");
-    const routeResponses = await fetchScripts(routes.files.filter((url) => !htmlAssets.includes(url)));
+    if (routes && !htmlAssets.includes(routes.entry)) throw new Error("The app shell and offline route list come from different builds.");
+    const routeResponses = routes ? await fetchScripts(routes.files.filter((url) => !htmlAssets.includes(url))) : [];
 
     const cache = await caches.open(CACHE_NAME);
     try {
@@ -80,7 +84,7 @@ self.addEventListener("install", (event) => {
       await cache.addAll([...new Set(htmlAssets)]);
       await Promise.all(routeResponses.map(([url, routeResponse]) => cache.put(url, routeResponse)));
       // StorageHealth reads this copy to keep route files out of optional cleanup.
-      await cache.put(ROUTE_LIST_URL, routes.response);
+      if (routes) await cache.put(ROUTE_LIST_URL, routes.response);
     } catch (error) {
       await discardFailedInstall();
       throw error;

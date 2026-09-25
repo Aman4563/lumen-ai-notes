@@ -87,6 +87,7 @@ const routeBytes = installOnlyFiles.reduce((total, file) => total + statSync(res
 assert(routeBytes < 900_000, `route screens add ${routeBytes} bytes to service-worker installation; keep them under 900 KB`);
 assert(worker.includes("offline-routes.json"), "the service worker must precache the route screens at install");
 assert(worker.includes("list?.build !== BUILD_ID"), "the service worker must reject a route list from a different build");
+assert(worker.includes("VERSIONED ? await readRouteList()"), "a build-specific service worker must require its route list; only an unversioned one may install entry-only");
 assert(worker.includes("htmlAssets.includes(routes.entry)"), "the service worker must reject a route list whose entry differs from the HTML");
 
 const searchChunk = scripts.find((path) => path.includes("content-search"));
