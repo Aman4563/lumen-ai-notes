@@ -1279,19 +1279,20 @@ export default function AiTutor({
   // phase, a reminder every 30 seconds, then the outcome. The visible
   // seconds counter and streamed text are never live.
   const activeStage = activeResponse?.stage || "";
+  const activeResponseId = activeResponse?.id || "";
   useEffect(() => {
-    // Effects can flush after the request already ended; a stale phase must
-    // not replace its outcome announcement.
-    if (activeStage && activeResponseRef.current?.stage === activeStage) announce(activeStage);
-  }, [activeStage, announce]);
+    // Effects, and the state updaters behind them, can run after the request
+    // ended. Only the request still in flight (a ref written in program
+    // order) may announce, so a stale phase never follows its outcome.
+    if (activeStage && activeResponseId && inFlightRef.current?.responseId === activeResponseId) announce(activeStage);
+  }, [activeResponseId, activeStage, announce]);
   useEffect(() => {
-    if (requestState.status === "loading" && requestElapsed > 0 && requestElapsed % 30 === 0) announce(`Still working, ${requestElapsed} seconds so far.`);
+    if (requestState.status === "loading" && inFlightRef.current && requestElapsed > 0 && requestElapsed % 30 === 0) announce(`Still working, ${requestElapsed} seconds so far.`);
   }, [announce, requestElapsed, requestState.status]);
 
   // A new answer starts at the end of the conversation. When Generate or
   // Retry started it, focus moves to Stop (which also brings it into view);
   // a Cmd/Ctrl+Enter send keeps focus in the question box.
-  const activeResponseId = activeResponse?.id || "";
   useLayoutEffect(() => {
     if (!activeResponseId) return;
     scrollConversationToEnd();

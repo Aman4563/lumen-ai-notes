@@ -1231,6 +1231,9 @@ try {
     assert.equal(await page.$eval(".ai-tutor__request-note", (node) => node.getAttribute("role")), null, "the Stop note was an assertive alert");
     assert.equal((await activeElement()).className.includes("ai-tutor__request-note"), true, "Stop left focus on <body>");
     assert.match(await announcement(), /Generation stopped/);
+    // A phase from the stopped request must not be announced after it.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.match(await announcement(), /Generation stopped/, "a stale phase replaced the stop announcement");
 
     // Clear asks in an in-app dialog: focus starts on Cancel, Escape restores
     // focus to Clear, confirming clears and focuses the tutor heading.
