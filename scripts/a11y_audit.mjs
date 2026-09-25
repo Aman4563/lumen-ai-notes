@@ -29,15 +29,11 @@ const VIEWPORTS = [
 ];
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"];
 
-// Known violations owned by the component waves that follow the accessibility
-// foundation. Each entry is one rule inside one component container; anything
-// else fails the gate. Remove an entry as soon as its owner fixes it.
-const ALLOWLIST = [
-  // Home concept map: pointer-only role=button nodes inside role=img (A11Y-SWEEP-15).
-  { rule: "nested-interactive", within: ".concept-map", owner: "dashboard" },
-  // Whiteboard chrome keeps hard-coded light surfaces under Night/Contrast text tokens (BOARD-3).
-  { rule: "color-contrast", within: ".board-header", owner: "whiteboard" },
-];
+// Known violations waiting on an owner fix. Each entry is one rule inside one
+// component container; anything else fails the gate. Remove an entry as soon
+// as its owner fixes it. Empty: the concept map (#52), whiteboard chrome (#55)
+// and tutor connection notice (#56) entries were removed once fixed.
+const ALLOWLIST = [];
 
 const findings = [];
 const runtimeErrors = [];
