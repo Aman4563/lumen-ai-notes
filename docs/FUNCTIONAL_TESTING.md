@@ -605,3 +605,15 @@ confirmed against the preceding build:
 - When Home itself failed, the in-shell panel's primary Go to Home did
   nothing because the view did not change. Reload is the primary action there
   now.
+- On 2026-09-25, rebased onto the startup-bundle split (#66), `audit:visual`
+  failed: after a Home-only visit with the server stopped, Review did not
+  render (`Failed to fetch dynamically imported module: …/ReviewCenter-….js`),
+  and the module check found the review center, its card editor, the readiness
+  check, and the reader's TeX renderer (`markdownMath.js`, now loaded on first
+  math) missing from the route list. They are app code, so the list names them
+  now: 34 files, 30 of them (773,930 bytes) beyond the 714 KB entry, about
+  223 KB gzipped. The split moved code out of the entry into route files, so
+  the entry plus route files fell from about 1.60 MB to 1.49 MB. The card
+  editor and readiness check render outside the view container; a chunk that
+  still fails there reaches the app-level boundary. `audit:app` and
+  `audit:visual` now name all four.

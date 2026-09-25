@@ -839,24 +839,29 @@ under the ink, so the eraser's `destination-out` affects ink only.
 
 ### 10.1 Service-worker strategy
 
-`public/service-worker.js` receives a build identifier through its registration URL and
-uses a distinct `lumen-ai-notes-v<build>` shell cache per release. Install caches the shell,
-the exact entry JS/CSS discovered from built HTML, and the route screens listed in the
-build's `offline-routes.json` (emitted by a plugin in `vite.config.js`: Reader, Whiteboard,
-AI studio, both tutors, Storage health, and Device evidence with their static imports and
-CSS). That adds 19 files and 688,530 bytes to the 908 KB entry. The Node server sends them
-uncompressed; a gzip host would send about 196 KB. KaTeX's JavaScript (259 KB) is included
-because the tutor imports it directly. Lectures, search data, Mermaid, fonts, and the WebLLM
-runtime stay on demand. Median install time rose from 253 to 738 ms at 50 Mbps/10 ms (home
-Wi-Fi) and from 957 to 4,776 ms at 1.6 Mbps/150 ms; registration waits for the load event,
-so first paint is unchanged. Install validates the list's build and entry
-against the worker and HTML, fetches every route file before writing, and fails on any
-missing file or HTML answer, so the previous working worker remains; a failed install
-deletes only its own unused cache. A worker registered without a build query (a legacy
-registration or the Vite dev server) cannot match a list and installs entry-only.
-Activation deletes only old Lumen shell caches and never WebLLM caches. The fetch handler neither answers nor caches `offline-routes.json`, so each
-cache keeps the list its install wrote. Optional-cache cleanup keeps every file named by
-the current build's list and by each cache's installed list.
+`public/service-worker.js` receives a build identifier through its registration URL and uses
+a distinct `lumen-ai-notes-v<build>` shell cache per release. Install caches the shell, the
+exact entry JS/CSS discovered from built HTML, and the route screens listed in the build's
+`offline-routes.json` (emitted by a plugin in `vite.config.js`: Reader and its lazy TeX
+renderer `markdownMath.js`, Whiteboard, AI studio, both tutors, the review center with its
+card editor, the readiness check, Storage health, and Device evidence with their static
+imports and CSS). That adds 30 files and 773,930 bytes to the 714 KB entry. The Node server
+sends them uncompressed; a gzip host would send about 223 KB. KaTeX's JavaScript (259 KB) is
+included because the tutor imports it directly and the reader's TeX renderer shares it. The
+review center and readiness check joined the list when the startup-bundle split made them
+lazy, so the install set shrank slightly rather than grew: the entry script plus route files
+is about 1.49 MB instead of 1.60 MB. Lectures, search data, Mermaid, fonts, the FSRS
+optimizer, and the WebLLM runtime stay on demand. Median install time, measured before that
+split, rose from 253 to 738 ms at 50 Mbps/10 ms (home Wi-Fi) and from 957 to 4,776 ms at 1.6
+Mbps/150 ms; registration waits for the load event, so first paint is unchanged. Install
+validates the list's build and entry against the worker and HTML, fetches every route file
+before writing, and fails on any missing file or HTML answer, so the previous working worker
+remains; a failed install deletes only its own unused cache. A worker registered without a
+build query (a legacy registration or the Vite dev server) cannot match a list and installs
+entry-only. Activation deletes only old Lumen shell caches and never WebLLM caches. The
+fetch handler neither answers nor caches `offline-routes.json`, so each cache keeps the list
+its install wrote. Optional-cache cleanup keeps every file named by the current build's list
+and by each cache's installed list.
 
 `/api/*` is never service-worker cached. Navigations are network-first with cached shell
 fallback. Same-origin static assets are cached on use. External image caching is bounded.
@@ -874,8 +879,12 @@ unreachable server gets no reload, because a reload would only boot the same cac
 Repeated failure reaches an in-shell boundary around the view container: the top bar and
 navigation stay usable, navigation clears it, and it distinguishes offline, unreachable,
 and incomplete-build cases. A failed dynamic import stays failed for that document, so its
-actions reload or go Home rather than retry in place. Storage health has its own boundary
-so Settings and backup export survive. Manual repair first proves a
+actions reload or go Home rather than retry in place. The boundary sits inside
+`<main id="main-content">`, so the landmark, skip link, App-level `inert`, and route heading
+focus are unchanged; the panel's `h1` is the heading that focus lands on. The lazy review
+card editor and readiness check render outside the view container, so a chunk that still
+fails there reaches the app-level boundary; both are in the route list. Storage health has
+its own boundary so Settings and backup export survive. Manual repair first proves a
 fresh HTML shell is reachable with a no-store probe, then removes only Lumen shell caches,
 unregisters the worker, and reloads. `update()` would not reinstall an unchanged worker URL,
 so the route screens would stay uncached; the reload registers the build afresh and install

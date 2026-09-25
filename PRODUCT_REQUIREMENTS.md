@@ -346,7 +346,8 @@ Acceptance criteria:
 Status: `Partial`
 
 Delivered slice: startup imports compact curriculum metadata only. The 143 lecture
-bodies, Reader, Whiteboard, AI tutor, diagrams, and the full-text corpus load on demand;
+bodies, Reader, Whiteboard, AI tutor, review center, readiness check, reader TeX renderer,
+diagrams, and the full-text corpus load on demand;
 the service worker installs the shell/entry assets plus the route screens named by the
 build's `offline-routes.json`, then caches visited content.
 The Mac-local tutor, phone-tutor UI, and WebLLM runtime are nested lazy boundaries; a
