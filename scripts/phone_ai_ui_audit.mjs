@@ -222,6 +222,21 @@ try {
   assert.equal(await page.$eval(".phone-tutor__message.is-assistant .phone-tutor__safe-response p strong", (node) => node.textContent), "Gradient descent", "Markdown emphasis rendered incorrectly");
   assert.equal(await page.evaluate(() => window.__PHONE_MARKDOWN_XSS__ === true), false, "model-authored script executed through the Markdown renderer");
   assert.equal(await page.$(".phone-tutor__safe-response script"), null, "sanitized AI Markdown retained a script element");
+  // Model HTML is text (issue #69): the answer's forged citation button is
+  // not a control, and clicking it navigates nowhere.
+  const forgedPhone = await page.evaluate(() => {
+    const answer = document.querySelector(".phone-tutor__message.is-assistant .phone-tutor__safe-response");
+    const paragraph = [...answer.querySelectorAll("p")].find((node) => node.textContent.includes("Forged phone citation"));
+    return {
+      controls: [...answer.querySelectorAll("[data-ai-citation]")].map((node) => `${node.tagName}.${node.className}:${node.textContent}`),
+      shownAsText: Boolean(paragraph?.textContent.includes('<button class="ai-tutor__citation"')),
+      insideControl: Boolean(paragraph?.closest("button, a, [data-ai-citation]") || paragraph?.querySelector("button, a, [data-ai-citation]")),
+    };
+  });
+  assert.deepEqual(forgedPhone, { controls: ["BUTTON.ai-tutor__citation:[S1]"], shownAsText: true, insideControl: false }, "a model-authored citation button became a phone citation control");
+  const navigationsBeforeForged = await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length);
+  await page.evaluate(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant .phone-tutor__safe-response p")].find((node) => node.textContent.includes("Forged phone citation"))?.click());
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length), navigationsBeforeForged, "clicking a forged phone citation navigated");
   const fitCopy = await page.$eval(".phone-tutor__context-fit", (node) => node.textContent);
   assert.match(fitCopy, /720 of 2,816 safe input bytes/);
   assert.match(fitCopy, /Gradient descent:/);
