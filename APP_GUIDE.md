@@ -251,6 +251,50 @@ paper/dark/system surface, text, border, and accent tokens as the rest of Lumen.
 The first large model-download approval is remembered for that exact artifact
 until **Clear model files**; it is distinct from the per-query web approval above.
 
+On a phone the Mac tutor is one scrolling page, with the question box docked above
+the bottom navigation. **Options** holds depth, answer length, web fallback and the
+privacy details, and names any setting you changed. With a keyboard, Enter sends and
+Shift+Enter starts a new line (Cmd/Ctrl+Enter in Code review); Up arrow in an empty box
+brings back your last question and Esc stops an answer. Scroll back while an answer
+streams and the tutor stops following it; **Jump to latest** takes you back. A grounded
+answer shows its steps (finding passages, drafting, checking citations) and the lessons
+it found.
+
+An empty conversation offers **Suggested starts** built from your open and next
+lessons, open mistakes and the cards you keep forgetting; a start fills the question
+box and never sends. Under the newest answer, one-tap follow-ups (Simpler, Give an
+example, Go deeper, Quiz me on this, Make flashcards, Check my understanding) ask about
+that answer alone. In a quiz, say how sure you are before checking an answer if you
+like; once every question is checked you see your score with confident misses first.
+**Explain my mistake** asks why your answer was wrong, **Save misses for review** puts
+them in your mistake notebook, and **New quiz on my weak spots** tests the same ideas
+again. **Listen** reads a finished answer aloud with the app's voice. **New topic**
+clears the conversation after asking, and can export it first; after a break of more
+than three hours, earlier turns stay on screen but are no longer sent to the model.
+
+While the tutor asks you questions in Socratic or Interview mode, a strip above the
+question box counts them and offers **Hint**, **I'm stuck** (it reveals and explains the
+answer, and the strip says so) and **Wrap up**: a recap of what you got right in your own
+answers, what you missed and what to review, built from the session itself, which you
+can save to notes or turn into flashcards. Wider screens spell the first two out as
+**Give me a hint** and **I'm stuck, explain it**. The question box becomes your answer
+box. Nothing is graded.
+
+In Interview mode, **Practice an authored question** gives you questions from Lumen's
+interview tracks, ones you missed before first. Answer in the card, then choose **Grade
+against rubric**. The result shows the question's rubric as a checklist for you to tick,
+what the tutor thinks you covered and may have missed, and the reference answer behind
+**Show reference answer**. It never shows a score: AI feedback can be generous, so trust
+the rubric. **Missed points** logs the question to your mistake notebook, where it merges
+with timed-round misses and comes first in your next round.
+
+From a mistake-notebook entry, **Work through with tutor** opens the tutor in Socratic
+mode with the question, the expected answer and your answer in the box. A finished
+readiness check with misses offers **Review my misses with tutor**. Nothing is sent until
+you press Send, and a question you had already typed stays unless you choose to replace
+it. On-device Lite receives these questions too. The buttons are hidden while AI
+features are off.
+
 Library confidence and answer citations are useful evidence, not a guarantee that
 every generated claim is supported. High-stakes answers and senior-level design
 judgment still need source review. Real Mac streaming has been exercised; real
