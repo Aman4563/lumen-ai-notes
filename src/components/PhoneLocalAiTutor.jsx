@@ -22,6 +22,7 @@ import {
 import PhoneLocalAiSettings from "./PhoneLocalAiSettings";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
+import { revealFocusedField } from "../lib/revealField.js";
 import {
   getPhoneLocalAiEngine,
   inspectPhoneLocalAiRequestFit,
@@ -619,10 +620,9 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
       return cleanText(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS);
     });
     onInsertConsumed?.(insertPrompt.nonce);
-    globalThis.setTimeout?.(() => {
-      promptFieldRef.current?.scrollIntoView?.({ block: "center" });
-      promptFieldRef.current?.focus({ preventScroll: true });
-    }, 0);
+    // The device panel above the composer finishes loading after mount, so
+    // keep the composer in view until the page settles.
+    globalThis.setTimeout?.(() => revealFocusedField(promptFieldRef.current), 0);
   }, [insertPrompt]);
 
   const finalize = useCallback((result, spec) => {

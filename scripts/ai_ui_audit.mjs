@@ -941,7 +941,16 @@ try {
       await page.evaluate((target) => { window.location.hash = target; }, hash);
       await page.waitForSelector(selector, { timeout: 15_000 });
     };
-    const askAiFromLesson = async () => {
+    // Fully visible between the fixed top bar and the phone's bottom bar.
+    const waitForRevealedField = (selector, message) => page.waitForFunction((fieldSelector) => {
+      const field = document.querySelector(fieldSelector);
+      const box = field?.getBoundingClientRect();
+      const top = Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0);
+      const nav = document.querySelector(".bottom-nav");
+      const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+      return document.activeElement === field && box.top >= top && box.bottom <= bottom;
+    }, { timeout: 5_000 }, selector).catch(() => assert.fail(message));
+    const askAiFromLesson = async ({ field = ".ai-tutor__composer textarea", ready = ".ai-tutor__connection--ready" } = {}) => {
       await visit(`#/read/${encodeURIComponent(lessonId)}`, ".markdown-body p");
       await page.$eval(".markdown-body", (article) => {
         const paragraph = [...article.querySelectorAll("p")].find((node) => node.textContent.trim().length > 80);
@@ -953,8 +962,8 @@ try {
       });
       await page.waitForFunction(() => [...document.querySelectorAll(".document-tools button")].some((button) => button.classList.contains("selection-ready") && button.textContent.includes("Ask AI")), { timeout: 5_000 });
       await clickByText(page, ".document-tools button", "Ask AI");
-      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 15_000 });
-      await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea")?.value.includes("Explain this excerpt"), { timeout: 5_000 });
+      await page.waitForSelector(ready, { timeout: 15_000 });
+      await page.waitForFunction((selector) => document.querySelector(selector)?.value.includes("Explain this excerpt"), { timeout: 5_000 }, field);
     };
 
     await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
@@ -962,11 +971,7 @@ try {
 
     await askAiFromLesson();
     assert.match(await promptValue(), /^Explain this excerpt from my lecture “[^”]+” in context:/, "Ask AI did not name the source lecture");
-    await page.waitForFunction(() => {
-      const field = document.querySelector(".ai-tutor__composer textarea");
-      const box = field?.getBoundingClientRect();
-      return document.activeElement === field && box.top >= 0 && box.bottom <= innerHeight;
-    }, { timeout: 5_000 }).catch(() => assert.fail("Ask AI did not reveal and focus the composer"));
+    await waitForRevealedField(".ai-tutor__composer textarea", "Ask AI did not reveal and focus the composer");
     assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /excerpt from “[^”]+”/, "Ask AI did not tell the learner which lecture the excerpt came from");
     await page.$eval(sendSelector, (button) => button.click());
     await waitForAnswers(1);
@@ -1067,6 +1072,13 @@ try {
     await visit("#/library", ".library-page");
     await visit("#/ai", ".ai-learning-studio");
     assert.equal(await page.$eval(".ai-learning-studio", (node) => node.dataset.aiEngine), "phone-local", "the engine choice reset on a route change");
+    // Ask AI reaches On-device Lite too, and its composer stays in view while
+    // the device panel above it finishes loading.
+    await askAiFromLesson({ field: ".phone-tutor textarea", ready: ".phone-tutor textarea" });
+    assert.match(await page.$eval(".phone-tutor textarea", (field) => field.value), /^Explain this excerpt from my lecture “[^”]+” in context:/, "Ask AI did not name the lecture in On-device Lite");
+    await waitForRevealedField(".phone-tutor textarea", "Ask AI did not reveal and focus the On-device composer");
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await waitForRevealedField(".phone-tutor textarea", "the On-device composer slid out of view after Ask AI");
     await page.$eval('[data-ai-engine-option="mac-local"]', (button) => button.click());
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
   } finally {

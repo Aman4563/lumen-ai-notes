@@ -38,6 +38,7 @@ import { buildConversationWindow } from "../lib/conversationMemory";
 import { fitAiRequestContext } from "../lib/aiRequestBudget";
 import { renderTutorInlineMarkdown, renderTutorMarkdown } from "../lib/tutorMarkdown";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
+import { revealFocusedField } from "../lib/revealField.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
 import { downloadBlob } from "../lib/download.js";
@@ -1068,10 +1069,7 @@ export default function AiTutor({
     setPrompt(asTrimmedString(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS));
     setComposerNotice(`${keepDraft ? "Your unsent question was kept, and the" : "The"} selected excerpt from ${lecture ? `“${lecture}”` : "your lecture"} was added below. Review it, then send.`);
     onInsertConsumedRef.current?.(insertPrompt.nonce);
-    window.setTimeout(() => {
-      promptRef.current?.scrollIntoView?.({ behavior: scrollBehavior(), block: "center" });
-      promptRef.current?.focus({ preventScroll: true });
-    }, 0);
+    window.setTimeout(() => revealFocusedField(promptRef.current), 0);
   }, [insertPrompt]);
   const initialTombstones = new Set((Array.isArray(historyTombstones) ? historyTombstones : []).filter((id) => typeof id === "string"));
   const [history, setHistory] = useState(() => normalizeHistory(initialHistory).filter((message) => !initialTombstones.has(message.id)));
