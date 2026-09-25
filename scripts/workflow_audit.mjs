@@ -121,10 +121,19 @@ const chooseBoardTool = async (page, label) => {
   await page.waitForFunction((name) => document.querySelector(`button[aria-label="${name}"]`)?.getAttribute("aria-pressed") === "true", { timeout: 5_000 }, label)
     .catch(() => assert.fail(`the ${label} tool never became active`));
 };
-// Explains a missing board dialog: which tool was active and what the tap hit.
+// Records every pointer and click event so a missing board dialog can be
+// explained from a CI log: did the click arrive, and on what?
+const recordBoardEvents = (page) => page.evaluate(() => {
+  window.__boardEvents = [];
+  for (const type of ["pointerdown", "pointerup", "pointercancel", "lostpointercapture", "click"]) {
+    window.addEventListener(type, (event) => window.__boardEvents.push(`${Math.round(event.timeStamp)} ${type} ${event.pointerType || ""}#${event.pointerId ?? ""} on ${event.target?.tagName}.${String(event.target?.className || "").slice(0, 40)}${event.defaultPrevented ? " (prevented)" : ""}`), { capture: true });
+  }
+});
+// Explains a missing board dialog: the active tool, what the tap hit, any open
+// toolbar panel, and the recorded event sequence.
 const boardTapDiagnostics = (page, x, y) => page.evaluate(([px, py]) => {
   const hit = document.elementFromPoint(px, py);
-  return JSON.stringify({ tool: document.querySelector('.board-view button[aria-pressed="true"]')?.getAttribute("aria-label"), hit: hit ? `${hit.tagName}.${hit.className}` : null, hint: document.querySelector(".board-hint")?.textContent, dialogs: document.querySelectorAll('[role="dialog"]').length });
+  return JSON.stringify({ tool: document.querySelector('.board-primary-tools button[aria-pressed="true"], .tool-segment button[aria-pressed="true"]')?.getAttribute("aria-label"), canvasClass: document.querySelector(".board-canvas")?.className, hit: hit ? `${hit.tagName}.${hit.className}` : null, openPanel: document.querySelector("[data-board-panel]:not([hidden])")?.getAttribute("data-board-panel") || null, hint: document.querySelector(".board-hint")?.textContent, dialogs: document.querySelectorAll('[role="dialog"]').length, events: (window.__boardEvents || []).slice(-24) });
 }, [x, y]);
 const clickBoardControl = async (page, selector) => {
   await revealBoardControl(page, selector);
@@ -462,10 +471,10 @@ try {
   await page.waitForSelector(".board-canvas");
   const boardKey = `board:${documentId}`;
   let canvasBox = await boardPageBox(page);
-  const touchTap = async (x, y) => {
-    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
-    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  };
+  // Let the browser synthesize the whole tap (touch events, then the click) with
+  // real tap timing. Two separate touchStart/touchEnd messages could arrive far
+  // apart on a starved CI runner, which Chrome reads as a long press: no click.
+  const touchTap = (x, y) => client.send("Input.synthesizeTapGesture", { x, y, duration: 40, tapCount: 1, gestureSourceType: "touch" });
   await clickBoardControl(page, 'button[aria-label="Straight line"]');
   await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: canvasBox.left + canvasBox.width * 0.14, y: canvasBox.top + canvasBox.height * 0.14 }] });
   await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: canvasBox.left + canvasBox.width * 0.72, y: canvasBox.top + canvasBox.height * 0.2 }] });
@@ -489,6 +498,7 @@ try {
   // BOARD-1: text and sticky placement must survive a real touch tap in the
   // upper half of the board, where the tap's follow-up click used to land on
   // the new dialog's scrim and close it immediately.
+  await recordBoardEvents(page);
   await chooseBoardTool(page, "Text");
   // Toolbar panels opened above (shapes, page tools) push the canvas down, and
   // wrap to more rows with wider fonts: re-measure before tapping.
