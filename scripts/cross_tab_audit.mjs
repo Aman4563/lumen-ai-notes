@@ -40,7 +40,10 @@ try {
     executablePath: chromePath,
     headless: true,
     userDataDir: profileDirectory,
-    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check"],
+    // Both tabs must keep running: a starved runner can otherwise throttle or
+    // freeze the background tab (CI saw tab B stop responding for minutes),
+    // which tests Chrome's tab management instead of Lumen's merge.
+    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"],
   });
   const pageA = await browser.newPage();
   const pageB = await browser.newPage();
