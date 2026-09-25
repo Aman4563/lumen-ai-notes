@@ -9,7 +9,6 @@ import {
   Check,
   ChevronDown,
   CircleStop,
-  ClipboardCheck,
   Copy,
   Cpu,
   ExternalLink,
@@ -86,7 +85,6 @@ import {
   withoutCitationLabels,
 } from "../lib/tutorFollowUps.js";
 import { buildStarterPrompts } from "../lib/tutorStarters.js";
-import { normalizeTrackBank } from "../lib/interviewTracks.js";
 import {
   HINT_PROMPT,
   NEXT_QUESTION_PROMPT,
@@ -98,18 +96,12 @@ import {
   wrapUpLabel,
 } from "../lib/tutorSession.js";
 import {
-  nextPracticeQuestion,
   normalizePracticeState,
   practiceAnswerFrom,
-  practiceGradingPrompt,
-  practiceMissDraft,
-  practiceQuestionCard,
   practiceQuestionIdFrom,
-  practiceReference,
-  practiceTracks,
   readPracticeState,
   writePracticeState,
-} from "../lib/tutorInterview.js";
+} from "../lib/tutorPractice.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -973,125 +965,6 @@ const FeedbackResult = ({ feedback, message, question, onNavigateSource, onAnswe
   );
 };
 
-/**
- * Interview practice feedback (TFEAT-06). The authored rubric is the
- * checklist the learner ticks; the model's gaps and credit sit beside it,
- * its score is never shown, and the reference answer stays behind a button.
- * The learner, not the model, decides whether the question goes to the
- * mistake notebook.
- */
-const RubricFeedback = ({ feedback, message, question, bankStatus = "ready", ticks = [], onTick, outcome = "", onOutcome, onFollowUp, onNavigateSource }) => {
-  const [showReference, setShowReference] = useState(false);
-  const [status, setStatus] = useState({ status: "idle", message: "" });
-  const referenceId = useId();
-  const cite = (text) => <InlineRichText text={text} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
-  const ticked = new Set(ticks);
-  const allTicked = Boolean(question?.rubric.length) && question.rubric.every((_, index) => ticked.has(index));
-  const decided = outcome || (status.status === "saving" ? "saving" : "");
-  const choose = async (next) => {
-    if (decided || !onOutcome) return;
-    setStatus({ status: "saving", message: next === "missed" ? "Logging this question…" : "" });
-    try {
-      const result = await onOutcome(next);
-      setStatus({
-        status: "saved",
-        message: next === "covered"
-          ? "Marked as covered."
-          : result?.merged ? "This question was already in your mistake notebook, so its count went up." : "Logged to your mistake notebook. It comes first in your next interview round.",
-      });
-    } catch (error) {
-      const reason = error instanceof Error && error.message ? ` ${error.message.replace(/\.?$/, ".")}` : "";
-      setStatus({ status: "error", message: `This question was not logged.${reason} Try again.` });
-    }
-  };
-  const decidedMessage = status.message || (outcome === "missed" ? "Logged to your mistake notebook." : outcome === "covered" ? "Marked as covered." : "");
-  return (
-    <div className="ai-tutor__rubric-result">
-      <div className="ai-tutor__result-title"><ClipboardCheck size={20} aria-hidden="true" /><div><h4>Interview practice feedback</h4>{question && <p>{question.prompt}</p>}</div></div>
-      <p className="ai-tutor__rubric-caption">AI feedback can be generous; trust the rubric.</p>
-      {question ? (
-        <fieldset className="ai-tutor__rubric">
-          <legend>Rubric</legend>
-          <p>Tick each point your answer covered.</p>
-          {question.rubric.map((bullet, index) => (
-            <label key={`${index}-${bullet}`}>
-              <input type="checkbox" checked={ticked.has(index)} onChange={(event) => onTick?.(index, event.target.checked)} />
-              <span>{bullet}</span>
-            </label>
-          ))}
-        </fieldset>
-      ) : <p className="ai-tutor__muted">{bankStatus === "loading" ? "Loading the rubric…" : "The rubric for this question is not in this version of Lumen."}</p>}
-      {feedback.gaps.length > 0 && <section><h5>You may have missed</h5><ul>{feedback.gaps.map((gap, index) => <li key={`${index}-${gap}`}>{cite(gap)}</li>)}</ul></section>}
-      {feedback.strengths.length > 0 && <section><h5>What you covered</h5><ul>{feedback.strengths.map((item, index) => <li key={`${index}-${item}`}>{cite(item)}</li>)}</ul></section>}
-      <section><h5>Feedback</h5><p>{cite(feedback.feedback)}</p></section>
-      <button className="ai-tutor__text-button ai-tutor__rubric-toggle" type="button" aria-expanded={showReference} aria-controls={referenceId} onClick={() => setShowReference((open) => !open)}>{showReference ? "Hide reference answer" : "Show reference answer"}<ChevronDown size={16} aria-hidden="true" /></button>
-      <div id={referenceId} className="ai-tutor__rubric-reference" hidden={!showReference}>
-        {showReference && <>
-          {question && <section><h5>Reference answer</h5><p>{question.modelAnswer}</p></section>}
-          <section><h5>A stronger version of your answer</h5><p>{cite(feedback.improvedAnswer)}</p></section>
-        </>}
-      </div>
-      {question?.followUps.length > 0 && onFollowUp && (
-        <section className="ai-tutor__rubric-next">
-          <h5>Next question</h5>
-          <ul>{question.followUps.map((followUp) => (
-            <li key={followUp}><p>{followUp}</p><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => onFollowUp(followUp)}><MessageCircleQuestion size={16} aria-hidden="true" /> Answer this</button></li>
-          ))}</ul>
-        </section>
-      )}
-      {question && onOutcome && (
-        <div className="ai-tutor__rubric-outcome" role="group" aria-label="How did your answer do?">
-          <button className={`ai-tutor__button ${allTicked ? "ai-tutor__button--secondary" : "ai-tutor__button--primary"}`} type="button" aria-disabled={Boolean(decided) || undefined} onClick={() => choose("missed")}>{outcome === "missed" ? <Check size={16} aria-hidden="true" /> : <NotebookPen size={16} aria-hidden="true" />} Missed points, log to mistake notebook</button>
-          <button className={`ai-tutor__button ${allTicked ? "ai-tutor__button--primary" : "ai-tutor__button--secondary"}`} type="button" aria-disabled={Boolean(decided) || undefined} onClick={() => choose("covered")}>{outcome === "covered" ? <Check size={16} aria-hidden="true" /> : null} Covered it</button>
-        </div>
-      )}
-      {decidedMessage && <p className={`ai-tutor__draft-status is-${status.status === "error" ? "error" : "saved"}`} role="status">{decidedMessage}</p>}
-    </div>
-  );
-};
-
-/**
- * Practise an authored interview question (TFEAT-06): pick a track, get the
- * next question (ones missed before come first), answer it here and grade it
- * against its rubric. Only the question is on the page before grading.
- */
-const InterviewPractice = ({ tracks, trackId, question, answer, answerLimit, reason, busy, grading, headingRef, onTrack, onNext, onAnswer, onGrade }) => {
-  const titleId = useId();
-  const promptId = useId();
-  const answerId = useId();
-  const counterId = useId();
-  const reasonId = useId();
-  const card = question ? practiceQuestionCard(question) : null;
-  const ready = Boolean(card && answer.trim() && !reason && !busy);
-  return (
-    <section className="ai-tutor__practice" aria-labelledby={titleId}>
-      <div className="ai-tutor__practice-head">
-        <h3 id={titleId} ref={headingRef} tabIndex={-1}>{card ? "Practice question" : "Practice an authored question"}</h3>
-        <label className="ai-tutor__practice-track"><span>Track</span><select value={trackId} disabled={busy} onChange={(event) => onTrack(event.target.value)}>{tracks.map((track) => <option value={track.id} key={track.id}>{track.label}</option>)}</select></label>
-      </div>
-      {!card ? (
-        <>
-          <p className="ai-tutor__practice-intro">Questions from Lumen&rsquo;s interview tracks, graded against their authored rubrics. Questions you missed before come first.</p>
-          <button className="ai-tutor__button ai-tutor__button--primary" type="button" disabled={busy} onClick={() => onNext(false)}><FileQuestion size={16} aria-hidden="true" /> Next question</button>
-        </>
-      ) : (
-        <>
-          <p className="ai-tutor__practice-meta">{card.meta}</p>
-          <p className="ai-tutor__practice-prompt" id={promptId}>{card.prompt}</p>
-          <label className="ai-tutor__practice-label" htmlFor={answerId}>Your answer</label>
-          <textarea id={answerId} value={answer} maxLength={answerLimit} rows={5} disabled={grading} aria-describedby={`${promptId} ${counterId}${reason ? ` ${reasonId}` : ""}`} placeholder="Answer as you would in the interview…" onChange={(event) => onAnswer(event.target.value)} />
-          <div className="ai-tutor__practice-actions">
-            <button className="ai-tutor__button ai-tutor__button--primary" type="button" disabled={!ready} onClick={onGrade}>{grading ? <><LoaderCircle className="ai-tutor__spin" size={16} aria-hidden="true" /> Grading…</> : <><ClipboardCheck size={16} aria-hidden="true" /> Grade against rubric</>}</button>
-            <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={busy} onClick={() => onNext(true)}>Skip question</button>
-            <span className="ai-tutor__character-count" id={counterId}>{answer.trim().length.toLocaleString()} / {answerLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>
-          </div>
-          {reason && <p className="ai-tutor__practice-reason" id={reasonId}>{reason}</p>}
-        </>
-      )}
-    </section>
-  );
-};
-
 const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSource }) => {
   const [selected, setSelected] = useState(() => cards.map((_, index) => index));
   const [expanded, setExpanded] = useState({});
@@ -1177,7 +1050,12 @@ const StudyPlanResult = ({ plan, citationSources, webSources, onNavigateSource }
 const AssistantMessage = ({ message, onCreateFlashcardDrafts, onNavigateSource, streaming = false, study = {} }) => {
   if (message.mode === "quiz" && validateTutorQuiz(message.data)) return <QuizResult quiz={message.data} message={message} onNavigateSource={onNavigateSource} {...study} />;
   if (message.mode === "feedback" && validateTutorAnswerFeedback(message.data)) return <FeedbackResult feedback={message.data} message={message} question={study.feedbackQuestion} onNavigateSource={onNavigateSource} onAnswerCheck={study.onAnswerCheck} />;
-  if (message.mode === "interview-practice" && validateTutorAnswerFeedback(message.data) && practiceQuestionIdFrom(message)) return <RubricFeedback feedback={message.data} message={message} onNavigateSource={onNavigateSource} {...study} />;
+  if (message.mode === "interview-practice" && validateTutorAnswerFeedback(message.data) && practiceQuestionIdFrom(message)) {
+    // The rubric view loads with the authored bank (TFEAT-06).
+    const { Rubric, ...rubricProps } = study;
+    const cite = (text) => <InlineRichText text={text} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
+    return Rubric ? <Rubric feedback={message.data} message={message} cite={cite} {...rubricProps} /> : <p className="ai-tutor__muted">{study.bankStatus === "error" ? "The rubric for this answer could not be loaded." : "Loading the rubric…"}</p>;
+  }
   if (message.mode === "flashcards" && validateTutorFlashcards(message.data)) return <FlashcardResult cards={message.data.cards} message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />;
   if (message.mode === "study-plan" && validateTutorStudyPlan(message.data)) return <StudyPlanResult plan={message.data} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
   return <SafeResponseText text={message.content} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} streaming={streaming} />;
@@ -1562,7 +1440,6 @@ export default function AiTutor({
   const [practice, setPractice] = useState(readPracticeState);
   useEffect(() => { writePracticeState(practice); }, [practice]);
   const updatePractice = useCallback((updater) => setPractice((current) => normalizePracticeState(typeof updater === "function" ? updater(current) : { ...current, ...updater })), []);
-  const practiceHeadingRef = useRef(null);
   useEffect(() => { writeQuizStates(quizStates); }, [quizStates]);
   const updateQuizState = useCallback((messageId, updater) => setQuizStates((current) => ({
     ...current,
@@ -1975,18 +1852,18 @@ export default function AiTutor({
   // The authored interview bank loads with Interview mode, or when the
   // conversation holds graded practice that needs its rubric.
   const needsInterviewBank = currentMode.id === "interview" || history.some((message) => message.mode === "interview-practice");
-  const [interviewBank, setInterviewBank] = useState({ status: "idle", bank: null });
+  // The practice views and the bank helpers load with it, off the offline
+  // shell: `ui` holds the components, `kit` the bank's tracks and questions.
+  const [interviewBank, setInterviewBank] = useState({ status: "idle", ui: null, kit: null });
   useEffect(() => {
     if (!needsInterviewBank || interviewBank.status !== "idle") return;
-    setInterviewBank({ status: "loading", bank: null });
-    import("../data/interviewTracks.v1.json")
-      .then((module) => setInterviewBank({ status: "ready", bank: module.default }))
-      .catch(() => setInterviewBank({ status: "error", bank: null }));
+    setInterviewBank({ status: "loading", ui: null, kit: null });
+    Promise.all([import("./TutorPractice.jsx"), import("../data/interviewTracks.v1.json")])
+      .then(([ui, bank]) => setInterviewBank({ status: "ready", ui, kit: ui.createPracticeKit(bank.default) }))
+      .catch(() => setInterviewBank({ status: "error", ui: null, kit: null }));
   }, [interviewBank.status, needsInterviewBank]);
-  const practiceTrackList = useMemo(() => practiceTracks(interviewBank.bank), [interviewBank.bank]);
-  const interviewQuestions = useMemo(() => new Map((interviewBank.bank ? normalizeTrackBank(interviewBank.bank).questions : []).map((question) => [question.id, question])), [interviewBank.bank]);
-  const practiceTrackId = practiceTrackList.some((track) => track.id === practice.trackId) ? practice.trackId : practiceTrackList[0]?.id || "";
-  const practiceQuestion = interviewQuestions.get(practice.questionId) || null;
+  const practiceKit = interviewBank.kit;
+  const practiceQuestion = practiceKit?.questions.get(practice.questionId) || null;
   // A graded answer ends the question: the card is ready for the next one.
   useEffect(() => {
     if (!practice.pendingId) return;
@@ -2188,20 +2065,6 @@ export default function AiTutor({
     }
   }, [configState.config?.privacy?.providerDataControlsUrl]);
   const composerIssue = tutorRequestIssue({ prompt, promptLimit, fitted: requestPreview, sources: selectedSources, requireAllSources: sourceMode !== "library-first" });
-  // The practice answer's own request, fitted as Grade will fit it: the
-  // answer may not crowd out any of the rubric it is graded against.
-  const practicePreview = useMemo(() => {
-    if (!practiceQuestion) return { issue: "", answerLimit: 0 };
-    const limits = tutorRequestLimits(configState.config, responseProfile);
-    const answerLimit = Math.max(0, limits.promptLimit - practiceGradingPrompt(practiceQuestion, "").length);
-    const answer = practice.answer.trim();
-    if (!answer) return { issue: "empty-prompt", answerLimit };
-    const reference = practiceReference(practiceQuestion);
-    const references = [{ ...reference, citationNumber: sourceNumbersRef.current.get(reference.id) ?? nextSourceNumberRef.current }];
-    const gradingPrompt = practiceGradingPrompt(practiceQuestion, answer);
-    const fitted = fitTutorRequest({ mode: modeById("interview-practice"), prompt: gradingPrompt, sources: references, difficulty, responseProfile, config: configState.config });
-    return { issue: tutorRequestIssue({ prompt: gradingPrompt, promptLimit: limits.promptLimit, fitted, sources: references, requireAllSources: true, requireWholeSources: true }), answerLimit };
-  }, [configState.config, difficulty, practice.answer, practiceQuestion, responseProfile]);
   const promptTooLong = composerIssue === "prompt-too-long";
   const contextTooSmall = composerIssue === "context-too-small";
   const requestTooLarge = composerIssue === "request-too-large";
@@ -2886,44 +2749,13 @@ export default function AiTutor({
     prefillAnswer({ modeId: "socratic", text: `${withoutCitationLabels(nextQuestion)}\n\nMy answer: `, documentId: citedDocumentId(feedbackMessage), notice: "Write your answer after “My answer:”, then send." });
   };
 
-  // Interview practice (TFEAT-06). The next question on the chosen track
-  // (missed ones first) takes focus so it is read; its answer is typed in
-  // the practice card.
-  const choosePracticeTrack = (trackId) => updatePractice((current) => ({ ...current, trackId }));
-  const nextPractice = (skip) => {
-    if (!interviewBank.bank || requestState.status === "loading") return;
-    const next = nextPracticeQuestion(interviewBank.bank, {
-      trackId: practiceTrackId,
-      mistakes: Array.isArray(studyContext?.mistakes) ? studyContext.mistakes : [],
-      practiced: practice.practiced,
-      skip: skip ? practice.questionId : "",
-    });
-    if (!next) return;
-    // A mode's default text is not the learner's draft; clearing it keeps
-    // the docked composer to one line while they answer in the card.
-    if (isDefaultPrompt(prompt.trim())) setPrompt("");
-    updatePractice((current) => ({
-      ...current,
-      trackId: practiceTrackId,
-      questionId: next.id,
-      answer: "",
-      pendingId: "",
-      practiced: skip && current.questionId ? [...current.practiced.filter((id) => id !== current.questionId), current.questionId] : current.practiced,
-    }));
-    window.setTimeout(() => {
-      const heading = practiceHeadingRef.current;
-      if (!heading?.isConnected) return;
-      heading.focus({ preventScroll: true });
-      heading.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
-    }, 0);
-  };
-
-  // Grading sends the answer with the question's model answer and rubric as
-  // its one supplied source, never the library or the web, and never
-  // without the whole rubric.
-  const gradePractice = () => {
-    if (!practiceQuestion || requestState.status === "loading") return;
-    const reference = practiceReference(practiceQuestion);
+  // Interview practice (TFEAT-06): the views in TutorPractice.jsx pick and
+  // show the question; grading sends the answer with the question's model
+  // answer and rubric as its one supplied source, never the library or the
+  // web, and never without the whole rubric. The reference keeps one [S#]
+  // number for the tab, like any other source.
+  const citationNumberFor = useCallback((id) => sourceNumbersRef.current.get(id) ?? nextSourceNumberRef.current, []);
+  const gradePractice = ({ prompt: gradingPrompt, reference }) => {
     if (!sourceNumbersRef.current.has(reference.id)) {
       sourceNumbersRef.current.set(reference.id, nextSourceNumberRef.current);
       nextSourceNumberRef.current += 1;
@@ -2931,7 +2763,7 @@ export default function AiTutor({
     const userMessageId = createId();
     const issue = runTutorAction({
       mode: modeById("interview-practice"),
-      prompt: practiceGradingPrompt(practiceQuestion, practice.answer),
+      prompt: gradingPrompt,
       sourceMode: "choose",
       sources: [{ ...reference, citationNumber: sourceNumbersRef.current.get(reference.id) }],
       historyWindow: noHistory,
@@ -2944,26 +2776,9 @@ export default function AiTutor({
     if (issue) setComposerNotice(`Your answer was not graded. ${tutorActionIssueReason(issue, { configMessage: configState.status === "ready" ? "" : configState.message })}`.trim());
     else updatePractice({ pendingId: userMessageId });
   };
-
-  // "Missed points" files the question the way a timed track round does;
-  // the learner's verdict, not the model's score, decides.
-  const practiceOutcome = async (message, question, outcome) => {
-    if (outcome === "missed") {
-      const trackId = question.trackIds.includes(practiceTrackId) ? practiceTrackId : question.trackIds[0];
-      const result = await onSaveMistakes([practiceMissDraft(question, { answer: practiceAnswerFrom(questionForAnswer(history, message.id)?.content), trackId })]);
-      updatePractice((current) => ({ ...current, outcomes: { ...current.outcomes, [message.id]: "missed" } }));
-      return result;
-    }
-    updatePractice((current) => ({ ...current, outcomes: { ...current.outcomes, [message.id]: "covered" } }));
-    return null;
-  };
-
-  const tickRubric = (messageId, index, checked) => updatePractice((current) => {
-    const points = new Set(current.ticks[messageId] || []);
-    if (checked) points.add(index);
-    else points.delete(index);
-    return { ...current, ticks: { ...current.ticks, [messageId]: [...points].sort((left, right) => left - right) } };
-  });
+  // A mode's default text is not the learner's draft; clearing it keeps the
+  // docked composer to one line while they answer in the practice card.
+  const clearDefaultPrompt = () => { if (isDefaultPrompt(prompt.trim())) setPrompt(""); };
 
   // An authored follow-up is answered in Interview mode, to the tutor.
   const answerPracticeFollowUp = (followUp, question) => {
@@ -3287,32 +3102,27 @@ export default function AiTutor({
       || (Array.isArray(serverStructuredTasks) && !serverStructuredTasks.includes("answer_feedback")))
     ? "This AI server cannot check quiz answers."
     : "";
-  // Why a practice answer cannot be graded yet; an empty box needs no words.
+  // Why the tutor cannot grade a practice answer at all right now.
   const practiceVisible = !setupRequired && currentMode.id === "interview";
-  const practiceReason = !practiceQuestion ? ""
-    : configState.status !== "ready" ? configState.message || "The tutor is not ready yet."
-      : feedbackUnavailable ? "This AI server cannot grade answers."
-        : !localDisclosureAcknowledged ? "Tick the local-model permission under the question box, then grade your answer."
-          : ["prompt-too-long", "source-clipped", "context-too-small", "request-too-large"].includes(practicePreview.issue) ? "Shorten your answer so the rubric can be included."
-            : "";
-  const practiceCard = practiceVisible && (interviewBank.status === "ready" && practiceTrackList.length ? (
+  const practiceBlocked = configState.status !== "ready" ? configState.message || "The tutor is not ready yet."
+    : feedbackUnavailable ? "This AI server cannot grade answers."
+      : !localDisclosureAcknowledged ? "Tick the local-model permission under the question box, then grade your answer." : "";
+  const InterviewPractice = interviewBank.ui?.InterviewPractice;
+  const practiceCard = practiceVisible && (InterviewPractice && practiceKit.tracks.length ? (
     <InterviewPractice
-      tracks={practiceTrackList}
-      trackId={practiceTrackId}
-      question={practiceQuestion}
-      answer={practice.answer}
-      answerLimit={practicePreview.answerLimit}
-      reason={practiceReason}
+      kit={practiceKit}
+      practice={practice}
+      updatePractice={updatePractice}
+      mistakes={Array.isArray(studyContext?.mistakes) ? studyContext.mistakes : []}
+      request={{ config: configState.config, responseProfile, difficulty }}
+      citationNumberFor={citationNumberFor}
+      blocked={practiceBlocked}
       busy={loading}
-      grading={loading && Boolean(practice.pendingId)}
-      headingRef={practiceHeadingRef}
-      onTrack={choosePracticeTrack}
-      onNext={nextPractice}
-      onAnswer={(value) => updatePractice((current) => ({ ...current, answer: value }))}
       onGrade={gradePractice}
+      onQuestion={clearDefaultPrompt}
     />
   ) : interviewBank.status === "error" ? (
-    <div className="ai-tutor__practice"><p className="ai-tutor__practice-intro">The authored interview questions could not be loaded.</p><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => setInterviewBank({ status: "idle", bank: null })}><RefreshCw size={15} aria-hidden="true" /> Try again</button></div>
+    <div className="ai-tutor__practice"><p className="ai-tutor__practice-intro">The authored interview questions could not be loaded.</p><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => setInterviewBank({ status: "idle", ui: null, kit: null })}><RefreshCw size={15} aria-hidden="true" /> Try again</button></div>
   ) : <p className="ai-tutor__practice-intro ai-tutor__practice-loading">Loading the authored interview questions…</p>);
   // The divider where the model's memory now starts.
   const contextBreak = (
@@ -3354,18 +3164,19 @@ export default function AiTutor({
     onShowExplanation: showExplanation,
     onSaveMisses: onSaveMistakes,
     onWeakSpotQuiz: quizWeakSpots,
-  } : message.mode === "feedback" ? { feedbackQuestion: feedbackQuestionFor(message), onAnswerCheck: answerCheck } : message.mode === "interview-practice" ? (() => {
-    const question = interviewQuestions.get(practiceQuestionIdFrom(message)) || null;
-    return {
-      question,
-      bankStatus: interviewBank.status,
-      ticks: practice.ticks[message.id] || [],
-      onTick: (index, checked) => tickRubric(message.id, index, checked),
-      outcome: practice.outcomes[message.id] || "",
-      onOutcome: onSaveMistakes && question ? (outcome) => practiceOutcome(message, question, outcome) : undefined,
-      onFollowUp: (followUp) => answerPracticeFollowUp(followUp, question),
-    };
-  })() : undefined);
+  } : message.mode === "feedback" ? { feedbackQuestion: feedbackQuestionFor(message), onAnswerCheck: answerCheck } : message.mode === "interview-practice" ? {
+    Rubric: interviewBank.ui?.RubricFeedback,
+    bankStatus: interviewBank.status,
+    question: practiceKit?.questions.get(practiceQuestionIdFrom(message)) || null,
+    messageId: message.id,
+    answer: practiceAnswerFrom(questionForAnswer(history, message.id)?.content),
+    trackId: practice.trackId,
+    kit: practiceKit,
+    practice,
+    updatePractice,
+    onSaveMistakes,
+    onFollowUp: (followUp) => answerPracticeFollowUp(followUp, practiceKit?.questions.get(practiceQuestionIdFrom(message))),
+  } : undefined);
 
   // Suggested starts (TFEAT-04): four on a phone, six on wider screens,
   // using lesson headings only when that lesson's text is already loaded.

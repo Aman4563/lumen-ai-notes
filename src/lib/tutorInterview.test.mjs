@@ -6,20 +6,23 @@ import { buildTrackRound, normalizeTrackBank } from "./interviewTracks.js";
 import { createMistake } from "./mistakes.js";
 import { buildTutorContext } from "./tutorGrounding.js";
 import {
-  PRACTICE_STATE_KEY,
+  createPracticeKit,
   nextPracticeQuestion,
-  normalizePracticeState,
-  practiceAnswerFrom,
-  practiceGradingPrompt,
   practiceMissDraft,
   practiceQuestionById,
   practiceQuestionCard,
-  practiceQuestionIdFrom,
   practiceReference,
   practiceTracks,
+} from "./tutorInterview.js";
+import {
+  PRACTICE_STATE_KEY,
+  normalizePracticeState,
+  practiceAnswerFrom,
+  practiceGradingPrompt,
+  practiceQuestionIdFrom,
   readPracticeState,
   writePracticeState,
-} from "./tutorInterview.js";
+} from "./tutorPractice.js";
 
 const { questions } = normalizeTrackBank(trackBank);
 const question = questions.find((item) => item.id === "mle-01");
@@ -105,4 +108,13 @@ test("practice state is bounded, typed and survives storage failures", () => {
   const many = normalizePracticeState({ outcomes: Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`m${index}`, "covered"])) });
   assert.equal(Object.keys(many.outcomes).length, 30);
   assert.equal(many.outcomes.m39, "covered", "the newest outcomes were dropped");
+});
+
+test("the practice kit answers everything the tutor asks of a loaded bank", () => {
+  const kit = createPracticeKit(trackBank);
+  assert.deepEqual(kit.tracks, practiceTracks(trackBank));
+  assert.equal(kit.questions.get("mle-01").id, "mle-01");
+  assert.equal(kit.next({ trackId: "mle" }).id, nextPracticeQuestion(trackBank, { trackId: "mle" }).id);
+  assert.deepEqual(kit.reference(question), practiceReference(question));
+  assert.deepEqual(kit.missDraft(question, { answer: "A", trackId: "mle" }), practiceMissDraft(question, { answer: "A", trackId: "mle" }));
 });
