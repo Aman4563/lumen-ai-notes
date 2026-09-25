@@ -85,6 +85,16 @@ import {
   withoutCitationLabels,
 } from "../lib/tutorFollowUps.js";
 import { buildStarterPrompts } from "../lib/tutorStarters.js";
+import {
+  HINT_PROMPT,
+  NEXT_QUESTION_PROMPT,
+  REVEAL_PROMPT,
+  SESSION_MODES,
+  sessionRetrievalQuery,
+  sessionWrapUp,
+  tutorSession,
+  wrapUpLabel,
+} from "../lib/tutorSession.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -153,8 +163,10 @@ const MODE_OPTIONS = Object.freeze([
 ]);
 
 // Modes that only a tutor action starts (never listed, never required by
-// the server check, never restored into the composer): "Explain my mistake"
-// sends answer_feedback.
+// the server check, never restored into the composer as themselves):
+// "Explain my mistake" sends answer_feedback; a Socratic or Interview
+// session's hint and reveal keep the session going without counting as new
+// questions. `composerMode` is the listed mode Edit & reuse reopens.
 const HIDDEN_MODES = Object.freeze([
   {
     id: "feedback",
@@ -163,6 +175,23 @@ const HIDDEN_MODES = Object.freeze([
     prompt: "",
     description: "Feedback on a quiz answer you missed.",
     structured: true,
+    hidden: true,
+  },
+  {
+    id: "hint",
+    label: "Hint",
+    task: "socratic",
+    prompt: "",
+    description: "One hint for the tutor's last question.",
+    hidden: true,
+    composerMode: "socratic",
+  },
+  {
+    id: "reveal",
+    label: "Answer revealed",
+    task: "explain",
+    prompt: "",
+    description: "The answer to the tutor's last question, explained.",
     hidden: true,
   },
 ]);
@@ -614,10 +643,12 @@ const verifyPublicConfig = (config) => {
 };
 
 const modeById = (id) => MODE_OPTIONS.find((mode) => mode.id === id) || HIDDEN_MODES.find((mode) => mode.id === id) || MODE_OPTIONS[0];
-// The composer only ever holds a listed mode; a hidden one reopens as Explain.
+// The composer only ever holds a listed mode; a hidden one reopens as its
+// `composerMode`, or Explain.
 const composerModeFor = (id) => {
   const mode = modeById(id);
-  return mode.hidden ? MODE_OPTIONS[0] : mode;
+  if (!mode.hidden) return mode;
+  return MODE_OPTIONS.find((item) => item.id === mode.composerMode) || MODE_OPTIONS[0];
 };
 const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.label || "Balanced";
 
@@ -1236,6 +1267,7 @@ export default function AiTutor({
   const keyHintId = useId();
   const startersHeadingId = useId();
   const newTopicHintId = useId();
+  const sessionTitleId = useId();
   const sourceNumbersRef = useRef(new Map());
   const nextSourceNumberRef = useRef(1);
   const requestControllerRef = useRef(null);
@@ -1781,6 +1813,9 @@ export default function AiTutor({
   useEffect(() => { setClock(Date.now()); }, [history]);
   // Turns before the latest break of more than three hours are not sent.
   const contextStart = tutorContextStart(history, clock);
+  // The Socratic or Interview session the conversation ends with (TFEAT-05),
+  // derived from the turns the model can still see.
+  const session = useMemo(() => tutorSession(history.slice(contextStart)), [contextStart, history]);
   const lastExternalHistoryRef = useRef({
     signature: historySignature(normalizedExternalHistory),
     history: normalizedExternalHistory,
@@ -2526,7 +2561,7 @@ export default function AiTutor({
     const answerText = message.data ? tutorMessageMarkdown(message, { includeSources: false }) : message.content;
     const scope = followUpScope(message, normalizedSources);
     const { inputLimit: followUpInputLimit } = tutorRequestLimits(configState.config, responseProfile);
-    startTutorAction({
+    const started = startTutorAction({
       mode,
       prompt: item.prompt,
       sourceMode: scope.sourceMode,
@@ -2534,6 +2569,45 @@ export default function AiTutor({
       historyWindow: tutorFollowUpWindow(followUpPair(question, answerText), { inputLimit: followUpInputLimit }),
       retrievalQuery: followUpRetrievalQuery(question, message),
       selectedDocumentId: citedDocumentId(message),
+      webSearch: false,
+    });
+    // "Check my understanding" asks a question: the learner answers it in
+    // the same mode, so the session continues from the composer.
+    if (started && SESSION_MODES.includes(mode.id) && modeId !== mode.id) {
+      setModeId(mode.id);
+      if (isDefaultPrompt(prompt.trim())) setPrompt("");
+    }
+  };
+
+  /**
+   * A Socratic or Interview session's own actions (TFEAT-05). A hint, a
+   * reveal and the next question retrieve with the tutor's last question and
+   * favour the lesson it cited, with the session as memory. Wrap up recaps
+   * the session's turns alone: no library text, no older summary. None of
+   * them grades a free-form answer, and none uses the web.
+   */
+  const runSessionAction = (kind) => {
+    if (!session || requestState.status === "loading") return;
+    if (kind === "wrap-up") {
+      const { inputLimit: wrapUpInputLimit } = tutorRequestLimits(configState.config, responseProfile);
+      const wrapUp = sessionWrapUp(session.messages, { inputLimit: wrapUpInputLimit });
+      startTutorAction({ mode: modeById("summarize"), prompt: wrapUp.prompt, sourceMode: "none", historyWindow: wrapUp.historyWindow, webSearch: false });
+      return;
+    }
+    const question = session.lastQuestion;
+    const scope = followUpScope(question, normalizedSources);
+    const action = {
+      hint: { mode: modeById("hint"), prompt: HINT_PROMPT },
+      reveal: { mode: modeById("reveal"), prompt: REVEAL_PROMPT },
+      next: { mode: modeById(session.mode), prompt: NEXT_QUESTION_PROMPT },
+    }[kind];
+    if (!action) return;
+    startTutorAction({
+      ...action,
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      retrievalQuery: sessionRetrievalQuery(question),
+      selectedDocumentId: citedDocumentId(question),
       webSearch: false,
     });
   };
@@ -2988,6 +3062,11 @@ export default function AiTutor({
     }
     applyStarter(starter);
   };
+  // The session strip (TFEAT-05) shows while the composer is in a practice
+  // mode; choosing another mode leaves the session. While a tutor question
+  // waits, the question box is where the learner answers it.
+  const sessionStrip = !setupRequired && session && SESSION_MODES.includes(currentMode.id) ? session : null;
+  const answering = Boolean(sessionStrip && !sessionStrip.revealed);
   const codeMode = currentMode.id === "code-review";
   const keyHint = setupRequired ? "" : composerKeyHint({ finePointer, codeMode, platform: currentPlatform() });
 
@@ -3225,12 +3304,14 @@ export default function AiTutor({
               {history.map((message, index) => {
                 const titleId = `${headingId}-message-${index}`;
                 const modeLabel = modeById(message.mode).label;
+                // A session recap says which turns it covers.
+                const recapLabel = message.role === "assistant" && message.mode === "summarize" ? wrapUpLabel(questionForAnswer(history, message.id)?.content) : "";
                 return (
                   <Fragment key={message.id}>
                   {index === contextStart && index > 0 && contextBreak}
                   <article className={`ai-tutor__message ai-tutor__message--${message.role}`} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined} aria-labelledby={titleId}>
                     <h3 className="visually-hidden" id={titleId}>{message.role === "assistant" ? `Tutor answer, ${modeLabel}${message.incomplete ? ", stopped early" : ""}` : `Your question, ${modeLabel}`}</h3>
-                    <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeLabel}</span>{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
+                    <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeLabel}</span>{recapLabel && <span className="ai-tutor__recap-label">{recapLabel}</span>}{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
                     {message.role === "assistant"
                       ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} study={studyFor(message)} />
                       : <p className="ai-tutor__user-prompt">{message.content}</p>}
@@ -3294,11 +3375,30 @@ export default function AiTutor({
             <label className="ai-tutor__consent"><input type="checkbox" checked={false} onChange={(event) => { const acknowledged = event.target.checked; setLocalDisclosureAcknowledged(acknowledged); rememberLocalDisclosureAcknowledgement(acknowledged); }} /><span>Allow prompts and attached notes to use the local model on your Mac. Remember on this browser.</span></label>
           </div>
         )}
+        {sessionStrip && (
+          <div className="ai-tutor__session" role="group" aria-labelledby={sessionTitleId}>
+            <p className="ai-tutor__session-status" id={sessionTitleId}>
+              <strong>{modeById(sessionStrip.mode).label} session</strong> · question {sessionStrip.questions}
+              {sessionStrip.revealed && <> <span className="ai-tutor__session-revealed"><span className="visually-hidden">· </span>Answer revealed</span></>}
+              {sessionStrip.suggestWrapUp && <span className="ai-tutor__session-tip"> · time to wrap up</span>}
+            </p>
+            <div className="ai-tutor__session-actions">
+              {sessionStrip.revealed
+                ? <button type="button" disabled={requestState.status === "loading"} onClick={() => runSessionAction("next")}>Next question</button>
+                : <>
+                  {/* Phones keep the three actions on one row. */}
+                  <button type="button" disabled={requestState.status === "loading"} onClick={() => runSessionAction("hint")}>{compactModes ? "Hint" : "Give me a hint"}</button>
+                  <button type="button" disabled={requestState.status === "loading"} onClick={() => runSessionAction("reveal")}>{compactModes ? "I’m stuck" : "I’m stuck, explain it"}</button>
+                </>}
+              <button type="button" className={sessionStrip.suggestWrapUp ? "is-suggested" : undefined} disabled={requestState.status === "loading"} onClick={() => runSessionAction("wrap-up")}>Wrap up</button>
+            </div>
+          </div>
+        )}
         {/* The question box stays in setup states so a draft or an Ask AI
             excerpt is kept for when the tutor becomes available. */}
-        <label className="ai-tutor__prompt-label" htmlFor={promptId}>Your question</label>
+        <label className="ai-tutor__prompt-label" htmlFor={promptId}>{answering ? "Your answer" : "Your question"}</label>
         <div className="ai-tutor__submit-row">
-          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}${keyHint ? ` ${keyHintId}` : ""}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={onPromptKeyDown} maxLength={promptLimit} rows={1} placeholder="Ask a question…" />
+          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}${keyHint ? ` ${keyHintId}` : ""}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={onPromptKeyDown} maxLength={promptLimit} rows={1} placeholder={answering ? "Type your answer…" : "Ask a question…"} />
           {requestState.status === "loading" ? (
             <button
               className="ai-tutor__button ai-tutor__button--secondary ai-tutor__send is-stop"
@@ -3314,7 +3414,7 @@ export default function AiTutor({
               }}
             ><CircleStop size={18} aria-hidden="true" /><span className="ai-tutor__send-label">Stop generating</span></button>
           ) : (
-            <button className="ai-tutor__button ai-tutor__button--primary ai-tutor__send" type="submit" ref={sendButtonRef} disabled={!requestReady} aria-describedby={`${sendSummaryId} ${sendReasonId}`}><Send size={18} aria-hidden="true" /><span className="ai-tutor__send-label">Generate {currentMode.label}</span></button>
+            <button className="ai-tutor__button ai-tutor__button--primary ai-tutor__send" type="submit" ref={sendButtonRef} disabled={!requestReady} aria-describedby={`${sendSummaryId} ${sendReasonId}`}><Send size={18} aria-hidden="true" /><span className="ai-tutor__send-label">{answering ? "Send answer" : `Generate ${currentMode.label}`}</span></button>
           )}
         </div>
         <div className="ai-tutor__composer-meta">

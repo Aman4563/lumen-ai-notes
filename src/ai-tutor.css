@@ -2202,6 +2202,91 @@
   .ai-tutor__follow-ups-list button { min-height: 44px; }
 }
 
+/* A Socratic or Interview session (TFEAT-05): its count and its own
+   actions sit in the docked composer, above the answer box. */
+.ai-tutor__session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 8px;
+}
+
+.ai-tutor__session-status {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.76rem;
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+.ai-tutor__session-status strong {
+  color: var(--ai-accent-ink);
+  font-weight: 780;
+}
+
+.ai-tutor__session-revealed {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  color: var(--ink, #172035);
+  background: var(--gold-soft, #fff6df);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 760;
+}
+
+.ai-tutor__session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-tutor__session-actions button {
+  min-height: 40px;
+  padding: 7px 12px;
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 30%, transparent);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 720;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.ai-tutor__session-actions button.is-suggested {
+  color: white;
+  background: var(--ai-accent-strong);
+  border-color: var(--ai-accent-strong);
+}
+
+.ai-tutor__session-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ai-accent) 60%, transparent);
+}
+
+.ai-tutor__session-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-tutor__session-actions button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
+}
+
+.ai-tutor__recap-label {
+  color: var(--ai-accent-ink);
+  font-weight: 760;
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__session { margin-bottom: 6px; }
+  .ai-tutor__session-actions button { min-height: 44px; padding-inline: 11px; }
+}
+
 .ai-tutor__copy-status {
   position: absolute;
   width: 1px;

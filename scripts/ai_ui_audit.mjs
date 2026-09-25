@@ -1835,6 +1835,16 @@ try {
       const tooLong = await checkLayout("prompt too long");
       assert.match(tooLong.reason.text, /Shorten the prompt|reduce it below/, `${viewport.name}: an over-long prompt gave no reason: ${JSON.stringify(tooLong.reason)}`);
       assert.ok(tooLong.reason.drawn && tooLong.reason.linked && tooLong.reason.span[1] <= tooLong.navTop + 1, `${viewport.name}: the over-long prompt's reason was hidden, unlinked or under the navigation: ${JSON.stringify(tooLong)}`);
+      // A Socratic session's strip (TFEAT-05) joins the dock without pushing
+      // the answer box or Send out of view.
+      await setLayoutPrompt("Teach me holdout evaluation one question at a time.");
+      await chooseMode(page, "Socratic");
+      await page.$eval(".ai-tutor__send", (button) => button.click());
+      await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= 2 && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 });
+      await page.waitForSelector(".ai-tutor__composer .ai-tutor__session", { timeout: 5_000 });
+      const sessionLayout = await checkLayout("socratic session");
+      const stripSpan = await page.$eval(".ai-tutor__session", (node) => [Math.round(node.getBoundingClientRect().top), Math.round(node.getBoundingClientRect().bottom)]);
+      assert.ok(stripSpan[0] >= sessionLayout.topbar - 1 && stripSpan[1] <= sessionLayout.navTop + 1, `${viewport.name}: the session strip left the visible area: ${JSON.stringify({ stripSpan, sessionLayout })}`);
     } finally {
       await layoutContext.close();
     }
@@ -2491,6 +2501,149 @@ try {
     await topicScenario.context.close();
   }
 
+  // Socratic and Interview sessions (TFEAT-05). A strip in the docked
+  // composer counts the tutor's questions and offers a hint, a reveal and a
+  // wrap-up; while a question waits, the box is where the learner answers.
+  // Hints and reveals retrieve with the tutor's last question and never use
+  // the web; Wrap up recaps the session's own turns without library text or
+  // an older summary. Choosing another mode leaves the session, and
+  // "Check my understanding" starts one. Nothing is graded.
+  const sessionScenario = await newIsolatedPage("socratic-session", {
+    mocks: {
+      answerText: (citation, body) => {
+        if (body.task === "summarize") return "## Session recap\n\n**Right:** the penalty shrinks the weights.\n\n**Missed:** why that lowers variance.";
+        if (body.prompt.startsWith("Reveal the answer")) return `## The answer\n\nAs λ grows, ridge shrinks every weight toward zero, trading a little bias for lower variance. [${citation}]`;
+        if (body.task === "explain") return `## Ridge regression\n\nRidge adds an L2 penalty to the loss, so large weights cost more. [${citation}]`;
+        if (body.prompt.startsWith("Give me one hint")) return `Think about what the penalty does to a large weight. What happens to it as λ grows? [${citation}]`;
+        return `Let's check. What happens to the ridge regression weights as the penalty λ grows? [${citation}]`;
+      },
+    },
+  });
+  try {
+    const { page, calls } = sessionScenario;
+    const strip = () => page.evaluate(() => {
+      const node = document.querySelector(".ai-tutor__composer .ai-tutor__session");
+      return node ? {
+        status: node.querySelector(".ai-tutor__session-status").textContent.replace(/\s+/g, " ").trim(),
+        actions: [...node.querySelectorAll("button")].map((button) => button.textContent.trim()),
+        suggested: [...node.querySelectorAll("button.is-suggested")].map((button) => button.textContent.trim()),
+        named: node.getAttribute("role") === "group" && document.getElementById(node.getAttribute("aria-labelledby"))?.textContent.length > 0,
+        live: Boolean(node.closest("[aria-live]") || node.querySelector("[aria-live], [role='status']")),
+      } : null;
+    });
+    const composerCopy = () => page.evaluate(() => ({
+      placeholder: document.querySelector(".ai-tutor__composer textarea").placeholder,
+      send: document.querySelector(".ai-tutor__send .ai-tutor__send-label").textContent,
+    }));
+    const clickStrip = (label) => clickByText(page, ".ai-tutor__session-actions button", label);
+    const lastAnswerFocused = () => page.evaluate(() => document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1));
+    const contextTitles = (body) => String(body.context).split("\n").filter((line) => /^\[S\d+\] /.test(line)).map((line) => line.replace(/^\[S\d+\] /, "").split(" — ")[0]);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await setComposerPrompt(page, "Why does ridge regression shrink the weights?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const first = calls.respond.at(-1).body;
+    assert.equal(await strip(), null, "an Explain answer showed a session strip");
+
+    // "Check my understanding" asks a question, so the composer follows it
+    // into Socratic and the session begins.
+    await settleScroll(page);
+    await clickByText(page, ".ai-tutor__follow-ups button", "Check my understanding");
+    await waitForAnswers(page, 2);
+    assert.equal(await activeMode(page), "Socratic", "a Socratic follow-up left the composer in Explain");
+    // Phones use short labels so the three actions share one row.
+    assert.deepEqual(await strip(), { status: "Socratic session · question 1", actions: ["Hint", "I’m stuck", "Wrap up"], suggested: [], named: true, live: false }, "the session strip did not appear after the tutor's question");
+    assert.equal(await page.$(".ai-tutor__follow-ups"), null, "a tutor question offered answer follow-ups next to the session strip");
+    assert.deepEqual(await composerCopy(), { placeholder: "Type your answer…", send: "Send answer" }, "the question box did not become the answer box");
+    await setComposerPrompt(page, "They get smaller.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 3);
+    assert.equal(calls.respond.at(-1).body.task, "socratic", "the learner's answer left the session's task");
+    assert.equal((await strip()).status, "Socratic session · question 2");
+    const stripLayout = await page.evaluate(() => {
+      const nav = document.querySelector(".bottom-nav");
+      const navTop = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+      const buttons = [...document.querySelectorAll(".ai-tutor__session-actions button")].map((node) => node.getBoundingClientRect());
+      const send = document.querySelector(".ai-tutor__send").getBoundingClientRect();
+      return {
+        heights: buttons.map((rect) => Math.round(rect.height)),
+        inView: buttons.every((rect) => rect.top >= 0 && rect.bottom <= navTop + 1) && send.bottom <= navTop + 1,
+        rows: new Set(buttons.map((rect) => Math.round(rect.top))).size,
+        scrollWidth: document.documentElement.scrollWidth,
+        innerWidth,
+      };
+    });
+    assert.ok(stripLayout.heights.every((height) => height >= 44), `session actions under 44px on a phone: ${stripLayout.heights}`);
+    assert.equal(stripLayout.inView, true, "the session strip or Send sat under the bottom navigation");
+    assert.equal(stripLayout.rows, 1, `three session actions took ${stripLayout.rows} rows on a 393px phone`);
+    assert.equal(stripLayout.scrollWidth, stripLayout.innerWidth, "the session strip made the phone page scroll sideways");
+
+    // A hint: Socratic, the session as memory, retrieved with the tutor's
+    // last question and its lesson, no web. It is not a new question.
+    await clickStrip("Hint");
+    await waitForAnswers(page, 4);
+    const hint = calls.respond.at(-1).body;
+    assert.equal(hint.task, "socratic");
+    assert.equal(hint.prompt.startsWith("Give me one hint for your last question without revealing the answer."), true);
+    assert.equal(hint.webSearch, false, "a hint used the web");
+    assert.ok(hint.history.length >= 4, `a hint forgot the session: ${hint.history.length} messages`);
+    assert.match(hint.history.at(-1).content, /What happens to the ridge regression weights/, "the hint's memory did not end with the question it is about");
+    assert.ok(contextTitles(hint).includes(contextTitles(first)[0]), `the hint did not retrieve the session's lesson: ${JSON.stringify(contextTitles(hint))}`);
+    assert.equal(await lastAnswerFocused(), true, "focus did not move to the hint");
+    assert.equal((await strip()).status, "Socratic session · question 2", "a hint counted as a new question");
+
+    // I'm stuck: an Explain answer that stays in the session, marked as a
+    // reveal; the strip then offers the next question instead of a hint.
+    await clickStrip("I’m stuck");
+    await waitForAnswers(page, 5);
+    const reveal = calls.respond.at(-1).body;
+    assert.equal(reveal.task, "explain", "I'm stuck did not ask for an explanation");
+    assert.equal(reveal.webSearch, false);
+    assert.equal(reveal.prompt.startsWith("Reveal the answer to your last question and explain it step by step."), true);
+    assert.deepEqual(await strip(), { status: "Socratic session · question 2 · Answer revealed", actions: ["Next question", "Wrap up"], suggested: [], named: true, live: false }, "the strip did not note the reveal");
+    assert.match(await page.$$eval(".ai-tutor__message--assistant .ai-tutor__message-meta", (nodes) => nodes.at(-1).textContent), /Answer revealed/, "the revealed answer was not labelled");
+    assert.deepEqual(await composerCopy(), { placeholder: "Ask a question…", send: "Generate Socratic" }, "the box still asked for an answer after the reveal");
+
+    // Another mode leaves the session; coming back shows it again.
+    await chooseMode(page, "Explain");
+    assert.equal(await strip(), null, "the strip stayed after choosing Explain");
+    assert.equal((await composerCopy()).send, "Generate Explain");
+    await chooseMode(page, "Socratic");
+    assert.ok(await strip(), "the strip did not return with Socratic");
+    await setComposerPrompt(page, "");
+
+    await clickStrip("Next question");
+    await waitForAnswers(page, 6);
+    assert.equal(calls.respond.at(-1).body.task, "socratic");
+    const long = await strip();
+    assert.equal(long.status, "Socratic session · question 3 · time to wrap up", "a ten-message session did not suggest Wrap up");
+    assert.deepEqual(long.suggested, ["Wrap up"]);
+
+    // Wrap up: a summary of the session's own turns, no library text.
+    await clickStrip("Wrap up");
+    await waitForAnswers(page, 7);
+    const wrap = calls.respond.at(-1).body;
+    assert.equal(wrap.task, "summarize");
+    assert.equal(wrap.prompt.startsWith("Recap this practice session: what I got right, what I missed, and 3 things to review."), true);
+    assert.equal(wrap.context, "", "Wrap up sent library text");
+    assert.deepEqual(wrap.contextCitations, []);
+    assert.equal(wrap.webSearch, false);
+    assert.equal(wrap.conversationSummary, "", "Wrap up sent an older summary");
+    assert.equal(wrap.history.length, 10, `Wrap up did not remember the whole session: ${wrap.history.length} messages`);
+    assert.equal(wrap.history[0].content.startsWith("Ask me one question that checks"), true, "Wrap up's memory began before the session");
+    assert.equal(await strip(), null, "the strip stayed after Wrap up");
+    const recap = await page.$$eval(".ai-tutor__message--assistant", (nodes) => ({
+      meta: nodes.at(-1).querySelector(".ai-tutor__message-meta").textContent,
+      actions: [...nodes.at(-1).querySelectorAll(".ai-tutor__message-actions button, .ai-tutor__follow-ups button")].map((node) => node.textContent.trim()),
+    }));
+    assert.match(recap.meta, /Session recap/, "the recap was not labelled");
+    assert.ok(recap.actions.includes("Save to notes") && recap.actions.includes("Make flashcards"), `the recap offered no Save to notes or Make flashcards: ${recap.actions}`);
+    assert.deepEqual(await composerCopy(), { placeholder: "Ask a question…", send: "Generate Socratic" });
+  } finally {
+    await sessionScenario.context.close();
+  }
+
   let modelOnline = false;
   const recovery = await newAuditPage("service-recovers", () => modelOnline ? secureConfig : {
     ...secureConfig, service: { ...secureConfig.service, reachable: false },
@@ -2517,7 +2670,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

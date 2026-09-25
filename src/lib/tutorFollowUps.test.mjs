@@ -27,6 +27,9 @@ test("follow-ups appear only under a complete newest answer", () => {
   assert.equal(followUpsForMessage(answer({ mode: "flashcards", data: { cards: [] } }), { isLast: true }), FLASHCARD_FOLLOW_UPS);
   assert.deepEqual(followUpsForMessage(answer({ mode: "study-plan", data: {} }), { isLast: true }), []);
   assert.deepEqual(followUpsForMessage(answer({ mode: "feedback", data: {} }), { isLast: true }), []);
+  // A tutor question gets the session strip instead; a reveal is an answer.
+  for (const mode of ["socratic", "interview", "hint", "interview-practice"]) assert.deepEqual(followUpsForMessage(answer({ mode }), { isLast: true }), [], `${mode} offered follow-ups`);
+  assert.equal(followUpsForMessage(answer({ mode: "reveal" }), { isLast: true }), ANSWER_FOLLOW_UPS);
   // Every chip uses a listed mode, never a hidden one.
   const modes = new Set([...ANSWER_FOLLOW_UPS, ...QUIZ_FOLLOW_UPS, ...FLASHCARD_FOLLOW_UPS].map((item) => item.modeId));
   assert.deepEqual([...modes].sort(), ["explain", "flashcards", "quiz", "socratic"]);

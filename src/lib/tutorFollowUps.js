@@ -35,16 +35,21 @@ export const FLASHCARD_FOLLOW_UPS = Object.freeze([
   { id: "quiz-cards", label: "Quiz me on these", modeId: "quiz", prompt: "Create 2 multiple-choice questions that test the ideas on your previous flashcards. Explain each answer." },
 ]);
 
+// Turns that ask the learner a question: the session strip in the composer
+// (TFEAT-05) offers their next steps, so they get no follow-ups.
+const QUESTION_MODES = new Set(["socratic", "interview", "hint"]);
+
 /**
  * The follow-ups for the newest turn: only when the conversation ends with a
- * complete answer (not stopped early, not display-capped). Study plans and
- * answer checks have none.
+ * complete answer (not stopped early, not display-capped). Study plans,
+ * answer checks, interview practice feedback and the tutor's own questions
+ * have none.
  */
 export const followUpsForMessage = (message, { isLast = false } = {}) => {
   if (!isLast || !message || message.role !== "assistant" || message.incomplete === true || message.truncated === true) return [];
   if (message.mode === "quiz") return message.data ? QUIZ_FOLLOW_UPS : [];
   if (message.mode === "flashcards") return message.data ? FLASHCARD_FOLLOW_UPS : [];
-  if (message.mode === "study-plan" || message.mode === "feedback") return [];
+  if (["study-plan", "feedback", "interview-practice"].includes(message.mode) || QUESTION_MODES.has(message.mode)) return [];
   return ANSWER_FOLLOW_UPS;
 };
 
