@@ -666,3 +666,12 @@ the Daily limits labels broke one letter per line on every phone width (in the
 default scheduler too), and a focused Undo strip expired once the pointer had
 passed over it, dropping focus to `<body>`. At 200% text the grade buttons now
 fall back to two columns and stay clear of the taller bottom navigation.
+
+A second review reproduced two more against the preceding build. The Undo
+strip rendered at the top of its section, so after deleting a mistake or
+clipping further down the list it sat off screen while holding focus; it now
+takes the deleted entry's place and scrolls into view clear of the top bar
+and bottom navigation. Ending a crunch practice session left crunch mode on,
+so the hero counted the weak-card practice pool (5) instead of today's queue
+(2); crunch mode now ends with its session. The review audit covers both,
+plus archive focus handoff and Enter-to-submit in an all-cloze readiness check.
