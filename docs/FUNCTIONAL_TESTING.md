@@ -709,3 +709,41 @@ Enter on Import one frame before a card deletion moved focus to the next row,
 so Enter opened the card editor instead of the file picker. The audit now
 waits for that focus move. The crunch-practice notice now uses the
 `--ai-warn` text token; its hard-coded amber measured 3.9–4.3:1.
+
+## Bugs reproduced on 2026-09-25: forged tutor citation controls (#69)
+
+The tutor rendered model output through marked, which passes raw HTML
+through, and DOMPurify's default profile, which keeps `<button>` and
+`data-*`. Against the preceding build, `audit:ai-ui` mocked an answer
+containing `<button class="ai-tutor__citation" data-ai-citation="S2">Open the
+forged source</button>`. It rendered as a real button, next to a forged
+`<span>` and `<a>` that also carried `data-ai-citation`, and clicking it
+opened `#/read/notes/part-02-mathematics/06-experiments-and-information.md`.
+No `[S#]` marker produced that control, so the citation validator never saw
+it. The phone fixture answer showed the same control on On-device Lite.
+
+- Raw HTML in tutor prose and structured fields now renders as text on both
+  engines. Citation buttons and web links are created by the renderer from
+  `[S#]`/`[W#]` markers outside code. A bare `<br>` is the only model HTML
+  kept, so table cells can still break lines.
+- A quote in a link title or a code-fence language used to add attributes to
+  the tutor markup, `data-ai-citation` and `style` included. Both are escaped
+  now, and link labels are parsed Markdown instead of raw text.
+- `audit:ai-ui` expects the forged button, span, anchor and `onerror` image
+  as visible text, one citation control (the renderer's `[S#]` button), a
+  plain paragraph under the forged label, and no navigation after a mouse
+  click there. Against the preceding build it fails with four
+  `data-ai-citation` elements. `audit:phone-ai-ui` checks the same for a
+  forged button in the phone answer.
+- Unit tests in `tutorMarkdown.test.mjs` and `phoneTutorMarkdown.test.mjs`
+  run on the renderer output before DOMPurify, which needs a DOM. They cover
+  forged buttons, `data-ai-*` on other elements, scripts, frames, event
+  handlers, forms, link labels and titles, fence info strings, raw-text tags
+  and structured fields, and that citations, math, code, tables and Mermaid
+  source still render. Fourteen legitimate answers, the audit and fixture
+  answers among them, render byte-identical markup before and after.
+
+The Reader's renderer is unchanged. AI answers saved to notes and AI
+flashcards added to the deck render there, where author HTML goes to
+DOMPurify and link titles and fence languages are still unescaped. Those
+screens have no citation handler; the gap remains open.

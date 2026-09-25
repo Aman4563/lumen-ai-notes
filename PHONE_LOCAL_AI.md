@@ -237,7 +237,8 @@ Declining calls the same method once with `consent: false`, consumes the one-use
 On-device conversation history is intentionally session-only and is visually separated from the durable Mac-local conversation. It is held in App memory, so switching engines or navigating away and back preserves completed turns while active or aborted turns are removed; the model's GPU memory is still released on unmount. It is not written to IndexedDB or exported in a backup. Reloading the page clears it. Generated flashcards can still be explicitly added to the normal review deck through the existing callback.
 
 Plain answers stream into a live mobile response card at animation-frame cadence.
-They use the same DOMPurify-sanitized GFM + KaTeX renderer as the Mac tutor, including
+They use the same DOMPurify-sanitized GFM + KaTeX renderer as the Mac tutor, which shows
+model-authored HTML as text so an answer cannot forge a citation control, including
 tables, lists, links, fenced-code copy controls, `$...$` inline math, and `$$...$$`
 display math. Compatible fenced Mermaid blocks remain readable source while tokens are
 arriving and render only after the response completes. The shared renderer lazy-loads
