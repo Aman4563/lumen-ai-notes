@@ -155,6 +155,21 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
   let lectureChars = 0;
   try {
     page = await openControlledPage(visited.url, errors);
+    // Repair app files deletes every Lumen cache and unregisters the worker
+    // (update() would not reinstall the same URL). Its reload must install
+    // this build again, route screens included.
+    await page.evaluate(async () => {
+      for (const key of await caches.keys()) if (key.startsWith("lumen-ai-notes-v")) await caches.delete(key);
+      await (await navigator.serviceWorker.getRegistration())?.unregister();
+    });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    const reinstalled = await page.waitForFunction(async () => {
+      const list = await (await caches.match(new URL("./offline-routes.json", location.href).href))?.json();
+      if (!navigator.serviceWorker.controller || !list?.files?.length) return false;
+      for (const file of list.files) if (!(await caches.match(new URL(file, location.href).href))) return false;
+      return true;
+    }, { timeout: 30_000, polling: 250 }).then(() => true, () => false);
+    assert(reinstalled, "after the repair sequence the worker did not reinstall this build's route screens");
     await page.goto(`${visited.url}#/read/${readerId}`, { waitUntil: "networkidle2", timeout: 30_000 });
     await page.waitForSelector(".markdown-body h1", { timeout: 15_000 });
     // Let the lecture's lazy diagram finish loading while the server is up.
@@ -179,7 +194,7 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     await visited.stop();
   }
   assert(errors.length === 0, `offline browser errors: ${errors.join(" | ")}`);
-  return `Read, AI Tutor, Whiteboard, Review, Device evidence, and Settings opened after a Home-only visit and every route screen loaded from the cache; a visited lecture reloaded (${lectureChars} characters)`;
+  return `Read, AI Tutor, Whiteboard, Review, Device evidence, and Settings opened after a Home-only visit and every route screen loaded from the cache; the repair sequence reinstalled the route screens; a visited lecture reloaded (${lectureChars} characters)`;
 };
 
 const browser = await puppeteer.launch({

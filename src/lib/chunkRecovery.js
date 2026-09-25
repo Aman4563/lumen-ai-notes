@@ -237,12 +237,15 @@ export const repairApplicationFiles = async ({
       .map((key) => cacheStorage.delete(key)));
   }
 
+  // Unregister instead of update(): the same worker URL never installs again,
+  // so its route screens would stay uncached until the next release, and a
+  // waiting worker whose cache was just deleted must not be promoted. The
+  // reload registers this build afresh, and install refills the cache.
   try {
     const registration = await navigatorObject?.serviceWorker?.getRegistration?.();
-    await registration?.update?.();
-    registration?.waiting?.postMessage?.({ type: "SKIP_WAITING" });
+    await registration?.unregister?.();
   } catch {
-    // A clean online reload can repair the shell even when SW update APIs fail.
+    // A clean online reload can repair the shell even when SW APIs fail.
   }
 
   // If the deployment is still incomplete, show the actionable boundary after

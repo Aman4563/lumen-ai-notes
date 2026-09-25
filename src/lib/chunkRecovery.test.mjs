@@ -108,11 +108,10 @@ test("a repeated stale failure rejects to the error boundary instead of reloadin
   assert.equal(reloads, 0);
 });
 
-test("manual repair verifies the server, removes only Lumen app caches, updates the worker, and reloads", async () => {
+test("manual repair verifies the server, removes only Lumen app caches, unregisters the worker, and reloads", async () => {
   const storage = makeStorage();
   const deleted = [];
-  const messages = [];
-  let updated = 0;
+  const workerCalls = [];
   let reloads = 0;
   let probe;
   await repairApplicationFiles({
@@ -128,9 +127,12 @@ test("manual repair verifies the server, removes only Lumen app caches, updates 
     navigatorObject: {
       onLine: true,
       serviceWorker: {
+        // update() would not reinstall the same worker URL, and SKIP_WAITING
+        // would promote a waiting worker whose cache was just deleted.
         getRegistration: async () => ({
-          update: async () => { updated += 1; },
-          waiting: { postMessage: (message) => messages.push(message) },
+          unregister: async () => { workerCalls.push("unregister"); return true; },
+          update: async () => { workerCalls.push("update"); },
+          waiting: { postMessage: (message) => workerCalls.push(message.type) },
         }),
       },
     },
@@ -141,8 +143,7 @@ test("manual repair verifies the server, removes only Lumen app caches, updates 
   assert.deepEqual(deleted, ["lumen-ai-notes-vlegacy-10", "lumen-ai-notes-vrelease-2"]);
   assert.match(probe.url, /^https:\/\/lumen\.test\/app\/\?lumen-repair=44$/);
   assert.deepEqual(probe.options, { cache: "no-store", credentials: "same-origin" });
-  assert.equal(updated, 1);
-  assert.deepEqual(messages, [{ type: "SKIP_WAITING" }]);
+  assert.deepEqual(workerCalls, ["unregister"]);
   assert.equal(reloads, 1);
   assert.deepEqual(JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY)), { attemptedAt: 44, asset: "manual-repair" });
 });
