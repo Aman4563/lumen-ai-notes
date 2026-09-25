@@ -82,13 +82,15 @@ export const sessionRetrievalQuery = (message) => {
 /**
  * Wrap up: a recap of the session's own turns, which are its only material
  * (no library text is sent). Up to 12 messages, within 60% of the input
- * budget and without an older summary. When the session is longer than
- * that, the question says which turns the recap covers.
+ * budget and without an older summary. The turns lose their [S#]/[W#]
+ * labels: no evidence is supplied with a recap, so a copied label would be
+ * an unsupported citation. When the session is longer than the window, the
+ * question says which turns the recap covers.
  *
  * Returns { prompt, historyWindow, covered, total }.
  */
 export const sessionWrapUp = (messages, { inputLimit = 16_000 } = {}) => {
-  const turns = Array.isArray(messages) ? messages : [];
+  const turns = (Array.isArray(messages) ? messages : []).map((message) => ({ ...message, content: withoutCitationLabels(message?.content) }));
   const window = buildConversationWindow(turns, {
     maxMessages: TUTOR_MAX_SERVER_HISTORY,
     characterBudget: Math.floor(inputLimit * 0.6),

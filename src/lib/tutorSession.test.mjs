@@ -73,6 +73,8 @@ test("wrap up recaps the session's own turns and says when it covers only the la
   assert.equal(short.total, 4);
   assert.deepEqual(short.historyWindow.messages.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
   assert.equal(short.historyWindow.conversationSummary, "", "a recap sent an older summary");
+  assert.equal(short.historyWindow.messages.some((message) => /\[[SW]\d+\]/.test(message.content)), false, "a recap without evidence kept citation labels");
+  assert.equal(short.historyWindow.messages[1].content, "Let's start. What happens to the weights as λ grows?");
   assert.equal(short.historyWindow.compactedMessages, 0);
   assert.equal(wrapUpLabel(short.prompt), "Session recap");
 

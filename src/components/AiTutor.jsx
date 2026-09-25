@@ -2798,10 +2798,15 @@ export default function AiTutor({
       next: { mode: modeById(session.mode), prompt: NEXT_QUESTION_PROMPT },
     }[kind];
     if (!action) return;
+    // The conversation is the memory, without the [S#]/[W#] labels of earlier
+    // requests: this one is grounded in freshly retrieved passages.
+    const { inputLimit: sessionInputLimit } = tutorRequestLimits(configState.config, responseProfile);
+    const unlabelled = history.slice(tutorContextStart(history, Date.now())).map((message) => ({ ...message, content: withoutCitationLabels(message.content) }));
     startTutorAction({
       ...action,
       sourceMode: scope.sourceMode,
       sources: scope.sources,
+      historyWindow: tutorConversationWindow(unlabelled, { prompt: action.prompt, sources: scope.sourceMode !== "none", inputLimit: sessionInputLimit }),
       retrievalQuery: sessionRetrievalQuery(question),
       selectedDocumentId: citedDocumentId(question),
       webSearch: false,

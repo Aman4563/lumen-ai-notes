@@ -2592,6 +2592,7 @@ try {
     assert.equal(hint.webSearch, false, "a hint used the web");
     assert.ok(hint.history.length >= 4, `a hint forgot the session: ${hint.history.length} messages`);
     assert.match(hint.history.at(-1).content, /What happens to the ridge regression weights/, "the hint's memory did not end with the question it is about");
+    assert.equal(hint.history.some((message) => /\[[SW]\d+\]/.test(message.content)), false, "a hint remembered another request's citation labels");
     assert.ok(contextTitles(hint).includes(contextTitles(first)[0]), `the hint did not retrieve the session's lesson: ${JSON.stringify(contextTitles(hint))}`);
     assert.equal(await lastAnswerFocused(), true, "focus did not move to the hint");
     assert.equal((await strip()).status, "Socratic session · question 2", "a hint counted as a new question");
@@ -2604,6 +2605,7 @@ try {
     assert.equal(reveal.task, "explain", "I'm stuck did not ask for an explanation");
     assert.equal(reveal.webSearch, false);
     assert.equal(reveal.prompt.startsWith("Reveal the answer to your last question and explain it step by step."), true);
+    assert.ok(reveal.history.length >= 4 && !reveal.history.some((message) => /\[[SW]\d+\]/.test(message.content)), "a reveal forgot the session or kept its citation labels");
     assert.deepEqual(await strip(), { status: "Socratic session · question 2 · Answer revealed", actions: ["Next question", "Wrap up"], suggested: [], named: true, live: false }, "the strip did not note the reveal");
     assert.match(await page.$$eval(".ai-tutor__message--assistant .ai-tutor__message-meta", (nodes) => nodes.at(-1).textContent), /Answer revealed/, "the revealed answer was not labelled");
     assert.deepEqual(await composerCopy(), { placeholder: "Ask a question…", send: "Generate Socratic" }, "the box still asked for an answer after the reveal");
@@ -2635,6 +2637,7 @@ try {
     assert.equal(wrap.conversationSummary, "", "Wrap up sent an older summary");
     assert.equal(wrap.history.length, 10, `Wrap up did not remember the whole session: ${wrap.history.length} messages`);
     assert.equal(wrap.history[0].content.startsWith("Ask me one question that checks"), true, "Wrap up's memory began before the session");
+    assert.equal(wrap.history.some((message) => /\[[SW]\d+\]/.test(message.content)), false, "Wrap up sent citation labels with no evidence to resolve them");
     assert.equal(await strip(), null, "the strip stayed after Wrap up");
     const recap = await page.$$eval(".ai-tutor__message--assistant", (nodes) => ({
       meta: nodes.at(-1).querySelector(".ai-tutor__message-meta").textContent,
