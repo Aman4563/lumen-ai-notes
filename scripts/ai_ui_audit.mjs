@@ -5,6 +5,9 @@ import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
+import { createMistake } from "../src/lib/mistakes.js";
+import { createReviewItem } from "../src/lib/review.js";
+import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -423,6 +426,21 @@ const newIsolatedPage = async (label, { viewport = phoneViewport, acknowledged =
   const calls = await installAiMocks(page, configFactory, mocks);
   return { context, page, calls };
 };
+
+// Merges fields into the stored profile; the app reads them on reload.
+const patchStoredProfile = (page, patch) => page.evaluate((patchJson) => new Promise((resolve, reject) => {
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const transaction = request.result.transaction("study-data", "readwrite");
+    const store = transaction.objectStore("study-data");
+    const get = store.get("profile");
+    get.onerror = () => reject(get.error);
+    get.onsuccess = () => { store.put({ ...get.result, ...JSON.parse(patchJson) }, "profile"); };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  };
+}), JSON.stringify(patch));
 
 const setComposerPrompt = (page, value) => page.$eval(".ai-tutor__composer textarea", (field, text) => {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
@@ -2017,6 +2035,95 @@ try {
     assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /in the question box\. Tick the local-model permission/);
   } finally {
     await followUpsScenario.context.close();
+  }
+
+  // Suggested starts (TFEAT-04): built from the learner's own data, never
+  // naming the roadmap on a fresh profile. A tap sets the mode and the
+  // question, focuses the box and sends nothing; a draft the learner wrote
+  // is replaced only on request. Phones show four full-width rows, wider
+  // screens six in two columns.
+  const documents = Array.isArray(contentIndex) ? contentIndex : contentIndex.documents;
+  const starterChapter = documents.find((document) => document.partNumber === 1 && !document.isIndex);
+  const startersScenario = await newIsolatedPage("starters");
+  try {
+    const { page, calls } = startersScenario;
+    const starterLabels = () => page.$$eval(".ai-tutor__starter", (nodes) => nodes.map((node) => [node.querySelector(".ai-tutor__starter-mode").textContent, node.querySelector(".ai-tutor__starter-title").textContent]));
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+    const freshStarters = await starterLabels();
+    assert.ok(freshStarters.length >= 1 && freshStarters.length <= 4, `a fresh phone showed ${freshStarters.length} starters`);
+    assert.equal(freshStarters.some(([, label]) => /roadmap|navigator|audit/i.test(label)), false, `a fresh profile's starters named the roadmap: ${JSON.stringify(freshStarters)}`);
+    assert.deepEqual(freshStarters[0], ["Explain", `Explain the key ideas of ${starterChapter.title}`], "a fresh profile did not start from the first lesson in the plan");
+    assert.equal(await page.$eval(".ai-tutor__starters", (node) => node.getAttribute("role") === "group" && document.getElementById(node.getAttribute("aria-labelledby"))?.textContent), "Suggested starts");
+
+    const lapsedCard = { ...createReviewItem({ type: "basic", front: "What does the ridge penalty add to the loss?", back: "The squared L2 norm of the weights.", documentId: starterChapter.id, tags: [] }), lapses: 3 };
+    await patchStoredProfile(page, {
+      recent: [starterChapter.id],
+      lastDocumentId: starterChapter.id,
+      mistakes: [
+        createMistake({ prompt: "Why does lasso produce sparse weights while ridge does not?", expected: "The L1 penalty has corners at zero.", documentId: starterChapter.id }),
+        createMistake({ prompt: "What is leakage in cross-validation?", expected: "Preprocessing fitted on every fold.", documentId: "" }),
+      ],
+      reviewItems: [lapsedCard],
+    });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__starter").length === 4, { timeout: 5_000 });
+    const seeded = await starterLabels();
+    assert.deepEqual(seeded.map(([mode]) => mode), ["Explain", "Explain", "Quiz", "Explain"], `starter modes: ${JSON.stringify(seeded)}`);
+    assert.equal(seeded[0][1], "I keep missing: Why does lasso produce sparse weights while ridge does not?", "the lesson's open mistake was not the first starter");
+    assert.equal(seeded[1][1], "Help me remember: What does the ridge penalty add to the loss?", "the lapsed card was not offered");
+    assert.match(seeded[2][1], /^Quiz me on /);
+    assert.equal(seeded[3][1], `Explain the key ideas of ${starterChapter.title}`);
+    const starterLayout = await page.evaluate(() => ({
+      heights: [...document.querySelectorAll(".ai-tutor__starter")].map((node) => Math.round(node.getBoundingClientRect().height)),
+      columns: new Set([...document.querySelectorAll(".ai-tutor__starter")].map((node) => Math.round(node.getBoundingClientRect().left))).size,
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth,
+    }));
+    assert.equal(starterLayout.heights.every((height) => height >= 48), true, `starter rows under 48px: ${starterLayout.heights}`);
+    assert.equal(starterLayout.columns, 1, "phone starters were not full-width rows");
+    assert.equal(starterLayout.scrollWidth, starterLayout.innerWidth, "starters made the phone page scroll sideways");
+
+    await clickByText(page, ".ai-tutor__starter", "I keep missing");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(await activeMode(page), "Explain");
+    const mistakePrompt = await page.$eval(".ai-tutor__composer textarea", (field) => field.value);
+    assert.match(mistakePrompt, /“Why does lasso produce sparse weights while ridge does not\?”\. The correct answer is: “The L1 penalty has corners at zero\.”/);
+    await clickByText(page, ".ai-tutor__starter", "Quiz me on");
+    assert.equal(await activeMode(page), "Quiz", "a quiz starter did not switch the mode");
+    assert.equal(await page.$(".ai-tutor__starter-confirm"), null, "replacing one starter with another asked about a draft");
+    assert.equal(calls.respond.length, 0, "a starter sent a request");
+
+    await setComposerPrompt(page, "My own question about ridge penalties");
+    await clickByText(page, ".ai-tutor__starter", "Explain the key ideas");
+    await page.waitForSelector(".ai-tutor__starter-confirm", { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Keep my draft", "the draft question did not offer the safe choice first");
+    await clickByText(page, ".ai-tutor__starter-confirm button", "Keep my draft");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "My own question about ridge penalties", "Keep my draft replaced the draft");
+    assert.equal(await page.$(".ai-tutor__starter-confirm"), null);
+    await clickByText(page, ".ai-tutor__starter", "Explain the key ideas");
+    await page.waitForSelector(".ai-tutor__starter-confirm", { timeout: 5_000 });
+    await clickByText(page, ".ai-tutor__starter-confirm button", "Replace draft");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), `Explain the key ideas of the lesson “${starterChapter.title}” with a short example and one common mistake.`);
+    assert.equal(await activeMode(page), "Explain");
+    assert.equal(calls.respond.length, 0, "choosing starters sent a request");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    assert.ok(String(calls.respond[0].body.context).includes(starterChapter.title), "the starter's lesson was not retrieved for it");
+    assert.equal(await page.$(".ai-tutor__starters"), null, "starters stayed after the conversation began");
+
+    // Clearing the conversation brings the starters back; wider screens
+    // show six in two columns.
+    await page.$eval('[aria-label="Clear AI tutor conversation"]', (button) => button.click());
+    await clickByText(page, ".tutor-dialog button", "Clear conversation");
+    await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+    await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__starter").length === 6, { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => new Set([...document.querySelectorAll(".ai-tutor__starter")].map((node) => Math.round(node.getBoundingClientRect().left))).size), 2, "desktop starters were not in two columns");
+  } finally {
+    await startersScenario.context.close();
   }
 
   let modelOnline = false;

@@ -64,6 +64,7 @@ import {
   followUpsForMessage,
   questionForAnswer,
 } from "../lib/tutorFollowUps.js";
+import { buildStarterPrompts } from "../lib/tutorStarters.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -1016,6 +1017,8 @@ const FollowUps = ({ items, disabled = false, onChoose }) => (
  * - onNavigateSource(source, { citation, sourceId }): opens an exact cited source
  * - onCreateFlashcardDrafts(cards, metadata): persists learner-selected drafts
  * - retrieveLibrary(query, options): optional local retrieval adapter
+ * - studyContext: { recent, last, next, mistakes, reviewItems } for the
+ *   suggested starts shown while the conversation is empty
  * - onClose: optional close action for hosts that show the tutor as a panel
  *
  * The component intentionally has no API-key or model-selection prop. Requests
@@ -1039,6 +1042,7 @@ export default function AiTutor({
   onSaveAnswerNote,
   onInteractionChange,
   retrieveLibrary,
+  studyContext = null,
   onClose,
   className = "",
 }) {
@@ -1051,6 +1055,7 @@ export default function AiTutor({
   const modeDescriptionId = useId();
   const optionsSummaryId = useId();
   const keyHintId = useId();
+  const startersHeadingId = useId();
   const sourceNumbersRef = useRef(new Map());
   const nextSourceNumberRef = useRef(1);
   const requestControllerRef = useRef(null);
@@ -2572,6 +2577,40 @@ export default function AiTutor({
   };
 
   const reuseNotice = `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`;
+
+  // Suggested starts (TFEAT-04): four on a phone, six on wider screens,
+  // using lesson headings only when that lesson's text is already loaded.
+  const starters = useMemo(() => buildStarterPrompts(studyContext, {
+    limit: compactModes ? 4 : 6,
+    lessonText: (id) => {
+      const loaded = (Array.isArray(sources) ? sources : []).find((source) => (source?.documentId || source?.id) === id);
+      return loaded ? sourceText(loaded) : "";
+    },
+  }), [compactModes, sources, studyContext]);
+  const [pendingStarter, setPendingStarter] = useState(null);
+  const keepDraftRef = useRef(null);
+  // A mode's default text or an earlier starter is not the learner's draft.
+  const isDefaultPrompt = (text) => MODE_OPTIONS.some((mode) => mode.prompt === text) || starters.some((starter) => starter.prompt === text);
+  const applyStarter = (starter) => {
+    setPendingStarter(null);
+    setModeId(composerModeFor(starter.modeId).id);
+    setPrompt(asTrimmedString(starter.prompt, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = asTrimmedString(starter.documentId, 240);
+    outboundChanged();
+    window.setTimeout(focusComposer, 0);
+  };
+  // A starter fills the question box and never sends. A draft the learner
+  // wrote is replaced only when they say so.
+  const chooseStarter = (starter) => {
+    if (requestState.status === "loading") return;
+    const draft = prompt.trim();
+    if (draft && draft !== starter.prompt && !isDefaultPrompt(draft)) {
+      setPendingStarter(starter);
+      window.setTimeout(() => keepDraftRef.current?.focus(), 0);
+      return;
+    }
+    applyStarter(starter);
+  };
   const codeMode = currentMode.id === "code-review";
   const keyHint = setupRequired ? "" : composerKeyHint({ finePointer, codeMode, platform: currentPlatform() });
 
@@ -2774,7 +2813,35 @@ export default function AiTutor({
               {configState.status === "disabled" && onUseOnDevice && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={onUseOnDevice}><Cpu size={16} aria-hidden="true" /> Use On-device Lite instead</button>}
             </div>}
           {history.length === 0 && !activeResponse ? (setupRequired ? null : (
-            <div className="ai-tutor__welcome"><MessageCircleQuestion size={28} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a question or choose a study mode.</p></div>
+            <div className={`ai-tutor__welcome${starters.length ? " has-starters" : ""}`}>
+              <MessageCircleQuestion size={28} aria-hidden="true" />
+              <h3>What would you like to learn?</h3>
+              <p>{starters.length ? "Pick a suggested start or ask your own question." : "Ask a question or choose a study mode."}</p>
+              {starters.length > 0 && (
+                <div className="ai-tutor__starters" role="group" aria-labelledby={startersHeadingId}>
+                  <h4 className="ai-tutor__starters-title" id={startersHeadingId}>Suggested starts</h4>
+                  <ul>
+                    {starters.map((starter) => (
+                      <li key={starter.id}>
+                        <button className="ai-tutor__starter" type="button" disabled={requestState.status === "loading"} onClick={() => chooseStarter(starter)}>
+                          <span className="ai-tutor__starter-mode">{modeById(starter.modeId).label}</span>
+                          <span className="ai-tutor__starter-title">{starter.label}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {pendingStarter && (
+                    <div className="ai-tutor__starter-confirm" role="group" aria-label="Replace your unsent question?">
+                      <p>Your unsent question is in the box. Replace it with “{pendingStarter.label}”?</p>
+                      <div>
+                        <button className="ai-tutor__button ai-tutor__button--secondary" type="button" ref={keepDraftRef} onClick={() => { setPendingStarter(null); window.setTimeout(focusComposer, 0); }}>Keep my draft</button>
+                        <button className="ai-tutor__button ai-tutor__button--primary" type="button" onClick={() => applyStarter(pendingStarter)}>Replace draft</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )) : (
             <div className="ai-tutor__messages" role="group" aria-label="AI tutor conversation">
               {history.map((message, index) => {

@@ -441,6 +441,113 @@
   line-height: 1.58;
 }
 
+/* Suggested starts (TFEAT-04): full-width rows on phones, two columns on
+   wider screens. Each is one button: a mode badge and a clamped title. */
+.ai-tutor__starters {
+  width: 100%;
+  max-width: 46rem;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.ai-tutor__starters-title {
+  margin: 0 0 8px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.74rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+}
+
+.ai-tutor__starters ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-tutor__starter {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 48px;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  color: var(--ink, #172035);
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-tutor__starter:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ai-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--ai-accent-soft) 45%, var(--paper, #fffdf8));
+}
+
+.ai-tutor__starter:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-tutor__starter:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
+}
+
+.ai-tutor__starter-mode {
+  justify-self: start;
+  padding: 3px 8px;
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.ai-tutor__starter-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.86rem;
+  font-weight: 650;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.ai-tutor__starter-confirm {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--paper-2, #f7f2e8);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 14px;
+}
+
+.ai-tutor__starter-confirm p {
+  margin: 0 0 10px;
+  color: var(--ink, #172035);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.ai-tutor__starter-confirm div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__starters ul { grid-template-columns: minmax(0, 1fr); }
+  .ai-tutor__starter-confirm .ai-tutor__button { flex: 1 1 auto; min-height: 44px; }
+}
+
 .ai-tutor__messages {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
