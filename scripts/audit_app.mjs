@@ -82,7 +82,8 @@ assert(routeFiles.every((file) => /^assets\/[^/]+\.(?:js|css)$/.test(file)), "th
 const eagerContent = routeFiles.filter((file) => /\/(?:README|\d{2}-)|content-search|mermaid\.core|cytoscape|Diagram-|-definition-|interviewTracks|labs\.v1|fsrsOptimizer/.test(file));
 assert(eagerContent.length === 0, `the offline route list eagerly caches content: ${eagerContent.join(", ")}`);
 const htmlFiles = new Set([...index.matchAll(/(?:src|href)="\.\/([^"#]+)"/g)].map((match) => match[1]));
-const routeBytes = routeFiles.filter((file) => !htmlFiles.has(file) && exists(file)).reduce((total, file) => total + statSync(resolve(dist, file)).size, 0);
+const installOnlyFiles = routeFiles.filter((file) => !htmlFiles.has(file) && exists(file));
+const routeBytes = installOnlyFiles.reduce((total, file) => total + statSync(resolve(dist, file)).size, 0);
 assert(routeBytes < 900_000, `route screens add ${routeBytes} bytes to service-worker installation; keep them under 900 KB`);
 assert(worker.includes("offline-routes.json"), "the service worker must precache the route screens at install");
 assert(worker.includes("list?.build !== BUILD_ID"), "the service worker must reject a route list from a different build");
@@ -102,4 +103,4 @@ console.log("App audit passed.");
 console.log(`Startup entry: ${entryScript} (${entryScript ? statSync(resolve(dist, entryScript)).size : 0} bytes)`);
 console.log(`On-demand JavaScript chunks: ${scripts.length - 1}`);
 console.log(`Manifest icons: ${manifest.icons.length}`);
-console.log(`Offline route screens: ${routeFiles.length} files, ${routeBytes} bytes beyond the HTML entry`);
+console.log(`Offline route screens: ${routeFiles.length} files listed, ${installOnlyFiles.length} (${routeBytes} bytes) beyond the HTML entry`);

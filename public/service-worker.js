@@ -121,6 +121,10 @@ self.addEventListener("fetch", (event) => {
   if (new URL(event.request.url).pathname.startsWith("/api/")) return;
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
+  // Each shell cache keeps the route list its own install wrote. Answering
+  // from, or refreshing, that copy here could store another build's list in
+  // it, and optional-cache cleanup would then drop this release's screens.
+  if (`${url.origin}${url.pathname}` === ROUTE_LIST_URL) return;
   if (url.origin !== self.location.origin) {
     if (event.request.destination !== "image") return;
     event.respondWith(

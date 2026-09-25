@@ -85,6 +85,7 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     assert(await tapBottomNav(page, "AI Tutor"), "offline: the AI Tutor tab was not found");
     const studio = await page.waitForSelector('[data-ai-engine-option="phone-local"]', { timeout: 15_000 }).catch(() => null);
     assert(Boolean(studio), "offline AI Tutor did not render the AI learning studio after a Home-only visit");
+    assert(Boolean(await page.waitForSelector(".ai-learning-studio .ai-tutor", { timeout: 15_000 }).catch(() => null)), "offline Mac-local tutor did not render after a Home-only visit");
     if (studio) {
       await page.click('[data-ai-engine-option="phone-local"]');
       assert(Boolean(await page.waitForSelector(".phone-local-ai", { timeout: 15_000 }).catch(() => null)), "offline On-device Lite tutor did not render after a Home-only visit");
@@ -96,6 +97,8 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     assert(Boolean(await page.waitForSelector(".board-canvas", { timeout: 15_000 }).catch(() => null)), "offline Whiteboard did not render after a Home-only visit");
     await page.evaluate(() => { location.hash = "#/review"; });
     assert(Boolean(await page.waitForSelector(".review-center-page", { timeout: 15_000 }).catch(() => null)), "offline Review did not render after a Home-only visit");
+    await page.evaluate(() => { location.hash = "#/device-evidence"; });
+    assert(Boolean(await page.waitForSelector(".device-evidence-page", { timeout: 15_000 }).catch(() => null)), "offline Device evidence did not render after a Home-only visit");
 
     await page.evaluate(() => { location.hash = "#/home"; });
     const settingsButton = await page.waitForSelector('[aria-label="Open settings"]', { timeout: 10_000 }).catch(() => null);
@@ -108,6 +111,24 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     }
     shell = await shellState(page);
     assert(!shell.fatal, `offline Settings replaced the app: ${shell.fatal}`);
+
+    // Read shows an in-page message for a lecture that was never downloaded,
+    // so the Reader screen itself never mounts above. Evaluate every route
+    // screen's module (and its static imports) from the offline cache.
+    const screens = await page.evaluate(async () => {
+      const list = await (await caches.match(new URL("./offline-routes.json", location.href).href)).json();
+      const failed = [];
+      for (const name of ["Reader", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "StorageHealth", "DeviceEvidence"]) {
+        const file = list.files.find((item) => item.startsWith(`assets/${name}-`) && item.endsWith(".js"));
+        try {
+          if (typeof (await import(new URL(file, location.href).href)).default !== "function") failed.push(`${name}: no screen component`);
+        } catch (error) {
+          failed.push(`${name}: ${error.message}`);
+        }
+      }
+      return failed;
+    });
+    assert(screens.length === 0, `route screens did not load from the offline cache: ${screens.join(" | ")}`);
   } catch (error) {
     // A reload or a replaced app detaches the page mid-check; report it as a failure.
     assert(false, `offline screens after a Home-only visit broke: ${error.message}`);
@@ -141,7 +162,7 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     await visited.stop();
   }
   assert(errors.length === 0, `offline browser errors: ${errors.join(" | ")}`);
-  return `Read, AI Tutor, Whiteboard, Review, and Settings opened after a Home-only visit; a visited lecture reloaded (${lectureChars} characters)`;
+  return `Read, AI Tutor, Whiteboard, Review, Device evidence, and Settings opened after a Home-only visit and every route screen loaded from the cache; a visited lecture reloaded (${lectureChars} characters)`;
 };
 
 const browser = await puppeteer.launch({
@@ -284,6 +305,23 @@ try {
 
   const routeCache = await missingRouteFiles(page);
   assert(routeCache.files > 0 && routeCache.missing.length === 0, `service worker did not precache the route screens: ${routeCache.missing.join(", ") || "no route list"}`);
+
+  // "Remove optional offline files" drops visited lectures but keeps the
+  // route screens, or every screen would be unavailable offline again.
+  const lectureUrl = cachedUrls.find((url) => /01-ai-ml-mental-model[^/]*\.js$/.test(url));
+  await page.$eval('[aria-label="Open settings"]', (button) => button.click());
+  const cleanup = await page.waitForSelector(".storage-cleanup:not([disabled])", { timeout: 15_000 }).catch(() => null);
+  assert(Boolean(cleanup), "Storage health did not offer optional offline file cleanup");
+  if (cleanup) {
+    page.once("dialog", (dialog) => dialog.accept());
+    await cleanup.click();
+    const cleaned = await page.waitForFunction(() => /optional cached assets? removed/.test(document.body.textContent), { timeout: 15_000 }).catch(() => null);
+    assert(Boolean(cleaned), "optional offline file cleanup did not report its result");
+    assert(!(await page.evaluate((url) => caches.match(url).then(Boolean), lectureUrl)), "optional offline file cleanup kept the visited lecture");
+    const afterCleanup = await missingRouteFiles(page);
+    assert(afterCleanup.files > 0 && afterCleanup.missing.length === 0, `optional offline file cleanup removed route screens: ${afterCleanup.missing.join(", ") || "no route list"}`);
+  }
+  await page.$eval(".settings-close", (button) => button.click());
 
   // True offline: setOfflineMode does not block service-worker fetches, so it
   // cannot prove anything about the offline cache. Each case below gets its
