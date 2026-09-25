@@ -1,6 +1,6 @@
 import { buildConversationWindow } from "./conversationMemory.js";
 import { TUTOR_MAX_HISTORY_MESSAGE_CHARS, TUTOR_MAX_SERVER_HISTORY } from "./tutorRequest.js";
-import { withoutCitationLabels } from "./tutorFollowUps.js";
+import { isFollowUpPrompt, withoutCitationLabels } from "./tutorFollowUps.js";
 
 /**
  * Socratic and Interview practice sessions (TFEAT-05). A session is derived
@@ -24,6 +24,9 @@ export const NEXT_QUESTION_PROMPT = "Ask me the next question in this session.";
 // Credit goes to the learner's own answers: a hint or a revealed answer is
 // the tutor's work, not something the learner got right.
 const WRAP_UP_ASK = "what I got right in my own answers, what I missed or needed revealed, and 3 things to review.";
+// With no answer of the learner's in the session there is nothing to credit;
+// live, the model otherwise praised points the tutor's own hint had made.
+const WRAP_UP_UNANSWERED = "I have not answered any of your questions yet, so do not credit me with anything. Say what the session covered, what you hinted at or revealed, and 3 things to review.";
 
 const clean = (value) => String(value ?? "").replace(/\r\n?/g, "\n").trim();
 
@@ -82,16 +85,34 @@ export const sessionRetrievalQuery = (message) => {
 };
 
 /**
+ * The learner's own answers in a session: their turns in a practice mode
+ * after the tutor's first question, other than "Next question" and the
+ * one-tap follow-ups. Hints and reveals are separate modes, so they never
+ * count.
+ */
+export const sessionAnswerCount = (messages) => {
+  const list = Array.isArray(messages) ? messages : [];
+  const firstQuestion = list.findIndex((message) => message?.role === "assistant" && SESSION_MODES.includes(message.mode));
+  if (firstQuestion < 0) return 0;
+  return list.slice(firstQuestion + 1).filter((message) => message?.role === "user"
+    && SESSION_MODES.includes(message.mode)
+    && clean(message.content) !== NEXT_QUESTION_PROMPT
+    && !isFollowUpPrompt(message.content)).length;
+};
+
+/**
  * Wrap up: a recap of the session's own turns, which are its only material
  * (no library text is sent). Up to 12 messages, within 60% of the input
  * budget and without an older summary. The turns lose their [S#]/[W#]
  * labels: no evidence is supplied with a recap, so a copied label would be
  * an unsupported citation. When the session is longer than the window, the
- * question says which turns the recap covers.
+ * question says which turns the recap covers; when the learner has not
+ * answered yet, it says there is nothing to credit.
  *
  * Returns { prompt, historyWindow, covered, total }.
  */
 export const sessionWrapUp = (messages, { inputLimit = 16_000 } = {}) => {
+  const ask = sessionAnswerCount(messages) ? WRAP_UP_ASK : WRAP_UP_UNANSWERED;
   const turns = (Array.isArray(messages) ? messages : []).map((message) => ({ ...message, content: withoutCitationLabels(message?.content) }));
   const window = buildConversationWindow(turns, {
     maxMessages: TUTOR_MAX_SERVER_HISTORY,
@@ -107,8 +128,8 @@ export const sessionWrapUp = (messages, { inputLimit = 16_000 } = {}) => {
   }).messages.length;
   const covered = window.messages.length;
   const prompt = covered < total
-    ? `Recap the last ${covered} turns of this practice session: ${WRAP_UP_ASK}`
-    : `Recap this practice session: ${WRAP_UP_ASK}`;
+    ? `Recap the last ${covered} turns of this practice session: ${ask}`
+    : `Recap this practice session: ${ask}`;
   return {
     prompt,
     historyWindow: { messages: window.messages, conversationSummary: "", compactedMessages: 0 },

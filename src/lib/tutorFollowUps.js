@@ -72,7 +72,9 @@ export const questionForAnswer = (history, answerId) => {
 // A chip's wording and a session hint or reveal name no topic.
 const CHIP_PROMPTS = new Set([...ANSWER_FOLLOW_UPS, ...QUIZ_FOLLOW_UPS, ...FLASHCARD_FOLLOW_UPS].map((item) => item.prompt));
 const TOPICLESS_MODES = new Set(["hint", "reveal"]);
-const topicless = (question) => CHIP_PROMPTS.has(clean(question?.content)) || TOPICLESS_MODES.has(question?.mode);
+/** Whether a question is a one-tap follow-up's fixed wording. */
+export const isFollowUpPrompt = (content) => CHIP_PROMPTS.has(clean(content));
+const topicless = (question) => isFollowUpPrompt(question?.content) || TOPICLESS_MODES.has(question?.mode);
 
 /**
  * The question that set an answer's topic, for library search words: the

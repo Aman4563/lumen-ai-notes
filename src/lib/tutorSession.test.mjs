@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { ANSWER_FOLLOW_UPS } from "./tutorFollowUps.js";
 import {
+  HINT_PROMPT,
+  NEXT_QUESTION_PROMPT,
   SESSION_WRAP_UP_AFTER,
+  sessionAnswerCount,
   sessionRetrievalQuery,
   sessionWrapUp,
   tutorSession,
@@ -89,4 +93,24 @@ test("wrap up recaps the session's own turns and says when it covers only the la
   const sent = budget.historyWindow.messages.reduce((total, message) => total + message.content.length, 0);
   assert.ok(sent <= Math.floor(8_740 * 0.6), `a recap used ${sent} characters of history`);
   assert.equal(wrapUpLabel("Explain ridge."), "");
+});
+
+test("a recap with no answer of the learner's credits nothing", () => {
+  assert.equal(sessionAnswerCount(socraticRun.slice(2)), 1);
+  // Live (#57 review): "Check my understanding", the tutor's question, a hint
+  // and its answer. The learner answered nothing, yet the recap praised them.
+  const check = ANSWER_FOLLOW_UPS.find((item) => item.id === "check").prompt;
+  const unanswered = [
+    turn("user", "socratic", check),
+    turn("assistant", "socratic", "Why is the target the uplift? [S10]"),
+    turn("user", "hint", HINT_PROMPT),
+    turn("assistant", "hint", "Think about who stays anyway. [S15]"),
+    turn("user", "socratic", NEXT_QUESTION_PROMPT),
+    turn("assistant", "socratic", "What would you measure? [S10]"),
+  ];
+  assert.equal(sessionAnswerCount(unanswered), 0, "a hint, Next question or the opening chip counted as an answer");
+  const recap = sessionWrapUp(unanswered, { inputLimit: 8_740 });
+  assert.match(recap.prompt, /^Recap this practice session: I have not answered any of your questions yet, so do not credit me with anything\./);
+  assert.equal(wrapUpLabel(recap.prompt), "Session recap");
+  assert.equal(sessionWrapUp([...unanswered, turn("user", "socratic", "The customers who stay anyway.")], { inputLimit: 8_740 }).prompt, "Recap this practice session: what I got right in my own answers, what I missed or needed revealed, and 3 things to review.");
 });
