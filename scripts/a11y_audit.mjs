@@ -37,8 +37,6 @@ const ALLOWLIST = [
   { rule: "nested-interactive", within: ".concept-map", owner: "dashboard" },
   // Whiteboard chrome keeps hard-coded light surfaces under Night/Contrast text tokens (BOARD-3).
   { rule: "color-contrast", within: ".board-header", owner: "whiteboard" },
-  // Tutor connection notice uses hard-coded coral on peach (TA11Y-6).
-  { rule: "color-contrast", within: ".ai-tutor__connection", owner: "ai-tutor" },
 ];
 
 const findings = [];
