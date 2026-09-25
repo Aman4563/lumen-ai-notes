@@ -1999,6 +1999,11 @@ try {
     const firstRequest = calls.respond.at(-1).body;
     const contextTitles = (body) => String(body.context).split("\n").filter((line) => /^\[S\d+\] /.test(line)).map((line) => line.replace(/^\[S\d+\] /, "").split(" — ")[0]);
     assert.ok(contextTitles(firstRequest).length > 0, "the first answer attached no library passage");
+    // The topic cue names the first attached passage's lesson, not a count.
+    const passageHeaders = String(firstRequest.context).split("\n").filter((line) => /^\[S\d+\] /.test(line)).map((line) => line.replace(/^\[S\d+\] /, ""));
+    const moreCue = passageHeaders.length > 1 ? ` (+${passageHeaders.length - 1} related passage${passageHeaders.length === 2 ? "" : "s"})` : "";
+    const topicCue = firstRequest.documentTitle.endsWith(moreCue) ? firstRequest.documentTitle.slice(0, firstRequest.documentTitle.length - moreCue.length) : "";
+    assert.ok(topicCue && passageHeaders[0].startsWith(topicCue), `a Library-first request did not name its topic: ${firstRequest.documentTitle} for ${passageHeaders[0]}`);
     assert.deepEqual(await page.$$eval(".ai-tutor__message", (nodes) => nodes.map((node) => Boolean(node.querySelector(".ai-tutor__follow-ups")))), [false, true], "follow-ups were not on the newest answer alone");
     assert.deepEqual(await page.$$eval(".ai-tutor__follow-ups button", (nodes) => nodes.map((node) => node.textContent)), ["Simpler", "Give an example", "Go deeper", "Quiz me on this", "Make flashcards", "Check my understanding"]);
     assert.equal(await page.$eval(".ai-tutor__follow-ups", (node) => node.getAttribute("role") === "group" && node.getAttribute("aria-label")), "Follow up on this answer");

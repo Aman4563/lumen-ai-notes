@@ -123,6 +123,23 @@ export const tutorActionIssueReason = (issue, { configMessage = "" } = {}) => ({
 }[issue] || "");
 
 /**
+ * The model's topic cue for the attached evidence: the title of the first
+ * included source, and how many more passages came with it ("Linear
+ * regression (+7 related passages)"), instead of a bare count. Server
+ * limit: 200 characters.
+ */
+export const tutorDocumentTitle = (sources, includedCitationNumbers) => {
+  const included = new Set(includedCitationNumbers);
+  const attached = (Array.isArray(sources) ? sources : []).filter((source) => included.has(source?.citationNumber));
+  if (!attached.length) return "General AI/ML learning question";
+  const title = String(attached[0].title || "").replace(/\s+/g, " ").trim() || "Lumen source";
+  const more = attached.length - 1;
+  const suffix = more ? ` (+${more} related passage${more === 1 ? "" : "s"})` : "";
+  const room = 200 - suffix.length;
+  return `${title.length <= room ? title : `${title.slice(0, room - 1).trimEnd()}…`}${suffix}`;
+};
+
+/**
  * Builds and fits the exact canonical request body. `mode` is the request's
  * own mode ({ task, structured, contextLimit }), never whatever the composer
  * shows, and the byte budget is that of `responseProfile`. Sources are
@@ -172,9 +189,7 @@ export const fitTutorRequest = ({
       prompt: preparedPrompt,
       context,
       contextCitations: [...includedCitationNumbers],
-      documentTitle: sourceList.length === 1
-        ? sourceList[0].title
-        : sourceList.length ? `${sourceList.length} selected Lumen sources` : "General AI/ML learning question",
+      documentTitle: tutorDocumentTitle(sourceList, includedCitationNumbers),
       difficulty,
       responseProfile,
       history: historyList,

@@ -8,6 +8,7 @@ import {
   promptForSources,
   TUTOR_CONTEXT_GAP_MS,
   tutorActionIssueReason,
+  tutorDocumentTitle,
   tutorContextStart,
   tutorConversationWindow,
   tutorFollowUpWindow,
@@ -58,7 +59,9 @@ test("the fitted body is the canonical envelope, measured exactly", () => {
   assert.equal(fitted.payload.difficulty, "advanced");
   assert.equal(fitted.payload.maxOutputTokens, 3_000);
   assert.equal(fitted.payload.webSearch, false);
-  assert.equal(fitted.payload.documentTitle, "3 selected Lumen sources");
+  const more = fitted.includedCitationNumbers.length - 1;
+  assert.ok(more >= 1, "the balanced fit kept only one of three sources");
+  assert.equal(fitted.payload.documentTitle, `Lesson 1 (+${more} related passage${more === 1 ? "" : "s"})`, "the title did not name the first attached source");
   assert.deepEqual(fitted.payload.history, history, "history passes through untouched");
   assert.match(fitted.payload.prompt, /^Why does ridge shrink weights\?\n\nUse the supplied \[S#\] labels/);
   assert.equal(fitted.bytes, utf8Bytes(fitted.payload), "bytes are the UTF-8 length of the serialized body");
@@ -184,4 +187,22 @@ test("turns before a break of more than three hours are not sent", () => {
   // turns after it.
   assert.equal(tutorContextStart([{ createdAt: at(10) }, { createdAt: "not a date" }], now), 1);
   assert.equal(tutorContextStart([{ createdAt: at(1) }, { createdAt: "" }], now), 0);
+});
+
+test("the topic cue names the first attached source, never a bare count", () => {
+  const retrieved = [
+    { citationNumber: 4, title: "Linear regression" },
+    { citationNumber: 5, title: "Regularization" },
+    { citationNumber: 6, title: "Linear regression" },
+  ];
+  assert.equal(tutorDocumentTitle(retrieved, [4, 5, 6]), "Linear regression (+2 related passages)");
+  assert.equal(tutorDocumentTitle(retrieved, [5]), "Regularization", "a dropped first source still named the request");
+  assert.equal(tutorDocumentTitle(retrieved, [6, 5]), "Regularization (+1 related passage)", "the order was not the attached order");
+  assert.equal(tutorDocumentTitle(retrieved, []), "General AI/ML learning question");
+  const long = tutorDocumentTitle([{ citationNumber: 1, title: "T".repeat(400) }, { citationNumber: 2, title: "U" }], [1, 2]);
+  assert.equal(long.length, 200, "the title exceeded the server's 200-character limit");
+  assert.match(long, /…\s\(\+1 related passage\)$/);
+  // Dropped sources are not counted; the fitted body carries the same title.
+  const fitted = fitTutorRequest({ mode: explain, prompt: "Explain.", sources, responseProfile: "deep", config });
+  assert.equal(fitted.payload.documentTitle, tutorDocumentTitle(sources, fitted.includedCitationNumbers));
 });
