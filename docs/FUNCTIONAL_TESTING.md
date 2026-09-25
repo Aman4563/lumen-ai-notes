@@ -7,6 +7,14 @@ isolated app server automatically and continue after a failure so every suite
 produces a result. Install Chrome or set `CHROME_PATH`. To check an already
 running app, set `LUMEN_URL` instead.
 
+A suite that fails is retried once and the retry is reported: the suite's
+result carries `"attempts": [false, true]`, and the run ends with a "Passed
+only on retry" line. Shared CI runners are sometimes starved (a 6 s suite taking
+minutes, a background tab frozen), so one retry keeps runner stalls from
+blocking unrelated work, while a real regression still fails twice. Treat a
+repeated "passed only on retry" as a bug to fix. Set `LUMEN_BROWSER_RETRIES=0`
+to disable retries when diagnosing.
+
 The browser suites cover reading/editing, narration controls, annotations and
 relocation, reviews and mistakes, imports, whiteboards and exports, backup and
 restore, cross-tab sync, search, keyboard focus, mobile layouts, AI consent and
