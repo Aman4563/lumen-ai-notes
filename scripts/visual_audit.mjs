@@ -53,6 +53,19 @@ const openControlledPage = async (url, errors) => {
   return page;
 };
 
+// Stopping the server is not enough: fingerprinted assets are served
+// `immutable`, so Chrome's HTTP cache (filled by the worker's own install
+// fetches) would answer them and hide a worker that never serves its cache.
+// Clear it browser-wide; Cache Storage is separate and stays.
+const goOffline = async (page, server) => {
+  await server.stop();
+  const session = await page.createCDPSession();
+  await session.send("Network.clearBrowserCache");
+  await session.detach();
+  const answered = await page.evaluate(() => fetch(`/api/health?offline-audit=${Date.now()}`, { cache: "no-store" }).then(() => true, () => false));
+  assert(!answered, "the stopped isolated server still answered; the offline checks would prove nothing");
+};
+
 const shellState = (page) => page.evaluate(() => ({
   fatal: document.querySelector(".fatal-error h1")?.textContent || "",
   routeError: document.querySelector(".route-error h1")?.textContent || "",
@@ -74,7 +87,7 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     page = await openControlledPage(homeOnly.url, errors);
     const routes = await missingRouteFiles(page);
     assert(routes.files > 0 && routes.missing.length === 0, `a Home-only visit did not precache the route screens: ${routes.missing.join(", ") || "no route list"}`);
-    await homeOnly.stop();
+    await goOffline(page, homeOnly);
 
     assert(await tapBottomNav(page, "Read"), "offline: the Read tab was not found");
     await page.waitForFunction(() => document.querySelector(".markdown-body h1, #main-content .empty-state, .route-error, .fatal-error"), { timeout: 15_000 }).catch(() => {});
@@ -147,8 +160,12 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     // Let the lecture's lazy diagram finish loading while the server is up.
     await page.waitForFunction(() => document.querySelectorAll(".diagram-shell svg").length > 0, { timeout: 15_000 }).catch(() => {});
     await page.waitForFunction(() => caches.match(performance.getEntriesByType("resource").map((entry) => entry.name).find((name) => /01-ai-ml-mental-model[^/]*\.js$/.test(name)) || "missing").then(Boolean), { timeout: 15_000 }).catch(() => {});
-    await visited.stop();
-    await page.goto(`${visited.url}#/read/${readerId}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    await goOffline(page, visited);
+    // goto() to the URL already shown is a same-document fragment navigation
+    // that keeps the online DOM; reload() really boots the app from the cache.
+    await page.evaluate(() => { window.lumenOnlineDocument = true; });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 20_000 });
+    assert(!(await page.evaluate(() => window.lumenOnlineDocument === true)), "the visited-lecture check did not reload the document");
     const lecture = await page.waitForSelector(".markdown-body h1", { timeout: 15_000 }).catch(() => null);
     assert(Boolean(lecture), "visited lecture did not reload with the server stopped");
     const offlineLecture = lecture ? await page.$eval(".markdown-body", (node) => ({ text: node.textContent.length, heading: node.querySelector("h1")?.textContent || "" })) : { text: 0, heading: "" };
