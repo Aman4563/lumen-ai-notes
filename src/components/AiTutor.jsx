@@ -2805,15 +2805,26 @@ export default function AiTutor({
 
   const submit = (event) => {
     event?.preventDefault?.();
-    if (!requestReady) return;
+    if (!requestReady) {
+      // Enter with a question that cannot be sent yet: when its reason is
+      // not drawn under the box (the local-model permission), say it.
+      if (event?.type === "keydown" && prompt.trim() && quietReason && disabledReason) setComposerNotice(disabledReason);
+      return;
+    }
     focusStopOnMountRef.current = document.activeElement !== promptRef.current;
     const selectedDocumentId = retrievalHintRef.current;
     const placed = retrievalQueryHintRef.current;
     const retrievalQuery = placed.query && placed.prompt === prompt.trim() ? placed.query : "";
-    if (!runTutorAction({ webSearch: effectiveWebSearch, selectedDocumentId, retrievalQuery })) {
+    const issue = runTutorAction({ webSearch: effectiveWebSearch, selectedDocumentId, retrievalQuery });
+    if (!issue) {
       retrievalHintRef.current = "";
       retrievalQueryHintRef.current = { prompt: "", query: "" };
+      return;
     }
+    // The send-time check re-reads the clock and the config; a request the
+    // composer's preview allowed can still be refused, never silently.
+    focusStopOnMountRef.current = false;
+    setComposerNotice(tutorActionIssueReason(issue, { configMessage: configState.status === "ready" ? "" : configState.message }));
   };
 
   const retry = () => {

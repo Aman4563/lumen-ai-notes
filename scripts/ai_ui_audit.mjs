@@ -1957,6 +1957,22 @@ try {
     assert.equal(calls.respond.length, 1, "Enter did not send exactly once");
     assert.equal(await page.evaluate((selector) => document.activeElement === document.querySelector(selector), field), true, "a keyboard send moved focus out of the question box");
 
+    // Enter with a question that cannot be sent yet sends nothing and says
+    // why in the dock, even where the reason is not drawn under the box.
+    await page.click(".ai-tutor__options-toggle");
+    await page.waitForSelector(".tutor-sheet", { timeout: 5_000 });
+    await clickByText(page, ".tutor-sheet button", "Review again");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+    await page.waitForSelector(".ai-tutor__consent-card", { timeout: 5_000 });
+    await setKeysPrompt("Keyboard send before the permission is ticked");
+    await page.keyboard.press("Enter");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(calls.respond.length, 1, "Enter sent the question before the local-model permission");
+    assert.equal(await fieldValue(), "Keyboard send before the permission is ticked", "Enter typed a new line instead of explaining why nothing was sent");
+    assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /acknowledge the local-model disclosure/i, "Enter gave no reason when nothing could be sent");
+    await page.click(".ai-tutor__consent input");
+
     await setKeysPrompt("Line one");
     await pressWith("Shift", "Enter");
     await new Promise((resolve) => setTimeout(resolve, 400));
