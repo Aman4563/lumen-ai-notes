@@ -14,6 +14,8 @@ import {
   withAiDraftTag,
 } from "./aiProvenance.js";
 import { createReviewItem } from "./review.js";
+import { exportReviewCards, importReviewCards, parseCardInterchange } from "./cardInterchange.js";
+import { recordMistake } from "./mistakes.js";
 
 test("Mac web citations become durable safe Markdown links", () => {
   const card = materializeAiFlashcard({
@@ -88,4 +90,33 @@ test("saved AI output keeps its provenance marker through normalization, backup 
   const restoredIds = aiClippingIds(restored.clippings);
   assert.deepEqual([...restoredIds], ["clip-ai"]);
   assert.deepEqual(restored.reviewItems.map((item) => isAiAuthoredReviewItem(item, restoredIds)), [true, true]);
+});
+
+test("a card made from an AI clipping before #81 gains ai-draft when the profile loads", () => {
+  const aiClip = { id: "clip-ai", documentId: "", origin: "ai-tutor", title: "AI tutor answer", text: "<img src=https://tracker.example/x>" };
+  const learnerClip = { id: "clip-learner", documentId: "notes/00-roadmap.md", text: "My excerpt" };
+  const legacy = { ...createReviewItem({ front: "Explain", back: aiClip.text, sourceClippingId: "clip-ai" }), id: "legacy" };
+  const crowded = { ...createReviewItem({ front: "Explain again", back: aiClip.text, sourceClippingId: "clip-ai", tags: Array.from({ length: 30 }, (_, index) => `tag-${index}`) }), id: "crowded" };
+  const learner = { ...createReviewItem({ front: "Mine", back: learnerClip.text, sourceClippingId: "clip-learner", tags: ["part-1"] }), id: "learner" };
+  const unlinked = { ...createReviewItem({ front: "Manual", back: "Text", tags: ["x"] }), id: "unlinked" };
+  const loaded = normalizeProfile({ ...initialProfile, clippings: [aiClip, learnerClip], reviewItems: [legacy, crowded, learner, unlinked] });
+  const tagsOf = (profile) => Object.fromEntries(profile.reviewItems.map((item) => [item.id, item.tags]));
+  assert.deepEqual(tagsOf(loaded).legacy, [AI_DRAFT_TAG]);
+  assert.equal(tagsOf(loaded).crowded[0], AI_DRAFT_TAG);
+  assert.equal(tagsOf(loaded).crowded.length, 30);
+  assert.deepEqual(tagsOf(loaded).learner, ["part-1"]);
+  assert.deepEqual(tagsOf(loaded).unlinked, ["x"]);
+  // Normalizing again changes nothing, so sync sees no edit.
+  assert.deepEqual(normalizeProfile(loaded).reviewItems, loaded.reviewItems);
+
+  // The tag outlives the clipping, a card export and a logged mistake.
+  const withoutClip = normalizeProfile({ ...loaded, clippings: [learnerClip] });
+  assert.equal(isAiAuthoredReviewItem(withoutClip.reviewItems.find((item) => item.id === "legacy")), true);
+  const exported = JSON.stringify(exportReviewCards(withoutClip.reviewItems));
+  const imported = importReviewCards([], parseCardInterchange(exported).cards).added;
+  assert.deepEqual(imported.map(isAiAuthoredReviewItem), [true, true, false, false]);
+  const card = withoutClip.reviewItems.find((item) => item.id === "crowded");
+  const { mistake } = recordMistake([], { prompt: card.front, expected: card.back, reviewItemId: card.id, tags: card.tags });
+  const corrective = createReviewItem({ front: mistake.prompt, back: mistake.expected, tags: [...mistake.tags, "mistake"] });
+  assert.equal(isAiAuthoredReviewItem(corrective), true, "a corrective card from an AI card's mistake lost ai-draft");
 });

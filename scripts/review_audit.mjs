@@ -737,6 +737,9 @@ try {
     const deckCard = (id) => aiPage.$$eval(`.review-deck-card[data-card-id="${id}"] .review-markdown`, savedAiReport);
     assertSavedAiInert(await deckCard("audit-ai-flashcard"), "AI flashcard in the deck");
     assertSavedAiInert(await deckCard("audit-legacy-card"), "card from an AI clipping in the deck");
+    // The pre-#81 card gains ai-draft when the profile loads, so its
+    // provenance no longer depends on the clipping still existing.
+    assert.deepEqual(await aiPage.$$eval('.review-deck-card[data-card-id="audit-legacy-card"] .review-tags span', (tags) => tags.map((tag) => tag.textContent)), ["ai-draft"], "a card made from an AI clipping did not gain ai-draft on load");
     assert.ok(await aiPage.$('.review-deck-card[data-card-id="audit-learner-card"] .review-markdown kbd'), "a learner card lost the Reader renderer's author HTML");
 
     // Every card in a session: the prompt and the revealed answer.
@@ -763,7 +766,7 @@ try {
     await aiPage.waitForSelector(".review-center-page");
 
     // Editing keeps the provenance: the preview is untrusted, and clearing
-    // the tags field does not drop ai-draft. The pre-#81 card gains it.
+    // the tags field does not drop ai-draft.
     for (const id of ["audit-legacy-card", "audit-ai-flashcard"]) {
       await aiPage.$eval(`.review-deck-card[data-card-id="${id}"] button[aria-label="Edit review card"]`, (button) => button.click());
       await aiPage.waitForSelector(".review-card-dialog .review-ai-note");

@@ -1,6 +1,7 @@
 import { createId } from "./id.js";
 import { normalizePageSize } from "./boardGeometry.js";
 import { normalizeMistakes } from "./mistakes.js";
+import { aiClippingIds, withAiDraftTag } from "./aiProvenance.js";
 import { normalizeAssessments } from "./assessment.js";
 import {
   assertOwnedDataBudgetTransition,
@@ -1203,6 +1204,15 @@ export const normalizeProfile = (value) => {
     }))
     .filter((annotation) => annotation.quote);
   const reviewTypes = new Set(["basic", "cloze", "formula", "derivation", "compare", "debugging", "code-output", "production-scenario"]);
+  // A card made from an AI clipping before issue #81 has no ai-draft tag,
+  // only the clipping id. It gains the tag here, so its provenance survives
+  // the clipping's deletion, a card export and a mistake it logs.
+  const aiClips = aiClippingIds(clippings);
+  const cardTags = (item) => {
+    const tags = uniqueStrings(item.tags, 30).map((tag) => tag.slice(0, 40));
+    const fromAiClip = typeof item.sourceClippingId === "string" && item.sourceClippingId !== "" && aiClips.has(item.sourceClippingId.slice(0, 200));
+    return fromAiClip ? withAiDraftTag(tags).slice(0, 30) : tags;
+  };
   const reviewItems = (Array.isArray(input.reviewItems) ? input.reviewItems : [])
     .filter((item) => isRecord(item) && typeof item.front === "string" && typeof item.back === "string")
     .slice(0, 10_000)
@@ -1214,7 +1224,7 @@ export const normalizeProfile = (value) => {
       documentId: typeof item.documentId === "string" ? item.documentId.slice(0, 500) : "",
       sourceAnnotationId: typeof item.sourceAnnotationId === "string" ? item.sourceAnnotationId.slice(0, 200) : "",
       sourceClippingId: typeof item.sourceClippingId === "string" ? item.sourceClippingId.slice(0, 200) : "",
-      tags: uniqueStrings(item.tags, 30).map((tag) => tag.slice(0, 40)),
+      tags: cardTags(item),
       suspended: Boolean(item.suspended),
       archived: Boolean(item.archived),
       buriedOnDay: typeof item.buriedOnDay === "string" ? item.buriedOnDay.slice(0, 160) : "",
