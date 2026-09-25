@@ -1887,7 +1887,7 @@ export default function AiTutor({
             ...current,
             citationSources,
             webFallbackStatus: useWebFallback ? "searching" : requestSpec.webSearch ? "not-needed" : "off",
-            stage: useWebFallback ? "Library evidence is insufficient. Running consented web fallback…" : citationSources.length ? "Library evidence ready. Generating without web egress…" : "No library passage fit. Answering without web egress and labeling evidence limits…",
+            stage: useWebFallback ? "Your library does not cover this well enough. Searching the web, as you allowed…" : citationSources.length ? "Library passages found. Writing the answer on your Mac, without the web…" : "No library passage fits. Answering without the web and saying where evidence is missing…",
             phase: "drafting",
           }));
           if (appendUser) publishHistory((current) => current.map((message) => message.id === userMessage.id ? { ...message, citationSources } : message));
@@ -1914,7 +1914,7 @@ export default function AiTutor({
             ...current,
             citationSources,
             webFallbackStatus: fallbackUsesWeb ? "searching" : "off",
-            stage: fallbackUsesWeb ? "Library search unavailable. Running consented web fallback…" : "Library search unavailable. Using attached lesson context without web egress…",
+            stage: fallbackUsesWeb ? "Library search is unavailable. Searching the web, as you allowed…" : "Library search is unavailable. Using the attached lesson, without the web…",
             phase: "drafting",
           }));
         }
@@ -2688,11 +2688,12 @@ export default function AiTutor({
                   {activeResponse.content
                     ? <AssistantMessage message={activeResponse} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} streaming />
                     : progressSteps.length === 0 && <div className="ai-tutor__response-skeleton" aria-hidden="true"><i /><i /><i /></div>}
-                  <div className="ai-tutor__stream-actions"><span>{activeResponse.content
+                  {/* While the steps describe the wait, a status line would repeat them. */}
+                  {(activeResponse.content || progressSteps.length === 0) && <div className="ai-tutor__stream-actions"><span>{activeResponse.content
                     ? `${activeResponse.content.length.toLocaleString()} characters received`
                     : activeResponse.sourceMode === "none" && !["searching", "used"].includes(activeResponse.webFallbackStatus)
                       ? "Waiting for the first token…"
-                      : "Preparing your answer and checking sources…"}</span></div>
+                      : "Preparing your answer and checking sources…"}</span></div>}
                 </article>
               )}
             </div>

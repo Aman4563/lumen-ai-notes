@@ -1865,6 +1865,9 @@ try {
     assert.ok((await page.$$(".ai-tutor__progress-sources li")).length >= 1, "the passages in use were not shown while waiting");
     assert.match(await page.$eval(".ai-tutor__progress-sources li", (node) => node.textContent), /^\[S\d+\] \S/, "a source chip did not show its label and title");
     assert.equal(await page.$$eval(".ai-tutor__message--streaming [aria-live], .ai-tutor__message--streaming [role='status']", (nodes) => nodes.length), 0, "the progress steps became a live region inside the busy answer");
+    const waitingCopy = await page.$eval(".ai-tutor__message--streaming", (node) => node.textContent);
+    assert.doesNotMatch(waitingCopy, /Preparing your answer and checking sources/, "a waiting line repeated the progress steps");
+    assert.doesNotMatch(waitingCopy, /egress/i, "the waiting state used pipeline jargon");
     await page.waitForFunction(() => document.querySelector(".ai-tutor__progress li.is-active")?.textContent.includes("Checking citations"), { timeout: 8_000 }).catch(() => assert.fail("the validating phase did not activate Checking citations"));
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     const progressAnnouncements = [...new Set(await page.evaluate(() => window.__lumenAuditAnnouncements))].filter(Boolean);
