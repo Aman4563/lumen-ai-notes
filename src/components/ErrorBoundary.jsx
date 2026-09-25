@@ -90,8 +90,11 @@ export default class ErrorBoundary extends Component {
     const [title, detail] = COPY[status];
     const busy = status === "checking" || status === "reloading";
     const Icon = status === "offline" || status === "unreachable" ? WifiOff : AlertTriangle;
-    const reload = <button className={status === "stale" || inline ? "button secondary" : "button primary"} onClick={() => window.location.reload()} type="button"><RotateCcw size={17} aria-hidden="true" /> Reload Lumen</button>;
-    const home = <button className={inline && status !== "stale" ? "button primary" : "button secondary"} onClick={this.goHome} type="button"><Home size={17} aria-hidden="true" /> Go to Home</button>;
+    // Inline on Home itself, "Go to Home" would not change the view or clear
+    // the error, so Reload becomes the primary action there.
+    const canGoHome = !inline || Boolean(this.props.onHome);
+    const reload = <button className={status === "stale" || (inline && canGoHome) ? "button secondary" : "button primary"} onClick={() => window.location.reload()} type="button"><RotateCcw size={17} aria-hidden="true" /> Reload Lumen</button>;
+    const home = canGoHome && <button className={inline && status !== "stale" ? "button primary" : "button secondary"} onClick={this.goHome} type="button"><Home size={17} aria-hidden="true" /> Go to Home</button>;
     const content = <>
       <Icon size={30} aria-hidden="true" />
       <div role={busy ? "status" : "alert"}><h1>{title}</h1><p>{detail}</p></div>
