@@ -114,6 +114,18 @@ const revealBoardControl = async (page, selector) => {
   await page.click(`[data-board-toggle="${panel}"]`);
   await page.waitForSelector(`[data-board-panel="${panel}"]:not([hidden])`);
 };
+// Selecting a tool re-renders the toolbar; tapping before the board reports
+// the tool as active (or before layout settles) can land on the old tool.
+const chooseBoardTool = async (page, label) => {
+  await clickBoardControl(page, `button[aria-label="${label}"]`);
+  await page.waitForFunction((name) => document.querySelector(`button[aria-label="${name}"]`)?.getAttribute("aria-pressed") === "true", { timeout: 5_000 }, label)
+    .catch(() => assert.fail(`the ${label} tool never became active`));
+};
+// Explains a missing board dialog: which tool was active and what the tap hit.
+const boardTapDiagnostics = (page, x, y) => page.evaluate(([px, py]) => {
+  const hit = document.elementFromPoint(px, py);
+  return JSON.stringify({ tool: document.querySelector('.board-view button[aria-pressed="true"]')?.getAttribute("aria-label"), hit: hit ? `${hit.tagName}.${hit.className}` : null, hint: document.querySelector(".board-hint")?.textContent, dialogs: document.querySelectorAll('[role="dialog"]').length });
+}, [x, y]);
 const clickBoardControl = async (page, selector) => {
   await revealBoardControl(page, selector);
   await page.click(selector);
@@ -477,22 +489,26 @@ try {
   // BOARD-1: text and sticky placement must survive a real touch tap in the
   // upper half of the board, where the tap's follow-up click used to land on
   // the new dialog's scrim and close it immediately.
-  await page.click('button[aria-label="Text"]');
+  await chooseBoardTool(page, "Text");
   // Toolbar panels opened above (shapes, page tools) push the canvas down, and
   // wrap to more rows with wider fonts: re-measure before tapping.
   canvasBox = await boardPageBox(page);
-  await touchTap(canvasBox.left + canvasBox.width * 0.28, canvasBox.top + canvasBox.height * 0.2);
-  await page.waitForSelector(".board-text-dialog");
+  const textTap = [canvasBox.left + canvasBox.width * 0.28, canvasBox.top + canvasBox.height * 0.2];
+  await touchTap(...textTap);
+  await page.waitForSelector(".board-text-dialog", { timeout: 10_000 })
+    .catch(async () => assert.fail(`a touch tap with the Text tool opened no dialog: ${await boardTapDiagnostics(page, ...textTap)}`));
   await delay(450);
   assert.ok(await page.$(".board-text-dialog"), "a touch tap for Text opened the dialog and closed it again");
   await page.type('.board-text-dialog textarea', "Gradient flow");
   await clickByText(page, ".board-text-dialog button", "Add to board");
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 objects"));
 
-  await page.click('button[aria-label="Sticky note"]');
+  await chooseBoardTool(page, "Sticky note");
   canvasBox = await boardPageBox(page);
-  await touchTap(canvasBox.left + canvasBox.width * 0.7, canvasBox.top + canvasBox.height * 0.2);
-  await page.waitForSelector(".board-text-dialog");
+  const stickyTap = [canvasBox.left + canvasBox.width * 0.7, canvasBox.top + canvasBox.height * 0.2];
+  await touchTap(...stickyTap);
+  await page.waitForSelector(".board-text-dialog", { timeout: 10_000 })
+    .catch(async () => assert.fail(`a touch tap with the Sticky note tool opened no dialog: ${await boardTapDiagnostics(page, ...stickyTap)}`));
   await delay(450);
   assert.ok(await page.$(".board-text-dialog"), "a touch tap for Sticky note opened the dialog and closed it again");
   await page.keyboard.press("Escape");

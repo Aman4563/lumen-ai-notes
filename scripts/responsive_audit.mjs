@@ -205,7 +205,13 @@ try {
         await frame();
         const buttons = [...document.querySelectorAll(".display-popover .segmented button")];
         state.note = document.querySelector(".display-popover .width-note")?.textContent || "";
-        for (const button of buttons) { button.click(); await frame(); state.widths[button.textContent.trim()] = article(); }
+        // Measure only once the reader has applied the chosen width; a fixed
+        // frame count raced the settings update on loaded CI machines.
+        const applied = async (value) => {
+          for (let tries = 0; tries < 120 && !document.querySelector(`.reader-layout.width-${value}`); tries += 1) await frame();
+          await frame();
+        };
+        for (const button of buttons) { const value = button.textContent.trim(); button.click(); await applied(value); state.widths[value] = article(); }
         buttons.find((button) => button.textContent.trim() === "comfortable")?.click();
         document.querySelector('[aria-label="Close appearance"]').click();
         await frame();
