@@ -50,6 +50,7 @@ import {
   TUTOR_MAX_PROMPT_CHARS as MAX_PROMPT_CHARS,
   TUTOR_MAX_SERVER_HISTORY as MAX_SERVER_HISTORY,
   fitTutorRequest,
+  tutorActionIssueReason,
   tutorConversationWindow,
   tutorRequestIssue,
   tutorRequestLimits,
@@ -118,6 +119,21 @@ const MODE_OPTIONS = Object.freeze([
     prompt: "Create a study plan with 3 milestones for this lesson, including practice and checks for understanding.",
     description: "Generate milestones, time estimates, activities, and mastery evidence.",
     structured: true,
+  },
+]);
+
+// Modes that only a tutor action starts (never listed, never required by
+// the server check, never restored into the composer): "Explain my mistake"
+// sends answer_feedback.
+const HIDDEN_MODES = Object.freeze([
+  {
+    id: "feedback",
+    label: "Answer check",
+    task: "answer_feedback",
+    prompt: "",
+    description: "Feedback on a quiz answer you missed.",
+    structured: true,
+    hidden: true,
   },
 ]);
 
@@ -563,7 +579,12 @@ const verifyPublicConfig = (config) => {
   return "";
 };
 
-const modeById = (id) => MODE_OPTIONS.find((mode) => mode.id === id) || MODE_OPTIONS[0];
+const modeById = (id) => MODE_OPTIONS.find((mode) => mode.id === id) || HIDDEN_MODES.find((mode) => mode.id === id) || MODE_OPTIONS[0];
+// The composer only ever holds a listed mode; a hidden one reopens as Explain.
+const composerModeFor = (id) => {
+  const mode = modeById(id);
+  return mode.hidden ? MODE_OPTIONS[0] : mode;
+};
 const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.label || "Balanced";
 
 /**
@@ -1030,6 +1051,12 @@ export default function AiTutor({
   const streamingArticleRef = useRef(null);
   const requestNoticeRef = useRef(null);
   const focusStopOnMountRef = useRef(false);
+  // A one-tap action's button goes away when its request starts; focus
+  // moves to the answer in progress instead, and on to the answer after.
+  const focusStreamOnMountRef = useRef(false);
+  // The document a starter or a follow-up is about, used to favour it in
+  // Library-first retrieval for the next question sent from the composer.
+  const retrievalHintRef = useRef("");
   const pendingFocusRef = useRef(null);
   // The conversation's last observed scroll position and height, to tell a
   // learner scrolling up from the tutor following new text downwards.
@@ -1115,6 +1142,7 @@ export default function AiTutor({
       && !MODE_OPTIONS.some((mode) => mode.prompt === draft)
       && !draft.startsWith("Explain this excerpt from my lecture");
     setPrompt(asTrimmedString(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = "";
     setComposerNotice(`${keepDraft ? "Your unsent question was kept, and the" : "The"} selected excerpt from ${lecture ? `“${lecture}”` : "your lecture"} was added below. Review it, then send.`);
     onInsertConsumedRef.current?.(insertPrompt.nonce);
     window.setTimeout(focusComposer, 0);
@@ -1356,7 +1384,11 @@ export default function AiTutor({
   useLayoutEffect(() => {
     if (!activeResponseId) return;
     scrollConversationToEnd();
-    if (focusStopOnMountRef.current) {
+    if (focusStreamOnMountRef.current) {
+      focusStreamOnMountRef.current = false;
+      focusStopOnMountRef.current = false;
+      streamingArticleRef.current?.focus({ preventScroll: true });
+    } else if (focusStopOnMountRef.current) {
       focusStopOnMountRef.current = false;
       sendButtonRef.current?.focus({ preventScroll: true });
     }
@@ -1768,7 +1800,7 @@ export default function AiTutor({
       webFallbackStatus: requestSpec.webSearch ? "armed" : "off",
       responseProfile: requestSpec.responseProfile,
       sourceMode: requestSpec.sourceMode,
-      stage: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "Searching your library…" : "Preparing grounded context…",
+      stage: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "Searching your library…" : requestSpec.stageHint || "Preparing grounded context…",
       phase: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "retrieving" : "drafting",
       searched: false,
     };
@@ -1888,7 +1920,7 @@ export default function AiTutor({
             ...current,
             citationSources,
             webFallbackStatus: useWebFallback ? "searching" : requestSpec.webSearch ? "not-needed" : "off",
-            stage: useWebFallback ? "Your library does not cover this well enough. Searching the web, as you allowed…" : citationSources.length ? "Library passages found. Writing the answer on your Mac, without the web…" : "No library passage fits. Answering without the web and saying where evidence is missing…",
+            stage: useWebFallback ? "Your library does not cover this well enough. Searching the web, as you allowed…" : requestSpec.stageHint || (citationSources.length ? "Library passages found. Writing the answer on your Mac, without the web…" : "No library passage fits. Answering without the web and saying where evidence is missing…"),
             phase: "drafting",
           }));
           if (appendUser) publishHistory((current) => current.map((message) => message.id === userMessage.id ? { ...message, citationSources } : message));
@@ -2101,9 +2133,12 @@ export default function AiTutor({
    * builder and checked like a Send. Web fallback is never implied: an action
    * searches only when it passes the learner's one-request permission.
    *
-   * action: { mode, prompt, sourceMode, sources, history, webSearch,
-   *   responseProfile, difficulty, retrievalQuery, selectedDocumentId }
-   * Returns { spec } or { issue }.
+   * action: { mode, prompt, sourceMode, sources, history, historyWindow,
+   *   webSearch, responseProfile, difficulty, retrievalQuery,
+   *   selectedDocumentId, userMessageId, stageHint }
+   * `historyWindow` ({ messages, conversationSummary, compactedMessages })
+   * replaces the composer's conversation memory, for an action about one
+   * earlier answer. Returns { spec } or { issue }.
    */
   const prepareTutorRequest = (action = {}) => {
     const mode = action.mode || currentMode;
@@ -2123,11 +2158,17 @@ export default function AiTutor({
     if (requestState.status === "loading" || requestControllerRef.current) return { issue: "busy" };
     if (requestWeb && config.webSearch?.macToolAvailable !== true) return { issue: "web-unavailable" };
     const limits = tutorRequestLimits(config, requestProfile);
-    const memory = tutorConversationWindow(Array.isArray(action.history) ? action.history : history, {
-      prompt: displayPrompt,
-      sources: contextSources.length > 0,
-      inputLimit: limits.inputLimit,
-    });
+    const memory = action.historyWindow && Array.isArray(action.historyWindow.messages)
+      ? {
+        messages: action.historyWindow.messages,
+        conversationSummary: String(action.historyWindow.conversationSummary || ""),
+        compactedMessages: Number.isSafeInteger(action.historyWindow.compactedMessages) ? action.historyWindow.compactedMessages : 0,
+      }
+      : tutorConversationWindow(Array.isArray(action.history) ? action.history : history, {
+        prompt: displayPrompt,
+        sources: contextSources.length > 0,
+        inputLimit: limits.inputLimit,
+      });
     const fitted = fitTutorRequest({
       mode,
       prompt: displayPrompt,
@@ -2148,7 +2189,7 @@ export default function AiTutor({
       && (displayPrompt === mode.prompt || refersToOpenLesson(displayPrompt));
     return {
       spec: {
-        userMessageId: createId(),
+        userMessageId: asTrimmedString(action.userMessageId, 200) || createId(),
         createdAt: new Date().toISOString(),
         displayPrompt,
         mode,
@@ -2159,6 +2200,7 @@ export default function AiTutor({
         openLessonTitle: aboutOpenLesson ? openLesson.title : "",
         retrievalQuery: asTrimmedString(action.retrievalQuery, MAX_PROMPT_CHARS),
         selectedDocumentId: asTrimmedString(action.selectedDocumentId, 240),
+        stageHint: asTrimmedString(action.stageHint, 160),
         sourceMode: requestSourceMode,
         webSearch: requestWeb,
         responseProfile: requestProfile,
@@ -2176,22 +2218,49 @@ export default function AiTutor({
     };
   };
 
-  /** Prepares and starts one request; returns "" or the reason it cannot run. */
+  /**
+   * Prepares and starts one request; returns "" or the reason it cannot run.
+   * `action.focus: "stream"` moves focus to the answer in progress, for an
+   * action whose button the new request removes or disables.
+   */
   const runTutorAction = (action = {}) => {
     const prepared = prepareTutorRequest(action);
     if (!prepared.spec) return prepared.issue;
     lastRequestRef.current = prepared.spec;
     // The learner's web permission covers exactly one request.
     if (prepared.spec.webSearch) setWebSearch(false);
+    if (action.focus === "stream") focusStreamOnMountRef.current = true;
     runRequest(prepared.spec);
     return "";
+  };
+
+  /**
+   * Starts a one-tap action, or, when it cannot start (setup, the local-model
+   * disclosure, a request that does not fit), puts its prompt in the question
+   * box in a listed mode with the reason, so the learner can finish and send
+   * it. It never fails silently.
+   */
+  const startTutorAction = (action) => {
+    const issue = runTutorAction({ ...action, focus: "stream" });
+    if (!issue) return true;
+    const mode = composerModeFor(action.mode?.id);
+    setModeId(mode.id);
+    setPrompt(asTrimmedString(action.prompt, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = asTrimmedString(action.selectedDocumentId, 240);
+    lastRequestRef.current = null;
+    setRequestState((current) => current.status === "loading" ? current : { status: "idle", error: null });
+    const reason = tutorActionIssueReason(issue, { configMessage: configState.status === "ready" ? "" : configState.message });
+    setComposerNotice(`Your request is in the question box. ${reason}`.trim());
+    window.setTimeout(focusComposer, 0);
+    return false;
   };
 
   const submit = (event) => {
     event?.preventDefault?.();
     if (!requestReady) return;
     focusStopOnMountRef.current = document.activeElement !== promptRef.current;
-    runTutorAction({ webSearch: effectiveWebSearch });
+    const selectedDocumentId = retrievalHintRef.current;
+    if (!runTutorAction({ webSearch: effectiveWebSearch, selectedDocumentId })) retrievalHintRef.current = "";
   };
 
   const retry = () => {
@@ -2228,12 +2297,15 @@ export default function AiTutor({
     const previousDefault = currentMode.prompt;
     setModeId(nextMode.id);
     outboundChanged();
-    setPrompt((current) => (!current.trim() || current === previousDefault ? nextMode.prompt : current));
+    if (!prompt.trim() || prompt === previousDefault) {
+      setPrompt(nextMode.prompt);
+      retrievalHintRef.current = "";
+    }
   };
 
   const preparePrompt = useCallback((message, notice) => {
     if (!message || requestState.status === "loading") return;
-    const nextMode = modeById(message.mode);
+    const nextMode = composerModeFor(message.mode);
     setModeId(nextMode.id);
     setPrompt(asTrimmedString(message.content, MAX_PROMPT_CHARS));
     setComposerNotice(notice);
@@ -2333,6 +2405,7 @@ export default function AiTutor({
     setConfirmClearOpen(false);
     publishHistory([]);
     lastRequestRef.current = null;
+    retrievalHintRef.current = "";
     setRequestState({ status: "idle", error: null });
     // The Clear button disappears with the conversation; the tutor heading
     // takes focus instead of <body>.

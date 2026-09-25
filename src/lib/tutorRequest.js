@@ -67,6 +67,38 @@ export const tutorConversationWindow = (history, { prompt = "", sources = false,
 };
 
 /**
+ * The memory for a follow-up about one answer (TFEAT-02): only that
+ * question/answer pair, with up to 3,000 characters of the answer and half
+ * the input budget, and no summary of older turns. The fitter then shrinks
+ * source context around it, dropping only whole [S#] blocks.
+ */
+export const tutorFollowUpWindow = (pair, { inputLimit = DEFAULT_INPUT_LIMIT } = {}) => {
+  const window = buildConversationWindow(Array.isArray(pair) ? pair : [], {
+    maxMessages: 2,
+    characterBudget: Math.floor(inputLimit * 0.5),
+    maxMessageCharacters: TUTOR_MAX_HISTORY_MESSAGE_CHARS,
+    summaryBudget: 0,
+  });
+  return { messages: window.messages, conversationSummary: "", compactedMessages: 0 };
+};
+
+/**
+ * What a learner reads when a one-tap action (a follow-up, a starter, an
+ * answer check) cannot start and its prompt is put in the question box
+ * instead. `configMessage` explains a tutor that is not ready.
+ */
+export const tutorActionIssueReason = (issue, { configMessage = "" } = {}) => ({
+  "not-ready": configMessage || "The tutor is not ready yet.",
+  disclosure: "Tick the local-model permission above your question, then send it.",
+  busy: "Wait for the current answer to finish, then send it.",
+  "web-unavailable": "Web search is not available right now. Send it without the web.",
+  "empty-prompt": "Write your question, then send it.",
+  "prompt-too-long": "It is longer than this server accepts. Shorten it, then send it.",
+  "context-too-small": "Its sources do not all fit. Choose fewer sources, then send it.",
+  "request-too-large": "It does not fit the local model's request limit. Shorten it, then send it.",
+}[issue] || "");
+
+/**
  * Builds and fits the exact canonical request body. `mode` is the request's
  * own mode ({ task, structured, contextLimit }), never whatever the composer
  * shows, and the byte budget is that of `responseProfile`. Sources are

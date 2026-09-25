@@ -6,7 +6,9 @@ import {
   fitTutorRequest,
   minimumContextBudget,
   promptForSources,
+  tutorActionIssueReason,
   tutorConversationWindow,
+  tutorFollowUpWindow,
   tutorRequestIssue,
   tutorRequestLimits,
 } from "./tutorRequest.js";
@@ -124,4 +126,37 @@ test("request issues are reported in the order a learner can fix them", () => {
   assert.equal(tutorRequestIssue({ prompt: "Explain.", promptLimit: limits.promptLimit, fitted: cramped, sources, requireAllSources: true }), "context-too-small");
   assert.equal(tutorRequestIssue({ prompt: "Explain.", promptLimit: limits.promptLimit, fitted: cramped, sources }), "", "retrieved passages are refitted, not required up front");
   assert.equal(tutorRequestIssue({ prompt: "Explain.", promptLimit: limits.promptLimit, fitted: { ...fitted, bytes: fitted.maximumBytes + 1 } }), "request-too-large");
+});
+
+test("a follow-up keeps only its question and up to 3,000 characters of the answer", () => {
+  const answer = `${"Ridge shrinks every weight toward zero. ".repeat(115)}END`;
+  const pair = [
+    { role: "user", content: "Why does ridge shrink weights?" },
+    { role: "assistant", content: answer },
+  ];
+  const { inputLimit } = tutorRequestLimits(config, "balanced");
+  const window = tutorFollowUpWindow(pair, { inputLimit });
+  assert.equal(window.messages.length, 2);
+  assert.equal(window.conversationSummary, "");
+  assert.equal(window.compactedMessages, 0);
+  assert.equal(window.messages[1].content.length, 3_000, "the answer keeps the per-message clip, not a quarter of the input budget");
+  // The composer's window gives the same answer far less room.
+  const composerWindow = tutorConversationWindow(pair, { prompt: "Simpler", sources: true, inputLimit });
+  assert.ok(composerWindow.messages[1].content.length < window.messages[1].content.length);
+  // Like any remembered turn, a pair shrinks to a smaller budget.
+  const small = tutorFollowUpWindow(pair, { inputLimit: 2_000 });
+  assert.equal(small.messages.length, 2);
+  assert.ok(small.messages.reduce((total, message) => total + message.content.length, 0) <= 1_000);
+  // An unanswered question is not a pair.
+  assert.deepEqual(tutorFollowUpWindow(pair.slice(0, 1), { inputLimit }).messages, []);
+});
+
+test("an action that cannot start names what the learner must do", () => {
+  assert.match(tutorActionIssueReason("disclosure"), /local-model permission/);
+  assert.match(tutorActionIssueReason("request-too-large"), /request limit/);
+  assert.equal(tutorActionIssueReason("not-ready", { configMessage: "The local Ollama service is not running." }), "The local Ollama service is not running.");
+  assert.equal(tutorActionIssueReason(""), "");
+  for (const issue of ["not-ready", "disclosure", "busy", "web-unavailable", "empty-prompt", "prompt-too-long", "context-too-small", "request-too-large"]) {
+    assert.ok(tutorActionIssueReason(issue).length > 10, issue);
+  }
 });
