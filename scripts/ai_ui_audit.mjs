@@ -1545,6 +1545,11 @@ try {
     await page.waitForFunction(() => /Stop generating/.test(document.activeElement?.textContent || ""), { timeout: 3_000 });
     await page.keyboard.press("Enter");
     await page.waitForSelector(".ai-tutor__request-note", { timeout: 5_000 });
+    // Stop turns back into Send as the request ends; that same activation
+    // must not then submit the question again.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(await page.$(".ai-tutor__message--streaming"), null, "Stop sent the stopped question again");
+    assert.ok(await page.$(".ai-tutor__request-note"), "Stop sent the stopped question again");
     assert.equal(await page.$(".ai-tutor__request-error"), null, "a learner's own Stop was shown as an error");
     assert.equal(await page.$eval(".ai-tutor__request-note", (node) => node.getAttribute("role")), null, "the Stop note was an assertive alert");
     assert.equal((await activeElement()).className.includes("ai-tutor__request-note"), true, "Stop left focus on <body>");

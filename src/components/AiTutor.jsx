@@ -2536,6 +2536,9 @@ export default function AiTutor({
               type="button"
               ref={sendButtonRef}
               onClick={(event) => {
+                // Stopping re-renders this button as Send before the click's
+                // default action runs; cancel it so Stop never re-sends.
+                event.preventDefault();
                 // A second tap of a double tap on Send is not a Stop.
                 if (event.detail > 0 && (globalThis.performance?.now?.() ?? Date.now()) - requestStartedAtRef.current < 500) return;
                 requestControllerRef.current?.abort();
