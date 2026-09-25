@@ -2500,13 +2500,15 @@
 }
 
 .ai-tutor__jump:focus-visible {
-  outline: 2px solid var(--focus-ring, var(--ai-accent-ink));
-  outline-offset: 3px;
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo), 0 8px 22px color-mix(in srgb, var(--ink, #172035) 24%, transparent);
 }
 
 .ai-tutor__message--streaming:focus-visible {
-  outline: 2px solid var(--focus-ring, var(--ai-accent-ink));
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
 }
 
 @media (forced-colors: active) {
