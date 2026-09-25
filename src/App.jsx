@@ -84,9 +84,10 @@ import { lectureLoadMessage, recoverableImport } from "./lib/chunkRecovery.js";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
 import { downloadBlob } from "./lib/download.js";
-import { UndoStrip } from "./components/ReviewCenter";
-import { UndoStrip } from "./components/ReviewCenter";
-import { UndoStrip } from "./components/ReviewCenter";
+// Small and shared with the review center; kept separate so the notebook does
+// not pull the lazily loaded review center into the startup bundle.
+import { UndoStrip, withUndoSlot } from "./components/UndoStrip.jsx";
+import { useCommitOnHide } from "./hooks/useCommitOnHide.js";
 import {
   actionableReviewCount,
   createReviewItem,
