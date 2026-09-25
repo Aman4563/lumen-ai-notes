@@ -568,7 +568,8 @@ Study features:
   lapsed cards; a fresh profile never names the roadmap. A start fills the box
   and never sends; a real draft is replaced only on request.
 - Follow-ups under the newest answer remember only that question and answer,
-  keep its grounding, retrieve with its topic and never use the web.
+  keep its grounding, retrieve with its topic (the learner's question behind
+  any chain of follow-ups) and never use the web.
 - Quizzes take an optional confidence, show the score once every question is
   checked (announced once, confident misses first), explain a miss through a
   Fast answer check with no score or strengths shown, save misses to the
@@ -607,7 +608,8 @@ Practice features:
 - Work through with tutor (mistake notebook) and Review my misses with tutor
   (readiness check) put a prepared question in the box: consumed once, never
   sent, a draft kept unless replaced, focus in the box, hidden with AI features
-  off. `audit:phone-ai-ui` applies one on On-device Lite.
+  off, and short enough for On-device Lite's 1,800-character box.
+  `audit:phone-ai-ui` applies one on On-device Lite.
 - A Library-first request names its first attached lesson as its topic
   ("Chapter 1 — Linear Regression and Regularization (+7 related passages)")
   instead of "8 selected Lumen sources".
@@ -655,14 +657,68 @@ controls are buttons. On the docked phone layout the forged route label in
 that fix's audit wraps, and the middle of its two-line box sat on the genuine
 `[S#]` beside it; the audit now clicks the label's first line.
 
+Review follow-up. An adversarial pass over the branch confirmed each defect
+against the preceding build (or live) before fixing it, with a regression in
+the named audit or unit test:
+
+- A follow-up of a follow-up searched with the chip's own wording. Live,
+  Check my understanding after Give an example on a ridge answer retrieved
+  "Chapter 2 — Problem Framing" and quizzed on customer churn; in
+  `audit:ai-ui` the chained quiz retrieved chapters 6, 2 and 7. Follow-ups
+  now search with the learner's question behind the chain, on both engines.
+  Live rerun: Chapter 1 (+6 related passages), a ridge question in 13 s.
+- Wrap up with no answer of the learner's credited them with the hint's
+  points; the recap question now says there is nothing to credit (live
+  rerun: a "what this session covered" recap in 20 s, no false credit).
+- An answer from before a three-hour break offered follow-ups, which would
+  send it as memory against the divider.
+- Edit & reuse, Edit & regenerate and Up arrow on a graded practice answer put
+  the grading question in the box as an Explain question, to be sent without
+  its rubric. They now reopen the practice card with the answer.
+- A long mistake or readiness check produced up to about 3,000 characters and
+  On-device Lite cut it off mid-word at 1,800; fields now give way, the
+  learner's answer first.
+- "?" with focus in Request options or the New topic dialog opened the
+  shortcut sheet underneath them and moved focus there, out of sight.
+- At 200% text on a 320×640 phone a dock holding a session strip was 768px
+  tall and pinned itself over the whole tutor, header included. Past 60% of
+  the room above the navigation (not counting the question box's growth) it
+  now stays in the page flow, and docks again below 50%.
+- Enter with the local-model permission unticked did nothing visible, and a
+  send refused at send time failed silently; both now give the reason.
+- A reading that failed part-way showed Listen again with no reason; the
+  engine's message now shows under the answer (a notice on On-device Lite).
+- The quiz dispute note said a miss was "not saved" when it had been saved
+  before the check; the disputed path now has a browser regression.
+
+Live `qwen3.5:4b` for the review (8 generations, 393px phone): Explain 50 s
+with 16 resolved citations and the topic cue; Give an example 44 s, history
+exactly the followed pair (45 and 3,000 characters); then the two failures
+above and their reruns (Check my understanding 13 s, Hint 9 s, Wrap up 20 s,
+all citations resolved). The first Socratic replies still praised a
+"previous answer" the learner never gave, and "Checking citations" never lit
+up (#58). The branch was then rebased onto #83 (saved AI output rendered as
+untrusted text); the difference from the pre-rebase tip is exactly #83's 22
+files. Together they put the precached route screens at 903,321 bytes, over
+the 900,000 budget, so the quiz and answer-check views and their styles now
+load with the first quiz, as interview practice does (890,629 bytes; the quiz
+state and requests stay in the tutor, and screenshots in Paper, Night and
+Contrast match the stage-2 ones). Gate on the final tip: `npm run check`
+(524 AI/data tests; AI eval 27 cases, hit@1 0.913; startup entry 715,643
+bytes; route screens 890,629 bytes) and all 13 `npm run check:browser`
+suites on the first attempt (`audit:ai-ui` 109 s, `audit:responsive` 434
+layout and 367 control checks, `audit:a11y` 57 axe runs).
+
 Still open: hiding the bottom navigation while typing (needs a physical
 iPhone); a docked composer, a session strip, interview practice and quiz
 follow-through on On-device Lite; titled multi-topic threads (designed in
 `docs/TUTOR_THREADS_DESIGN.md`); and the server-side Socratic prompt fixes
 (#58) seen live: a first reply that praises a "previous answer" the learner
 never gave, a hint request answered as "your hint", and a mistake explained
-before the learner is asked what went wrong. Below 481px of height the
-composer is not docked, so the strip scrolls with the page there.
+before the learner is asked what went wrong. Below 481px of height, or with
+very large text on a small phone, the composer is not docked, so the strip
+scrolls with the page there. At 200% text on a 320px phone the tutor title
+runs under the header's two 44px buttons, which are the same size as on main.
 
 ## Offline route screens reproduced on 2026-09-24
 
