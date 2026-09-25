@@ -513,6 +513,22 @@ try {
   await clickByText(page, ".board-text-dialog button", "Add to board");
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 objects"));
 
+  // A browser may deliver a tap's pointer events but synthesize no click
+  // (seen on Linux Chrome). Placement must not depend on that click.
+  await chooseBoardTool(page, "Text");
+  canvasBox = await boardPageBox(page);
+  await page.evaluate(() => {
+    window.__blockClicks = (event) => { event.stopImmediatePropagation(); event.preventDefault(); };
+    window.addEventListener("click", window.__blockClicks, { capture: true });
+  });
+  const noClickTap = [canvasBox.left + canvasBox.width * 0.55, canvasBox.top + canvasBox.height * 0.82];
+  await touchTap(...noClickTap);
+  await page.waitForSelector(".board-text-dialog", { timeout: 10_000 })
+    .catch(async () => assert.fail(`a touch tap with no synthesized click opened no Text dialog: ${await boardTapDiagnostics(page, ...noClickTap)}`));
+  await page.evaluate(() => window.removeEventListener("click", window.__blockClicks, { capture: true }));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".board-text-dialog", { hidden: true });
+
   await chooseBoardTool(page, "Sticky note");
   canvasBox = await boardPageBox(page);
   const stickyTap = [canvasBox.left + canvasBox.width * 0.7, canvasBox.top + canvasBox.height * 0.2];
