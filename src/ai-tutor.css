@@ -2125,6 +2125,8 @@
   .ai-tutor__message-actions button,
   .ai-tutor__text-button,
   .ai-tutor__consent--acknowledged .ai-tutor__text-button,
+  .ai-tutor__difficulty select,
+  .ai-tutor__source-tools > label,
   .ai-tutor__response-text .code-copy { min-height: 44px; }
   .ai-tutor__session-stats { padding-inline: 14px; }
   .ai-tutor__citation::after { position: absolute; content: ""; inset: -9px -3px; }

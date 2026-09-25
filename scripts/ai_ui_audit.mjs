@@ -323,6 +323,16 @@ try {
   assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), true, "web fallback remained enabled without whole-library retrieval");
   await clickByText(page, ".ai-tutor__source-modes button", "Library first");
   assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), false, "Library first did not restore the eligible web-fallback control");
+  // Phone targets (TC-21): every tutor control on this 393px phone is at
+  // least 44px tall, the source filter included. Inline citations extend
+  // their hit area with a pseudo-element instead.
+  await clickByText(page, ".ai-tutor__source-modes button", "Choose sources");
+  const undersizedTutorControls = await page.$$eval(".ai-tutor button, .ai-tutor select, .ai-tutor textarea, .ai-tutor__source-tools > label", (nodes) => nodes
+    .filter((node) => !node.classList.contains("ai-tutor__citation") && !node.closest(".visually-hidden"))
+    .map((node) => ({ name: (node.getAttribute("aria-label") || node.textContent || node.tagName).trim().slice(0, 40), height: Math.round(node.getBoundingClientRect().height) }))
+    .filter((control) => control.height > 0 && control.height < 44));
+  assert.deepEqual(undersizedTutorControls, [], `undersized Mac tutor controls on a phone: ${JSON.stringify(undersizedTutorControls)}`);
+  await clickByText(page, ".ai-tutor__source-modes button", "Library first");
 
   const sendSelector = ".ai-tutor__send";
   await page.$eval(".ai-tutor__composer textarea", (field) => {
