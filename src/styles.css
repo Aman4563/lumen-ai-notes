@@ -2760,14 +2760,17 @@ input[type="range"] {
 .review-question { width: 100%; margin: 16px 0; color: var(--ink); font-family: "Manrope", sans-serif; font-size: clamp(1.35rem, 4vw, 2.25rem); line-height: 1.24; letter-spacing: -0.045em; }
 
 .review-session-page { min-height: calc(100dvh - 70px); }
-.review-session-header { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.review-session-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 15px; }
 .review-session-header > div { display: flex; align-items: baseline; gap: 7px; }
+/* The count takes the room between the buttons and wraps its words first;
+   the header wraps only when even that cannot fit (large text). */
+.review-session-header > div:nth-child(2) { flex: 1 1 0; justify-content: center; text-align: center; }
 .review-session-header > div strong { color: var(--ink); font-family: "Manrope", sans-serif; font-size: 1.35rem; }
 .review-session-header > div span { color: var(--ink-faint); font-size: 0.68rem; }
 .review-session-header > .button,
 .review-reveal kbd { white-space: nowrap; }
 .review-stage { width: min(760px, 100%); margin: 48px auto 0; text-align: center; }
-.review-crunch-notice { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 0 12px; color: #a86c29; font-size: 0.69rem; }
+.review-crunch-notice { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 0 12px; color: var(--ai-warn); font-size: 0.69rem; }
 .review-progress { height: 5px; overflow: hidden; margin-bottom: 17px; border-radius: 99px; background: var(--paper-3); }
 .review-progress span { display: block; height: 100%; border-radius: inherit; background: var(--coral); transition: width 220ms ease; }
 .review-flashcard { display: flex; min-height: 360px; flex-direction: column; align-items: center; justify-content: center; padding: clamp(27px, 6vw, 58px); border: 1px solid var(--line); border-radius: 28px; background: var(--paper); box-shadow: var(--shadow-md); }
