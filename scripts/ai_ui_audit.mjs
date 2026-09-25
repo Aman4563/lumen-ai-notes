@@ -507,7 +507,7 @@ try {
   assert.match(disclosure, /no paid remote-model API/i);
   assert.match(disclosure, /saves up to 50 normalized tutor messages and web-source links locally/i);
   assert.match(disclosure, /includes them in exported backups/i);
-  assert.match(disclosure, /Clear conversation/i);
+  assert.match(disclosure, /Use “New topic” in the tutor header to clear it/i);
   assert.match(disclosure, /no paid-provider key is accepted or exposed/i);
 
   // Web egress is available only after the complete-library sufficiency
@@ -1714,18 +1714,21 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.match(await announcement(), /Generation stopped/, "a stale phase replaced the stop announcement");
 
-    // Clear asks in an in-app dialog: focus starts on Cancel, Escape restores
-    // focus to Clear, confirming clears and focuses the tutor heading.
-    await page.$eval('[aria-label="Clear AI tutor conversation"]', (button) => button.focus());
+    // New topic (which clears) asks in an in-app dialog: focus starts on
+    // Cancel, Tab stays among its three choices, Escape restores focus to
+    // New topic, confirming clears and focuses the tutor heading.
+    await page.$eval(".ai-tutor__new-topic", (button) => button.focus());
     await page.keyboard.press("Enter");
     await page.waitForSelector(".tutor-dialog[role='alertdialog'][aria-modal='true']", { timeout: 3_000 });
     assert.equal((await activeElement()).text, "Cancel", "the confirmation did not focus its safe choice");
+    assert.deepEqual(await page.$$eval(".tutor-dialog button", (nodes) => nodes.map((node) => node.textContent)), ["Cancel", "Export, then clear", "Clear conversation"]);
+    await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     assert.equal((await activeElement()).text, "Cancel", "Tab escaped the confirmation dialog");
     await page.keyboard.press("Escape");
     await page.waitForSelector(".tutor-dialog", { hidden: true });
-    assert.equal((await activeElement()).label, "Clear AI tutor conversation", "cancelling did not return focus to Clear");
+    assert.equal((await activeElement()).text, "New topic", "cancelling did not return focus to New topic");
     assert.ok((await page.$$(".ai-tutor__message")).length > 0, "cancelling the confirmation cleared the conversation");
     await page.keyboard.press("Enter");
     await page.waitForSelector(".tutor-dialog");
@@ -2122,7 +2125,7 @@ try {
 
     // Clearing the conversation brings the starters back; wider screens
     // show six in two columns.
-    await page.$eval('[aria-label="Clear AI tutor conversation"]', (button) => button.click());
+    await page.$eval(".ai-tutor__new-topic", (button) => button.click());
     await clickByText(page, ".tutor-dialog button", "Clear conversation");
     await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
     await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
@@ -2391,6 +2394,80 @@ try {
     assert.ok(await cancels() > before, "leaving the tutor did not stop the answer being read");
   } finally {
     await listenScenario.context.close();
+  }
+
+  // New topic and the three-hour break (TFEAT-13, interim). Turns before a
+  // break of more than three hours are neither sent nor summarised; a
+  // divider and the privacy panel say so. New topic can export the whole
+  // conversation before clearing it.
+  const topicScenario = await newIsolatedPage("new-topic");
+  try {
+    const { page, calls } = topicScenario;
+    const turn = (id, role, content, minutesAgo) => ({ id, role, content, mode: "explain", createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(), requestId: null, data: null, citationSources: [], webSources: [], responseProfile: "balanced" });
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await patchStoredProfile(page, { aiTutorHistory: [
+      turn("old-q", "user", "Yesterday: how does linear regression work?", 360),
+      turn("old-a", "assistant", "Linear regression fits a line by least squares.", 359),
+      turn("new-q", "user", "Today: what is attention in transformers?", 12),
+      turn("new-a", "assistant", "Attention weighs tokens by relevance.", 11),
+    ] });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.waitForSelector(".ai-tutor__context-break", { timeout: 5_000 });
+    assert.deepEqual(await page.$eval(".ai-tutor__context-break", (node) => ({
+      text: node.querySelector("strong").textContent,
+      before: node.previousElementSibling?.dataset.messageId,
+      after: node.nextElementSibling?.dataset.messageId,
+    })), { text: "Earlier turns are not sent to the model", before: "old-a", after: "new-q" }, "the break divider was not between the two sittings");
+    await withOptions(page, async () => {
+      await page.click(".ai-tutor__privacy-toggle");
+      assert.match(await page.$eval(".ai-tutor__privacy-body", (node) => node.textContent.replace(/\s+/g, " ")), /2 recent conversation messages \(maximum 12\); 2 earlier messages from before a break of more than 3 hours are not sent/);
+    });
+    await setComposerPrompt(page, "And how does multi-head attention differ?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 3);
+    const afterBreak = calls.respond.at(-1).body;
+    assert.deepEqual(afterBreak.history.map((message) => message.content), ["Today: what is attention in transformers?", "Attention weighs tokens by relevance."], "turns before the break were sent");
+    assert.equal(afterBreak.conversationSummary, "", "turns before the break were summarised");
+
+    // After a long break the next question starts fresh; the divider sits
+    // at the end until it is asked.
+    await patchStoredProfile(page, { aiTutorHistory: [
+      turn("old-q", "user", "Yesterday: how does linear regression work?", 300),
+      turn("old-a", "assistant", "Linear regression fits a line by least squares.", 299),
+    ] });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__context-break", { timeout: 10_000 });
+    assert.equal(await page.$eval(".ai-tutor__context-break", (node) => node.previousElementSibling?.dataset.messageId && !node.nextElementSibling?.dataset.messageId), true, "a stale conversation did not end with the break divider");
+    await setComposerPrompt(page, "What is dropout?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 2);
+    assert.equal(calls.respond.at(-1).body.history.length, 0, "a question after a long break carried the old conversation");
+
+    // New topic → Export, then clear: the whole conversation is saved as
+    // Markdown, then cleared, and the suggested starts return.
+    await page.evaluate(() => {
+      window.__lumenAuditDownloads = [];
+      URL.createObjectURL = (blob) => { window.__lumenAuditDownloads.push(blob); return "blob:lumen-audit"; };
+      URL.revokeObjectURL = () => {};
+      const click = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function auditClick() { if (!this.download) click.call(this); };
+    });
+    await page.$eval(".ai-tutor__new-topic", (button) => button.click());
+    await page.waitForSelector(".tutor-dialog", { timeout: 3_000 });
+    assert.equal(await page.$eval(".tutor-dialog h2", (node) => node.textContent), "Start a new topic?");
+    await clickByText(page, ".tutor-dialog button", "Export, then clear");
+    await page.waitForFunction(() => window.__lumenAuditDownloads.length === 1 && !document.querySelector(".ai-tutor__message"), { timeout: 5_000 });
+    const exported = await page.evaluate(() => window.__lumenAuditDownloads[0].text());
+    assert.match(exported, /^# Lumen AI Tutor conversation/);
+    assert.match(exported, /Yesterday: how does linear regression work\?[\s\S]*What is dropout\?/, "the export did not hold the whole conversation");
+    await waitForStoredHistory(page, "empty");
+    await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => document.activeElement?.tagName), "H2", "New topic left focus on <body>");
+    assert.equal(await page.$(".ai-tutor__context-break"), null);
+  } finally {
+    await topicScenario.context.close();
   }
 
   let modelOnline = false;

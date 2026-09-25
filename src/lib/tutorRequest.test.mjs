@@ -6,7 +6,9 @@ import {
   fitTutorRequest,
   minimumContextBudget,
   promptForSources,
+  TUTOR_CONTEXT_GAP_MS,
   tutorActionIssueReason,
+  tutorContextStart,
   tutorConversationWindow,
   tutorFollowUpWindow,
   tutorRequestIssue,
@@ -159,4 +161,27 @@ test("an action that cannot start names what the learner must do", () => {
   for (const issue of ["not-ready", "disclosure", "busy", "web-unavailable", "empty-prompt", "prompt-too-long", "context-too-small", "request-too-large"]) {
     assert.ok(tutorActionIssueReason(issue).length > 10, issue);
   }
+});
+
+test("turns before a break of more than three hours are not sent", () => {
+  const now = Date.parse("2026-09-24T18:00:00.000Z");
+  const at = (hoursAgo) => new Date(now - hoursAgo * 3_600_000).toISOString();
+  const history = [
+    { id: "u1", createdAt: at(26) },
+    { id: "a1", createdAt: at(25.9) },
+    { id: "u2", createdAt: at(5) },
+    { id: "a2", createdAt: at(4.95) },
+    { id: "u3", createdAt: at(0.5) },
+    { id: "a3", createdAt: at(0.45) },
+  ];
+  assert.equal(tutorContextStart(history, now), 4, "only the turns after the latest break are sent");
+  assert.equal(tutorContextStart(history.slice(0, 4), now), 4, "a question after a long break starts fresh");
+  assert.equal(tutorContextStart(history.slice(4), now), 0);
+  assert.equal(tutorContextStart([], now), 0);
+  // Exactly three hours is still the same sitting.
+  assert.equal(tutorContextStart([{ createdAt: new Date(now - TUTOR_CONTEXT_GAP_MS).toISOString() }], now), 0);
+  // A turn without a readable time never starts a break; it stays with the
+  // turns after it.
+  assert.equal(tutorContextStart([{ createdAt: at(10) }, { createdAt: "not a date" }], now), 1);
+  assert.equal(tutorContextStart([{ createdAt: at(1) }, { createdAt: "" }], now), 0);
 });

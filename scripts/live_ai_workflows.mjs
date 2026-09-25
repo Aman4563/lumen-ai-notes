@@ -53,8 +53,8 @@ try {
   for (const [mode, prompt, resultSelector] of cases) {
     const started = Date.now();
     try {
-      if (await page.$('[aria-label="Clear AI tutor conversation"]')) {
-        await page.locator('[aria-label="Clear AI tutor conversation"]').click();
+      if (await page.$(".ai-tutor__new-topic")) {
+        await page.locator(".ai-tutor__new-topic").click();
         // Clearing asks in the tutor's own confirmation dialog.
         await page.waitForSelector(".tutor-dialog");
         await clickText(page, ".tutor-dialog button", "Clear conversation");

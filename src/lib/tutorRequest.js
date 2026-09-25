@@ -66,6 +66,30 @@ export const tutorConversationWindow = (history, { prompt = "", sources = false,
   });
 };
 
+/** A break longer than this starts a new sitting (TFEAT-13, interim). */
+export const TUTOR_CONTEXT_GAP_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Where the conversation the model may still see begins: after the latest
+ * break of more than three hours between turns, where the question about to
+ * be asked (`now`) counts as the next turn. 0 when there was no such break;
+ * `history.length` when even the last turn is older than the break. Turns
+ * before it are left out of the sent history and of the compacted summary,
+ * so yesterday's topic does not steer today's answer. A turn without a
+ * readable time never starts a break; it stays with the turns after it.
+ */
+export const tutorContextStart = (history, now = Date.now(), gapMs = TUTOR_CONTEXT_GAP_MS) => {
+  const list = Array.isArray(history) ? history : [];
+  let next = Number.isFinite(now) ? now : Date.now();
+  for (let index = list.length; index > 0; index -= 1) {
+    const time = Date.parse(list[index - 1]?.createdAt || "");
+    if (!Number.isFinite(time)) continue;
+    if (next - time > gapMs) return index;
+    next = time;
+  }
+  return 0;
+};
+
 /**
  * The memory for a follow-up about one answer (TFEAT-02): only that
  * question/answer pair, with up to 3,000 characters of the answer and half

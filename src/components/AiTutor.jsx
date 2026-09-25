@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { scrollBehavior } from "../lib/motion.js";
 import "katex/dist/katex.min.css";
 import {
@@ -27,7 +27,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Download,
-  Trash2,
+  MessageSquarePlus,
   Pause,
   Play,
   Square,
@@ -55,6 +55,7 @@ import {
   TUTOR_MAX_PROMPT_CHARS as MAX_PROMPT_CHARS,
   TUTOR_MAX_SERVER_HISTORY as MAX_SERVER_HISTORY,
   fitTutorRequest,
+  tutorContextStart,
   tutorActionIssueReason,
   tutorConversationWindow,
   tutorFollowUpWindow,
@@ -1234,6 +1235,7 @@ export default function AiTutor({
   const optionsSummaryId = useId();
   const keyHintId = useId();
   const startersHeadingId = useId();
+  const newTopicHintId = useId();
   const sourceNumbersRef = useRef(new Map());
   const nextSourceNumberRef = useRef(1);
   const requestControllerRef = useRef(null);
@@ -1380,6 +1382,19 @@ export default function AiTutor({
   })), []);
   // Moving focus to a message on request needs a render to apply it.
   const [, setFocusRequest] = useState(0);
+  // "Now", for the three-hour context break (TFEAT-13, interim): refreshed
+  // each minute, when the tab returns and after every change to the
+  // conversation. Send re-reads the time itself.
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState !== "hidden") setClock(Date.now()); };
+    const timer = window.setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
   // Listen (TFEAT-09): which answer the app's speech engine is reading.
   const speechRef = useRef(speech);
   speechRef.current = speech;
@@ -1763,6 +1778,9 @@ export default function AiTutor({
     const live = new Set(history.map((message) => message.id));
     setQuizStates((current) => pruneQuizStates(current, live));
   }, [history]);
+  useEffect(() => { setClock(Date.now()); }, [history]);
+  // Turns before the latest break of more than three hours are not sent.
+  const contextStart = tutorContextStart(history, clock);
   const lastExternalHistoryRef = useRef({
     signature: historySignature(normalizedExternalHistory),
     history: normalizedExternalHistory,
@@ -1913,8 +1931,8 @@ export default function AiTutor({
   const requestLimits = useMemo(() => tutorRequestLimits(configState.config, responseProfile), [configState.config, responseProfile]);
   const { inputLimit, maximumBytes: configuredRequestByteLimit, promptLimit } = requestLimits;
   const conversationWindow = useMemo(
-    () => tutorConversationWindow(history, { prompt, sources: selectedSources.length > 0, inputLimit }),
-    [history, inputLimit, prompt, selectedSources.length],
+    () => tutorConversationWindow(history.slice(contextStart), { prompt, sources: selectedSources.length > 0, inputLimit }),
+    [contextStart, history, inputLimit, prompt, selectedSources.length],
   );
   const outboundHistory = conversationWindow.messages;
   const selectedMaxOutputTokens = outputTokensForProfile({
@@ -2404,7 +2422,7 @@ export default function AiTutor({
         conversationSummary: String(action.historyWindow.conversationSummary || ""),
         compactedMessages: Number.isSafeInteger(action.historyWindow.compactedMessages) ? action.historyWindow.compactedMessages : 0,
       }
-      : tutorConversationWindow(Array.isArray(action.history) ? action.history : history, {
+      : tutorConversationWindow(Array.isArray(action.history) ? action.history : history.slice(tutorContextStart(history, Date.now())), {
         prompt: displayPrompt,
         sources: contextSources.length > 0,
         inputLimit: limits.inputLimit,
@@ -2895,6 +2913,14 @@ export default function AiTutor({
       || (Array.isArray(serverStructuredTasks) && !serverStructuredTasks.includes("answer_feedback")))
     ? "This AI server cannot check quiz answers."
     : "";
+  // The divider where the model's memory now starts.
+  const contextBreak = (
+    <div className="ai-tutor__context-break" role="note">
+      <strong>Earlier turns are not sent to the model</strong>
+      <span>More than 3 hours passed, so the tutor starts fresh from here.</span>
+    </div>
+  );
+
   // Completed prose answers can be heard; speak() runs inside the click so
   // iOS treats it as the learner's gesture. Unsupported speech hides it.
   const listenFor = (message) => {
@@ -3022,7 +3048,8 @@ export default function AiTutor({
         </div>
         <div className="ai-tutor__header-actions">
           {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={exportConversation} aria-label="Export conversation as Markdown" title="Export conversation"><Download size={18} /></button>}
-          {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={clearHistory} disabled={requestState.status === "loading"} aria-label="Clear AI tutor conversation" title="Clear conversation"><Trash2 size={18} /></button>}
+          {history.length > 0 && <button className="ai-tutor__new-topic" type="button" onClick={clearHistory} disabled={requestState.status === "loading"} aria-describedby={newTopicHintId}><MessageSquarePlus size={17} aria-hidden="true" /><span className="ai-tutor__new-topic-label">New topic</span></button>}
+          {history.length > 0 && <span className="visually-hidden" id={newTopicHintId}>Clears this conversation, with an option to export it first.</span>}
           {onClose && <button className="ai-tutor__button ai-tutor__button--ghost" type="button" onClick={onClose}>Close</button>}
         </div>
       </header>
@@ -3199,7 +3226,9 @@ export default function AiTutor({
                 const titleId = `${headingId}-message-${index}`;
                 const modeLabel = modeById(message.mode).label;
                 return (
-                  <article className={`ai-tutor__message ai-tutor__message--${message.role}`} key={message.id} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined} aria-labelledby={titleId}>
+                  <Fragment key={message.id}>
+                  {index === contextStart && index > 0 && contextBreak}
+                  <article className={`ai-tutor__message ai-tutor__message--${message.role}`} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined} aria-labelledby={titleId}>
                     <h3 className="visually-hidden" id={titleId}>{message.role === "assistant" ? `Tutor answer, ${modeLabel}${message.incomplete ? ", stopped early" : ""}` : `Your question, ${modeLabel}`}</h3>
                     <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeLabel}</span>{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
                     {message.role === "assistant"
@@ -3211,8 +3240,10 @@ export default function AiTutor({
                       return followUps.length > 0 && <FollowUps items={followUps} disabled={requestState.status === "loading"} onChoose={(item) => runFollowUp(message, item)} />;
                     })()}
                   </article>
+                  </Fragment>
                 );
               })}
+              {contextStart > 0 && contextStart === history.length && contextBreak}
               {activeResponse && (
                 <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true" tabIndex={-1} aria-label="Tutor answer, in progress" ref={streamingArticleRef}>
                   <div className="ai-tutor__message-meta"><strong>Lumen Tutor</strong><span>{modeById(activeResponse.mode).label}</span><span>{RESPONSE_PROFILES.find((item) => item.id === activeResponse.responseProfile)?.label || "Balanced"}</span><span className="ai-tutor__live-badge"><i aria-hidden="true" /> Live</span><WebFallbackBadge status={activeResponse.webFallbackStatus} /></div>
@@ -3327,19 +3358,23 @@ export default function AiTutor({
             {effectiveWebSearch && <p><strong>Consented web fallback:</strong> {AI_DATA_DISCLOSURE.webSearch.destination} Local-library retrieval runs first. Only when it recommends fallback may Lumen send up to {configState.config?.webSearch?.maxRounds || 1} focused queries derived from this prompt, selected context, and bounded history. If the local model skips its required tool call, the server uses a bounded form of your question so the authorized fallback still runs. Query text is sent without a separate preview in Mac-local mode. Use On-device Lite when you need to approve the exact query first.</p>}
             {responseProfile === "deep" && <p><strong>Deep response:</strong> The local model may use private internal thinking to plan a stronger answer. That private thinking is never returned to this UI, saved in history, or shown by the Approach toggle; Approach contains only disclosure-safe orchestration and evidence metadata.</p>}
             <div className="ai-tutor__disclosure-grid">
-              <div><h4>This request sends to the local model</h4><ul><li>Your {prompt.trim().length.toLocaleString()}-character prompt</li><li>Difficulty: {DIFFICULTIES.find((item) => item.id === difficulty)?.label}</li><li>Response profile: {RESPONSE_PROFILES.find((item) => item.id === responseProfile)?.label} (up to {selectedMaxOutputTokens.toLocaleString()} output tokens)</li><li>Grounding: {SOURCE_MODES.find((item) => item.id === sourceMode)?.label}</li><li>{selectedSources.length ? `${selectedSources.length} prepared source${selectedSources.length === 1 ? "" : "s"}: ${selectedSources.map((source) => `[S${source.citationNumber}] ${source.title}`).join(", ")}` : "No curriculum source text is currently prepared"}{contextPreview.length > 0 ? ` (${contextPreview.length.toLocaleString()} source characters prepared)` : ""}</li><li>{outboundHistory.length} recent conversation message{outboundHistory.length === 1 ? "" : "s"} (maximum {MAX_SERVER_HISTORY}){conversationWindow.compactedMessages ? `; ${conversationWindow.compactedMessages} older messages form a visible bounded memory` : ""}</li><li>A fixed grounding instruction requiring valid [S#] citations</li><li>Web fallback: {effectiveWebSearch ? "consented; used only when local retrieval recommends it" : "off"}</li></ul></div>
+              <div><h4>This request sends to the local model</h4><ul><li>Your {prompt.trim().length.toLocaleString()}-character prompt</li><li>Difficulty: {DIFFICULTIES.find((item) => item.id === difficulty)?.label}</li><li>Response profile: {RESPONSE_PROFILES.find((item) => item.id === responseProfile)?.label} (up to {selectedMaxOutputTokens.toLocaleString()} output tokens)</li><li>Grounding: {SOURCE_MODES.find((item) => item.id === sourceMode)?.label}</li><li>{selectedSources.length ? `${selectedSources.length} prepared source${selectedSources.length === 1 ? "" : "s"}: ${selectedSources.map((source) => `[S${source.citationNumber}] ${source.title}`).join(", ")}` : "No curriculum source text is currently prepared"}{contextPreview.length > 0 ? ` (${contextPreview.length.toLocaleString()} source characters prepared)` : ""}</li><li>{outboundHistory.length} recent conversation message{outboundHistory.length === 1 ? "" : "s"} (maximum {MAX_SERVER_HISTORY}){conversationWindow.compactedMessages ? `; ${conversationWindow.compactedMessages} older messages form a visible bounded memory` : ""}{contextStart > 0 ? `; ${contextStart} earlier message${contextStart === 1 ? "" : "s"} from before a break of more than 3 hours ${contextStart === 1 ? "is" : "are"} not sent` : ""}</li><li>A fixed grounding instruction requiring valid [S#] citations</li><li>Web fallback: {effectiveWebSearch ? "consented; used only when local retrieval recommends it" : "off"}</li></ul></div>
               <div><h4>This client does not send</h4><ul>{AI_DATA_DISCLOSURE.neverSentByThisClient.map((item) => <li key={item}>{item}</li>)}</ul></div>
             </div>
-            <p className="ai-tutor__retention"><ShieldCheck size={16} aria-hidden="true" />The Lumen server reports no prompt or response storage and no paid remote-model API. {effectiveWebSearch ? "Search engines can observe the search query and ordinary request metadata according to their own policies. " : "No web-search service is contacted for this request. "}{onHistoryChange ? `This app saves up to ${MAX_VISIBLE_HISTORY} normalized tutor messages and web-source links locally and includes them in exported backups. Full source text and search-result bodies are not duplicated in that history. Use “Clear conversation” in the tutor header to remove it.` : "Conversation history stays only in this component for the current visit."}</p>
+            <p className="ai-tutor__retention"><ShieldCheck size={16} aria-hidden="true" />The Lumen server reports no prompt or response storage and no paid remote-model API. {effectiveWebSearch ? "Search engines can observe the search query and ordinary request metadata according to their own policies. " : "No web-search service is contacted for this request. "}{onHistoryChange ? `This app saves up to ${MAX_VISIBLE_HISTORY} normalized tutor messages and web-source links locally and includes them in exported backups. Full source text and search-result bodies are not duplicated in that history. Use “New topic” in the tutor header to clear it, with an option to export it first.` : "Conversation history stays only in this component for the current visit."}</p>
             {providerControlsUrl && <a href={providerControlsUrl} target="_blank" rel="noreferrer">Review provider data controls <ExternalLink size={13} aria-hidden="true" /></a>}
           </div>}
         </div>
       </TutorSheet>
 
+      {/* New topic (TFEAT-13, interim): one conversation, so starting fresh
+          clears it; exporting first keeps a full copy. */}
       <TutorConfirmDialog
         open={confirmClearOpen}
-        title="Clear this conversation?"
-        body="This removes the saved tutor messages on this device. Your lessons, notes and review cards are not deleted."
+        title="Start a new topic?"
+        body="This clears the saved tutor conversation on this device so the tutor starts fresh. Export it first to keep a copy. Your lessons, notes and review cards are not deleted."
+        secondaryLabel="Export, then clear"
+        onSecondary={() => { exportConversation(); confirmClear(); }}
         confirmLabel="Clear conversation"
         onConfirm={confirmClear}
         onCancel={() => setConfirmClearOpen(false)}
