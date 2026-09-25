@@ -164,7 +164,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -233,8 +233,12 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         }));
       } else {
         const localCitation = body.context.match(/^\[(S\d+)\]/)?.[1] || "S1";
-        const outputText = answerText ? answerText(localCitation) : `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
-        const sources = body.webSearch ? [{ title: "PyTorch release notes", url: "https://pytorch.org/blog/releases/#stable", snippet: "Current release evidence." }] : [];
+        // The server's library-only degradation: the approved search ran but
+        // kept no usable web evidence, so the answer is library-only and
+        // opens with the server-written notice (docs/AI_STREAMING.md).
+        const webDegraded = webSearchUnavailable && body.webSearch === true;
+        const outputText = webDegraded ? `> **Current-web evidence unavailable.** The approved web search returned no usable public results, so this answer uses only your library sources and may not reflect the latest information.\n\nRepeated test inspection causes evaluation leakage. [${localCitation}]` : answerText ? answerText(localCitation) : `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
+        const sources = body.webSearch && !webDegraded ? [{ title: "PyTorch release notes", url: "https://pytorch.org/blog/releases/#stable", snippet: "Current release evidence." }] : [];
         const approach = { summary: "Ground in the local library, then use approved current evidence where needed.", steps: ["Locate relevant library evidence.", "Attach the approved web result.", "Present a concise answer with citations."] };
         const response = {
           ok: true,
@@ -244,7 +248,7 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
           status: "completed",
           model: "audit-local-model",
           usage: { inputTokens: 240, outputTokens: 46, totalTokens: 286 },
-          webSearch: { requested: body.webSearch === true, used: body.webSearch === true, rounds: body.webSearch ? 1 : 0 },
+          webSearch: { requested: body.webSearch === true, used: body.webSearch === true && !webDegraded, rounds: body.webSearch ? webDegraded ? 2 : 1 : 0 },
           sources,
           approach,
         };
@@ -589,6 +593,32 @@ try {
   assert.equal(retryConsent.calls.respond[1].body.webSearch, true, "retry lost the disclosed web-search scope");
   assert.equal(await retryConsent.page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "retry web authorization was not consumed");
   await retryConsent.page.close();
+
+  // An approved search that returns nothing usable degrades to a library-only
+  // answer with the server's notice; its badge must say the fallback failed,
+  // not that the web was not needed.
+  const webUnavailable = await newAuditPage("web-unavailable", () => secureConfig, { webSearchUnavailable: true });
+  await webUnavailable.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await webUnavailable.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  await webUnavailable.page.$eval(".ai-tutor__composer textarea", (field) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(field, "What is the latest current guidance on evaluation leakage?");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await webUnavailable.page.locator(".ai-tutor__web-search input").click();
+  // Earlier scenarios share this browser profile and its saved conversation.
+  const answeredBefore = await webUnavailable.page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.length);
+  await webUnavailable.page.locator(sendSelector).click();
+  await webUnavailable.page.waitForFunction((count) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length > count && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 }, answeredBefore);
+  assert.equal(webUnavailable.calls.respond.at(-1)?.body.webSearch, true, "the degraded-web scenario did not authorize a web search");
+  const degraded = await webUnavailable.page.$$eval(".ai-tutor__message--assistant", (nodes) => {
+    const last = nodes.at(-1);
+    const badge = last.querySelector(".ai-tutor__web-status");
+    return { text: last.querySelector(".ai-tutor__response-text")?.textContent || "", badge: badge ? `${badge.className} ${badge.textContent}` : "" };
+  });
+  assert.match(degraded.text, /Current-web evidence unavailable/, "the library-only notice was not shown");
+  assert.match(degraded.badge, /is-failed .*fallback failed/i, `a search that kept no web evidence was not reported as a failed fallback: ${degraded.badge}`);
+  await webUnavailable.page.close();
 
   const staleConfig = await newAuditPage("stale-config", () => secureConfig, {
     failFirstResponse: true,

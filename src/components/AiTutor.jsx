@@ -1834,9 +1834,13 @@ export default function AiTutor({
         data: response.data || null,
         citationSources,
         webSources: normalizeWebSources(response.sources).length ? normalizeWebSources(response.sources) : streamedWebSources,
+        // An authorized search that ran (rounds > 0) but kept no usable web
+        // evidence leaves a library-only answer that says so in its text;
+        // the badge must agree rather than claim the web was not needed.
         webFallbackStatus: response.webSearch?.used === true
           ? "used"
           : activeResponseRef.current?.webFallbackStatus === "failed"
+            || (response.webSearch?.requested === true && Number(response.webSearch?.rounds) > 0)
             ? "failed"
             : requestSpec.webSearch ? "not-needed" : "off",
         conversationMemory: requestSpec.conversationMemory,
