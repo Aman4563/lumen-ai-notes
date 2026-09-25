@@ -464,14 +464,20 @@ try {
     return document.activeElement === button;
   }, { timeout: 5_000, polling: 200 }).then(() => true, () => false);
   assert.ok(importFocused, "the deck Import control must be a focusable button that keeps focus");
-  const [chooser] = await Promise.all([
-    page.waitForFileChooser({ timeout: 5_000 }).catch(async (error) => {
-      const active = await page.evaluate(() => `${document.activeElement?.tagName}.${document.activeElement?.className} "${(document.activeElement?.textContent || "").trim().slice(0, 30)}"`);
-      throw new Error(`Enter on the deck Import button opened no file chooser (focus: ${active}): ${error.message}`);
-    }),
-    page.keyboard.press("Enter"),
-  ]);
-  await chooser.accept([deckFile]);
+  // Keyboard operability is the app's job: Enter on Import must open the
+  // picker, i.e. click the hidden file input. The native chooser that Chrome
+  // then shows is not the app's, and headless Linux CI intermittently never
+  // reported it, so the audit supplies the file through the input directly.
+  await page.evaluate(() => {
+    const input = document.querySelector('.review-deck-heading input[type="file"]');
+    window.__deckImportPicked = false;
+    input?.addEventListener("click", (event) => { window.__deckImportPicked = true; event.preventDefault(); }, { once: true });
+  });
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.__deckImportPicked, { timeout: 5_000 })
+    .catch(async () => assert.fail(`Enter on the deck Import button did not open the file picker (focus: ${await page.evaluate(() => `${document.activeElement?.tagName}.${document.activeElement?.className}`)})`));
+  const deckInput = await page.$('.review-deck-heading input[type="file"]');
+  await deckInput.uploadFile(deckFile);
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 cards imported"), { timeout: 5_000 })
     .catch(() => assert.fail("importing a card deck did not confirm the imported count"));
   await page.waitForFunction((expected) => Number(document.querySelector(".review-deck-heading h2")?.textContent.match(/^(\d+)/)?.[1]) === expected, { timeout: 5_000 }, cardsBefore + 2)
