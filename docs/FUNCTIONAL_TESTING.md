@@ -684,7 +684,12 @@ dialog was still open. The dialog now joins the App modal flag, so the shell
 stays inert until every modal closes. The review audit opens and closes the
 shortcut sheet over the dialog and checks that the shell stays inert; that
 check fails against the previous mechanism. It also checks that closing the
-dialog returns focus to Log mistake.
+dialog returns focus to Log mistake. With the sheet on top, Escape used to
+close both dialogs and discard the mistake draft. A trial move to the shared
+`useModalDialog` hook also let Tab in the sheet pull focus behind it, so that
+change was reverted. The dialog keeps its own key handling and ignores keys
+while focus is in a dialog stacked over it. The audit presses Tab and Escape
+in the sheet: focus stays in the sheet, and Escape closes only the sheet.
 
 The gate's axe run sees only a fresh profile. An axe pass over populated
 review screens in all three themes found low-contrast mistake chips (4.23:1
