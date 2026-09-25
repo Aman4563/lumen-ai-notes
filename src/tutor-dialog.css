@@ -56,8 +56,9 @@
 }
 
 .tutor-dialog__button:focus-visible {
-  outline: 2px solid var(--focus-ring, color-mix(in srgb, var(--violet, #7467a8) 72%, var(--ink, #172035)));
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
 }
 
 @media (forced-colors: active) {

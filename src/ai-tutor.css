@@ -2,13 +2,15 @@
   --ai-accent: var(--violet, #7467a8);
   --ai-accent-soft: var(--violet-soft, #f0edfb);
   --ai-good: var(--teal, #2f8e86);
-  /* Text-safe variants mixed toward the theme ink: at least 4.5:1 on the
-     tutor's paper and soft fills in Paper, Night and Contrast. */
+  /* Text-safe colours, at least 4.5:1 on the tutor's paper and soft fills in
+     Paper, Night and Contrast. Success, error and warning text use the
+     theme's shared text tokens; the violet accent has none, so it is mixed
+     toward the theme ink. */
   --ai-accent-ink: color-mix(in srgb, var(--ai-accent) 72%, var(--ink, #172035));
   --ai-accent-strong: var(--ai-accent);
-  --ai-good-ink: color-mix(in srgb, var(--ai-good) 68%, var(--ink, #172035));
-  --ai-tutor-danger: color-mix(in srgb, var(--coral, #e96d53) 55%, var(--ink, #172035));
-  --ai-tutor-warn: color-mix(in srgb, var(--gold, #e8b55b) 45%, var(--ink, #172035));
+  --ai-good-ink: var(--teal-text);
+  --ai-tutor-danger: var(--danger);
+  --ai-tutor-warn: var(--ai-warn);
   width: 100%;
   color: var(--ink, #172035);
   background: var(--paper, #fffdf8);
@@ -526,7 +528,7 @@
 
 .ai-tutor__web-status.is-failed,
 .ai-tutor__message-meta .ai-tutor__web-status.is-failed {
-  color: var(--ai-warn, var(--ai-tutor-warn));
+  color: var(--ai-tutor-warn);
   background: var(--gold-soft, #fff6df);
 }
 
@@ -1620,7 +1622,7 @@
 }
 
 .ai-tutor__message-meta .is-warning {
-  color: var(--ai-warn, var(--ai-tutor-warn));
+  color: var(--ai-tutor-warn);
   background: var(--gold-soft, #fff6df);
 }
 
@@ -2043,7 +2045,7 @@
 
 .ai-tutor__pairing-error {
   margin: 8px 0 0;
-  color: var(--danger, var(--ai-tutor-danger));
+  color: var(--ai-tutor-danger);
   font-size: 0.76rem;
 }
 

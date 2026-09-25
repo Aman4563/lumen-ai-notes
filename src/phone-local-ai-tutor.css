@@ -246,7 +246,7 @@
 .phone-tutor .ai-tutor__scroll > table { margin: 0; }
 .phone-tutor .ai-tutor__scroll .katex-display { margin: 0; overflow: visible; }
 .phone-tutor .ai-tutor__scroll:focus-visible,
-.phone-tutor__quiz-feedback:focus-visible { outline: 2px solid var(--focus-ring, color-mix(in srgb, var(--teal) 70%, var(--ink))); outline-offset: 2px; }
+.phone-tutor__quiz-feedback:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 7px var(--focus-halo); }
 
 /* KaTeX's hidden MathML copy must not become an invisible, focusable scroller. */
 .phone-tutor .katex-mathml math[display="block"] { display: inline; width: auto; margin: 0; padding: 0; overflow: visible; border: 0; background: none; }
