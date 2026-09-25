@@ -7,7 +7,6 @@ import { checkLabAnswer, labMistakeDraft, normalizeLabBank } from "../lib/labs.j
 import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
 import { UndoStrip, withUndoSlot } from "./UndoStrip.jsx";
 import { useCommitOnHide } from "../hooks/useCommitOnHide.js";
-import { useModalDialog } from "../hooks/useModalDialog.js";
 import {
   Archive,
   ArchiveRestore,
@@ -158,6 +157,8 @@ export function MistakeDialog({ open, onClose, onLog, onModalChange }) {
   const [hints, setHints] = useState("");
   const [tags, setTags] = useState("");
   const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   // The shell goes inert through the App's modal flag (REV-8), so an App
   // dialog opened or closed over this one never re-exposes the background,
   // and closing this one restores each region to the state the App renders.
@@ -167,17 +168,44 @@ export function MistakeDialog({ open, onClose, onLog, onModalChange }) {
     onModalChange(true);
     return () => onModalChange(false);
   }, [onModalChange, open]);
-  // Focus, Tab wrap, Escape, and focus return follow the shared dialog contract.
-  useModalDialog(open, dialogRef, { onClose, initialFocus: (dialog) => dialog.querySelector("textarea") });
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) return undefined;
     setPrompt("");
     setExpected("");
     setResponse("");
     setCategory("misconception");
     setHints("");
     setTags("");
+    const previous = document.activeElement;
+    dialogRef.current?.querySelector("textarea")?.focus();
+    const onKeyDown = (event) => {
+      // A dialog stacked over this one (the ? shortcut sheet) owns the keys:
+      // Tab must not pull focus back here and Escape must not discard the draft.
+      const active = document.activeElement;
+      if (active && !dialogRef.current?.contains(active) && active.closest('[aria-modal="true"]')) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...(dialogRef.current?.querySelectorAll(FOCUSABLE) || [])];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      const target = previous;
+      requestAnimationFrame(() => {
+        if (target?.isConnected && !target.closest?.("[inert]")) target.focus?.();
+        else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected) target.focus?.(); });
+      });
+    };
   }, [open]);
 
   if (!open) return null;

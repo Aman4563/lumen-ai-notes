@@ -273,12 +273,18 @@ try {
   assert.deepEqual(await page.evaluate(() => [document.querySelector(".mistake-dialog").closest(".view-container") === null, ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "the mistake dialog must inert the background it covers");
   // The dialog shares the App's modal flag: the shortcut sheet opened over it
   // and closed again must not re-expose the shell behind the mistake dialog.
+  // The sheet on top owns the keyboard: Tab stays in it, and Escape closes
+  // only the sheet, keeping the mistake draft.
   await page.$eval(".mistake-dialog .modal-actions .button.ghost", (node) => node.focus());
   await page.keyboard.press("?");
   await page.waitForSelector(".shortcuts-dialog", { timeout: 5_000 });
-  await page.$$eval(".shortcuts-dialog button", (nodes) => nodes.find((node) => node.textContent.trim() === "Done")?.click());
+  await page.waitForFunction(() => document.activeElement?.closest(".shortcuts-dialog"), { timeout: 5_000 })
+    .catch(() => assert.fail("the shortcut sheet did not take focus over the mistake dialog"));
+  await page.keyboard.press("Tab");
+  assert.ok(await page.evaluate(() => Boolean(document.activeElement?.closest(".shortcuts-dialog"))), "Tab in the shortcut sheet moved focus to the mistake dialog behind it");
+  await page.keyboard.press("Escape");
   await page.waitForSelector(".shortcuts-dialog", { hidden: true, timeout: 5_000 });
-  assert.deepEqual(await page.evaluate(() => [Boolean(document.querySelector(".mistake-dialog")), ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "closing a dialog opened over the mistake dialog re-exposed the shell behind it");
+  assert.deepEqual(await page.evaluate(() => [Boolean(document.querySelector(".mistake-dialog")), ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "Escape in a dialog opened over the mistake dialog closed it too or re-exposed the shell behind it");
   const manualFields = await page.$$(".mistake-dialog textarea");
   await manualFields[0].type("Wrote the softmax gradient with the wrong sign");
   await manualFields[1].type("The Jacobian diagonal is p_i(1 - p_i); off-diagonals are -p_i p_j.");
