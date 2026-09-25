@@ -1797,6 +1797,22 @@ try {
         return layout;
       };
       await checkLayout("first load");
+      // Suggested starts (TFEAT-04) on a fresh profile stay inside the page
+      // and, at its bottom, clear of the docked composer.
+      await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+      const starterFit = await page.evaluate(() => {
+        const inside = [...document.querySelectorAll(".ai-tutor__starter")].every((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.left >= -1 && rect.right <= innerWidth + 1 && rect.height >= 48;
+        });
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
+        const last = [...document.querySelectorAll(".ai-tutor__starter")].at(-1).getBoundingClientRect();
+        const dock = document.querySelector(".ai-tutor__composer");
+        const dockTop = getComputedStyle(dock).position === "sticky" ? dock.getBoundingClientRect().top : Number.POSITIVE_INFINITY;
+        window.scrollTo({ top: 0, behavior: "instant" });
+        return { inside, clearOfDock: last.bottom <= dockTop + 1 };
+      });
+      assert.deepEqual(starterFit, { inside: true, clearOfDock: true }, `${viewport.name}: suggested starts overflowed or sat behind the docked composer`);
       await setLayoutPrompt(Array.from({ length: 8 }, (_, line) => `Line ${line + 1} of a long draft about ridge and lasso penalties.`).join("\n"));
       await checkLayout("long draft");
       await setLayoutPrompt("Layout check: why does repeated holdout inspection leak information?");
@@ -2496,7 +2512,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
