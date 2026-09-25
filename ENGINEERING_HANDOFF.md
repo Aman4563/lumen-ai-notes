@@ -550,7 +550,12 @@ uppercase `[W1]`, `[W2]`, … labels. Current guards:
 - model-authored HTML in tutor prose and structured fields (Mac and phone) renders as text,
   so an answer cannot forge a citation control or a `data-ai-*` attribute. The tutor
   renderer creates `[S#]` buttons and `[W#]` links itself from markers outside code; the
-  only model HTML it keeps is a bare `<br>` (issue #69).
+  only model HTML it keeps is a bare `<br>` (issue #69);
+- a model Markdown link stays a link only to an absolute `http(s)`/`mailto` address, and a
+  link whose label shows a citation marker (`[[S1]](url)`, or `&#91;S1&#93;`) renders
+  without its link. A citation button inside a model's `<a>` followed the model's URL on
+  click (on the phone, an in-app `#/read/…` route), and an in-app link would open a library
+  note that no citation validated. Mermaid diagram links are dropped for the same reason.
 
 These are syntax/provenance integrity checks, not claim-level entailment. One valid citation
 can still be attached to a weakly supported or partially unsupported claim. The main release
@@ -1574,7 +1579,8 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 
 - Sanitize Markdown/KaTeX output and Mermaid SVG.
 - Tutor renderers show model-authored HTML as text; only the renderer creates citation
-  controls.
+  controls, never inside a model link, and model links never target an in-app route.
+- Rendered Mermaid SVG keeps no link targets.
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).

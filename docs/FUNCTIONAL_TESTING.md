@@ -747,3 +747,40 @@ The Reader's renderer is unchanged. AI answers saved to notes and AI
 flashcards added to the deck render there, where author HTML goes to
 DOMPurify and link titles and fence languages are still unescaped. Those
 screens have no citation handler; the gap remains open.
+
+### Adversarial review of the #69 fix (2026-09-25)
+
+Raw HTML, entities, SVG and MathML, forms, autolinks, link titles, image
+alt text, tables, lists, blockquotes, KaTeX `\href`/`\htmlData` and
+Mermaid labels, directives and theme CSS all stayed inert. Three paths
+still led somewhere the evidence did not:
+
+- A model could wrap a verified citation in its own link:
+  `[[S1]](#/read/notes/forged-phone-route)`. Chrome follows an `<a>` when a
+  `<button>` inside it is clicked, and the phone handler did not prevent
+  that, so `audit:phone-ai-ui` recorded the S1 source navigation and then
+  the hash moving to `#/read/notes/forged-phone-route`. On the Mac,
+  `preventDefault` stopped a plain click, but the chip still sat inside a
+  link to the model's URL for middle-click and open-in-new-tab. A label
+  that shows a citation marker now renders without its link (entities,
+  full-width forms and zero-width characters count), and the phone handler
+  prevents the default action like the Mac's.
+- A Markdown link to an app route, `[Open the lecture](#/read/notes/…)`,
+  was a working link that opened a note no citation validated. Tutor links
+  now keep only `http(s)` and `mailto` targets; relative, root, `//` and
+  `#` links render as their label.
+- The Mermaid SVG filter kept any `href` starting with `#`, so a `click`
+  line to `#/read/…` would become a working diagram link. Mermaid 11.17
+  leaves the `xlink` prefix undeclared, so those diagrams fail to parse
+  today; the filter now drops every diagram link target and keeps `<use>`
+  references. No lecture uses a Mermaid `click` line.
+
+Image alt text also showed citation button markup (`alt="see <button …"`);
+it now shows the marker. `audit:ai-ui` adds a wrapped citation and an app
+route link to the forged answer and expects two renderer `[S#]` buttons, no
+links, and no navigation after a click on the route label.
+`audit:phone-ai-ui` clicks the wrapped `[S1]` and fails against the
+previous build when the hash moves. `audit:mermaid` renders a well-formed
+linked SVG through a stand-in Mermaid and fails when a link target
+survives. Removing either link check or the image override fails the unit
+tests.
