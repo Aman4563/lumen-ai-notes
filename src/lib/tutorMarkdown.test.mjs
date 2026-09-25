@@ -312,3 +312,12 @@ test("structured fields render math and citations but keep model HTML as text", 
 test("creates useful plain text for copy controls", () => {
   assert.equal(tutorMarkdownPlainText("## Result\n\n- **One** with `code`"), "Result\n\n• One with code");
 });
+
+test("a model diagram in a tutor answer never names an address Mermaid would fetch", () => {
+  const fence = (body) => `\`\`\`mermaid\n${body}\n\`\`\``;
+  const hostile = render(fence('flowchart LR\n  A@{ img: "https://tracker.example/x.png" } --> B'));
+  assert.doesNotMatch(hostile, /diagram-shell/u);
+  assert.match(hostile, /<code class="language-mermaid">/u);
+  const directive = render(fence('%%{init: {"fontFamily": "Comic Sans MS"}}%%\nflowchart LR\n  A --> B'));
+  assert.match(directive, /<div class="mermaid" data-diagram-status="pending"[^>]*data-diagram-author="model">/u);
+});

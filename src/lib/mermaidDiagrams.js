@@ -56,6 +56,65 @@ export const mermaidDefinitionForFence = (language, source) => {
   return "";
 };
 
+const codePointText = (value) => (Number.isSafeInteger(value) && value >= 0 && value <= 0x10ffff ? String.fromCodePoint(value) : "");
+// Anything a browser could resolve to another host: a web scheme (a special
+// scheme needs no slashes), a network-path `//` or `\\`, and any backslash,
+// which is how YAML, JSON and CSS escapes spell those characters. CSS url(),
+// image-set() and @import are refused even when relative.
+const RESOURCE_SYNTAX = /(?:https?|ftp|wss?|file):|\/\/|\\|url\s*\(|image-set|@import/iu;
+
+/**
+ * True when a Mermaid definition written by the model could name a resource
+ * the browser would fetch while drawing it (issue #81): a flowchart node's
+ * `@{ img: … }`, a sequence actor's `properties` icon, or a CSS url() in a
+ * classDef. Mermaid fetches these as it lays the diagram out, before any SVG
+ * sanitizer runs, so such a diagram is shown as its source instead.
+ * Numeric entities (`&#58;`, Mermaid's own `#58;`) are decoded first, and
+ * tabs and line breaks, which a URL parser drops, are removed.
+ */
+export const mermaidDefinitionNamesResource = (definition) => RESOURCE_SYNTAX.test(String(definition ?? "")
+  .replace(/&#x([\da-f]{1,6});?/giu, (_match, hex) => codePointText(Number.parseInt(hex, 16)))
+  .replace(/&?#(\d{1,7});?/gu, (_match, decimal) => codePointText(Number(decimal)))
+  .replace(/[\t\n\r]/gu, ""));
+
+// The keys Mermaid's own defaults already protect, plus the ones a directive
+// could use to reach CSS or HTML. Used when Mermaid does not expose its
+// default configuration.
+const LOCKED_CONFIG_KEYS = Object.freeze([
+  "secure", "securityLevel", "startOnLoad", "maxTextSize", "suppressErrorRendering", "maxEdges",
+  "theme", "themeVariables", "themeCSS", "fontFamily", "altFontFamily", "fontSize", "htmlLabels",
+  "darkMode", "look", "layout", "markdownAutoWrap", "wrap", "flowchart", "sequence", "class", "state",
+  "er", "gantt", "journey", "timeline", "mindmap", "kanban", "gitGraph", "c4", "requirement",
+  "architecture", "block", "packet", "pie", "quadrantChart", "xyChart", "sankey", "radar",
+]);
+
+/**
+ * Site configuration for one render. A diagram can override site settings
+ * with an `%%{init: …}%%` directive or a frontmatter `config:` block, and
+ * Mermaid applies neither to a key listed in `secure`. For a diagram the
+ * model wrote every key is secure, so a directive cannot set fontFamily or
+ * themeCSS (both reach the SVG's <style>, where a url() loads) or turn
+ * htmlLabels back on (an HTML label's <img> loads while Mermaid measures it).
+ * Learner diagrams keep Mermaid's defaults.
+ */
+export const mermaidSiteConfig = ({ theme, modelAuthored = false, defaultConfig } = {}) => ({
+  startOnLoad: false,
+  securityLevel: "strict",
+  suppressErrorRendering: true,
+  theme,
+  fontFamily: SAFE_FONT_FAMILY,
+  htmlLabels: false,
+  maxTextSize: MAX_DEFINITION_CHARACTERS,
+  maxEdges: 300,
+  logLevel: "fatal",
+  flowchart: { htmlLabels: false, useMaxWidth: true },
+  sequence: { useMaxWidth: true },
+  ...(modelAuthored ? { secure: [...new Set([...LOCKED_CONFIG_KEYS, ...Object.keys(defaultConfig || {})])] } : {}),
+});
+
+/** A diagram the untrusted Markdown profile emitted. */
+const isModelDiagram = (node) => node?.dataset?.diagramAuthor === "model";
+
 const DIAGRAM_KINDS = [
   [/^(?:flowchart|graph)\b/u, "Flowchart"],
   [/^sequenceDiagram\b/u, "Sequence diagram"],
@@ -329,14 +388,16 @@ const showDiagramFailure = (node, definition, error, kind = "syntax") => {
   diagnostic.setAttribute("role", "alert");
 
   const title = document.createElement("strong");
-  title.textContent = kind === "load" ? "Diagram renderer unavailable" : kind === "limit" ? "Diagram is too large to render safely" : "Diagram syntax needs attention";
+  title.textContent = kind === "load" ? "Diagram renderer unavailable" : kind === "limit" ? "Diagram is too large to render safely" : kind === "resource" ? "Diagram not drawn" : "Diagram syntax needs attention";
   const explanation = document.createElement("p");
   const location = line ? ` near line ${line}${column ? `, column ${column}` : ""}` : "";
   explanation.textContent = kind === "load"
     ? "The Mermaid module could not be loaded. Reload after reconnecting; the original source remains available below."
     : kind === "limit"
       ? `This diagram exceeds Lumen's ${MAX_DEFINITION_CHARACTERS.toLocaleString()}-character rendering limit. Split it into smaller diagrams.`
-      : `Mermaid could not parse or draw this definition${location}. Check the diagram type, arrows, quotes, brackets, and subgraph boundaries.`;
+      : kind === "resource"
+        ? "This AI-written diagram names a web address or uses an escape sequence, and drawing it could load that address. Its source is under Show Mermaid source."
+        : `Mermaid could not parse or draw this definition${location}. Check the diagram type, arrows, quotes, brackets, and subgraph boundaries.`;
   const details = document.createElement("details");
   const summary = document.createElement("summary");
   summary.textContent = "Show Mermaid source";
@@ -455,19 +516,8 @@ export const renderMermaidDiagrams = (root, {
     }
     if (abortRequested(signal)) return { rendered: 0, failed: 0, skipped: nodes.length };
 
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      suppressErrorRendering: true,
-      theme: theme || currentMermaidTheme(),
-      fontFamily: SAFE_FONT_FAMILY,
-      htmlLabels: false,
-      maxTextSize: MAX_DEFINITION_CHARACTERS,
-      maxEdges: 300,
-      logLevel: "fatal",
-      flowchart: { htmlLabels: false, useMaxWidth: true },
-      sequence: { useMaxWidth: true },
-    });
+    const renderTheme = theme || currentMermaidTheme();
+    let configuredFor = null;
 
     let rendered = 0;
     let failed = 0;
@@ -482,6 +532,18 @@ export const renderMermaidDiagrams = (root, {
         showDiagramFailure(node, definition, null, "limit");
         failed += 1;
         continue;
+      }
+      // The untrusted profile already shows a resource-naming model diagram
+      // as code; this check also covers markup that did not pass through it.
+      const modelAuthored = isModelDiagram(node);
+      if (modelAuthored && mermaidDefinitionNamesResource(definition)) {
+        showDiagramFailure(node, definition, null, "resource");
+        failed += 1;
+        continue;
+      }
+      if (configuredFor !== modelAuthored) {
+        mermaid.initialize(mermaidSiteConfig({ theme: renderTheme, modelAuthored, defaultConfig: mermaid.mermaidAPI?.defaultConfig }));
+        configuredFor = modelAuthored;
       }
       // Restore the original definition before each render. This is essential
       // after a theme change: textContent of the existing SVG is not Mermaid.

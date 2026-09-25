@@ -156,3 +156,33 @@ test("the link check normalizes the address and reads the page origin by default
     else delete globalThis.location;
   }
 });
+
+// Mermaid fetches a flowchart node's `img`, a sequence actor's icon and a CSS
+// url() while it draws, before the SVG filter runs (issue #81).
+const mermaidFence = (body) => `\`\`\`mermaid\n${body}\n\`\`\``;
+const DIAGRAM = /<div class="diagram-shell"/u;
+
+test("a saved model diagram that names an address shows as code", () => {
+  [
+    'flowchart LR\n  A@{ img: "https://tracker.example/x.png" } --> B',
+    'sequenceDiagram\n  participant A\n  properties A: {"icon": "https://tracker.example/icon"}\n  A->>B: hi',
+    "stateDiagram-v2\n  [*] --> S\n  classDef c mask-image:url(https://tracker.example/c)\n  class S c",
+    'flowchart LR\n  A@{ "i\\x6dg": "\\x68ttps\\x3a\\x2f\\x2ftracker.example/x" } --> B',
+  ].forEach((body) => {
+    const result = render(mermaidFence(body));
+    assert.doesNotMatch(result, DIAGRAM, body);
+    assert.match(result, /<div class="code-shell"><div class="code-label"><span>mermaid<\/span>/u, body);
+    assert.match(result, /tracker\.example/u, "the source stays readable");
+  });
+});
+
+test("a saved model diagram draws with its config locked, and learner diagrams do not change", () => {
+  const model = render(mermaidFence('%%{init: {"htmlLabels": true}}%%\nflowchart LR\n  A[Train] --> B[Holdout]'));
+  assert.match(model, /<div class="mermaid" data-diagram-status="pending" role="img" aria-label="Mermaid diagram awaiting rendering" data-diagram-author="model">%%\{init/u);
+  // The Reader keeps drawing a learner's diagram, address and all, unmarked.
+  const learner = marked.parse(mermaidFence('flowchart LR\n  A@{ img: "https://example.com/x.png" } --> B'));
+  assert.match(learner, DIAGRAM);
+  assert.doesNotMatch(learner, /data-diagram-author/u);
+  // Ordinary code fences are unaffected.
+  assert.doesNotMatch(render("```js\nconst url = 'https://example.com';\n```"), /data-diagram-author|diagram-shell/u);
+});

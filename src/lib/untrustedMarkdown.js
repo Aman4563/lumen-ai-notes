@@ -1,5 +1,6 @@
 import { Marked } from "marked";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
+import { mermaidDefinitionForFence, mermaidDefinitionNamesResource } from "./mermaidDiagrams.js";
 
 /**
  * Markdown rules for text the model wrote (issues #69 and #81). The tutor
@@ -15,6 +16,8 @@ import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
  * - A link whose label shows a citation marker renders without the link.
  * - Images never load. A remote image becomes a link that opens it in a new
  *   tab; any other image is shown as its alt text.
+ * - A Mermaid diagram ignores its own config directives, and one that names
+ *   a web address or uses an escape sequence is shown as code.
  */
 
 // `[S1]: …` is a citation followed by text, not a link reference definition
@@ -119,8 +122,15 @@ const appOriginFor = (parser) => parser.options.untrustedAppOrigin ?? currentOri
  * renderer as `this`.
  */
 export const untrustedRenderer = {
+  // A model's Mermaid diagram is marked so that no `%%{init}%%` directive or
+  // frontmatter config applies to it (mermaidSiteConfig). One that could name
+  // a web address is shown as code: Mermaid would fetch the address while
+  // drawing it.
   code(token) {
-    return markdownRenderer.code.call(this, { ...token, lang: fenceLanguage(token.lang) });
+    const lang = fenceLanguage(token.lang);
+    const diagram = mermaidDefinitionForFence(lang, token.text);
+    const drawable = Boolean(diagram) && !mermaidDefinitionNamesResource(diagram);
+    return markdownRenderer.code.call(this, { ...token, lang, diagram: drawable ? undefined : false, diagramAuthor: "model" });
   },
   // The Reader's renderer writes a link's raw label and leaves quotes in its
   // title unescaped. Here the label is parsed Markdown and every attribute

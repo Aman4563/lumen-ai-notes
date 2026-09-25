@@ -4,7 +4,9 @@ import {
   MERMAID_RENDER_LIMITS,
   describeMermaidDefinition,
   mermaidDefinitionForFence,
+  mermaidDefinitionNamesResource,
   mermaidErrorLocation,
+  mermaidSiteConfig,
   subscribeToMermaidTheme,
 } from "./mermaidDiagrams.js";
 
@@ -118,4 +120,45 @@ test("rendered diagrams get a text alternative built from the preserved definiti
   assert.equal(describeMermaidDefinition('flowchart LR\n  A["<img src=x onerror=alert(1)> Safe"] --> B[Done]'), "Flowchart: Safe → Done");
   const long = `flowchart LR\n${Array.from({ length: 80 }, (_, index) => `  N${index}[Step number ${index}] --> N${index + 1}[Step number ${index + 1}]`).join("\n")}`;
   assert.ok(describeMermaidDefinition(long).length <= 700, "the accessible name stays bounded");
+});
+
+// Issue #81: each of these fetched https://tracker.example from a tutor
+// answer while Mermaid drew it (see audit:mermaid).
+test("a model diagram that could name a web address is recognized in every spelling", () => {
+  const resourceDiagrams = [
+    'flowchart LR\n  A@{ img: "https://tracker.example/x.png" } --> B',
+    'sequenceDiagram\n  properties A: {"icon": "HTTPS://tracker.example/icon"}\n  A->>B: hi',
+    "stateDiagram-v2\n  classDef c mask-image:url(tracker.png)\n  class S c",
+    'flowchart LR\n  A@{ img: "//tracker.example/x" } --> B',
+    'flowchart LR\n  A@{ img: "https:tracker.example/x" } --> B',
+    'flowchart LR\n  A@{ "i\\x6dg": "\\x68ttps\\x3a\\x2f\\x2ftracker.example/x" } --> B',
+    "stateDiagram-v2\n  classDef c mask-image:u\\72l(\\68ttps\\3a\\2f\\2ftracker.example)",
+    "flowchart LR\n  A[a] -->|http#58;tracker.example| B",
+    "flowchart LR\n  A[a] -->|http&#58;tracker.example| B",
+    "flowchart LR\n  A[a] -->|http&#x3a;tracker.example| B",
+    'flowchart LR\n  A@{ img: "ht\ttps:tracker.example/x" } --> B',
+    '%%{init: {"themeCSS": "rect{background:-webkit-image-set(\'x.png\' 1x)}"}}%%\nflowchart LR\n  A --> B',
+    '%%{init: {"themeCSS": "@import \'x.css\';"}}%%\nflowchart LR\n  A --> B',
+  ];
+  resourceDiagrams.forEach((definition) => assert.equal(mermaidDefinitionNamesResource(definition), true, definition));
+  const ordinary = [
+    "flowchart LR\n  A[Train] --> B[Holdout]\n  style A fill:#f9f,stroke:#333,stroke-width:2px\n  classDef hot fill:#f96;",
+    "sequenceDiagram\n  Learner->>Tutor: Ask why gradients vanish\n  Tutor-->>Learner: Explain: the chain rule",
+    '%%{init: {"theme": "forest"}}%%\nflowchart TD\n  A{Leak?} -->|yes| B[Refit]',
+    "classDiagram\n  class Model {\n    +predict(input)\n  }",
+  ];
+  ordinary.forEach((definition) => assert.equal(mermaidDefinitionNamesResource(definition), false, definition));
+});
+
+test("a model diagram gets a site config that no directive can override", () => {
+  const learner = mermaidSiteConfig({ theme: "neutral" });
+  assert.equal(Object.hasOwn(learner, "secure"), false, "learner diagrams keep Mermaid's default secure keys");
+  assert.equal(learner.htmlLabels, false);
+  assert.equal(learner.securityLevel, "strict");
+  const model = mermaidSiteConfig({ theme: "dark", modelAuthored: true, defaultConfig: { venn: {}, cynefin: {} } });
+  ["secure", "securityLevel", "htmlLabels", "themeCSS", "fontFamily", "altFontFamily", "themeVariables", "flowchart", "sequence", "theme", "venn", "cynefin"]
+    .forEach((key) => assert.ok(model.secure.includes(key), `${key} is not secure for a model diagram`));
+  assert.equal(model.theme, "dark");
+  assert.equal(model.fontFamily, learner.fontFamily);
+  assert.deepEqual(new Set(model.secure).size, model.secure.length);
 });
