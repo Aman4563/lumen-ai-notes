@@ -69,7 +69,9 @@ const records = await Promise.all(files.map(async (path) => {
       ...contentCapabilities(raw),
       source: "builtin",
     },
-    search: [id, plain.toLocaleLowerCase()],
+    // Case-preserved so result snippets read naturally; every consumer
+    // normalizes before matching.
+    search: [id, plain],
   };
 }));
 

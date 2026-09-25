@@ -236,6 +236,14 @@ try {
   await page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 30_000 });
   await page.waitForSelector(".welcome-block");
   inspected += await inspectControls(page, "home");
+  // Issue #52: the fresh-profile reading tile is a live control, and the
+  // curriculum map is one Tab stop whose arrow keys walk the Parts in order.
+  assert.equal(await page.$eval(".today-widget--wide", (node) => node.disabled), false, "the fresh-profile Start reading tile must not be disabled");
+  assert.equal((await page.$$('.concept-node[tabindex="0"]')).length, 1, "the curriculum map must be exactly one Tab stop");
+  await page.focus('.concept-node[tabindex="0"]');
+  const mapStart = Number(await page.evaluate(() => document.activeElement?.dataset.part));
+  await page.keyboard.press("ArrowRight");
+  assert.equal(Number(await page.evaluate(() => document.activeElement?.dataset.part)), mapStart + 1, "ArrowRight must move map focus to the next Part");
 
   await page.goto(`${baseUrl}#/library`, { waitUntil: "networkidle2", timeout: 30_000 });
   await page.waitForSelector(".library-page");

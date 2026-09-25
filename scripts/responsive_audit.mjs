@@ -160,11 +160,45 @@ try {
       if (!result.ok || representative || process.env.LUMEN_LAYOUT_SCREENSHOTS === "1") await page.screenshot({ path: join(artifactDirectory, `${device}-${surface}.png`) });
       console.log(JSON.stringify(result));
     };
+    // Issue #52: a squeezed grid or flex track must never stack a Home or
+    // Library label a few glyphs per line (the study card once collapsed to a
+    // 17px column, and mastery rows showed "readines/s"). Overflow checks
+    // cannot see this, so look for ordinary words split across lines at
+    // normal text size; the seeded overlong fixture words are exempt.
+    const inspectWords = async (surface, rootSelector) => {
+      if (textScale !== 1) return;
+      const split = await page.$eval(rootSelector, (root) => {
+        const found = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const element = node.parentElement;
+          // Line-clamped excerpts hide their overflow lines on purpose.
+          if (!element || element.closest("svg, pre, code, table, [inert], [aria-hidden='true']") || !element.getClientRects().length) continue;
+          if ([element, element.parentElement].some((box) => box && getComputedStyle(box).webkitLineClamp !== "none")) continue;
+          for (const match of node.textContent.matchAll(/[A-Za-z]+/g)) {
+            if (match[0].length < 4 || match[0].length > 20) continue;
+            const range = document.createRange();
+            range.setStart(node, match.index);
+            range.setEnd(node, match.index + match[0].length);
+            if (new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top))).size > 1) {
+              found.push(`${element.getAttribute("class") || element.tagName}: “${match[0]}”`);
+              break;
+            }
+          }
+        }
+        return found.slice(0, 8);
+      });
+      const result = { device, width, height, textScale, surface, ok: split.length === 0, problems: split.length ? ["Words split mid-word across lines"] : [], split };
+      results.push(result);
+      if (!result.ok) await page.screenshot({ path: join(artifactDirectory, `${device}-${surface}.png`), fullPage: true });
+      console.log(JSON.stringify(result));
+    };
     const navigate = async (route, selector) => {
       await page.evaluate((hash) => { location.hash = hash; window.scrollTo(0, 0); }, `#/${route}`);
       await page.waitForSelector(selector);
     };
     await inspect("home", ".dashboard-page");
+    await inspectWords("home-words", ".dashboard-page");
     await inspect("topbar", ".app-topbar");
     if (width <= 980) {
       await inspect("bottom-navigation", ".bottom-nav", { dialog: true });
@@ -189,6 +223,7 @@ try {
     await page.waitForSelector(".assessment-dialog", { hidden: true });
     await navigate("library", ".library-page");
     await inspect("library", ".library-page");
+    await inspectWords("library-words", ".library-page");
     await navigate(`read/${encodeURIComponent(documentId)}`, ".reader-view");
     await page.waitForSelector(".markdown-body h1");
     await inspect("reader", ".reader-view");
