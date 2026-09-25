@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
+import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
 
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-phone-ai-ui-profile-"));
@@ -574,6 +575,17 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(await page.$eval(phoneField, (field) => field.value), "", "a consumed prepared question was applied again");
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length), preparedCallsBefore, "a prepared question was sent");
+  // A long notebook entry is shortened to fit On-device Lite's box whole,
+  // never cut off mid-word by the box itself.
+  const longMistake = mistakeTutorRequest({ prompt: `Why ${"does lasso zero out weights ".repeat(40)}?`, expected: "the L1 corners sit at zero ".repeat(60), response: "because it squares them ".repeat(60) });
+  await page.evaluate((request) => window.__PHONE_INSERT__({ kind: "prompt", ...request, nonce: 4343 }), longMistake);
+  await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.consumedInserts.includes(4343), { timeout: 5_000 });
+  assert.equal(await page.$eval(phoneField, (field) => field.value), longMistake.prompt, "a long prepared question was cut off in On-device Lite");
+  assert.match(longMistake.prompt, /\nMy answer: .+…$/, "the long prepared question lost the learner's answer");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   await chooseMode(page, modeBeforeInsert);
   await page.$eval(phoneField, (field, text) => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
