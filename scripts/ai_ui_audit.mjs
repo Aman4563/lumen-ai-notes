@@ -1835,6 +1835,40 @@ try {
     assert.equal(await page.$(".ai-tutor__message--streaming"), null, "Escape did not stop the answer");
     assert.match(await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.at(-1).textContent), /Stopped early/, "the stopped answer was not marked as stopped early");
     assert.match(await page.$eval(".ai-tutor > p.visually-hidden[role='status']", (node) => node.textContent), /Generation stopped/, "Escape's stop was not announced");
+
+    // Grounded answers show staged progress (TVU-18): the steps follow the
+    // library retrieval and the stream's phase events, the passages in use
+    // appear once found, and each step, not each second, is announced once.
+    await page.evaluate(() => {
+      window.__lumenAuditAnnouncements = [];
+      const region = document.querySelector(".ai-tutor > p.visually-hidden[role='status']");
+      new MutationObserver(() => window.__lumenAuditAnnouncements.push(region.textContent.trim())).observe(region, { childList: true, characterData: true, subtree: true });
+    });
+    await setKeysPrompt("Progress check: explain the bias-variance trade-off from my notes.");
+    await page.evaluate(() => {
+      window.__lumenAuditSlowStream = {
+        paragraphs: 8,
+        phaseDelayMs: 700,
+        phases: [
+          ["preparing", "Preparing the bounded local-model request."],
+          ["generating", "Generating the answer with the local model."],
+          ["validating", "Checking completion and grounding before finalizing the answer."],
+        ],
+      };
+    });
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /^Found \d+ passages?/.test(document.querySelector(".ai-tutor__progress li.is-done")?.textContent || "")
+      && document.querySelector(".ai-tutor__progress li.is-active")?.textContent.includes("Drafting the answer"), { timeout: 8_000 }).catch(async () => assert.fail(`the steps did not move from finding passages to drafting: ${await page.$eval(".ai-tutor__message--streaming", (node) => node.textContent).catch(() => "no streaming answer")}`));
+    assert.ok((await page.$$(".ai-tutor__progress-sources li")).length >= 1, "the passages in use were not shown while waiting");
+    assert.match(await page.$eval(".ai-tutor__progress-sources li", (node) => node.textContent), /^\[S\d+\] \S/, "a source chip did not show its label and title");
+    assert.equal(await page.$$eval(".ai-tutor__message--streaming [aria-live], .ai-tutor__message--streaming [role='status']", (nodes) => nodes.length), 0, "the progress steps became a live region inside the busy answer");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__progress li.is-active")?.textContent.includes("Checking citations"), { timeout: 8_000 }).catch(() => assert.fail("the validating phase did not activate Checking citations"));
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
+    const progressAnnouncements = [...new Set(await page.evaluate(() => window.__lumenAuditAnnouncements))].filter(Boolean);
+    assert.ok(progressAnnouncements.some((text) => /^Found \d+ passages?\. Drafting the answer…$/.test(text)), `drafting was not announced: ${JSON.stringify(progressAnnouncements)}`);
+    assert.ok(progressAnnouncements.includes("Checking citations…"), `checking was not announced: ${JSON.stringify(progressAnnouncements)}`);
+    assert.equal(progressAnnouncements.some((text) => /Preparing the bounded|Generating the answer with/.test(text)), false, `stage messages were announced alongside the steps: ${JSON.stringify(progressAnnouncements)}`);
+    assert.ok(progressAnnouncements.length <= 5, `progress was announced too often: ${JSON.stringify(progressAnnouncements)}`);
   } finally {
     await desktopKeysContext.close();
   }
@@ -1865,7 +1899,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

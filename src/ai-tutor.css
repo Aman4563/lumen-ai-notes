@@ -2518,3 +2518,93 @@
   color: var(--ink-soft, #566078);
   font-size: 0.7rem;
 }
+
+/* Staged progress for grounded answers (TVU-18): a compact step list and
+   the passages being used, shown while the checked answer is prepared. */
+.ai-tutor__progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+}
+
+.ai-tutor__progress li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft, #566078);
+}
+
+.ai-tutor__progress-mark {
+  display: grid;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 50%;
+  place-items: center;
+}
+
+.ai-tutor__progress li.is-done {
+  color: var(--ink, #172035);
+}
+
+.ai-tutor__progress li.is-done .ai-tutor__progress-mark {
+  color: var(--ai-good-ink);
+  border-color: var(--ai-good-ink);
+}
+
+.ai-tutor__progress li.is-active {
+  color: var(--ink, #172035);
+  font-weight: 760;
+}
+
+.ai-tutor__progress li.is-active .ai-tutor__progress-mark {
+  color: var(--ai-accent-ink);
+  border-color: transparent;
+}
+
+.ai-tutor__progress li.is-skipped {
+  text-decoration: line-through;
+}
+
+.ai-tutor__progress-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-tutor__progress-sources li {
+  max-width: min(100%, 17em);
+  padding: 3px 9px;
+  overflow: hidden;
+  color: var(--ink, #172035);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 999px;
+  font-size: 0.74rem;
+}
+
+.ai-tutor__progress-sources li > span {
+  color: var(--ai-accent-ink);
+  font-weight: 800;
+}
+
+@media (forced-colors: active) {
+  .ai-tutor__progress-mark { border-color: CanvasText; }
+}
+
+/* With the step list shown, the server's stage message is a detail. */
+.ai-tutor__stream-status.has-progress {
+  margin-bottom: 0;
+  color: var(--ink-soft, #566078);
+  font-weight: 600;
+}

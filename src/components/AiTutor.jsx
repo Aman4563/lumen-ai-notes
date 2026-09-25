@@ -39,6 +39,7 @@ import { renderTutorInlineMarkdown, renderTutorMarkdown } from "../lib/tutorMark
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
+import { progressAnnouncement, tutorProgressSteps } from "../lib/tutorProgress.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import TutorSheet from "./TutorSheet.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
@@ -1325,12 +1326,24 @@ export default function AiTutor({
   // seconds counter and streamed text are never live.
   const activeStage = activeResponse?.stage || "";
   const activeResponseId = activeResponse?.id || "";
+  // Grounded answers show staged progress (TVU-18); its steps, not every
+  // stage message, are announced.
+  const progressSteps = activeResponse ? tutorProgressSteps({
+    sourceMode: activeResponse.sourceMode,
+    phase: activeResponse.phase,
+    passages: activeResponse.phase === "retrieving" ? null : activeResponse.citationSources.length,
+    web: ["searching", "used"].includes(activeResponse.webFallbackStatus),
+    searched: activeResponse.searched === true,
+    structured: modeById(activeResponse.mode).structured === true,
+  }) : [];
+  const progressMessage = progressAnnouncement(progressSteps);
+  const announcementKey = progressSteps.length ? progressMessage : activeStage;
   useEffect(() => {
     // Effects, and the state updaters behind them, can run after the request
     // ended. Only the request still in flight (a ref written in program
     // order) may announce, so a stale phase never follows its outcome.
-    if (activeStage && activeResponseId && inFlightRef.current?.responseId === activeResponseId) announce(activeStage);
-  }, [activeResponseId, activeStage, announce]);
+    if (announcementKey && activeResponseId && inFlightRef.current?.responseId === activeResponseId) announce(announcementKey);
+  }, [activeResponseId, announcementKey, announce]);
   useEffect(() => {
     if (requestState.status === "loading" && inFlightRef.current && requestElapsed > 0 && requestElapsed % 30 === 0) announce(`Still working, ${requestElapsed} seconds so far.`);
   }, [announce, requestElapsed, requestState.status]);
@@ -1346,6 +1359,12 @@ export default function AiTutor({
       sendButtonRef.current?.focus({ preventScroll: true });
     }
   }, [activeResponseId, scrollConversationToEnd]);
+
+  // While following, every update of the answer in progress (new text, a
+  // step, its sources) keeps its end in view, before the frame is painted.
+  useLayoutEffect(() => {
+    if (activeResponse && followStreamRef.current) scrollConversationToEnd();
+  }, [activeResponse, scrollConversationToEnd]);
 
   // The sticky composer's height (plus its offset from the bottom) is
   // published so scrolled-to content and focus stop above it instead of
@@ -1750,6 +1769,8 @@ export default function AiTutor({
       responseProfile: requestSpec.responseProfile,
       sourceMode: requestSpec.sourceMode,
       stage: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "Searching your library…" : "Preparing grounded context…",
+      phase: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "retrieving" : "drafting",
+      searched: false,
     };
     activeResponseRef.current = initialActiveResponse;
     setActiveResponse(initialActiveResponse);
@@ -1763,11 +1784,8 @@ export default function AiTutor({
     };
     const flushStream = () => {
       streamFrameRef.current = 0;
+      // Following happens as each update commits (see below).
       updateActiveResponse((current) => ({ ...current, content: streamedText }));
-      // Follow inside the conversation only; the page itself never moves
-      // while a learner reads elsewhere. Check again when the frame runs: a
-      // learner's scroll-up in between has already stopped following.
-      if (followStreamRef.current) requestAnimationFrame(() => { if (followStreamRef.current) scrollConversationToEnd(); });
     };
     const queueDelta = (delta) => {
       if (typeof delta !== "string" || !delta || streamTruncated) return;
@@ -1786,7 +1804,15 @@ export default function AiTutor({
         queueDelta(event.delta ?? event.text ?? event.token ?? "");
       } else if (["status", "stage", "phase"].includes(event.type)) {
         const stage = asTrimmedString(event.message ?? event.stage ?? event.phase, 160);
-        if (stage) updateActiveResponse((current) => ({ ...current, stage }));
+        const phase = event.type === "phase" ? asTrimmedString(event.phase, 40) : "";
+        if (stage || phase) {
+          updateActiveResponse((current) => ({
+            ...current,
+            stage: stage || current.stage,
+            phase: phase || current.phase,
+            searched: current.searched || phase === "searching",
+          }));
+        }
       } else if (["source", "sources", "web_sources"].includes(event.type)) {
         const incoming = event.type === "source" ? [event.source || event] : event.sources;
         streamedWebSources = [...new Map(normalizeWebSources([...streamedWebSources, ...(Array.isArray(incoming) ? incoming : [])]).map((source) => [source.url, source])).values()];
@@ -1863,6 +1889,7 @@ export default function AiTutor({
             citationSources,
             webFallbackStatus: useWebFallback ? "searching" : requestSpec.webSearch ? "not-needed" : "off",
             stage: useWebFallback ? "Library evidence is insufficient. Running consented web fallback…" : citationSources.length ? "Library evidence ready. Generating without web egress…" : "No library passage fit. Answering without web egress and labeling evidence limits…",
+            phase: "drafting",
           }));
           if (appendUser) publishHistory((current) => current.map((message) => message.id === userMessage.id ? { ...message, citationSources } : message));
         } else {
@@ -1889,6 +1916,7 @@ export default function AiTutor({
             citationSources,
             webFallbackStatus: fallbackUsesWeb ? "searching" : "off",
             stage: fallbackUsesWeb ? "Library search unavailable. Running consented web fallback…" : "Library search unavailable. Using attached lesson context without web egress…",
+            phase: "drafting",
           }));
         }
       }
@@ -2636,10 +2664,26 @@ export default function AiTutor({
               {activeResponse && (
                 <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true" tabIndex={-1} aria-label="Tutor answer, in progress" ref={streamingArticleRef}>
                   <div className="ai-tutor__message-meta"><strong>Lumen Tutor</strong><span>{modeById(activeResponse.mode).label}</span><span>{RESPONSE_PROFILES.find((item) => item.id === activeResponse.responseProfile)?.label || "Balanced"}</span><span className="ai-tutor__live-badge"><i aria-hidden="true" /> Live</span><WebFallbackBadge status={activeResponse.webFallbackStatus} /></div>
-                  <div className="ai-tutor__stream-status"><span>{activeResponse.stage || "Generating response…"}</span><small aria-hidden="true">{requestElapsed}s</small></div>
+                  <div className={`ai-tutor__stream-status${progressSteps.length ? " has-progress" : ""}`}><span>{activeResponse.stage || "Generating response…"}</span><small aria-hidden="true">{requestElapsed}s</small></div>
+                  {progressSteps.length > 0 && (
+                    <ol className="ai-tutor__progress" aria-label="Answer progress">
+                      {progressSteps.map((step) => (
+                        <li className={`is-${step.state}`} key={step.id}>
+                          <span className="ai-tutor__progress-mark" aria-hidden="true">{step.state === "done" ? <Check size={13} /> : step.state === "active" ? <LoaderCircle className="ai-tutor__spin" size={13} /> : null}</span>
+                          {step.label}<span className="visually-hidden">{{ done: ", done", active: ", in progress", skipped: ", skipped" }[step.state] || ""}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {progressSteps.length > 0 && activeResponse.citationSources.length > 0 && (
+                    <ul className="ai-tutor__progress-sources" aria-label="Sources for this answer">
+                      {activeResponse.citationSources.slice(0, 4).map((source) => <li key={source.id}><span>[S{source.citationNumber}]</span> {source.title}</li>)}
+                      {activeResponse.citationSources.length > 4 && <li>+{activeResponse.citationSources.length - 4} more</li>}
+                    </ul>
+                  )}
                   {activeResponse.content
                     ? <AssistantMessage message={activeResponse} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} streaming />
-                    : <div className="ai-tutor__response-skeleton" aria-hidden="true"><i /><i /><i /></div>}
+                    : progressSteps.length === 0 && <div className="ai-tutor__response-skeleton" aria-hidden="true"><i /><i /><i /></div>}
                   <div className="ai-tutor__stream-actions"><span>{activeResponse.content
                     ? `${activeResponse.content.length.toLocaleString()} characters received`
                     : activeResponse.sourceMode === "none" && !["searching", "used"].includes(activeResponse.webFallbackStatus)
