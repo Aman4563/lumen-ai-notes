@@ -629,3 +629,83 @@ confirmed against the preceding build:
   and focus lands on its `h1`. `audit:chunks` now asserts the single landmark
   and the return-visit focus; it fails when route focus is mutated to skip the
   panel's heading.
+
+## Bugs reproduced on 2026-09-24: review center and notebook
+
+Review center, readiness check, and notebook (issue #54):
+
+- Importing a `lumen.cards.v1` deck threw `ReferenceError: onImportCards is
+  not defined`; nothing was imported and no message appeared. Import is now a
+  keyboard-operable button wired to the handler. The review audit imports a
+  deck by keyboard, then re-imports it and a malformed file to check the
+  duplicate and error messages.
+- After "Show answer", all four grade buttons sat under the bottom navigation
+  at 375×667 and 320×640. The grading panel now sticks above the navigation;
+  the audit checks each button is visible and hit-testable at 375×667.
+- Home showed three due counts for one deck because archived and buried cards
+  were counted. Home, the sidebar badge, and the app badge now use the review
+  queue's count.
+- Focus fell to `<body>` after starting, revealing, grading, archiving, and
+  deleting, and after each readiness answer; grades were not announced; the
+  progress bar showed 1/remaining. Focus now follows the prompt, answer,
+  question, or result, grades are announced, and the bar reports graded/total.
+- Deleting a mistake or clipping was instant and final, and a scrim tap or
+  Escape discarded a readiness check's answers. Deletions offer Undo, and a
+  check in progress asks before closing.
+- Burst typing into a clipping note with two clippings dropped a character and
+  raised React error #185. The note now buffers keystrokes and commits after a
+  pause, on blur, or when the page is hidden.
+- Review and dialog fields were 10–12.5px, so iOS zoomed on focus; notebook
+  rows cut titles to four characters at 320px; the FSRS Daily limits strip
+  collapsed to one letter per line at 768–1100px. Fields are 16px on phones,
+  row actions sit under the title, and the strip wraps.
+
+Review of the fix branch caught two regressions of its own, each first
+reproduced against the preceding build and now covered by the review audit:
+the Daily limits labels broke one letter per line on every phone width (in the
+default scheduler too), and a focused Undo strip expired once the pointer had
+passed over it, dropping focus to `<body>`. At 200% text the grade buttons now
+fall back to two columns and stay clear of the taller bottom navigation.
+
+A second review reproduced two more against the preceding build. The Undo
+strip rendered at the top of its section, so after deleting a mistake or
+clipping further down the list it sat off screen while holding focus; it now
+takes the deleted entry's place and scrolls into view clear of the top bar
+and bottom navigation. Ending a crunch practice session left crunch mode on,
+so the hero counted the weak-card practice pool (5) instead of today's queue
+(2); crunch mode now ends with its session. The review audit covers both,
+plus archive focus handoff and Enter-to-submit in an all-cloze readiness check.
+
+After rebasing onto the accessibility foundation, the mistake dialog's own
+inert handling and the App's modal flag could undo each other. With the dialog
+open, `?` opened the shortcut sheet over it; closing the sheet removed `inert`
+from the top bar, `#main-content`, and the bottom navigation while the mistake
+dialog was still open. The dialog now joins the App modal flag, so the shell
+stays inert until every modal closes. The review audit opens and closes the
+shortcut sheet over the dialog and checks that the shell stays inert; that
+check fails against the previous mechanism. It also checks that closing the
+dialog returns focus to Log mistake. With the sheet on top, Escape used to
+close both dialogs and discard the mistake draft. A trial move to the shared
+`useModalDialog` hook also let Tab in the sheet pull focus behind it, so that
+change was reverted. The dialog keeps its own key handling and ignores keys
+while focus is in a dialog stacked over it. The audit presses Tab and Escape
+in the sheet: focus stays in the sheet, and Escape closes only the sheet.
+
+The gate's axe run sees only a fresh profile. An axe pass over populated
+review screens in all three themes found low-contrast mistake chips (4.23:1
+and 2.86:1 in Paper), a low-contrast Show answer hint (2.12:1 in Night), and
+practice views with no level-one heading. All three are fixed. The
+`<form role="dialog">` markup (`aria-allowed-role`) is shared with the App's
+dialogs and remains open.
+
+The first browser gate on the rebased branch failed twice. At 360px with
+200% text, the session header's Undo button extended to 397px. The branch
+keeps the header buttons on one line, and the count between them had shrunk
+only because `overflow-wrap: anywhere` split "remaining" mid-word; the
+foundation removed that. The count now fills the space between the buttons
+and wraps between words. The header wraps to two rows only at large text and
+stays on one line from 320px at normal size. The review audit also pressed
+Enter on Import one frame before a card deletion moved focus to the next row,
+so Enter opened the card editor instead of the file picker. The audit now
+waits for that focus move. The crunch-practice notice now uses the
+`--ai-warn` text token; its hard-coded amber measured 3.9–4.3:1.

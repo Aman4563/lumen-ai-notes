@@ -57,8 +57,10 @@ test("import schedules fresh new-queue items and skips duplicates", () => {
   assert.equal(added[0].dueAt, now.toISOString(), "imported cards start in the new queue");
   assert.deepEqual(added[0].tags, ["imported"]);
 
-  const nearCapacity = importReviewCards(existing, [{ front: "X", back: "Y" }], now, 1);
+  const nearCapacity = importReviewCards(existing, [{ front: "X", back: "Y" }, { front: "X", back: "Y" }, { front: "known", back: "answer" }], now, 1);
   assert.equal(nearCapacity.added.length, 0, "capacity is honored");
+  assert.equal(nearCapacity.overCapacity, 1, "unique cards left out by a full deck are counted, not dropped silently");
+  assert.equal(nearCapacity.duplicates, 2, "duplicates stay duplicates even when the deck is full");
 });
 
 test("standalone HTML export is self-contained and escapes the title", () => {

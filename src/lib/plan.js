@@ -1,4 +1,4 @@
-import { buildReviewQueue } from "./review.js";
+import { actionableReviewCount, buildReviewQueue } from "./review.js";
 
 /**
  * Daily session builder v1 (PLAN-001 slice): a deterministic 15/30/60-minute
@@ -154,6 +154,5 @@ export const planPace = ({ profile, documents }, now = new Date()) => {
   return { status, remainingChapters, daysLeft, chaptersPerDay, message };
 };
 
-/** Due count for the opt-in app badge: actionable reviews right now. */
-export const actionableDueCount = (profile, now = new Date()) => (profile.reviewItems || [])
-  .filter((item) => !item.suspended && !item.archived && Date.parse(item.dueAt) <= now.getTime()).length;
+/** Due count for the opt-in app badge: the shared actionable count (review.js). */
+export const actionableDueCount = (profile, now = new Date()) => actionableReviewCount(profile, now);

@@ -12,7 +12,7 @@ import {
   scoreAssessment,
 } from "./assessment.js";
 import { actionableDueCount, planPace } from "./plan.js";
-import { createReviewItem } from "./review.js";
+import { createReviewItem, localDayKey } from "./review.js";
 
 const now = new Date("2026-09-02T12:00:00.000Z");
 
@@ -167,6 +167,13 @@ test("goal pacing reports honest statuses and the badge count is actionable-only
     card("d3", "q", "a", { dueAt: "2026-12-01T00:00:00.000Z" }),
   ];
   assert.equal(actionableDueCount(profileWith(due), now), 1, "suspended and future cards never inflate the badge");
+  const hidden = [
+    ...due,
+    card("d4", "q4", "a", { dueAt: "2026-09-01T00:00:00.000Z", archived: true }),
+    card("d5", "q5", "a", { dueAt: "2026-09-01T00:00:00.000Z", buriedOnDay: localDayKey(now) }),
+  ];
+  assert.equal(actionableDueCount(profileWith(hidden), now), 1, "archived cards and cards buried for today never inflate the badge");
+  assert.equal(actionableDueCount(profileWith(due, { reviewSettings: { dailyNewLimit: 0, dailyReviewLimit: 50 } }), now), 0, "the badge counts only what today's limits still allow");
 });
 
 test("numeric answers auto-grade with tolerant matching and survive normalization", () => {

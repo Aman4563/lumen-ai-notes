@@ -229,6 +229,16 @@ export const buildReviewQueue = (items, settings, now = new Date(), sessions = [
   return [...due.slice(0, reviewRemaining), ...fresh.slice(0, newRemaining)];
 };
 
+/**
+ * The single due count every surface shows (Home widgets, the sidebar and
+ * app-icon badges, the review hero): cards actionable in today's queue — not
+ * suspended, archived, or buried for today, and within the remaining daily
+ * new/review limits. It is exactly the queue that Start review opens.
+ */
+export const actionableReviewCount = ({ reviewItems = [], reviewSettings = {}, reviewSessions = [] } = {}, now = new Date(), timeZone = currentTimeZone()) => (
+  buildReviewQueue(reviewItems, reviewSettings, now, reviewSessions, { timeZone }).length
+);
+
 export const reviewStats = (items, now = new Date(), timeZone = currentTimeZone()) => {
   const stats = { due: 0, overdue: 0, newCount: 0, learning: 0, mastered: 0, suspended: 0, archived: 0 };
   const todayKey = localDayKey(now, timeZone);
@@ -385,12 +395,19 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
     streak += 1;
     cursor = new Date(cursor.getTime() - DAY_MS);
   }
+  // Upcoming reviews bucketed by local calendar day (index 0 = the rest of
+  // today), so the chart's "Today"/"Tomorrow" labels mean what they say.
   const forecast = Array(7).fill(0);
+  const calendarDay = (date) => {
+    const [year, month, day] = localDayKey(date, timeZone).split("@")[0].split("-").map(Number);
+    return Math.round(Date.UTC(year, month - 1, day) / DAY_MS);
+  };
+  const today = calendarDay(now);
   for (const item of items) {
     if (item.suspended || item.archived) continue;
     const dueAt = Date.parse(item.dueAt);
-    if (!Number.isFinite(dueAt)) continue;
-    const bucket = Math.floor((dueAt - nowMilliseconds) / DAY_MS);
+    if (!Number.isFinite(dueAt) || dueAt < nowMilliseconds || dueAt - nowMilliseconds >= 8 * DAY_MS) continue;
+    const bucket = calendarDay(new Date(dueAt)) - today;
     if (bucket >= 0 && bucket < forecast.length) forecast[bucket] += 1;
   }
   return {

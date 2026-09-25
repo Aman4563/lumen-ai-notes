@@ -141,3 +141,16 @@ export const mistakeAnalytics = (mistakes = []) => {
     .slice(0, 3);
   return { open, corrected, byCategory, mostRepeated };
 };
+
+/**
+ * Undo for a notebook deletion (REV-11): puts the removed record back at its
+ * old position unless a record with the same id already exists (another tab
+ * restored or merged it back), and keeps the collection within its bound.
+ * Shared by mistakes and clippings.
+ */
+export const reinsertRecord = (records, record, index = 0, limit = MAX_MISTAKES) => {
+  const list = Array.isArray(records) ? records : [];
+  if (!record?.id || list.some((entry) => entry.id === record.id)) return list;
+  const at = Math.max(0, Math.min(Number.isInteger(index) ? index : 0, list.length));
+  return [...list.slice(0, at), record, ...list.slice(at)].slice(0, limit);
+};

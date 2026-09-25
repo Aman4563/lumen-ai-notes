@@ -1045,7 +1045,7 @@ try {
   await page.waitForSelector(".notebook-page");
   const notebookText = await page.$eval(".notebook-page", (node) => node.innerText);
   assert.match(notebookText, /1\s+Bookmarks/);
-  assert.match(notebookText, /1\s+Annotations/);
+  assert.match(notebookText, /1\s+Personal notes/);
   assert.match(notebookText, /1\s+Edited copies/);
   assert.match(notebookText, /1\s+Clippings/);
   await page.type('.clipping-card textarea', "Connect this excerpt to model-system tradeoffs.");
@@ -1223,6 +1223,7 @@ try {
   await clickByText(page, ".notebook-heading-actions button", "Check links");
   await page.waitForSelector(".link-report.has-findings", { timeout: 5_000 });
   assert.ok((await page.$eval(".link-report", (node) => node.textContent)).includes("missing-lecture.md"), "the link audit missed the broken link");
+  assert.ok((await page.$eval(".link-report li", (node) => node.textContent)).startsWith("HTML Import Proof"), "the link report must name the document by its title, not its storage id");
   await page.$eval('.link-report button[aria-label="Dismiss link report"]', (button) => button.click());
 
   await clickByText(page, ".notebook-heading-actions button", "Select");
@@ -1675,9 +1676,35 @@ try {
   await clickByText(page, ".assessment-dialog button", "Start");
   // Answer helper: choice questions pick right/wrong by text; the numeric
   // question types a tolerant variant of the answer ("42.0" for "42").
-  const answerRound = async (wrongOnQuestions) => {
+  // Issue #54 (REV-7/REV-12/REV-15): each question takes focus, a stray scrim
+  // tap mid-check asks before discarding answers, and choices are a radio group.
+  let guardChecked = false;
+  let radioChecked = false;
+  const checkLeaveGuard = async () => {
+    await page.waitForFunction(() => document.activeElement?.id === "assessment-title" && document.activeElement.textContent.includes("Question 2"), { timeout: 5_000 })
+      .catch(() => assert.fail("the next question must take focus"));
+    await page.$eval(".assessment-layer .modal-scrim", (node) => node.click());
+    await page.waitForSelector(".assessment-leave", { timeout: 5_000 });
+    assert.ok((await page.$eval(".assessment-leave", (node) => node.textContent)).includes("1 answer so far will be lost"), "the leave prompt must say what would be lost");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".assessment-leave") && document.querySelector(".assessment-dialog h2")?.textContent.includes("Question 2"), { timeout: 5_000 })
+      .catch(() => assert.fail("Escape on the leave prompt must return to the same question"));
+    guardChecked = true;
+  };
+  const checkRadioKeys = async () => {
+    const before = await page.$$eval(".assessment-option", (nodes) => nodes.map((node) => node.tabIndex));
+    assert.equal(before.filter((index) => index === 0).length, 1, "a radio group exposes exactly one tab stop");
+    await page.focus(".assessment-option");
+    await page.keyboard.press("ArrowDown");
+    const after = await page.$$eval(".assessment-option", (nodes) => nodes.map((node) => [node.getAttribute("aria-checked"), document.activeElement === node]));
+    assert.deepEqual(after[1], ["true", true], "ArrowDown must move focus and selection to the next option");
+    radioChecked = true;
+  };
+  const answerRound = async (wrongOnQuestions, guard = false) => {
     for (let answered = 0; answered < 4; answered += 1) {
       await page.waitForFunction(() => document.querySelector(".assessment-options") || document.querySelector(".assessment-numeric"), { timeout: 5_000 });
+      if (guard && answered === 1) await checkLeaveGuard();
+      if (guard && !radioChecked && await page.$(".assessment-option")) await checkRadioKeys();
       if (await page.$(".assessment-numeric")) {
         await page.$eval(".assessment-numeric input", (input, value) => {
           const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
@@ -1699,7 +1726,9 @@ try {
     await page.waitForFunction(() => document.querySelector(".assessment-dialog h2")?.textContent.includes("%"), { timeout: 5_000 });
   };
   // Round 1: miss two of four (questions 2 and 3) → 50%.
-  await answerRound(new Set([1, 2]));
+  await answerRound(new Set([1, 2]), true);
+  assert.ok(guardChecked && radioChecked, "the leave guard and radio keys must both be exercised");
+  assert.ok(await page.evaluate(() => document.activeElement?.id === "assessment-title" && document.activeElement.textContent.includes("%")), "the result heading must take focus so the score is read");
   assert.ok((await page.$eval(".assessment-dialog", (node) => node.textContent)).includes("2 misses added to your mistake notebook"), "misses did not report to the notebook");
   assert.equal((await page.$$(".assessment-missed-link")).length, 2, "each missed question must link its source lecture");
   // Retry (issue #9): same frozen questions, a fresh attempt, all correct.

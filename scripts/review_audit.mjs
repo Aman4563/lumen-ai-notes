@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -8,6 +8,7 @@ const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-review-profile-"));
 const downloadDirectory = await mkdtemp(join(tmpdir(), "lumen-review-downloads-"));
+const fixtureDirectory = await mkdtemp(join(tmpdir(), "lumen-review-fixtures-"));
 const errors = [];
 let browser;
 
@@ -75,11 +76,41 @@ try {
   await page.waitForFunction(() => !document.querySelector(".review-card-dialog"));
   assert.equal(await page.$eval(".review-hero strong", (node) => node.textContent), "1", "a duplicate card must not grow the deck");
 
+  // Issue #54 (REV-5): Home's due widget and Review button use the same
+  // actionable count as the review queue.
+  await page.evaluate(() => { location.hash = "#/home"; });
+  await page.waitForSelector(".today-widgets");
+  assert.equal(await page.$eval(".today-widget strong", (node) => node.textContent), "1", "Home's due widget must match the review queue");
+  assert.ok((await page.$eval(".dashboard-method-actions .button.primary", (node) => node.textContent)).includes("Review 1 due"), "Home's Review button must match the review queue");
+  await page.evaluate(() => { location.hash = "#/review"; });
+  await page.waitForSelector(".review-hero");
+
   await clickByText(page, ".review-hero button", "Start review");
   await page.waitForSelector(".review-session-page");
+  // Issue #54 (REV-6/REV-7): the progress bar starts empty with progressbar
+  // semantics, and focus follows the prompt and then the revealed answer.
+  await page.waitForFunction(() => document.activeElement?.classList.contains("review-question"), { timeout: 5_000 })
+    .catch(() => assert.fail("starting a session must focus the card prompt"));
+  assert.deepEqual(await page.$eval(".review-progress", (node) => [node.getAttribute("role"), node.getAttribute("aria-valuenow"), node.getAttribute("aria-valuemax"), node.querySelector("span").style.width]), ["progressbar", "0", "1", "0%"], "an ungraded session must show an empty progressbar");
   await clickByText(page, ".review-session-page button", "Show answer");
   await page.waitForSelector(".review-answer");
   assert.ok((await page.$eval(".review-answer", (node) => node.textContent)).includes("overestimates production generalization"));
+  await page.waitForFunction(() => document.activeElement?.classList.contains("review-answer"), { timeout: 5_000 })
+    .catch(() => assert.fail("revealing must move focus to the answer"));
+  // Issue #54 (REV-2): on an iPhone SE-sized screen every grade button stays
+  // above the fixed bottom navigation without scrolling.
+  await page.setViewport({ width: 375, height: 667, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  await page.waitForSelector(".toast", { hidden: true, timeout: 10_000 });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const gradeReach = await page.evaluate(() => {
+    const navTop = document.querySelector(".bottom-nav").getBoundingClientRect().top;
+    return [...document.querySelectorAll(".review-rating")].map((button) => {
+      const box = button.getBoundingClientRect();
+      return box.bottom <= navTop && button.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+    });
+  });
+  assert.deepEqual(gradeReach, [true, true, true, true], "grade buttons must be visible above the bottom navigation at 375x667");
+  await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
   await clickByText(page, ".review-rating", "Good");
   try {
     await page.waitForSelector(".review-center-page", { timeout: 5_000 });
@@ -88,8 +119,16 @@ try {
     throw error;
   }
   await page.waitForFunction(() => document.querySelector(".review-hero strong")?.textContent === "0");
+  assert.ok((await page.$eval(".review-center-page [role='status']", (node) => node.textContent)).includes("Rated Good: next review in 1 day"), "the grade outcome must be announced");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("1 day interval"), "Good rating did not schedule a one-day interval");
   assert.ok((await page.$eval(".review-stat-grid", (node) => node.textContent)).includes("100%"), "recall rate was not updated");
+  // Issue #54 (REV-5): ending a crunch practice session returns the hero to
+  // today's queue; it used to keep counting the weak-card practice pool.
+  await clickByText(page, ".review-hero-actions button", "Crunch weak cards");
+  await page.waitForFunction(() => document.querySelector(".review-session-header")?.textContent.includes("practice cards left"), { timeout: 5_000 });
+  await clickByText(page, ".review-session-header button", "End session");
+  await page.waitForSelector(".review-center-page");
+  assert.equal(await page.$eval(".review-hero strong", (node) => node.textContent), "0", "after crunch practice the hero must count today's queue, not the practice pool");
 
   await clickByText(page, ".review-hero-actions button", "Undo last grade");
   await page.waitForFunction(() => document.querySelector(".review-hero strong")?.textContent === "1");
@@ -103,13 +142,20 @@ try {
   await page.$eval('button[aria-label="Edit review card"]', (node) => node.click());
   await page.waitForSelector(".review-card-dialog");
   await page.focus(".review-card-dialog textarea");
-  await page.keyboard.press("End");
+  // Place the caret at the end of the text: at the 16px phone field size the
+  // prompt wraps, and End only reaches the end of the first visual line.
+  await page.$eval(".review-card-dialog textarea", (node) => node.setSelectionRange(node.value.length, node.value.length));
   await page.keyboard.type(" [edited]");
   await clickByText(page, ".review-card-dialog button", "Save changes");
   await page.waitForSelector(".review-deck-card");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("[edited]"), "card edit was not saved");
-  await page.$eval('button[aria-label="Archive review card"]', (node) => node.click());
+  await page.$eval('button[aria-label="Archive review card"]', (node) => { node.focus(); node.click(); });
   await page.waitForFunction(() => [...document.querySelectorAll(".review-deck-tools button")].some((node) => node.textContent.includes("Archived (1)")), { timeout: 5_000 });
+  // Issue #54 (REV-7): the archived row's button is gone, so focus moves to
+  // the deck heading (the list is now empty) and a toast confirms the change.
+  await page.waitForFunction(() => document.activeElement === document.querySelector(".review-deck-heading h2"), { timeout: 5_000 })
+    .catch(() => assert.fail("archiving the last card must move focus to the deck heading"));
+  assert.ok((await page.$eval(".toast", (node) => node.textContent)).includes("Card archived"), "archiving must be confirmed");
   await clickByText(page, ".review-deck-tools button", "Archived (1)");
   await page.waitForSelector('button[aria-label="Restore review card"]');
   await page.$eval('button[aria-label="Restore review card"]', (node) => node.click());
@@ -158,6 +204,21 @@ try {
   assert.equal(withMistake.mistakes.length, 1);
   assert.equal(withMistake.mistakes[0].occurrences, 1);
   assert.ok(withMistake.mistakes[0].correction.includes("stays untouched"), "the correction was not persisted");
+  // Issue #54 (REV-19): a correction still being typed is committed when the
+  // page is hidden, before the app's pagehide flush saves the profile.
+  await page.focus(".mistake-card textarea");
+  await page.keyboard.type("Test data is for the final report only. ");
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  {
+    const deadline = Date.now() + 5_000;
+    let saved = "";
+    while (Date.now() < deadline && !saved.includes("final report only")) {
+      saved = (await readProfile(page)).mistakes[0]?.correction || "";
+      if (!saved.includes("final report only")) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(saved.includes("final report only"), "an unblurred correction must be saved when the page is hidden");
+  }
+  await page.$eval(".mistake-card textarea", (node) => node.blur());
   assert.equal(withMistake.mistakes[0].reviewItemId, withMistake.reviewItems.find((item) => item.front.startsWith("Which split")).id, "the mistake lost its card link");
 
   // The lapsed card sits in a short relearning delay; corrective scheduling
@@ -202,8 +263,28 @@ try {
 
   // Manual capture: the Log-mistake dialog records a categorized entry, and
   // repeating the same prompt merges instead of duplicating.
-  await clickByText(page, ".review-mistakes button", "Log mistake");
+  // The closed phone drawer is inert (React's prop), and the App dialogs used
+  // above (the card editor) must have left it that way.
+  assert.equal(await page.$eval(".app-sidebar", (node) => node.inert), true, "an earlier dialog re-exposed the closed phone drawer");
+  await page.$$eval(".review-mistakes button", (nodes) => { const opener = nodes.find((node) => node.textContent.includes("Log mistake")); opener?.focus(); opener?.click(); });
   await page.waitForSelector(".mistake-dialog");
+  // Issue #54 (REV-8): the dialog renders outside the view and makes the app
+  // shell inert while open.
+  assert.deepEqual(await page.evaluate(() => [document.querySelector(".mistake-dialog").closest(".view-container") === null, ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "the mistake dialog must inert the background it covers");
+  // The dialog shares the App's modal flag: the shortcut sheet opened over it
+  // and closed again must not re-expose the shell behind the mistake dialog.
+  // The sheet on top owns the keyboard: Tab stays in it, and Escape closes
+  // only the sheet, keeping the mistake draft.
+  await page.$eval(".mistake-dialog .modal-actions .button.ghost", (node) => node.focus());
+  await page.keyboard.press("?");
+  await page.waitForSelector(".shortcuts-dialog", { timeout: 5_000 });
+  await page.waitForFunction(() => document.activeElement?.closest(".shortcuts-dialog"), { timeout: 5_000 })
+    .catch(() => assert.fail("the shortcut sheet did not take focus over the mistake dialog"));
+  await page.keyboard.press("Tab");
+  assert.ok(await page.evaluate(() => Boolean(document.activeElement?.closest(".shortcuts-dialog"))), "Tab in the shortcut sheet moved focus to the mistake dialog behind it");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".shortcuts-dialog", { hidden: true, timeout: 5_000 });
+  assert.deepEqual(await page.evaluate(() => [Boolean(document.querySelector(".mistake-dialog")), ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "Escape in a dialog opened over the mistake dialog closed it too or re-exposed the shell behind it");
   const manualFields = await page.$$(".mistake-dialog textarea");
   await manualFields[0].type("Wrote the softmax gradient with the wrong sign");
   await manualFields[1].type("The Jacobian diagonal is p_i(1 - p_i); off-diagonals are -p_i p_j.");
@@ -217,6 +298,10 @@ try {
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await clickByText(page, ".mistake-dialog button", "Log mistake");
   await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("Formula")), { timeout: 5_000 });
+  await page.waitForFunction(() => !document.querySelector(".mistake-dialog"));
+  assert.deepEqual(await page.evaluate(() => [".app-sidebar", ".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)), [true, false, false, false], "closing the dialog must restore the shell and keep the closed phone drawer inert");
+  await page.waitForFunction(() => document.activeElement?.closest(".review-mistakes") && document.activeElement.textContent.includes("Log mistake"), { timeout: 5_000 })
+    .catch(() => assert.fail("closing the mistake dialog must return focus to Log mistake"));
   await clickByText(page, ".review-mistakes button", "Log mistake");
   await page.waitForSelector(".mistake-dialog");
   const repeatFields = await page.$$(".mistake-dialog textarea");
@@ -243,11 +328,48 @@ try {
     assert.match(exported, /# Mistake notebook/);
     assert.ok(exported.includes("softmax gradient") && exported.includes("Category: Formula") && exported.includes("×2"), "the export is missing the merged mistake's details");
   }
-  await page.evaluate(() => {
-    const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("softmax gradient"));
-    card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
+  const deleteSoftmaxMistake = async () => {
+    await page.evaluate(() => {
+      const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("softmax gradient"));
+      card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
+    });
+    await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient")), { timeout: 5_000 });
+  };
+  const softmaxSlot = await page.$$eval(".mistake-list > *", (nodes) => nodes.findIndex((node) => node.textContent.includes("softmax gradient")));
+  await deleteSoftmaxMistake();
+  // Issue #54 (REV-11): a deleted mistake offers a focused Undo that restores
+  // the same merged entry.
+  await page.waitForFunction(() => document.activeElement?.closest(".undo-strip") && document.activeElement.textContent.includes("Undo"), { timeout: 5_000 })
+    .catch(() => assert.fail("deleting a mistake must focus an Undo control"));
+  // The strip takes the deleted entry's place in the list and scrolls on
+  // screen (smoothly), not at the top of the notebook out of sight.
+  assert.deepEqual(await page.evaluate(() => {
+    const strip = document.querySelector(".undo-strip");
+    return [[...strip.parentElement.children].indexOf(strip), strip.parentElement.classList.contains("mistake-list")];
+  }), [softmaxSlot, true], "the mistake Undo strip must take the deleted entry's place");
+  await page.waitForFunction(() => {
+    const box = document.querySelector(".undo-strip")?.getBoundingClientRect();
+    const top = document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0;
+    const nav = document.querySelector(".bottom-nav");
+    const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+    return box && box.top >= top && box.bottom <= bottom;
+  }, { timeout: 5_000 }).catch(() => assert.fail("the mistake Undo strip must scroll into view, clear of the top bar and bottom navigation"));
+  // The strip must not expire while Undo holds focus, even after the pointer
+  // passes over it and leaves (hover and focus pause it independently).
+  await page.$eval(".undo-strip", (node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  const stripCenter = await page.$eval(".undo-strip > span", (node) => {
+    const box = node.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2, hit: Boolean(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest(".undo-strip")) };
   });
-  await page.waitForFunction(() => ![...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient")), { timeout: 5_000 });
+  assert.ok(stripCenter.hit, "the Undo strip must be uncovered for the hover check");
+  await page.mouse.move(stripCenter.x, stripCenter.y, { steps: 4 });
+  await page.mouse.move(2, 2, { steps: 4 });
+  await new Promise((resolve) => setTimeout(resolve, 10_600));
+  assert.ok(await page.evaluate(() => Boolean(document.activeElement?.closest(".undo-strip"))), "a focused Undo strip expired after the pointer left it, dropping focus");
+  await clickByText(page, ".undo-strip button", "Undo");
+  await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("×2")), { timeout: 5_000 })
+    .catch(() => assert.fail("Undo did not restore the deleted mistake"));
+  await deleteSoftmaxMistake();
 
   // INTERVIEW-002 slice: a timed interview round runs prep → answer → reveal,
   // and a missed question lands in the mistake notebook under Interview.
@@ -287,6 +409,63 @@ try {
     target?.querySelector('button[aria-label="Delete review card"]')?.click();
   });
 
+  // Issue #54 (REV-1/REV-9): a lumen.cards.v1 deck imports through a real,
+  // keyboard-operable Import button, reports its counts, and never throws.
+  const deckCount = async () => Number((await page.$eval(".review-deck-heading h2", (node) => node.textContent)).match(/^(\d+)/)?.[1]);
+  await page.waitForFunction(() => ![...document.querySelectorAll(".review-deck-card")].some((card) => card.textContent.includes("Which split tunes hyperparameters?")), { timeout: 5_000 });
+  // Deleting hands focus to the next row a frame later (REV-7). Wait for it,
+  // or it can land between focusing Import and pressing Enter below.
+  await page.waitForFunction(() => document.activeElement?.closest(".review-card-actions") || document.activeElement === document.querySelector(".review-deck-heading h2"), { timeout: 5_000 })
+    .catch(() => assert.fail("deleting a card must move focus to the next row or the deck heading"));
+  const cardsBefore = await deckCount();
+  const deckFile = join(fixtureDirectory, "import-deck.json");
+  await writeFile(deckFile, JSON.stringify({ format: "lumen.cards.v1", exportedAt: new Date().toISOString(), cards: [
+    { type: "basic", front: "Imported: what does dropout do during training?", back: "It randomly zeroes activations so units cannot co-adapt.", tags: ["imported"] },
+    { type: "cloze", front: "Imported: early stopping halts training when {{validation loss}} stops improving.", back: "validation loss", tags: ["imported"] },
+  ] }));
+  const importFocused = await page.evaluate(() => {
+    const button = [...document.querySelectorAll(".review-deck-tools button")].find((node) => node.textContent.trim() === "Import");
+    button?.focus();
+    return Boolean(button) && document.activeElement === button;
+  });
+  assert.ok(importFocused, "the deck Import control must be a focusable button");
+  const [chooser] = await Promise.all([page.waitForFileChooser({ timeout: 5_000 }), page.keyboard.press("Enter")]);
+  await chooser.accept([deckFile]);
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 cards imported"), { timeout: 5_000 })
+    .catch(() => assert.fail("importing a card deck did not confirm the imported count"));
+  await page.waitForFunction((expected) => Number(document.querySelector(".review-deck-heading h2")?.textContent.match(/^(\d+)/)?.[1]) === expected, { timeout: 5_000 }, cardsBefore + 2)
+    .catch(() => assert.fail("imported cards did not appear in the deck"));
+  const importDeck = (json) => page.$eval('.review-deck-tools input[type="file"]', (input, text) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([text], "deck.json", { type: "application/json" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, json);
+  await importDeck(await readFile(deckFile, "utf8"));
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("already in your deck"), { timeout: 5_000 })
+    .catch(() => assert.fail("re-importing the same deck did not report the duplicates"));
+  await importDeck("{ not json");
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Import failed"), { timeout: 5_000 })
+    .catch(() => assert.fail("a malformed card file did not surface an import error"));
+  assert.equal(await deckCount(), cardsBefore + 2, "duplicate and malformed imports must not grow the deck");
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const imported = (await readProfile(page)).reviewItems.filter((item) => item.front.startsWith("Imported:"));
+  assert.equal(imported.length, 2, "both imported cards must persist");
+  assert.ok(imported.every((item) => item.reviewCount === 0 && item.tags.includes("imported")), "imported cards start fresh and keep their tags");
+
+  // Issue #54 (REV-22): at phone width every Daily limits picker keeps its
+  // one-word label on one line and a usable select, in both schedulers.
+  const assertLimitsStripReadable = async (mode) => {
+    const pickers = await page.$$eval(".review-settings-strip label", (labels) => labels.map((label) => {
+      const text = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      return { name: text.textContent.trim(), lines: new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size, select: Math.round(label.querySelector("select").getBoundingClientRect().width) };
+    }));
+    assert.ok(pickers.length >= 3 && pickers.every((picker) => picker.lines === 1 && picker.select >= 60), `the ${mode} Daily limits strip collapsed at phone width: ${JSON.stringify(pickers)}`);
+  };
+  await assertLimitsStripReadable("classic");
+
   // Issue #16: enabling the Adaptive (FSRS) scheduler migrates existing
   // cards once (history replay or SM-2 seed) and grades store FSRS state.
   await page.select('select[aria-label="Scheduling algorithm"]', "fsrs");
@@ -294,6 +473,7 @@ try {
     .catch(() => assert.fail("enabling FSRS did not confirm the calibration"));
   await page.waitForSelector('select[aria-label="Target retention"]', { timeout: 5_000 });
   await new Promise((resolve) => setTimeout(resolve, 700));
+  await assertLimitsStripReadable("FSRS");
   const fsrsProfile = await readProfile(page);
   assert.equal(fsrsProfile.reviewSettings.scheduler, "fsrs");
   const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
@@ -352,6 +532,73 @@ try {
   });
   await new Promise((resolve) => setTimeout(resolve, 400));
 
+  // Issue #54 (REV-19/REV-11): burst typing into a clipping note keeps every
+  // character with several clippings, and a deleted clipping can be undone.
+  await page.goto(`${baseUrl}manifest.webmanifest`, { waitUntil: "load" });
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction("study-data", "readwrite");
+      const store = transaction.objectStore("study-data");
+      const get = store.get("profile");
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => {
+        const profile = get.result;
+        const stamp = new Date().toISOString();
+        profile.clippings = [1, 2].map((index) => ({ id: `audit-clip-${index}`, documentId: "notes/part-01-foundations/01-ai-ml-mental-model.md", text: `Audit clipping ${index}: attention weighs every token against every other token.`, note: "", createdAt: stamp, updatedAt: stamp }));
+        // Three cloze cards give Part 07 an all-cloze readiness check.
+        profile.reviewItems = [...profile.reviewItems, ...["chain rule", "learning rate", "batch normalization"].map((answer, index) => ({
+          id: `audit-cloze-${index}`, type: "cloze", front: `Deep learning fact ${index}: the {{${answer}}} matters.`, back: answer,
+          documentId: "notes/part-07-deep-learning/01-neural-networks-and-backprop.md", tags: [], suspended: false, archived: false, buriedOnDay: "",
+          dueAt: stamp, intervalDays: 1, ease: 2.5, repetitions: 1, reviewCount: 1, lapses: 0, createdAt: stamp, updatedAt: stamp, lastReviewedAt: stamp,
+        }))];
+        store.put(profile, "profile");
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    };
+  }));
+  await page.goto(`${baseUrl}#/notebook`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector('.clipping-card[data-clipping-id="audit-clip-1"] textarea');
+  const burst = "Attention cost grows quadratically with sequence length, which is why long contexts need tricks.";
+  await page.focus('.clipping-card[data-clipping-id="audit-clip-1"] textarea');
+  await page.keyboard.type(burst, { delay: 0 });
+  assert.equal(await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] textarea', (node) => node.value), burst, "burst typing dropped characters from the clipping note");
+  await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] textarea', (node) => node.blur());
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal((await readProfile(page)).clippings.find((clip) => clip.id === "audit-clip-1")?.note, burst, "the clipping note must persist in full");
+  await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] button[aria-label="Delete clipping"]', (node) => node.click());
+  await page.waitForFunction(() => !document.querySelector('.clipping-card[data-clipping-id="audit-clip-1"]') && document.querySelector(".undo-strip"), { timeout: 5_000 });
+  assert.ok(await page.evaluate(() => document.querySelector(".clipping-grid")?.firstElementChild?.classList.contains("undo-strip")), "the clipping Undo strip must take the deleted card's place");
+  await clickByText(page, ".undo-strip button", "Undo");
+  await page.waitForSelector('.clipping-card[data-clipping-id="audit-clip-1"]', { timeout: 5_000 });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const restoredClippings = (await readProfile(page)).clippings;
+  assert.deepEqual(restoredClippings.map((clip) => clip.id), ["audit-clip-1", "audit-clip-2"], "Undo must restore the clipping in its original place");
+  assert.equal(restoredClippings[0].note, burst, "the restored clipping keeps its note");
+
+  // Issue #54 (REV-15): Enter in a cloze blank submits the answer and the
+  // next question takes focus; closing mid-check asks before discarding.
+  await page.evaluate(() => { location.hash = "#/home"; });
+  await page.waitForSelector(".mastery-grid");
+  await page.evaluate(() => [...document.querySelectorAll(".mastery-row")].find((node) => node.querySelector(".mastery-part")?.textContent === "07")?.querySelector(".mastery-check")?.click());
+  await page.waitForSelector(".assessment-dialog", { timeout: 5_000 });
+  await clickByText(page, ".assessment-dialog button", "Start");
+  await page.waitForSelector(".assessment-cloze input", { timeout: 5_000 });
+  await page.focus(".assessment-cloze input");
+  await page.keyboard.type("chain rule");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.activeElement?.id === "assessment-title" && document.activeElement.textContent.includes("Question 2 of 3"), { timeout: 5_000 })
+    .catch(() => assert.fail("Enter in a cloze blank must submit and focus the next question"));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".assessment-leave", { timeout: 5_000 });
+  await clickByText(page, ".assessment-leave button", "Leave and discard");
+  await page.waitForFunction(() => !document.querySelector(".assessment-dialog"), { timeout: 5_000 });
+
+  await page.evaluate(() => { location.hash = "#/review"; });
+  await page.waitForSelector(".review-center-page");
+
   // Exercise the maximum persisted deck size. The center must keep the DOM
   // bounded on an iPhone instead of rendering 10,000 Markdown cards at once.
   await page.evaluate(() => new Promise((resolve, reject) => {
@@ -398,9 +645,10 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
   await rm(downloadDirectory, { recursive: true, force: true });
+  await rm(fixtureDirectory, { recursive: true, force: true });
 }
