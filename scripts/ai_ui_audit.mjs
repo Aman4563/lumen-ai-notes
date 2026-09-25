@@ -1516,8 +1516,11 @@ try {
     const chips = await page.$$eval(".ai-tutor__message-meta > span", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)));
     assert.ok(chips.every((height) => height <= 24), `message meta chips broke mid-word: ${chips}`);
 
-    // Grounding radiogroup: one Tab stop; arrows move and select.
+    // Grounding radiogroup: one Tab stop; arrows move and select. The
+    // finished answer's smooth reveal settles before the pointer click.
+    await settleScroll(page);
     await page.click(".ai-tutor__source-panel-toggle");
+    await page.waitForSelector(".ai-tutor__context.is-open", { timeout: 3_000 });
     assert.equal(await page.$$eval(".ai-tutor__source-modes [role='radio']", (nodes) => nodes.filter((node) => node.tabIndex === 0).length), 1, "the grounding radiogroup has more than one Tab stop");
     await page.$eval(".ai-tutor__source-modes [aria-checked='true']", (node) => node.focus());
     await page.keyboard.press("ArrowDown");
