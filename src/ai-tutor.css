@@ -1,4 +1,6 @@
-.ai-tutor {
+/* Tokens are shared with the portaled options sheet. */
+.ai-tutor,
+.ai-tutor-sheet {
   --ai-accent: var(--violet, #7467a8);
   --ai-accent-soft: var(--violet-soft, #f0edfb);
   --ai-good: var(--teal, #2f8e86);
@@ -11,36 +13,44 @@
   --ai-good-ink: var(--teal-text);
   --ai-tutor-danger: var(--danger);
   --ai-tutor-warn: var(--ai-warn);
+}
+
+.ai-tutor {
   width: 100%;
+  min-width: 0;
   color: var(--ink, #172035);
   background: var(--paper, #fffdf8);
   border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
   border-radius: clamp(18px, 3vw, 28px);
   box-shadow: var(--shadow-md, 0 16px 42px rgba(25, 35, 58, 0.12));
+  /* Clip, unlike hidden, is not a scroll container, so the composer can
+     stick to the viewport. Older engines keep hidden. */
   overflow: hidden;
+  overflow: clip;
 }
 
 /* In dark palettes the violet accent is light, so white CTA and badge text
    needs a deeper fill (6.5:1). */
-[data-theme="dark"] .ai-tutor {
+[data-theme="dark"] :is(.ai-tutor, .ai-tutor-sheet) {
   --ai-accent-strong: #5d4fb0;
 }
 
 @media (prefers-color-scheme: dark) {
-  [data-theme="system"] .ai-tutor {
+  [data-theme="system"] :is(.ai-tutor, .ai-tutor-sheet) {
     --ai-accent-strong: #5d4fb0;
   }
 }
 
-.ai-tutor button,
-.ai-tutor select,
-.ai-tutor textarea,
-.ai-tutor input {
+:is(.ai-tutor, .ai-tutor-sheet) :is(button, select, textarea, input) {
   font: inherit;
 }
 
-.ai-tutor button {
+:is(.ai-tutor, .ai-tutor-sheet) button {
   touch-action: manipulation;
+}
+
+.ai-tutor-sheet :is(h3, h4, p) {
+  margin-top: 0;
 }
 
 .ai-tutor__header,
@@ -144,6 +154,62 @@
   border-color: var(--ai-accent-ink);
 }
 
+/* New topic (TFEAT-13, interim): the one way to start fresh, labelled. */
+.ai-tutor__new-topic {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 44px;
+  gap: 6px;
+  padding: 0 14px;
+  color: var(--ink, #172035);
+  background: color-mix(in srgb, var(--paper, #fffdf8) 80%, transparent);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 13px;
+  font-size: 0.84rem;
+  font-weight: 720;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ai-tutor__new-topic:hover:not(:disabled) {
+  border-color: var(--ai-accent-ink);
+}
+
+.ai-tutor__new-topic:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-tutor__new-topic:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
+}
+
+/* The narrowest phones keep the label for screen readers only. */
+@media (max-width: 390px) {
+  .ai-tutor__new-topic { width: 44px; justify-content: center; padding: 0; }
+  .ai-tutor__new-topic-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+/* Where the model's memory starts after a break of more than 3 hours. */
+.ai-tutor__context-break {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0;
+  padding: 10px 0 0;
+  color: var(--ink-soft, #566078);
+  border-top: 1px dashed var(--line-strong, rgba(23, 32, 53, 0.18));
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.ai-tutor__context-break strong {
+  color: var(--ink, #172035);
+  font-size: 0.8rem;
+}
+
 .ai-tutor__connection {
   min-height: 42px;
   gap: 8px;
@@ -172,16 +238,9 @@
 
 .ai-tutor__mode-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   padding: 16px 16px 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  scroll-padding-inline: 16px;
-  scroll-snap-type: x proximity;
-}
-
-.ai-tutor__mode-tabs::-webkit-scrollbar {
-  display: none;
 }
 
 .ai-tutor__mode-tabs button {
@@ -193,7 +252,6 @@
   border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
   border-radius: 999px;
   cursor: pointer;
-  scroll-snap-align: start;
 }
 
 .ai-tutor__mode-tabs button:hover,
@@ -403,7 +461,7 @@
 .ai-tutor__conversation {
   position: relative;
   min-width: 0;
-  max-height: 720px;
+  max-height: clamp(360px, calc(100svh - 300px), 720px);
   padding: 18px;
   overflow: auto;
   overscroll-behavior: contain;
@@ -437,6 +495,122 @@
   max-width: 42rem;
   margin-bottom: 0;
   line-height: 1.58;
+}
+
+/* Suggested starts (TFEAT-04): full-width rows on phones, two columns on
+   wider screens. Each is one button: a mode badge and a clamped title. */
+.ai-tutor__starters {
+  width: 100%;
+  max-width: 46rem;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.ai-tutor__starters-title {
+  margin: 0 0 8px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.74rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+}
+
+.ai-tutor__starters ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-tutor__starter {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 48px;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  color: var(--ink, #172035);
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-tutor__starter:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ai-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--ai-accent-soft) 45%, var(--paper, #fffdf8));
+}
+
+.ai-tutor__starter:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-tutor__starter:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
+}
+
+.ai-tutor__starter-mode {
+  justify-self: start;
+  padding: 3px 8px;
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.ai-tutor__starter-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.86rem;
+  font-weight: 650;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.ai-tutor__starter-confirm,
+.ai-tutor__prefill-confirm {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--paper-2, #f7f2e8);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 14px;
+}
+
+.ai-tutor__composer .ai-tutor__prefill-confirm {
+  margin: 0 0 8px;
+  padding: 10px;
+}
+
+.ai-tutor__starter-confirm p,
+.ai-tutor__prefill-confirm p {
+  margin: 0 0 10px;
+  color: var(--ink, #172035);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.ai-tutor__starter-confirm div,
+.ai-tutor__prefill-confirm div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__starters ul { grid-template-columns: minmax(0, 1fr); }
+  .ai-tutor__starter-confirm .ai-tutor__button,
+  .ai-tutor__prefill-confirm .ai-tutor__button { flex: 1 1 auto; min-height: 44px; }
 }
 
 .ai-tutor__messages {
@@ -743,92 +917,6 @@
   line-height: 1.5;
 }
 
-.ai-tutor__quiz {
-  display: grid;
-  gap: 12px;
-}
-
-.ai-tutor__quiz-question {
-  min-width: 0;
-  margin: 0;
-  padding: 14px;
-  background: var(--paper-2, #f9f7f1);
-  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
-  border-radius: 14px;
-}
-
-.ai-tutor__quiz-question legend {
-  display: grid;
-  float: left;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: start;
-  width: 100%;
-  padding: 0;
-  font-weight: 750;
-  line-height: 1.5;
-}
-
-.ai-tutor__difficulty-tag {
-  display: inline-block;
-  clear: both;
-  margin: 8px 0;
-  padding: 2px 7px;
-  color: var(--ink-soft, #566078);
-  background: var(--paper-3, #f0eee7);
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: capitalize;
-}
-
-.ai-tutor__quiz-options {
-  display: grid;
-  clear: both;
-  gap: 7px;
-  margin-bottom: 10px;
-}
-
-.ai-tutor__quiz-options label {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  align-items: start;
-  min-height: 44px;
-  gap: 8px;
-  padding: 10px;
-  background: var(--paper, #fffdf8);
-  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
-  border-radius: 11px;
-  cursor: pointer;
-}
-
-.ai-tutor__quiz-options label.is-correct {
-  background: var(--teal-soft, #e3f5f1);
-  border-color: color-mix(in srgb, var(--ai-good) 54%, transparent);
-}
-
-.ai-tutor__quiz-options label.is-incorrect {
-  background: var(--coral-soft, #fff0e9);
-  border-color: color-mix(in srgb, var(--coral, #e96d53) 48%, transparent);
-}
-
-.ai-tutor__quiz-feedback {
-  padding: 11px;
-  border-radius: 10px;
-}
-
-.ai-tutor__quiz-feedback.is-correct {
-  background: var(--teal-soft, #e3f5f1);
-}
-
-.ai-tutor__quiz-feedback.is-incorrect {
-  background: var(--coral-soft, #fff0e9);
-}
-
-.ai-tutor__quiz-feedback p {
-  margin: 4px 0 0;
-  line-height: 1.52;
-}
-
 .ai-tutor__flashcards {
   display: grid;
   gap: 10px;
@@ -993,9 +1081,18 @@
   padding-left: 20px;
 }
 
+/* The composer is a dock that sticks to the bottom of the viewport while
+   the tutor is on screen, so the question box never scrolls away. */
 .ai-tutor__composer {
-  padding: 18px;
+  position: sticky;
+  z-index: 6;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  margin: 0 12px 12px;
+  padding: 10px 12px 8px;
   background: var(--paper, #fffdf8);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 18px;
+  box-shadow: 0 -6px 24px color-mix(in srgb, var(--ink, #172035) 10%, transparent);
 }
 
 .ai-tutor__composer-row {
@@ -1083,23 +1180,28 @@
 
 .ai-tutor__prompt-label {
   display: block;
-  margin-bottom: 7px;
-  font-size: 0.84rem;
+  margin: 2px 2px 6px;
+  font-size: 0.8rem;
   font-weight: 780;
 }
 
+/* One line to start; grows with its text to about six lines, then scrolls. */
 .ai-tutor__composer textarea {
   display: block;
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 112px;
-  padding: 13px;
+  min-width: 0;
+  min-height: 46px;
+  max-height: min(35svh, calc(6 * 1.5em + 24px));
+  padding: 11px 13px;
+  overflow-y: auto;
   color: var(--ink, #172035);
-  resize: vertical;
+  resize: none;
   background: var(--paper-2, #f9f7f1);
   border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
   border-radius: 14px;
   outline: none;
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
 .ai-tutor__composer textarea:focus {
@@ -1111,13 +1213,82 @@
   opacity: 0.72;
 }
 
-.ai-tutor__character-count {
+.ai-tutor__composer-meta {
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 6px 2px 13px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+
+.ai-tutor__composer-meta .ai-tutor__web-status {
+  margin: 0;
+}
+
+.ai-tutor__character-count {
+  margin-left: auto;
+  padding-right: 2px;
   color: var(--ink-soft, #566078);
   font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-tutor__options-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  gap: 6px;
+  padding: 6px 11px;
+  color: var(--ink, #172035);
+  background: transparent;
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 12px;
+  font-size: 0.78rem;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.ai-tutor__composer .ai-tutor__options-toggle {
+  font-size: 0.82rem;
+}
+
+.ai-tutor__options-toggle > svg {
+  color: var(--ai-accent-ink);
+}
+
+.ai-tutor__options-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-tutor__options-summary {
+  padding: 2px 8px;
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.ai-tutor__consent-card {
+  margin-bottom: 8px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--ai-accent-soft) 70%, var(--paper, #fffdf8));
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 34%, var(--line, rgba(23, 32, 53, 0.1)));
+  border-radius: 12px;
+}
+
+.ai-tutor__consent-card .ai-tutor__consent {
+  min-height: 0;
+  color: var(--ink, #172035);
+  line-height: 1.4;
+}
+
+.ai-tutor__consent-note {
+  margin: 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.78rem;
 }
 
 .ai-tutor__privacy {
@@ -1217,9 +1388,7 @@
 
 .ai-tutor__submit-row {
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 13px;
+  gap: 8px;
 }
 
 .ai-tutor__consent {
@@ -1296,7 +1465,14 @@
 
 .ai-tutor__send {
   flex: 0 0 auto;
-  min-width: 158px;
+  min-width: 46px;
+  min-height: 46px;
+  border-radius: 14px;
+}
+
+.ai-tutor__send.is-stop {
+  color: var(--ai-tutor-danger);
+  border-color: color-mix(in srgb, var(--ai-tutor-danger) 45%, var(--line-strong, rgba(23, 32, 53, 0.18)));
 }
 
 .ai-tutor__text-button {
@@ -1330,8 +1506,23 @@
 }
 
 .ai-tutor__disabled-reason {
-  margin: 7px 0 0;
-  text-align: right;
+  margin: 4px 2px 0;
+  text-align: left;
+}
+
+.ai-tutor__disabled-reason:empty {
+  margin: 0;
+}
+
+/* Still read out and linked from Send, just not drawn (see quietReason). */
+.ai-tutor__disabled-reason.is-quiet {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .ai-tutor__spin {
@@ -1361,7 +1552,8 @@
   }
 
   .ai-tutor__composer {
-    padding: 20px 24px 22px;
+    margin: 0 18px 18px;
+    padding: 12px 14px 10px;
   }
 }
 
@@ -1414,8 +1606,7 @@
 
   .ai-tutor__loading,
   .ai-tutor__request-error,
-  .ai-tutor__request-note,
-  .ai-tutor__submit-row {
+  .ai-tutor__request-note {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1423,20 +1614,6 @@
   .ai-tutor__request-error > svg,
   .ai-tutor__request-note > svg {
     display: none;
-  }
-
-  .ai-tutor__send {
-    width: 100%;
-  }
-
-  .ai-tutor__disabled-reason {
-    text-align: left;
-  }
-
-  .ai-tutor__character-count {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 2px;
   }
 
   .ai-tutor__message--user {
@@ -1690,6 +1867,12 @@
   box-shadow: none;
 }
 
+/* Listen shows which answer is being read. */
+.ai-tutor__message-actions .ai-tutor__listen.is-active {
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+}
+
 .ai-tutor__message-actions .ai-tutor__action-count {
   display: grid;
   min-width: 18px;
@@ -1702,6 +1885,122 @@
   place-items: center;
 }
 
+/* One-tap follow-ups (TFEAT-02): their own wrapping group under the
+   newest answer, never part of the message actions row. */
+.ai-tutor__follow-ups {
+  margin-top: 12px;
+}
+
+.ai-tutor__follow-ups-label {
+  margin: 0 0 7px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.72rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+}
+
+.ai-tutor__follow-ups-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Session actions (TFEAT-05) share the follow-up chip. */
+.ai-tutor__follow-ups-list button,
+.ai-tutor__session-actions button {
+  min-height: 40px;
+  padding: 7px 12px;
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 30%, transparent);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 720;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-tutor__follow-ups-list button:hover:not(:disabled),
+.ai-tutor__session-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ai-accent) 60%, transparent);
+}
+
+.ai-tutor__follow-ups-list button:disabled,
+.ai-tutor__session-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-tutor__follow-ups-list button:focus-visible,
+.ai-tutor__session-actions button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__follow-ups-list button,
+  .ai-tutor__session-actions button { min-height: 44px; }
+}
+
+/* A Socratic or Interview session (TFEAT-05): its count and its own
+   actions sit in the docked composer, above the answer box. */
+.ai-tutor__session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 8px;
+}
+
+.ai-tutor__session-status {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.76rem;
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+.ai-tutor__session-status strong {
+  color: var(--ai-accent-ink);
+  font-weight: 780;
+}
+
+.ai-tutor__session-revealed {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  color: var(--ink, #172035);
+  background: var(--gold-soft, #fff6df);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 760;
+}
+
+.ai-tutor__session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-tutor__session-actions button.is-suggested {
+  color: white;
+  background: var(--ai-accent-strong);
+  border-color: var(--ai-accent-strong);
+}
+
+.ai-tutor__recap-label {
+  color: var(--ai-accent-ink);
+  font-weight: 760;
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__session { margin-bottom: 6px; }
+  .ai-tutor__session-actions button { padding-inline: 11px; }
+}
+
 .ai-tutor__copy-status {
   position: absolute;
   width: 1px;
@@ -1710,6 +2009,22 @@
   clip: rect(0 0 0 0);
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* A Listen problem (TFEAT-09) is shown under the answer's actions. */
+.ai-tutor__copy-status.is-visible {
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  margin-top: 6px;
+  overflow: visible;
+  clip: auto;
+  clip-path: none;
+  color: var(--ai-tutor-warn);
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: normal;
 }
 
 .ai-tutor__evidence,
@@ -2106,17 +2421,19 @@
   .ai-tutor__header { padding: 14px; }
   .ai-tutor__mark { flex-basis: 42px; width: 42px; height: 42px; border-radius: 13px; }
   .ai-tutor__connection { padding-inline: 14px; }
-  .ai-tutor__mode-tabs { padding: 12px 12px 6px; scroll-padding-inline: 12px; }
-  .ai-tutor__mode-tabs button { min-height: 44px; padding: 8px 14px; }
-  .ai-tutor__mode-description { margin: 7px 14px 12px; }
+  .ai-tutor__mode-description { margin: 6px 14px 12px; font-size: 0.8rem; }
   .ai-tutor__context { padding: 10px 12px; }
   .ai-tutor__source-panel { max-height: 58svh; overflow: auto; overscroll-behavior: contain; }
-  .ai-tutor__conversation { max-height: 61svh; padding: 12px; }
+  .ai-tutor__conversation { padding: 12px; }
   .ai-tutor__message { padding: 13px; border-radius: 15px; }
   .ai-tutor__message--user { max-width: 92%; }
   .ai-tutor__messages { gap: 11px; }
-  .ai-tutor__composer { padding: 13px 12px calc(14px + env(safe-area-inset-bottom)); }
-  .ai-tutor__composer textarea { min-height: 96px; font-size: 16px; }
+  .ai-tutor__composer { margin: 0 8px 8px; padding: 8px 8px 6px; border-radius: 16px; }
+  .ai-tutor__composer textarea { font-size: 16px; }
+  .ai-tutor__prompt-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ai-tutor__send { width: 46px; padding: 0; }
+  .ai-tutor__send-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ai-tutor__options-toggle { min-height: 44px; }
   .ai-tutor__composer-row { align-items: flex-end; }
   .ai-tutor__model { margin-left: auto; text-align: right; }
   .ai-tutor__consent--acknowledged { grid-template-columns: 22px minmax(0, 1fr); }
@@ -2314,3 +2631,236 @@
 }
 
 .ai-tutor__composer > .ai-tutor__web-status { margin-bottom: 12px; }
+
+/* Phone-first chat layout (issue #57) ------------------------------------- */
+
+/* Phones pick the mode from a native select; its description follows. */
+.ai-tutor__mode-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.82rem;
+  font-weight: 780;
+}
+
+.ai-tutor__mode-select select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 34px 8px 12px;
+  color: var(--ink, #172035);
+  background: var(--paper-2, #f9f7f1);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+/* Below 981px the bottom navigation is fixed, the page is the only scroller
+   and the composer docks just above the navigation. */
+@media (max-width: 980px) {
+  .ai-tutor__composer {
+    bottom: calc(77px + env(safe-area-inset-bottom));
+  }
+
+  .ai-tutor__conversation {
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: auto;
+  }
+
+  .ai-tutor__workspace {
+    min-height: 0;
+  }
+
+  .ai-tutor__welcome {
+    min-height: 0;
+    padding: 18px 16px 24px;
+  }
+
+  .ai-tutor__welcome > svg {
+    display: none;
+  }
+
+  .ai-page .ai-tutor__conversation :is(button, a, input, select, [tabindex]) {
+    scroll-margin-bottom: calc(var(--ai-composer-space, 90px) + 12px);
+  }
+}
+
+/* Wide screens: the docked composer rests over the lower part of the
+   conversation column, so the welcome sits at its top, beside the evidence
+   scope heading, rather than in its middle. */
+@media (min-width: 981px) {
+  .ai-tutor__welcome {
+    min-height: 0;
+    padding-top: 22px;
+    place-content: start center;
+  }
+}
+
+/* A short landscape phone cannot spare the height for a docked composer. */
+@media (max-height: 480px) {
+  .ai-tutor__composer {
+    position: static;
+  }
+}
+
+/* Large text on a small screen: a dock that would take most of the room
+   above the bottom navigation stays in the page flow (AiTutor sets
+   data-dock); "Jump to latest" stays just above it. */
+.ai-tutor__composer[data-dock="off"] {
+  position: relative;
+  bottom: auto;
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__header { padding: 10px 12px 10px 14px; }
+  .ai-tutor__header .ai-tutor__eyebrow { display: none; }
+  .ai-tutor__mark { flex-basis: 36px; width: 36px; height: 36px; border-radius: 11px; }
+  .ai-tutor__mark svg { width: 20px; height: 20px; }
+  .ai-tutor__connection { min-height: 0; padding-block: 2px; font-size: 0.76rem; }
+  .ai-tutor__connection--ready { align-items: center; flex-wrap: nowrap; }
+  .ai-tutor__connection--ready > svg { margin-top: 0; }
+}
+
+/* The observed end of the conversation (TFEAT-08). */
+.ai-tutor__conversation-end {
+  height: 1px;
+}
+
+/* "Jump to latest" / "Answer ready" floats just above the docked composer. */
+.ai-tutor__jump {
+  position: absolute;
+  z-index: 1;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  gap: 6px;
+  padding: 8px 16px;
+  color: #fff;
+  white-space: nowrap;
+  background: var(--ai-accent-strong);
+  border: 1px solid color-mix(in srgb, var(--ai-accent-strong) 70%, #000);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--ink, #172035) 24%, transparent);
+  font-size: 0.82rem;
+  font-weight: 780;
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.ai-tutor__jump:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo), 0 8px 22px color-mix(in srgb, var(--ink, #172035) 24%, transparent);
+}
+
+.ai-tutor__message--streaming:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
+}
+
+@media (forced-colors: active) {
+  .ai-tutor__jump { border: 2px solid ButtonText; }
+}
+
+/* Keyboard hint on devices where Enter sends (TFEAT-10). */
+.ai-tutor__key-hint {
+  color: var(--ink-soft, #566078);
+  font-size: 0.7rem;
+}
+
+/* Staged progress for grounded answers (TVU-18): a compact step list and
+   the passages being used, shown while the checked answer is prepared. */
+.ai-tutor__progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+}
+
+.ai-tutor__progress li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft, #566078);
+}
+
+.ai-tutor__progress-mark {
+  display: grid;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 50%;
+  place-items: center;
+}
+
+.ai-tutor__progress li.is-done {
+  color: var(--ink, #172035);
+}
+
+.ai-tutor__progress li.is-done .ai-tutor__progress-mark {
+  color: var(--ai-good-ink);
+  border-color: var(--ai-good-ink);
+}
+
+.ai-tutor__progress li.is-active {
+  color: var(--ink, #172035);
+  font-weight: 760;
+}
+
+.ai-tutor__progress li.is-active .ai-tutor__progress-mark {
+  color: var(--ai-accent-ink);
+  border-color: transparent;
+}
+
+.ai-tutor__progress li.is-skipped {
+  text-decoration: line-through;
+}
+
+.ai-tutor__progress-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-tutor__progress-sources li {
+  max-width: min(100%, 17em);
+  padding: 3px 9px;
+  overflow: hidden;
+  color: var(--ink, #172035);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 999px;
+  font-size: 0.74rem;
+}
+
+.ai-tutor__progress-sources li > span {
+  color: var(--ai-accent-ink);
+  font-weight: 800;
+}
+
+@media (forced-colors: active) {
+  .ai-tutor__progress-mark { border-color: CanvasText; }
+}
+
+/* With the step list shown, the server's stage message is a detail. */
+.ai-tutor__stream-status.has-progress {
+  margin-bottom: 0;
+  color: var(--ink-soft, #566078);
+  font-weight: 600;
+}

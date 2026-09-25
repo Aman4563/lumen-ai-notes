@@ -196,3 +196,93 @@ export const renderTutorInlineMarkdown = (text, citationSources = [], webSources
 
 // Plain text that keeps code, math and identifiers such as `for _ in` intact.
 export const tutorMarkdownPlainText = tutorPlainText;
+
+const SPOKEN_CODE = "Code example shown on screen.";
+const SPOKEN_DIAGRAM = "Diagram shown on screen.";
+const SPOKEN_EQUATION = "equation";
+const TERMINAL_PUNCTUATION = /[.!?:;…)"”]$/u;
+
+const endSentence = (text) => (text && !TERMINAL_PUNCTUATION.test(text) ? `${text}.` : text);
+
+// One line of prose as it should be heard: math is "equation", inline code
+// keeps its text, links and images keep their words, and [S#]/[W#] labels,
+// HTML and emphasis markers are silent.
+const spokenInline = (line) => line
+  .replace(/\$\$[^$\n]+\$\$|\\\[[^\n]+?\\\]|\\\([^\n]+?\\\)|\$[^$\n]+\$/g, SPOKEN_EQUATION)
+  .replace(/`([^`\n]+)`/g, "$1")
+  .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+  .replace(/\[([^\]]+)\]\((?:[^)]*)\)/g, "$1")
+  .replace(/\s*\[[SW]\d+\]/g, "")
+  .replace(/<[^>\n]+>/g, "")
+  .replace(/(\*\*|__)(?=\S)([^*\n]*?\S)\1/g, "$2")
+  .replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?!\w)/g, "$1$2")
+  .replace(/(^|[^\w])_(?=\S)([^_\n]*?\S)_(?!\w)/g, "$1$2")
+  .replace(/~~(?=\S)([^~\n]*?\S)~~/g, "$1")
+  .replace(/\s+/g, " ")
+  .trim();
+
+/**
+ * A tutor answer as text for the app's speech engine (TFEAT-09), built from
+ * its Markdown (the rendered HTML would read KaTeX twice and every line of
+ * code). Fenced code is "Code example shown on screen.", a Mermaid block is
+ * "Diagram shown on screen.", math is "equation", citation labels are not
+ * read, and headings and list items end as sentences so the voice pauses.
+ * Level-one and level-two headings split the answer into sections, returned
+ * only when there is more than one.
+ */
+export const tutorSpeechText = (markdown) => {
+  const sections = [];
+  let current = { label: "", lines: [] };
+  let fence = "";
+  let displayMath = false;
+  const push = (text) => { if (text) current.lines.push(text); };
+  for (const line of String(markdown || "").replace(/\r\n?/g, "\n").split("\n")) {
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})\s*([\w+-]*)/);
+    if (fence) {
+      if (fenceMatch && fenceMatch[1][0] === fence[0] && fenceMatch[1].length >= fence.length) fence = "";
+      continue;
+    }
+    if (fenceMatch) {
+      fence = fenceMatch[1];
+      push(fenceMatch[2].toLowerCase() === "mermaid" ? SPOKEN_DIAGRAM : SPOKEN_CODE);
+      continue;
+    }
+    if (displayMath) {
+      if (/^\s*(\$\$|\\\])\s*$/.test(line)) displayMath = false;
+      continue;
+    }
+    if (/^\s*(\$\$|\\\[)\s*$/.test(line)) {
+      displayMath = true;
+      push(`${SPOKEN_EQUATION}.`);
+      continue;
+    }
+    // Table separator rows are silent; other rows read their cells.
+    if (/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(line)) continue;
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const text = spokenInline(heading[2]);
+      if (heading[1].length <= 2) {
+        if (current.lines.length || current.label) sections.push(current);
+        current = { label: text, lines: [] };
+      }
+      push(endSentence(text));
+      continue;
+    }
+    if (/^\s*\|/.test(line)) {
+      push(endSentence(line.replace(/^\s*\||\|\s*$/g, "").split("|").map((cell) => spokenInline(cell)).filter(Boolean).join(", ")));
+      continue;
+    }
+    const listItem = line.match(/^\s*(?:[-+*]|\d+[.)])\s+(.*)$/);
+    const text = spokenInline((listItem ? listItem[1] : line).replace(/^\s*>\s?/, ""));
+    push(listItem ? endSentence(text) : text);
+    if (!text && current.lines.length && current.lines.at(-1) !== "") current.lines.push("");
+  }
+  if (current.lines.length || current.label) sections.push(current);
+  const finished = sections
+    .map((section) => ({ label: section.label || "Answer", text: section.lines.join("\n").replace(/\n{2,}/g, "\n\n").trim() }))
+    .filter((section) => section.text);
+  return {
+    text: finished.map((section) => section.text).join("\n\n"),
+    sections: finished.length > 1 ? finished : [],
+  };
+};

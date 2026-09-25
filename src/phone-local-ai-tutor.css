@@ -19,10 +19,12 @@
 .phone-tutor__disclosure p { margin: 0; color: var(--ink-soft); font-size: .8rem; line-height: 1.5; }
 .phone-tutor__disclosure strong { color: var(--ink); }
 
-.phone-tutor__mode-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 2px 1px 6px; scrollbar-width: thin; }
+.phone-tutor__mode-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 1px 6px; }
 .phone-tutor__mode-tabs button { min-width: max-content; min-height: 44px; padding: 9px 14px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--ink-soft); background: var(--paper); font-size: .82rem; font-weight: 700; cursor: pointer; }
 .phone-tutor__mode-tabs button.is-selected { border-color: var(--teal); color: var(--ink); background: var(--teal-soft); }
 .phone-tutor__mode-description { margin: -9px 2px 0; color: var(--ink-soft); font-size: .8rem; }
+.phone-tutor__mode-select { display: flex; align-items: center; gap: 10px; color: var(--ink-soft); font-size: .82rem; font-weight: 750; }
+.phone-tutor__mode-select select { flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 8px 34px 8px 12px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--paper); font-size: 1rem; font-weight: 700; }
 
 .phone-tutor__layout { display: grid; grid-template-columns: minmax(230px, .7fr) minmax(0, 1.5fr); gap: 14px; align-items: start; }
 .phone-tutor__sources, .phone-tutor__conversation, .phone-tutor__composer { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper); box-shadow: var(--shadow-sm); }
@@ -68,6 +70,11 @@
 .phone-tutor__message-meta small { color: inherit; opacity: .68; font-size: .68rem; }
 .phone-tutor__message-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .phone-tutor__message-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 44px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); background: var(--paper); font-size: .67rem; cursor: pointer; }
+/* One-tap follow-ups under the newest answer (TFEAT-02). */
+.phone-tutor__follow-ups { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.phone-tutor__follow-ups button { min-height: 44px; padding: 8px 14px; border: 1px solid color-mix(in srgb, var(--teal) 40%, transparent); border-radius: 999px; color: var(--teal-text); background: var(--teal-soft); font: inherit; font-size: .8rem; font-weight: 720; cursor: pointer; }
+.phone-tutor__follow-ups button:disabled { opacity: .55; cursor: not-allowed; }
+.phone-tutor__follow-ups button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 7px var(--focus-halo); }
 .phone-tutor__context-fit { margin: 10px 0 0; padding: 9px 10px; border-radius: 9px; background: var(--paper-3); color: var(--ink-soft); font-size: .69rem; line-height: 1.45; }
 .phone-tutor__context-fit p { margin: 0; }
 .phone-tutor__context-fit ul { margin: 7px 0 0; padding-left: 18px; }
@@ -253,3 +260,10 @@
 
 .phone-tutor__inline-md .katex { font-size: 1.05em; }
 .phone-tutor__option-mark { display: block; margin-top: 4px; font-size: .72rem; font-weight: 750; }
+
+/* The observed end of the conversation, and the pill that jumps to it. */
+.phone-tutor__conversation-end { height: 1px; }
+.phone-tutor__jump { position: fixed; z-index: 40; bottom: calc(92px + env(safe-area-inset-bottom)); left: 50%; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 16px; border: 1px solid color-mix(in srgb, var(--teal) 60%, #000); border-radius: 999px; color: #fff; background: color-mix(in srgb, var(--teal) 62%, #000); box-shadow: var(--shadow-lg); font-size: .82rem; font-weight: 780; white-space: nowrap; cursor: pointer; transform: translateX(-50%); }
+.phone-tutor__jump:focus-visible, .phone-tutor__message:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 7px var(--focus-halo); }
+@media (min-width: 981px) { .phone-tutor__jump { bottom: 24px; } }
+@media (forced-colors: active) { .phone-tutor__jump { border: 2px solid ButtonText; } }

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { scrollBehavior } from "../lib/motion.js";
 import "katex/dist/katex.min.css";
 import {
   AlertTriangle,
+  ArrowDown,
   BookOpen,
   BrainCircuit,
   Check,
@@ -11,7 +12,6 @@ import {
   Copy,
   Cpu,
   ExternalLink,
-  FileQuestion,
   LoaderCircle,
   LockKeyhole,
   MessageCircleQuestion,
@@ -22,10 +22,14 @@ import {
   Send,
   ServerOff,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Download,
-  Trash2,
-  X,
+  MessageSquarePlus,
+  Pause,
+  Play,
+  Square,
+  Volume2,
 } from "lucide-react";
 import {
   AI_DATA_DISCLOSURE,
@@ -33,16 +37,66 @@ import {
   aiRequestUtf8Bytes,
   aiClient,
 } from "../lib/aiClient";
-import { AI_REQUEST_CONTRACT_ID } from "../lib/aiContract";
-import { buildConversationWindow } from "../lib/conversationMemory";
-import { fitAiRequestContext } from "../lib/aiRequestBudget";
-import { renderTutorInlineMarkdown, renderTutorMarkdown } from "../lib/tutorMarkdown";
+import { renderTutorInlineMarkdown, renderTutorMarkdown, tutorSpeechText } from "../lib/tutorMarkdown";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
-import { revealFocusedField } from "../lib/revealField.js";
+import { useMediaQuery } from "../lib/useMediaQuery.js";
+import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
+import { progressAnnouncement, tutorProgressSteps } from "../lib/tutorProgress.js";
+import { isPageReadBack } from "../lib/scrollIntent.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
+import TutorSheet from "./TutorSheet.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
 import { downloadBlob } from "../lib/download.js";
-import { buildTutorContext, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
+import { outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
+import {
+  TUTOR_MAX_PROMPT_CHARS as MAX_PROMPT_CHARS,
+  TUTOR_MAX_SERVER_HISTORY as MAX_SERVER_HISTORY,
+  fitTutorRequest,
+  tutorContextStart,
+  tutorActionIssueReason,
+  tutorConversationWindow,
+  tutorFollowUpWindow,
+  tutorRequestIssue,
+  tutorRequestLimits,
+} from "../lib/tutorRequest";
+import {
+  answerFeedbackPrompt,
+  feedbackRetrievalQuery,
+  normalizeQuizState,
+  pruneQuizStates,
+  readQuizStates,
+  validateTutorAnswerFeedback,
+  weakSpotQuiz,
+  writeQuizStates,
+} from "../lib/tutorQuiz.js";
+import {
+  citedDocumentId,
+  followUpPair,
+  followUpRetrievalQuery,
+  followUpScope,
+  followUpsForMessage,
+  questionForAnswer,
+  topicQuestionFor,
+  withoutCitationLabels,
+} from "../lib/tutorFollowUps.js";
+import { buildStarterPrompts } from "../lib/tutorStarters.js";
+import {
+  HINT_PROMPT,
+  NEXT_QUESTION_PROMPT,
+  REVEAL_PROMPT,
+  SESSION_MODES,
+  sessionRetrievalQuery,
+  sessionWrapUp,
+  tutorSession,
+  wrapUpLabel,
+} from "../lib/tutorSession.js";
+import {
+  normalizePracticeState,
+  practiceAnswerFrom,
+  practiceQuestionIdFrom,
+  readPracticeState,
+  writePracticeState,
+} from "../lib/tutorPractice.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -110,6 +164,49 @@ const MODE_OPTIONS = Object.freeze([
   },
 ]);
 
+// Modes that only a tutor action starts (never listed, never required by
+// the server check, never restored into the composer as themselves):
+// "Explain my mistake" sends answer_feedback; a Socratic or Interview
+// session's hint and reveal keep the session going without counting as new
+// questions. `composerMode` is the listed mode Edit & reuse reopens.
+const HIDDEN_MODES = Object.freeze([
+  {
+    id: "feedback",
+    label: "Answer check",
+    task: "answer_feedback",
+    prompt: "",
+    description: "Feedback on a quiz answer you missed.",
+    structured: true,
+    hidden: true,
+  },
+  {
+    id: "hint",
+    label: "Hint",
+    task: "socratic",
+    prompt: "",
+    description: "One hint for the tutor's last question.",
+    hidden: true,
+    composerMode: "socratic",
+  },
+  {
+    id: "reveal",
+    label: "Answer revealed",
+    task: "explain",
+    prompt: "",
+    description: "The answer to the tutor's last question, explained.",
+    hidden: true,
+  },
+  {
+    id: "interview-practice",
+    label: "Interview practice",
+    task: "answer_feedback",
+    prompt: "",
+    description: "Your answer to an authored interview question, checked against its rubric.",
+    structured: true,
+    hidden: true,
+  },
+]);
+
 const DIFFICULTIES = Object.freeze([
   { id: "beginner", label: "Beginner" },
   { id: "intermediate", label: "Intermediate" },
@@ -131,16 +228,17 @@ const RESPONSE_PROFILES = Object.freeze([
 ]);
 
 const MAX_SELECTED_SOURCES = 8;
+// The app's one speech session is labelled so the tutor can tell its own
+// reading from a lecture's (TFEAT-09).
+const TUTOR_SPEECH_LABEL = "Tutor answer";
 // Of the eight Library-first passages, a request about the open lesson
 // reserves most for that lesson; the rest still come from the whole library.
 const OPEN_LESSON_RESERVED_PASSAGES = 6;
 const MAX_WEB_SOURCES = 8;
 const MAX_VISIBLE_HISTORY = 50;
-const MAX_SERVER_HISTORY = 12;
-const MAX_HISTORY_MESSAGE_CHARS = 3_000;
-const MAX_PROMPT_CHARS = 5_700;
 const MAX_RESPONSE_CHARS = 160_000;
 const LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY = "lumen.ai.local-disclosure-ack.v1";
+const DISCLOSURE_REASON = "Review and acknowledge the local-model disclosure once on this browser to enable generation.";
 const WEB_FALLBACK_STATES = new Set(["off", "armed", "not-needed", "searching", "used", "failed"]);
 
 const readLocalDisclosureAcknowledgement = () => {
@@ -400,11 +498,6 @@ const boundResponseText = (value) => {
   };
 };
 
-const minimumContextBudget = (sources) => sources.reduce(
-  (total, source) => total + source.title.length + source.section.length + 24 + 180,
-  0,
-);
-
 const assertFittedAiRequest = (fitted, message = "The prepared request exceeds the local model request limit. Shorten the prompt or clear older conversation turns.") => {
   if (!fitted || typeof fitted !== "object" || !fitted.payload) {
     throw new AiClientError("AI_INPUT_TOO_LARGE", "Lumen could not prepare a bounded local-model request.");
@@ -490,6 +583,7 @@ const validateStructuredResult = (task, value) => {
   if (task === "quiz") return validateTutorQuiz(value);
   if (task === "flashcards") return validateTutorFlashcards(value);
   if (task === "study_plan") return validateTutorStudyPlan(value);
+  if (task === "answer_feedback") return validateTutorAnswerFeedback(value);
   return false;
 };
 
@@ -559,7 +653,14 @@ const verifyPublicConfig = (config) => {
   return "";
 };
 
-const modeById = (id) => MODE_OPTIONS.find((mode) => mode.id === id) || MODE_OPTIONS[0];
+const modeById = (id) => MODE_OPTIONS.find((mode) => mode.id === id) || HIDDEN_MODES.find((mode) => mode.id === id) || MODE_OPTIONS[0];
+// The composer only ever holds a listed mode; a hidden one reopens as its
+// `composerMode`, or Explain.
+const composerModeFor = (id) => {
+  const mode = modeById(id);
+  if (!mode.hidden) return mode;
+  return MODE_OPTIONS.find((item) => item.id === mode.composerMode) || MODE_OPTIONS[0];
+};
 const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.label || "Balanced";
 
 /**
@@ -653,70 +754,6 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
   );
 };
 
-const optionLetter = (index) => String.fromCharCode(65 + index);
-
-const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSource }) => {
-  const [answers, setAnswers] = useState({});
-  const [checked, setChecked] = useState({});
-  // "Check answer" is replaced by its feedback; focus follows it there.
-  const focusFeedbackRef = useRef("");
-  const cite = (text, className) => <InlineRichText className={className} text={text} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} />;
-  return (
-    <div className="ai-tutor__quiz">
-      <div className="ai-tutor__result-title"><FileQuestion size={20} aria-hidden="true" /><div><h4>{quiz.title}</h4><p>{cite(quiz.instructions)}</p></div></div>
-      {quiz.questions.map((question, questionIndex) => {
-        const chosen = answers[question.id];
-        const revealed = checked[question.id];
-        const correct = chosen === question.correctIndex;
-        const answerLetter = optionLetter(question.correctIndex);
-        return (
-          <fieldset className="ai-tutor__quiz-question" key={question.id}>
-            <legend><span className="ai-tutor__quiz-number">{questionIndex + 1}</span>{cite(question.prompt, "ai-tutor__quiz-prompt")}</legend>
-            <span className="ai-tutor__difficulty-tag">{question.difficulty}</span>
-            <div className="ai-tutor__quiz-options">
-              {question.options.map((option, optionIndex) => {
-                const isCorrect = revealed && optionIndex === question.correctIndex;
-                const isIncorrect = revealed && optionIndex === chosen && !correct;
-                return (
-                  <label className={`${isCorrect ? "is-correct" : ""} ${isIncorrect ? "is-incorrect" : ""}`} key={`${question.id}-${optionIndex}`}>
-                    <input
-                      type="radio"
-                      name={`quiz-${messageId}-${question.id}`}
-                      checked={chosen === optionIndex}
-                      disabled={revealed}
-                      onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))}
-                    />
-                    <span className="ai-tutor__quiz-option-text">
-                      <span className="ai-tutor__option-letter">{optionLetter(optionIndex)}.</span> {cite(option)}
-                      {(isCorrect || isIncorrect) && <span className={`ai-tutor__option-mark ${isCorrect ? "is-correct" : "is-incorrect"}`}>{isCorrect ? <Check size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}<span>{isCorrect ? (optionIndex === chosen ? "Your answer · correct" : "Correct answer") : "Your answer · incorrect"}</span></span>}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-            {!revealed ? (
-              <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={!Number.isSafeInteger(chosen)} onClick={() => { focusFeedbackRef.current = question.id; setChecked((current) => ({ ...current, [question.id]: true })); }}>Check answer</button>
-            ) : (
-              <div
-                className={correct ? "ai-tutor__quiz-feedback is-correct" : "ai-tutor__quiz-feedback is-incorrect"}
-                tabIndex={-1}
-                ref={(node) => {
-                  if (!node || focusFeedbackRef.current !== question.id) return;
-                  focusFeedbackRef.current = "";
-                  node.focus({ preventScroll: true });
-                }}
-              >
-                <strong>{correct ? `Correct — ${answerLetter} is right.` : `Not quite — the correct answer is ${answerLetter}.`}</strong>
-                <p>{cite(question.explanation)}</p>
-              </div>
-            )}
-          </fieldset>
-        );
-      })}
-    </div>
-  );
-};
-
 const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSource }) => {
   const [selected, setSelected] = useState(() => cards.map((_, index) => index));
   const [expanded, setExpanded] = useState({});
@@ -799,8 +836,25 @@ const StudyPlanResult = ({ plan, citationSources, webSources, onNavigateSource }
   </div>
 );
 
-const AssistantMessage = ({ message, onCreateFlashcardDrafts, onNavigateSource, streaming = false }) => {
-  if (message.mode === "quiz" && validateTutorQuiz(message.data)) return <QuizResult quiz={message.data} messageId={message.id} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
+const AssistantMessage = ({ message, onCreateFlashcardDrafts, onNavigateSource, streaming = false, study = {} }) => {
+  const cite = (text, className) => <InlineRichText className={className} text={text} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
+  // The quiz and answer-check views load on first use (TutorQuiz.jsx).
+  const viewNote = (loading, failed) => (
+    <p className="ai-tutor__muted">{study.viewStatus === "error" ? <>{failed} <button className="ai-tutor__text-button" type="button" onClick={study.onRetryView}>Try again</button></> : loading}</p>
+  );
+  if (message.mode === "quiz" && validateTutorQuiz(message.data)) {
+    const { QuizView, viewStatus: _viewStatus, onRetryView: _onRetryView, ...quizProps } = study;
+    return QuizView ? <QuizView quiz={message.data} message={message} cite={cite} {...quizProps} /> : viewNote("Loading the quiz…", "The quiz could not be shown.");
+  }
+  if (message.mode === "feedback" && validateTutorAnswerFeedback(message.data)) {
+    const { FeedbackView } = study;
+    return FeedbackView ? <FeedbackView feedback={message.data} message={message} question={study.feedbackQuestion} cite={cite} onAnswerCheck={study.onAnswerCheck} /> : viewNote("Loading the answer check…", "The answer check could not be shown.");
+  }
+  if (message.mode === "interview-practice" && validateTutorAnswerFeedback(message.data) && practiceQuestionIdFrom(message)) {
+    // The rubric view loads with the authored bank (TFEAT-06).
+    const { Rubric, ...rubricProps } = study;
+    return Rubric ? <Rubric feedback={message.data} message={message} cite={cite} {...rubricProps} /> : <p className="ai-tutor__muted">{study.bankStatus === "error" ? "The rubric for this answer could not be loaded." : "Loading the rubric…"}</p>;
+  }
   if (message.mode === "flashcards" && validateTutorFlashcards(message.data)) return <FlashcardResult cards={message.data.cards} message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />;
   if (message.mode === "study-plan" && validateTutorStudyPlan(message.data)) return <StudyPlanResult plan={message.data} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
   return <SafeResponseText text={message.content} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} streaming={streaming} />;
@@ -908,7 +962,7 @@ const ResponseApproach = ({ message }) => {
   );
 };
 
-const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReusePrompt, onSaveAnswerNote, requestBusy = false }) => {
+const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReusePrompt, onSaveAnswerNote, requestBusy = false, listen = null }) => {
   const saveHintId = useId();
   const [panel, setPanel] = useState("");
   const [copyStatus, setCopyStatus] = useState("idle");
@@ -949,14 +1003,37 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
         {canSaveNote && <button type="button" aria-disabled={noteStatus === "saved" || undefined} aria-describedby={saveHintId} onClick={saveNote}>{noteStatus === "saved" ? <Check size={15} aria-hidden="true" /> : <NotebookPen size={15} aria-hidden="true" />} {noteStatus === "saved" ? "Saved to notes" : "Save to notes"}</button>}
         {message.role === "assistant" && hasEvidence && <button type="button" aria-expanded={panel === "sources"} onClick={() => togglePanel("sources")}><BookOpen size={15} aria-hidden="true" /> Sources <span className="ai-tutor__action-count">{message.citationSources.length + message.webSources.length}</span></button>}
         {message.role === "assistant" && <button type="button" aria-expanded={panel === "approach"} onClick={() => togglePanel("approach")}><Sparkles size={15} aria-hidden="true" /> Approach</button>}
+        {/* Listen, then Pause/Resume and Stop while this answer is read. */}
+        {listen && (listen.state === "idle"
+          ? <button type="button" className="ai-tutor__listen" onClick={listen.onListen}><Volume2 size={15} aria-hidden="true" /> Listen<span className="visually-hidden"> to this answer</span></button>
+          : <>
+            <button type="button" className="ai-tutor__listen is-active" onClick={listen.onTogglePause}>{listen.state === "paused" ? <Play size={15} aria-hidden="true" /> : <Pause size={15} aria-hidden="true" />} {listen.state === "paused" ? "Resume" : "Pause"}<span className="visually-hidden"> reading this answer</span></button>
+            <button type="button" className="ai-tutor__listen-stop" onClick={listen.onStop}><Square size={13} aria-hidden="true" /> Stop<span className="visually-hidden"> reading</span></button>
+          </>)}
       </div>
       {canSaveNote && <span className="visually-hidden" id={saveHintId}>{noteStatus === "saved" ? "This answer is in your Notebook as a labeled AI note." : "Saves this answer to your Notebook as a labeled AI note."}</span>}
-      <span className="ai-tutor__copy-status" role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : ""}</span>
+      {/* One polite region for copy results and Listen problems; a Listen
+          problem is also shown, since nothing else says why reading stopped. */}
+      <span className={`ai-tutor__copy-status${copyStatus === "idle" && listen?.error ? " is-visible" : ""}`} role="status" aria-live="polite">{copyStatus === "copied" ? message.role === "assistant" ? "Response copied as Markdown." : "Request copied." : copyStatus === "error" ? "Copy failed. Select the text and copy it manually." : listen?.error || ""}</span>
       {panel === "sources" && <ResponseEvidence message={message} onNavigateSource={onNavigateSource} />}
       {panel === "approach" && <ResponseApproach message={message} />}
     </>
   );
 };
+
+/**
+ * One-tap next steps under the newest answer (TFEAT-02): a wrapping group of
+ * native buttons, separate from the message actions, each a visible question
+ * the learner can read in the conversation once it is sent.
+ */
+const FollowUps = ({ items, disabled = false, onChoose }) => (
+  <div className="ai-tutor__follow-ups" role="group" aria-label="Follow up on this answer">
+    <p className="ai-tutor__follow-ups-label" aria-hidden="true">Follow up</p>
+    <div className="ai-tutor__follow-ups-list">
+      {items.map((item) => <button type="button" disabled={disabled} onClick={() => onChoose(item)} key={item.id}>{item.label}</button>)}
+    </div>
+  </div>
+);
 
 /**
  * Secure learner-facing AI workspace.
@@ -967,7 +1044,12 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
  * - initialHistory / historyTombstones / onHistoryChange: optional parent-owned local persistence
  * - onNavigateSource(source, { citation, sourceId }): opens an exact cited source
  * - onCreateFlashcardDrafts(cards, metadata): persists learner-selected drafts
+ * - onSaveMistakes(drafts): records quiz or interview-practice misses in the
+ *   mistake notebook and returns { added, merged }
  * - retrieveLibrary(query, options): optional local retrieval adapter
+ * - speech: the app's speech engine (useSpeech), to read answers aloud
+ * - studyContext: { recent, last, next, mistakes, reviewItems } for the
+ *   suggested starts shown while the conversation is empty
  * - onClose: optional close action for hosts that show the tutor as a panel
  *
  * The component intentionally has no API-key or model-selection prop. Requests
@@ -988,9 +1070,12 @@ export default function AiTutor({
   onHistoryChange,
   onNavigateSource,
   onCreateFlashcardDrafts,
+  onSaveMistakes,
   onSaveAnswerNote,
   onInteractionChange,
   retrieveLibrary,
+  studyContext = null,
+  speech = null,
   onClose,
   className = "",
 }) {
@@ -1000,11 +1085,20 @@ export default function AiTutor({
   const sendSummaryId = useId();
   const counterId = useId();
   const pairingErrorId = useId();
+  const modeDescriptionId = useId();
+  const optionsSummaryId = useId();
+  const keyHintId = useId();
+  const startersHeadingId = useId();
+  const newTopicHintId = useId();
+  const sessionTitleId = useId();
   const sourceNumbersRef = useRef(new Map());
   const nextSourceNumberRef = useRef(1);
   const requestControllerRef = useRef(null);
   const lastRequestRef = useRef(null);
   const conversationRef = useRef(null);
+  // The end of the conversation, observed to know whether the newest text
+  // is on screen (TFEAT-08).
+  const conversationEndRef = useRef(null);
   const followStreamRef = useRef(true);
   const promptRef = useRef(null);
   const activeResponseRef = useRef(null);
@@ -1013,10 +1107,23 @@ export default function AiTutor({
   // when the control that had focus is disabled or unmounted.
   const headingRef = useRef(null);
   const sendButtonRef = useRef(null);
-  const stopButtonRef = useRef(null);
+  const composerRef = useRef(null);
+  // When the current request started, so a double tap on Send does not land
+  // on the Stop it turns into.
+  const requestStartedAtRef = useRef(0);
   const streamingArticleRef = useRef(null);
   const requestNoticeRef = useRef(null);
   const focusStopOnMountRef = useRef(false);
+  // A one-tap action's button goes away when its request starts; focus
+  // moves to the answer in progress instead, and on to the answer after.
+  const focusStreamOnMountRef = useRef(false);
+  // The document a starter or a follow-up is about, used to favour it in
+  // Library-first retrieval for the next question sent from the composer.
+  const retrievalHintRef = useRef("");
+  // Library search words for a prepared question from another screen, used
+  // while the question is sent as it was placed: its instructions ("work
+  // through this mistake…") name no topic.
+  const retrievalQueryHintRef = useRef({ prompt: "", query: "" });
   const pendingFocusRef = useRef(null);
   // The conversation's last observed scroll position and height, to tell a
   // learner scrolling up from the tutor following new text downwards.
@@ -1024,12 +1131,34 @@ export default function AiTutor({
   const userScrolledRef = useRef(false);
   const [announcement, setAnnouncement] = useState({ text: "", id: 0 });
   const announce = useCallback((text) => setAnnouncement((current) => ({ text, id: current.id + 1 })), []);
+  // Following an answer keeps its newest text in view, just above the
+  // docked composer. Wide screens scroll the conversation's own scroller to
+  // its end; the page itself only ever moves down, and only as far as that
+  // end (or, on phones, the end of the conversation) needs.
+  const composerSpaceRef = useRef(0);
+  const [following, setFollowingState] = useState(true);
+  const setFollowing = useCallback((value) => {
+    followStreamRef.current = value;
+    setFollowingState(value);
+  }, []);
   const scrollConversationToEnd = useCallback(() => {
     const surface = conversationRef.current;
+    const end = conversationEndRef.current;
     if (!surface) return;
-    surface.scrollTop = surface.scrollHeight;
+    const ownScroller = getComputedStyle(surface).overflowY !== "visible" && surface.scrollHeight > surface.clientHeight + 1;
+    if (ownScroller) surface.scrollTop = surface.scrollHeight;
+    const edge = ownScroller ? surface : end;
+    if (!edge) return;
+    const visibleBottom = window.innerHeight - composerSpaceRef.current - 12;
+    const overshoot = edge.getBoundingClientRect().bottom - visibleBottom;
+    if (overshoot > 1) window.scrollBy({ top: overshoot, behavior: "instant" });
   }, []);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  // Phones pick the mode from a native select; wider screens show chips.
+  const compactModes = useMediaQuery("(max-width: 719px)");
+  // Enter sends only with a mouse or trackpad (TFEAT-10).
+  const finePointer = useMediaQuery(FINE_POINTER_QUERY);
   const sourceModeRefs = useRef({});
   const pairingInputRef = useRef(null);
   const [storedDraft] = useState(readTutorDraft);
@@ -1052,13 +1181,27 @@ export default function AiTutor({
   const inFlightRef = useRef(null);
   const [composerNotice, setComposerNotice] = useState("");
 
+  // The composer is sticky, so it is normally already in view: focus it in
+  // place, and scroll only when the tutor itself is out of view.
+  const focusComposer = useCallback(() => {
+    const field = promptRef.current;
+    if (!field?.isConnected) return;
+    field.focus({ preventScroll: true });
+    const box = field.getBoundingClientRect();
+    const top = Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0);
+    const nav = document.querySelector(".bottom-nav");
+    const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : window.innerHeight;
+    if (box.top < top || box.bottom > bottom) field.scrollIntoView({ block: "nearest", behavior: "instant" });
+  }, []);
+
   // Quick-insert (Reader selection → prompt). Each insert is applied once and
   // then consumed by the host, so a remount never brings back an excerpt that
   // was already sent. An unsent question the learner wrote is kept, the
-  // lecture is named, and the composer is revealed and focused.
+  // lecture is named, and the composer is revealed and focused. A prepared
+  // question from another screen (kind "prompt") is handled further down.
   const consumedInsertRef = useRef(null);
   useEffect(() => {
-    if (!insertPrompt?.text || consumedInsertRef.current === insertPrompt.nonce) return;
+    if (!insertPrompt?.text || insertPrompt.kind === "prompt" || consumedInsertRef.current === insertPrompt.nonce) return;
     consumedInsertRef.current = insertPrompt.nonce;
     const lecture = asTrimmedString(insertPrompt.title, 200);
     const inserted = `Explain this excerpt from my lecture${lecture ? ` “${lecture}”` : ""} in context:\n\n"${insertPrompt.text}"`;
@@ -1067,10 +1210,11 @@ export default function AiTutor({
       && !MODE_OPTIONS.some((mode) => mode.prompt === draft)
       && !draft.startsWith("Explain this excerpt from my lecture");
     setPrompt(asTrimmedString(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = "";
     setComposerNotice(`${keepDraft ? "Your unsent question was kept, and the" : "The"} selected excerpt from ${lecture ? `“${lecture}”` : "your lecture"} was added below. Review it, then send.`);
     onInsertConsumedRef.current?.(insertPrompt.nonce);
-    window.setTimeout(() => revealFocusedField(promptRef.current), 0);
-  }, [insertPrompt]);
+    window.setTimeout(focusComposer, 0);
+  }, [focusComposer, insertPrompt]);
   const initialTombstones = new Set((Array.isArray(historyTombstones) ? historyTombstones : []).filter((id) => typeof id === "string"));
   const [history, setHistory] = useState(() => normalizeHistory(initialHistory).filter((message) => !initialTombstones.has(message.id)));
   const [selectedSourceIds, setSelectedSourceIds] = useState(() => initiallySelectedSourceIds(sources));
@@ -1088,6 +1232,53 @@ export default function AiTutor({
   const [activeResponse, setActiveResponse] = useState(null);
   const [requestElapsed, setRequestElapsed] = useState(0);
   const [sourceWarning, setSourceWarning] = useState("");
+  // Quiz answers, confidence, checks and saves per quiz message (TFEAT-01),
+  // kept for this tab so leaving #/ai does not lose them.
+  const [quizStates, setQuizStates] = useState(readQuizStates);
+  // Interview practice (TFEAT-06): the track, the question being answered
+  // and its typed answer, and per graded answer the rubric points ticked and
+  // the learner's verdict, kept for this tab.
+  const [practice, setPractice] = useState(readPracticeState);
+  useEffect(() => { writePracticeState(practice); }, [practice]);
+  const updatePractice = useCallback((updater) => setPractice((current) => normalizePracticeState(typeof updater === "function" ? updater(current) : { ...current, ...updater })), []);
+  useEffect(() => { writeQuizStates(quizStates); }, [quizStates]);
+  const updateQuizState = useCallback((messageId, updater) => setQuizStates((current) => ({
+    ...current,
+    [messageId]: { ...normalizeQuizState(updater(normalizeQuizState(current[messageId]))), updatedAt: Date.now() },
+  })), []);
+  // Moving focus to a message on request needs a render to apply it.
+  const [, setFocusRequest] = useState(0);
+  // "Now", for the three-hour context break (TFEAT-13, interim): refreshed
+  // each minute, when the tab returns and after every change to the
+  // conversation. Send re-reads the time itself.
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState !== "hidden") setClock(Date.now()); };
+    const timer = window.setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
+  // Listen (TFEAT-09): which answer the app's speech engine is reading.
+  const speechRef = useRef(speech);
+  speechRef.current = speech;
+  const [speakingMessageId, setSpeakingMessageId] = useState("");
+  const [listenError, setListenError] = useState({ id: "", text: "" });
+  const tutorSpeechState = speech?.activeLabel === TUTOR_SPEECH_LABEL && ["speaking", "paused"].includes(speech?.status) ? speech.status : "idle";
+  // Why the engine stopped or paused a reading by itself (a synthesis
+  // error, or iOS interrupting it); shown with the answer being read.
+  const tutorSpeechError = speech?.activeLabel === TUTOR_SPEECH_LABEL && ["error", "paused"].includes(speech?.status) ? String(speech?.error || "") : "";
+  useEffect(() => {
+    if (tutorSpeechState === "idle" && speakingMessageId && !tutorSpeechError) setSpeakingMessageId("");
+  }, [speakingMessageId, tutorSpeechError, tutorSpeechState]);
+  // Stops the tutor's own reading, never a lecture's.
+  const stopTutorSpeech = useCallback(() => {
+    const engine = speechRef.current;
+    if (engine?.activeLabel === TUTOR_SPEECH_LABEL) engine.stop();
+  }, []);
+  useEffect(() => stopTutorSpeech, [stopTutorSpeech]);
   const currentMode = modeById(modeId);
   useEffect(() => {
     rememberTutorDraft({ prompt, modeId, sourceMode, difficulty, responseProfile });
@@ -1280,48 +1471,247 @@ export default function AiTutor({
   // seconds counter and streamed text are never live.
   const activeStage = activeResponse?.stage || "";
   const activeResponseId = activeResponse?.id || "";
+  // Grounded answers show staged progress (TVU-18); its steps, not every
+  // stage message, are announced.
+  const progressSteps = activeResponse ? tutorProgressSteps({
+    sourceMode: activeResponse.sourceMode,
+    phase: activeResponse.phase,
+    passages: activeResponse.phase === "retrieving" ? null : activeResponse.citationSources.length,
+    web: ["searching", "used"].includes(activeResponse.webFallbackStatus),
+    searched: activeResponse.searched === true,
+    structured: modeById(activeResponse.mode).structured === true,
+  }) : [];
+  const progressMessage = progressAnnouncement(progressSteps);
+  const announcementKey = progressSteps.length ? progressMessage : activeStage;
   useEffect(() => {
     // Effects, and the state updaters behind them, can run after the request
     // ended. Only the request still in flight (a ref written in program
     // order) may announce, so a stale phase never follows its outcome.
-    if (activeStage && activeResponseId && inFlightRef.current?.responseId === activeResponseId) announce(activeStage);
-  }, [activeResponseId, activeStage, announce]);
+    if (announcementKey && activeResponseId && inFlightRef.current?.responseId === activeResponseId) announce(announcementKey);
+  }, [activeResponseId, announcementKey, announce]);
   useEffect(() => {
     if (requestState.status === "loading" && inFlightRef.current && requestElapsed > 0 && requestElapsed % 30 === 0) announce(`Still working, ${requestElapsed} seconds so far.`);
   }, [announce, requestElapsed, requestState.status]);
 
   // A new answer starts at the end of the conversation. When Generate or
-  // Retry started it, focus moves to Stop (which also brings it into view);
-  // a Cmd/Ctrl+Enter send keeps focus in the question box.
+  // Retry started it, focus moves to Send, which has become Stop; a
+  // keyboard send keeps focus in the question box.
   useLayoutEffect(() => {
     if (!activeResponseId) return;
     scrollConversationToEnd();
-    if (focusStopOnMountRef.current) {
+    if (focusStreamOnMountRef.current) {
+      focusStreamOnMountRef.current = false;
       focusStopOnMountRef.current = false;
-      stopButtonRef.current?.focus();
+      streamingArticleRef.current?.focus({ preventScroll: true });
+    } else if (focusStopOnMountRef.current) {
+      focusStopOnMountRef.current = false;
+      sendButtonRef.current?.focus({ preventScroll: true });
     }
   }, [activeResponseId, scrollConversationToEnd]);
 
-  // Any scroll gesture while an answer is generating means the learner is
-  // reading something else; completion then does not move the page.
+  // While following, every update of the answer in progress (new text, a
+  // step, its sources) keeps its end in view, before the frame is painted.
+  useLayoutEffect(() => {
+    if (activeResponse && followStreamRef.current) scrollConversationToEnd();
+  }, [activeResponse, scrollConversationToEnd]);
+
+  // The sticky composer's height (plus its offset from the bottom) is
+  // published so scrolled-to content and focus stop above it instead of
+  // behind it.
+  const [composerSpace, setComposerSpace] = useState(0);
+  useLayoutEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return undefined;
+    const root = document.documentElement;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      // Large text on a small screen can make the dock taller than the room
+      // between the top bar and the bottom navigation, hiding the whole
+      // conversation behind it. Past about 60% of that room it stays in the
+      // page flow instead (back above 50%, so it does not flicker). The
+      // question box's own growth is left out, so typing never moves it.
+      const field = promptRef.current;
+      const fieldStyle = field ? getComputedStyle(field) : null;
+      const px = (value) => Number.parseFloat(value) || 0;
+      const oneLine = fieldStyle ? Math.max(px(fieldStyle.minHeight), px(fieldStyle.lineHeight) + px(fieldStyle.paddingTop) + px(fieldStyle.paddingBottom) + px(fieldStyle.borderTopWidth) + px(fieldStyle.borderBottomWidth)) : 0;
+      const growth = field ? Math.max(0, field.offsetHeight - oneLine) : 0;
+      const top = Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0);
+      const nav = document.querySelector(".bottom-nav");
+      const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : window.innerHeight;
+      const share = (composer.offsetHeight - growth) / Math.max(1, bottom - top);
+      const undocked = composer.dataset.dock === "off";
+      if (!undocked && share > 0.6) composer.dataset.dock = "off";
+      else if (undocked && share < 0.5) delete composer.dataset.dock;
+      const style = getComputedStyle(composer);
+      const offset = style.position === "sticky" ? Number.parseFloat(style.bottom) || 0 : 0;
+      const space = style.position === "sticky" ? Math.ceil(composer.offsetHeight + offset) : 0;
+      root.style.setProperty("--ai-composer-space", `${space}px`);
+      root.style.scrollPaddingBottom = space ? `${space + 12}px` : "";
+      composerSpaceRef.current = space;
+      setComposerSpace((current) => Math.abs(current - space) > 2 ? space : current);
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+    observer?.observe(composer);
+    window.addEventListener("resize", schedule);
+    measure();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      if (frame) cancelAnimationFrame(frame);
+      root.style.removeProperty("--ai-composer-space");
+      root.style.scrollPaddingBottom = "";
+    };
+  }, []);
+
+  // The question box grows with its text (up to about six lines, then it
+  // scrolls), including text placed there by a mode, Ask AI or a restore.
+  useLayoutEffect(() => {
+    const field = promptRef.current;
+    if (!field) return undefined;
+    const fit = () => {
+      field.style.height = "auto";
+      const borders = field.offsetHeight - field.clientHeight;
+      field.style.height = `${field.scrollHeight + borders}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [prompt]);
+
+  // While an answer is generating, any scroll gesture means the learner is
+  // reading something else, so completion does not move the page; a gesture
+  // upwards (wheel, a finger dragging down, PageUp/ArrowUp/Home, or the page
+  // itself moving up) stops following. The tutor's own scrolls only go down,
+  // so they never stop it.
   useEffect(() => {
     if (requestState.status !== "loading") return undefined;
-    const markScrolled = () => { userScrolledRef.current = true; };
+    let touchY = null;
+    let pageY = window.scrollY;
+    let pageHeight = document.documentElement.scrollHeight;
+    const readingElsewhere = () => { userScrolledRef.current = true; };
+    const readBack = () => {
+      userScrolledRef.current = true;
+      setFollowing(false);
+    };
+    const onWheel = (event) => { if (event.deltaY < 0) readBack(); else readingElsewhere(); };
+    const onTouchStart = (event) => { touchY = event.touches?.[0]?.clientY ?? null; };
+    const onTouchMove = (event) => {
+      const y = event.touches?.[0]?.clientY;
+      if (Number.isFinite(y) && touchY !== null && y - touchY > 8) readBack();
+      else readingElsewhere();
+      if (Number.isFinite(y)) touchY = y;
+    };
     const onKeyDown = (event) => {
-      if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key) && !event.target?.closest?.("textarea, input, select, [contenteditable='true']")) markScrolled();
+      if (event.target?.closest?.("textarea, input, select, [contenteditable='true']")) return;
+      if (["PageUp", "ArrowUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) readBack();
+      else if (["PageDown", "End", "ArrowDown", " "].includes(event.key)) readingElsewhere();
     };
-    window.addEventListener("wheel", markScrolled, { passive: true });
-    window.addEventListener("touchmove", markScrolled, { passive: true });
+    const onPageScroll = () => {
+      const y = window.scrollY;
+      const height = document.documentElement.scrollHeight;
+      if (isPageReadBack({ y, previousY: pageY, height, previousHeight: pageHeight, viewportHeight: window.innerHeight })) readBack();
+      pageY = y;
+      pageHeight = height;
+    };
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onPageScroll, { passive: true });
     return () => {
-      window.removeEventListener("wheel", markScrolled);
-      window.removeEventListener("touchmove", markScrolled);
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onPageScroll);
     };
-  }, [requestState.status]);
+  }, [requestState.status, setFollowing]);
+
+  // Whether the end of the conversation is on screen, above the docked
+  // composer. Returning there while an answer streams resumes following.
+  const [atLatest, setAtLatest] = useState(true);
+  useEffect(() => {
+    const target = conversationEndRef.current;
+    if (!target || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver(([entry]) => {
+      setAtLatest(entry.isIntersecting);
+      if (entry.isIntersecting && inFlightRef.current) setFollowing(true);
+    }, { rootMargin: `0px 0px -${Math.max(0, composerSpace)}px 0px` });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [composerSpace, setFollowing]);
+
+  // After an answer lands while the learner is reading elsewhere, the pill
+  // offers it for eight seconds.
+  const [readyAnswerId, setReadyAnswerId] = useState("");
+  useEffect(() => {
+    if (!readyAnswerId) return undefined;
+    const timer = window.setTimeout(() => setReadyAnswerId(""), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [readyAnswerId]);
+  useEffect(() => {
+    if (atLatest) setReadyAnswerId("");
+  }, [atLatest]);
 
   const historyRef = useRef(history);
   historyRef.current = history;
+  // A quiz removed from the conversation takes its state with it. An empty
+  // history may simply not be loaded yet, so it prunes nothing.
+  useEffect(() => {
+    if (!history.length) return;
+    const live = new Set(history.map((message) => message.id));
+    setQuizStates((current) => pruneQuizStates(current, live));
+  }, [history]);
+  useEffect(() => { setClock(Date.now()); }, [history]);
+  // Turns before the latest break of more than three hours are not sent.
+  const contextStart = tutorContextStart(history, clock);
+  // The Socratic or Interview session the conversation ends with (TFEAT-05),
+  // derived from the turns the model can still see.
+  const session = useMemo(() => tutorSession(history.slice(contextStart)), [contextStart, history]);
+  // The authored interview bank loads with Interview mode, or when the
+  // conversation holds graded practice that needs its rubric.
+  const needsInterviewBank = currentMode.id === "interview" || history.some((message) => message.mode === "interview-practice");
+  // The practice views and the bank helpers load with it, off the offline
+  // shell: `ui` holds the components, `kit` the bank's tracks and questions.
+  const [interviewBank, setInterviewBank] = useState({ status: "idle", ui: null, kit: null });
+  useEffect(() => {
+    if (!needsInterviewBank || interviewBank.status !== "idle") return;
+    setInterviewBank({ status: "loading", ui: null, kit: null });
+    Promise.all([import("./TutorPractice.jsx"), import("../data/interviewTracks.v1.json")])
+      .then(([ui, bank]) => setInterviewBank({ status: "ready", ui, kit: ui.createPracticeKit(bank.default) }))
+      .catch(() => setInterviewBank({ status: "error", ui: null, kit: null }));
+  }, [interviewBank.status, needsInterviewBank]);
+  const practiceKit = interviewBank.kit;
+  // The quiz and answer-check views load while a quiz is asked for or shown,
+  // off the offline shell (route screens have a fixed install budget).
+  const needsQuizViews = currentMode.id === "quiz"
+    || ["quiz", "feedback"].includes(activeResponse?.mode)
+    || history.some((message) => message.role === "assistant" && (message.mode === "quiz" || message.mode === "feedback"));
+  const [quizViews, setQuizViews] = useState({ status: "idle", ui: null });
+  useEffect(() => {
+    if (!needsQuizViews || quizViews.status !== "idle") return;
+    setQuizViews({ status: "loading", ui: null });
+    import("./TutorQuiz.jsx")
+      .then((ui) => setQuizViews({ status: "ready", ui }))
+      .catch(() => setQuizViews({ status: "error", ui: null }));
+  }, [needsQuizViews, quizViews.status]);
+  const retryQuizViews = () => setQuizViews({ status: "idle", ui: null });
+  const practiceQuestion = practiceKit?.questions.get(practice.questionId) || null;
+  // A graded answer ends the question: the card is ready for the next one.
+  useEffect(() => {
+    if (!practice.pendingId) return;
+    const index = history.findIndex((message) => message.id === practice.pendingId);
+    if (index < 0 || !history.slice(index + 1).some((message) => message.role === "assistant" && message.mode === "interview-practice" && message.data && !message.incomplete)) return;
+    updatePractice((current) => ({
+      ...current,
+      pendingId: "",
+      questionId: "",
+      answer: "",
+      practiced: [...current.practiced.filter((id) => id !== current.questionId), current.questionId].filter(Boolean),
+    }));
+  }, [history, practice.pendingId, updatePractice]);
   const lastExternalHistoryRef = useRef({
     signature: historySignature(normalizedExternalHistory),
     history: normalizedExternalHistory,
@@ -1379,8 +1769,11 @@ export default function AiTutor({
     if (surface?.contains(target)) surface.scrollTop = Math.max(0, target.offsetTop - 8);
     const topbar = document.querySelector(".app-topbar")?.getBoundingClientRect();
     const visibleTop = Math.max(0, topbar?.bottom ?? 0) + 12;
+    // The start belongs near the top of the band above the docked composer,
+    // so most of the answer shows.
+    const visibleBottom = window.innerHeight - composerSpaceRef.current;
     const top = target.getBoundingClientRect().top;
-    if (top < visibleTop || top > window.innerHeight * 0.66) window.scrollBy({ top: top - visibleTop, behavior: scrollBehavior() });
+    if (top < visibleTop || top > visibleTop + (visibleBottom - visibleTop) * 0.35) window.scrollBy({ top: top - visibleTop, behavior: scrollBehavior() });
   }, []);
 
   // Applies focus/scroll requested by the last state change once the target
@@ -1393,7 +1786,8 @@ export default function AiTutor({
       : pending.kind === "notice" ? requestNoticeRef.current : headingRef.current;
     if (!target) return;
     pendingFocusRef.current = null;
-    if (pending.scroll) revealMessageStart(target);
+    if (pending.scroll && pending.kind === "notice") target.scrollIntoView({ block: "nearest", behavior: "instant" });
+    else if (pending.scroll) revealMessageStart(target);
     if (pending.focus) target.focus({ preventScroll: true });
   });
 
@@ -1465,100 +1859,37 @@ export default function AiTutor({
     }).slice(0, MAX_SELECTED_SOURCES);
   }, [normalizedSources]);
 
-  const configuredInputLimit = configState.config?.limits?.maxInputChars;
-  const configuredRequestByteLimit = configState.config?.responseProfiles?.maxRequestUtf8Bytes?.[responseProfile]
-    ?? configState.config?.limits?.profileMaxRequestUtf8Bytes?.[responseProfile]
-    ?? configState.config?.limits?.maxRequestUtf8Bytes;
-  const inputLimit = Number.isSafeInteger(configuredInputLimit) && configuredInputLimit >= 2_000 && configuredInputLimit <= 100_000
-    ? Math.min(configuredInputLimit, configuredRequestByteLimit || configuredInputLimit)
-    : 16_000;
-  const promptLimit = Math.min(MAX_PROMPT_CHARS, Math.max(800, Math.floor(inputLimit * 0.48)));
-  const promptForSources = useCallback((promptText, sourceSnapshot) => {
-    const citationInstruction = sourceSnapshot.length
-      ? "Use the supplied [S#] labels to cite every source-grounded claim. Do not cite a label that was not supplied."
-      : "No relevant library evidence was supplied. Clearly label claims that rely on general knowledge or attached web evidence.";
-    return `${promptText.trim()}\n\n${citationInstruction}`;
-  }, []);
-  const outboundPrompt = promptForSources(prompt, selectedSources);
-  const reservedContext = selectedSources.length ? Math.min(4_000, Math.max(600, Math.floor(inputLimit * 0.35))) : 0;
-  const historyBudget = Math.max(0, Math.min(
-    Math.floor(inputLimit * 0.25),
-    inputLimit - outboundPrompt.length - reservedContext - 300,
-  ));
-  const conversationWindow = useMemo(() => buildConversationWindow(history, {
-    maxMessages: MAX_SERVER_HISTORY,
-    characterBudget: historyBudget,
-    maxMessageCharacters: MAX_HISTORY_MESSAGE_CHARS,
-    summaryBudget: Math.min(2_400, Math.max(800, Math.floor(inputLimit * 0.12))),
-  }), [history, historyBudget, inputLimit]);
+  const requestLimits = useMemo(() => tutorRequestLimits(configState.config, responseProfile), [configState.config, responseProfile]);
+  const { inputLimit, maximumBytes: configuredRequestByteLimit, promptLimit } = requestLimits;
+  const conversationWindow = useMemo(
+    () => tutorConversationWindow(history.slice(contextStart), { prompt, sources: selectedSources.length > 0, inputLimit }),
+    [contextStart, history, inputLimit, prompt, selectedSources.length],
+  );
   const outboundHistory = conversationWindow.messages;
-  // Small local models become unreliable when an open-ended answer competes
-  // with a large source excerpt. Each mode may therefore publish a stricter
-  // working-set limit than the server's absolute safety ceiling. The default
-  // Explain path is intentionally proven against the shipped Qwen 4B model.
-  const buildContext = useCallback((sourceSnapshot, budget) => {
-    if (!sourceSnapshot.length) return "";
-    return buildTutorContext(sourceSnapshot, budget).context;
-  }, []);
-
   const selectedMaxOutputTokens = outputTokensForProfile({
     profile: responseProfile,
     responseProfiles: configState.config?.responseProfiles,
     maximum: configState.config?.limits?.maxOutputTokens,
     structured: currentMode.structured,
   });
-  const buildFittedRequest = useCallback((
-    sourceSnapshot,
-    displayPrompt = prompt.trim(),
-    historySnapshot = outboundHistory,
-    conversationSummarySnapshot = conversationWindow.conversationSummary,
-    webSearchSnapshot = effectiveWebSearch,
-  ) => {
-    const preparedPrompt = promptForSources(displayPrompt, sourceSnapshot);
-    const historyCharacters = historySnapshot.reduce((total, message) => total + message.content.length, 0);
-    const availableContextBudget = Math.max(0, Math.min(
-      currentMode.contextLimit || 16_000,
-      inputLimit - preparedPrompt.length - historyCharacters - conversationSummarySnapshot.length - 300,
-    ));
-    let fittedCitationNumbers = [];
-    const buildFittedContext = (budget) => {
-      const built = buildTutorContext(sourceSnapshot, budget);
-      fittedCitationNumbers = built.includedCitationNumbers;
-      return built.context;
-    };
-    const makePayload = (context) => ({
-      contract: AI_REQUEST_CONTRACT_ID,
-      task: currentMode.task,
-      prompt: preparedPrompt,
-      context,
-      contextCitations: [...fittedCitationNumbers],
-      documentTitle: sourceSnapshot.length === 1 ? sourceSnapshot[0].title : sourceSnapshot.length ? `${sourceSnapshot.length} selected Lumen sources` : "General AI/ML learning question",
-      difficulty,
-      responseProfile,
-      history: historySnapshot,
-      conversationSummary: conversationSummarySnapshot.slice(0, 3_000),
-      responseFormat: currentMode.structured ? "structured" : "markdown",
-      webSearch: webSearchSnapshot === true,
-      maxOutputTokens: selectedMaxOutputTokens,
-    });
-    const fitted = fitAiRequestContext({
-      maximumBytes: configuredRequestByteLimit,
-      maximumContextCharacters: availableContextBudget,
-      buildContext: buildFittedContext,
-      buildPayload: makePayload,
-    });
-    return {
-      ...fitted,
-      includedCitationNumbers: [...fittedCitationNumbers],
-    };
-  }, [buildContext, configuredRequestByteLimit, conversationWindow.conversationSummary, currentMode.contextLimit, currentMode.structured, currentMode.task, difficulty, effectiveWebSearch, inputLimit, outboundHistory, prompt, promptForSources, responseProfile, selectedMaxOutputTokens]);
   const requestPreviewSources = useMemo(
     () => sourceMode === "library-first" && typeof retrieveLibrary === "function" ? [] : selectedSources,
     [retrieveLibrary, selectedSources, sourceMode],
   );
-  const requestPreview = useMemo(() => buildFittedRequest(requestPreviewSources), [buildFittedRequest, requestPreviewSources]);
+  // The composer's own request, fitted exactly as Send will fit it: the byte
+  // count and the Send state below describe the body that would be sent.
+  const requestPreview = useMemo(() => fitTutorRequest({
+    mode: currentMode,
+    prompt: prompt.trim(),
+    sources: requestPreviewSources,
+    history: outboundHistory,
+    conversationSummary: conversationWindow.conversationSummary,
+    webSearch: effectiveWebSearch,
+    difficulty,
+    responseProfile,
+    config: configState.config,
+  }), [configState.config, conversationWindow.conversationSummary, currentMode, difficulty, effectiveWebSearch, outboundHistory, prompt, requestPreviewSources, responseProfile]);
   const contextPreview = requestPreview.context;
-  const requestPayloadPreview = requestPreview.payload;
   const requestPayloadBytes = requestPreview.bytes;
   const providerControlsUrl = useMemo(() => {
     try {
@@ -1568,9 +1899,10 @@ export default function AiTutor({
       return "";
     }
   }, [configState.config?.privacy?.providerDataControlsUrl]);
-  const promptTooLong = prompt.trim().length > promptLimit;
-  const contextTooSmall = sourceMode !== "library-first" && selectedSources.length > 0 && requestPreview.contextBudget < minimumContextBudget(selectedSources);
-  const requestTooLarge = Number.isSafeInteger(configuredRequestByteLimit) && requestPayloadBytes > configuredRequestByteLimit;
+  const composerIssue = tutorRequestIssue({ prompt, promptLimit, fitted: requestPreview, sources: selectedSources, requireAllSources: sourceMode !== "library-first" });
+  const promptTooLong = composerIssue === "prompt-too-long";
+  const contextTooSmall = composerIssue === "context-too-small";
+  const requestTooLarge = composerIssue === "request-too-large";
   const webSearchAvailable = configState.config?.webSearch?.macToolAvailable === true;
   // Deep sends `think: true` upstream, so it is offered only when the
   // installed model actually attests Ollama thinking support (AI-002).
@@ -1589,8 +1921,23 @@ export default function AiTutor({
     const controller = new AbortController();
     const requestStartedAt = globalThis.performance?.now?.() ?? Date.now();
     requestControllerRef.current = controller;
+    // A new question stops an answer being read aloud.
+    stopTutorSpeech();
     let citationSources = requestSpec.sources;
     let payload = requestSpec.payload;
+    // Every re-fit uses the request's own mode, depth, profile and config
+    // snapshot, never whatever the composer shows by then.
+    const refit = (sourceSnapshot, webSearch) => fitTutorRequest({
+      mode: requestSpec.mode,
+      prompt: requestSpec.displayPrompt,
+      sources: sourceSnapshot,
+      history: requestSpec.conversationHistory,
+      conversationSummary: requestSpec.conversationMemory?.summary || "",
+      webSearch,
+      difficulty: requestSpec.difficulty,
+      responseProfile: requestSpec.responseProfile,
+      config: requestSpec.config,
+    });
     let retrievalTrace = null;
     let streamedText = "";
     let streamedWebSources = [];
@@ -1623,7 +1970,9 @@ export default function AiTutor({
       }),
     };
     setRequestState({ status: "loading", error: null });
-    followStreamRef.current = true;
+    requestStartedAtRef.current = globalThis.performance?.now?.() ?? Date.now();
+    setFollowing(true);
+    setReadyAnswerId("");
     userScrolledRef.current = false;
     pendingFocusRef.current = null;
     setComposerNotice("");
@@ -1640,7 +1989,9 @@ export default function AiTutor({
       webFallbackStatus: requestSpec.webSearch ? "armed" : "off",
       responseProfile: requestSpec.responseProfile,
       sourceMode: requestSpec.sourceMode,
-      stage: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "Searching your library…" : "Preparing grounded context…",
+      stage: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "Searching your library…" : requestSpec.stageHint || "Preparing grounded context…",
+      phase: requestSpec.sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "retrieving" : "drafting",
+      searched: false,
     };
     activeResponseRef.current = initialActiveResponse;
     setActiveResponse(initialActiveResponse);
@@ -1654,11 +2005,8 @@ export default function AiTutor({
     };
     const flushStream = () => {
       streamFrameRef.current = 0;
+      // Following happens as each update commits (see below).
       updateActiveResponse((current) => ({ ...current, content: streamedText }));
-      // Follow inside the conversation only; the page itself never moves
-      // while a learner reads elsewhere. Check again when the frame runs: a
-      // learner's scroll-up in between has already stopped following.
-      if (followStreamRef.current) requestAnimationFrame(() => { if (followStreamRef.current) scrollConversationToEnd(); });
     };
     const queueDelta = (delta) => {
       if (typeof delta !== "string" || !delta || streamTruncated) return;
@@ -1677,7 +2025,15 @@ export default function AiTutor({
         queueDelta(event.delta ?? event.text ?? event.token ?? "");
       } else if (["status", "stage", "phase"].includes(event.type)) {
         const stage = asTrimmedString(event.message ?? event.stage ?? event.phase, 160);
-        if (stage) updateActiveResponse((current) => ({ ...current, stage }));
+        const phase = event.type === "phase" ? asTrimmedString(event.phase, 40) : "";
+        if (stage || phase) {
+          updateActiveResponse((current) => ({
+            ...current,
+            stage: stage || current.stage,
+            phase: phase || current.phase,
+            searched: current.searched || phase === "searching",
+          }));
+        }
       } else if (["source", "sources", "web_sources"].includes(event.type)) {
         const incoming = event.type === "source" ? [event.source || event] : event.sources;
         streamedWebSources = [...new Map(normalizeWebSources([...streamedWebSources, ...(Array.isArray(incoming) ? incoming : [])]).map((source) => [source.url, source])).values()];
@@ -1692,13 +2048,16 @@ export default function AiTutor({
         let result = null;
         let retrievalError = null;
         try {
-          result = await retrieveLibrary(requestSpec.displayPrompt, {
+          // An action may retrieve with its own query and favour the document
+          // it is about (a cited lesson, a mistake's source) over the one open.
+          const selectedDocumentId = requestSpec.selectedDocumentId || requestSpec.openLessonId;
+          result = await retrieveLibrary(requestSpec.retrievalQuery || requestSpec.displayPrompt, {
             signal: controller.signal,
             maxPassages: MAX_SELECTED_SOURCES,
             maxBytes: requestSpec.retrievalMaxBytes,
             currentSources: requestSpec.contextSources.map(({ id, title, section }) => ({ id, title, section })),
+            ...(selectedDocumentId ? { selectedDocumentId } : {}),
             ...(requestSpec.openLessonId ? {
-              selectedDocumentId: requestSpec.openLessonId,
               reservedDocumentId: requestSpec.openLessonId,
               reservedPassages: OPEN_LESSON_RESERVED_PASSAGES,
             } : {}),
@@ -1713,7 +2072,7 @@ export default function AiTutor({
           let useWebFallback = shouldUseWebFallback({ learnerAllowedWeb: requestSpec.webSearch, trace: result?.trace });
           let fitted;
           if (retrieved.length) {
-            fitted = buildFittedRequest(retrieved, requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", useWebFallback);
+            fitted = refit(retrieved, useWebFallback);
             let included = new Set(fitted.includedCitationNumbers);
             // A high-confidence retrieval result is not evidence if none of its
             // complete [S#] blocks fit the final wire request. Rebuild the
@@ -1721,13 +2080,13 @@ export default function AiTutor({
             // authorized it, treat this as a genuine web-fallback condition.
             if (!included.size) {
               useWebFallback = requestSpec.webSearch;
-              fitted = buildFittedRequest([], requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", useWebFallback);
+              fitted = refit([], useWebFallback);
               included = new Set();
             }
             citationSources = retrieved.filter((source) => included.has(source.citationNumber)).map(citationSnapshot);
           } else {
             citationSources = [];
-            fitted = buildFittedRequest([], requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", useWebFallback);
+            fitted = refit([], useWebFallback);
           }
           payload = assertFittedAiRequest(fitted, "The retrieved library context exceeds the local model request limit. Narrow the question or clear older conversation turns.");
           const fittedNothing = retrieved.length > 0 && citationSources.length === 0;
@@ -1750,7 +2109,8 @@ export default function AiTutor({
             ...current,
             citationSources,
             webFallbackStatus: useWebFallback ? "searching" : requestSpec.webSearch ? "not-needed" : "off",
-            stage: useWebFallback ? "Library evidence is insufficient. Running consented web fallback…" : citationSources.length ? "Library evidence ready. Generating without web egress…" : "No library passage fit. Answering without web egress and labeling evidence limits…",
+            stage: useWebFallback ? "Your library does not cover this well enough. Searching the web, as you allowed…" : requestSpec.stageHint || (citationSources.length ? "Library passages found. Writing the answer on your Mac, without the web…" : "No library passage fits. Answering without the web and saying where evidence is missing…"),
+            phase: "drafting",
           }));
           if (appendUser) publishHistory((current) => current.map((message) => message.id === userMessage.id ? { ...message, citationSources } : message));
         } else {
@@ -1758,10 +2118,10 @@ export default function AiTutor({
           // fallback recommendations. The learner's consumed one-request web
           // authorization remains the separate egress gate.
           const fallbackUsesWeb = requestSpec.webSearch;
-          let fallback = buildFittedRequest(requestSpec.contextSources, requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", fallbackUsesWeb);
+          let fallback = refit(requestSpec.contextSources, fallbackUsesWeb);
           let included = new Set(fallback.includedCitationNumbers);
           if (requestSpec.contextSources.length && !included.size) {
-            fallback = buildFittedRequest([], requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", fallbackUsesWeb);
+            fallback = refit([], fallbackUsesWeb);
             included = new Set();
           }
           citationSources = requestSpec.contextSources.filter((source) => included.has(source.citationNumber)).map(citationSnapshot);
@@ -1776,7 +2136,8 @@ export default function AiTutor({
             ...current,
             citationSources,
             webFallbackStatus: fallbackUsesWeb ? "searching" : "off",
-            stage: fallbackUsesWeb ? "Library search unavailable. Running consented web fallback…" : "Library search unavailable. Using attached lesson context without web egress…",
+            stage: fallbackUsesWeb ? "Library search is unavailable. Searching the web, as you allowed…" : "Library search is unavailable. Using the attached lesson, without the web…",
+            phase: "drafting",
           }));
         }
       }
@@ -1866,7 +2227,9 @@ export default function AiTutor({
       // Show the new answer from its start (not its end) unless the learner
       // scrolled away meanwhile, and move focus there if it was on Generate,
       // Stop or nowhere.
-      pendingFocusRef.current = { kind: "message", id: responseId, focus: restoreFocus, scroll: followStreamRef.current && !userScrolledRef.current };
+      const revealAnswer = followStreamRef.current && !userScrolledRef.current;
+      pendingFocusRef.current = { kind: "message", id: responseId, focus: restoreFocus, scroll: revealAnswer };
+      if (!revealAnswer) setReadyAnswerId(responseId);
       const seconds = Math.round(assistantMessage.durationMs / 1_000);
       announce(`${requestSpec.mode.label} ${requestSpec.mode.structured ? "result" : "answer"} ready${seconds > 0 ? ` after ${seconds} second${seconds === 1 ? "" : "s"}` : ""}.`);
     } catch (error) {
@@ -1942,55 +2305,346 @@ export default function AiTutor({
       // Stop and the streaming card are gone; the outcome note takes focus.
       // A failure is announced by its alert; a learner's own Stop is not an
       // error and is confirmed politely.
-      pendingFocusRef.current = { kind: "notice", focus: restoreFocus };
+      // It is brought into view above the docked composer unless the
+      // learner scrolled away while the request ran.
+      pendingFocusRef.current = { kind: "notice", focus: restoreFocus, scroll: followStreamRef.current && !userScrolledRef.current };
       if (cancelled) announce(partial && !partialFailedValidation ? "Generation stopped. The partial answer is kept." : "Generation stopped.");
     } finally {
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
       if (inFlightRef.current?.responseId === responseId) inFlightRef.current = null;
     }
-  }, [announce, buildFittedRequest, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd]);
+  }, [announce, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd, setFollowing, stopTutorSpeech]);
+
+  /**
+   * The one way a request is prepared, for Send and for tutor actions
+   * (follow-ups, hints, wrap-up, grading). Every field the learner has not
+   * overridden comes from the composer; the body is fitted with the shared
+   * builder and checked like a Send. Web fallback is never implied: an action
+   * searches only when it passes the learner's one-request permission.
+   *
+   * action: { mode, prompt, sourceMode, sources, history, historyWindow,
+   *   webSearch, responseProfile, difficulty, retrievalQuery,
+   *   selectedDocumentId, userMessageId, stageHint, requireWholeSources }
+   * `historyWindow` ({ messages, conversationSummary, compactedMessages })
+   * replaces the composer's conversation memory, for an action about one
+   * earlier answer. `requireWholeSources` refuses a request whose attached
+   * source (an answer key) would be dropped or clipped. Returns { spec } or
+   * { issue }.
+   */
+  const prepareTutorRequest = (action = {}) => {
+    const mode = action.mode || currentMode;
+    const displayPrompt = String(action.prompt ?? prompt).trim();
+    const requestSourceMode = SOURCE_MODES.some((item) => item.id === action.sourceMode) ? action.sourceMode : sourceMode;
+    const requestProfile = RESPONSE_PROFILES.some((item) => item.id === action.responseProfile) ? action.responseProfile : responseProfile;
+    const requestDifficulty = DIFFICULTIES.some((item) => item.id === action.difficulty) ? action.difficulty : difficulty;
+    const retrieves = requestSourceMode === "library-first" && typeof retrieveLibrary === "function";
+    const contextSources = (Array.isArray(action.sources)
+      ? action.sources
+      : requestSourceMode === "none" ? [] : requestSourceMode === "current" ? currentLessonSources : manuallySelectedSources
+    ).map((source) => ({ ...source }));
+    const requestWeb = retrieves && action.webSearch === true;
+    const config = configState.config;
+    if (configState.status !== "ready" || !config) return { issue: "not-ready" };
+    if (!localDisclosureAcknowledged) return { issue: "disclosure" };
+    if (requestState.status === "loading" || requestControllerRef.current) return { issue: "busy" };
+    if (requestWeb && config.webSearch?.macToolAvailable !== true) return { issue: "web-unavailable" };
+    const limits = tutorRequestLimits(config, requestProfile);
+    const memory = action.historyWindow && Array.isArray(action.historyWindow.messages)
+      ? {
+        messages: action.historyWindow.messages,
+        conversationSummary: String(action.historyWindow.conversationSummary || ""),
+        compactedMessages: Number.isSafeInteger(action.historyWindow.compactedMessages) ? action.historyWindow.compactedMessages : 0,
+      }
+      : tutorConversationWindow(Array.isArray(action.history) ? action.history : history.slice(tutorContextStart(history, Date.now())), {
+        prompt: displayPrompt,
+        sources: contextSources.length > 0,
+        inputLimit: limits.inputLimit,
+      });
+    const fitted = fitTutorRequest({
+      mode,
+      prompt: displayPrompt,
+      sources: retrieves ? [] : contextSources,
+      history: memory.messages,
+      conversationSummary: memory.conversationSummary,
+      webSearch: requestWeb,
+      difficulty: requestDifficulty,
+      responseProfile: requestProfile,
+      config,
+    });
+    const issue = tutorRequestIssue({ prompt: displayPrompt, promptLimit: limits.promptLimit, fitted, sources: contextSources, requireAllSources: !retrieves, requireWholeSources: !retrieves && action.requireWholeSources === true });
+    if (issue) return { issue };
+    const included = new Set(fitted.includedCitationNumbers);
+    // "Explain this lesson", an unedited mode default or an Ask AI excerpt
+    // is about the open lesson; generic wording alone never retrieves it.
+    const aboutOpenLesson = retrieves && openLesson
+      && (displayPrompt === mode.prompt || refersToOpenLesson(displayPrompt));
+    return {
+      spec: {
+        userMessageId: asTrimmedString(action.userMessageId, 200) || createId(),
+        createdAt: new Date().toISOString(),
+        displayPrompt,
+        mode,
+        difficulty: requestDifficulty,
+        sources: contextSources.filter((source) => included.has(source.citationNumber)).map(citationSnapshot),
+        contextSources,
+        openLessonId: aboutOpenLesson ? asTrimmedString(openLesson.original?.documentId || openLesson.id, 240) : "",
+        openLessonTitle: aboutOpenLesson ? openLesson.title : "",
+        retrievalQuery: asTrimmedString(action.retrievalQuery, MAX_PROMPT_CHARS),
+        selectedDocumentId: asTrimmedString(action.selectedDocumentId, 240),
+        stageHint: asTrimmedString(action.stageHint, 160),
+        sourceMode: requestSourceMode,
+        webSearch: requestWeb,
+        responseProfile: requestProfile,
+        retrievalMaxBytes: Math.max(512, fitted.contextBudget),
+        conversationHistory: memory.messages.map((message) => ({ ...message })),
+        conversationMemory: memory.compactedMessages ? {
+          compactedMessages: memory.compactedMessages,
+          summary: memory.conversationSummary,
+        } : null,
+        config,
+        // The exact UTF-8/JSON-fitted body; Library-first requests refit it
+        // with the retrieved passages through the same builder.
+        payload: { ...fitted.payload },
+      },
+    };
+  };
+
+  /**
+   * Prepares and starts one request; returns "" or the reason it cannot run.
+   * `action.focus: "stream"` moves focus to the answer in progress, for an
+   * action whose button the new request removes or disables.
+   */
+  const runTutorAction = (action = {}) => {
+    const prepared = prepareTutorRequest(action);
+    if (!prepared.spec) return prepared.issue;
+    lastRequestRef.current = prepared.spec;
+    // The learner's web permission covers exactly one request.
+    if (prepared.spec.webSearch) setWebSearch(false);
+    if (action.focus === "stream") focusStreamOnMountRef.current = true;
+    runRequest(prepared.spec);
+    return "";
+  };
+
+  /**
+   * Starts a one-tap action, or, when it cannot start (setup, the local-model
+   * disclosure, a request that does not fit), puts its prompt in the question
+   * box in a listed mode with the reason, so the learner can finish and send
+   * it. It never fails silently.
+   */
+  const startTutorAction = (action) => {
+    const issue = runTutorAction({ ...action, focus: "stream" });
+    if (!issue) return true;
+    const mode = composerModeFor(action.mode?.id);
+    setModeId(mode.id);
+    setPrompt(asTrimmedString(action.prompt, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = asTrimmedString(action.selectedDocumentId, 240);
+    lastRequestRef.current = null;
+    setRequestState((current) => current.status === "loading" ? current : { status: "idle", error: null });
+    const reason = tutorActionIssueReason(issue, { configMessage: configState.status === "ready" ? "" : configState.message });
+    setComposerNotice(`Your request is in the question box. ${reason}`.trim());
+    window.setTimeout(focusComposer, 0);
+    return false;
+  };
+
+  /**
+   * A follow-up about one answer: that question and answer are its only
+   * memory, it keeps the answer's grounding, retrieves with the answer's
+   * topic and favours the lesson it cited. It never uses the web.
+   */
+  const runFollowUp = (message, item) => {
+    if (requestState.status === "loading") return;
+    const mode = modeById(item.modeId);
+    const question = questionForAnswer(history, message.id);
+    // Quiz and card results are remembered as the learner read them.
+    const answerText = message.data ? tutorMessageMarkdown(message, { includeSources: false }) : message.content;
+    const scope = followUpScope(message, normalizedSources);
+    const { inputLimit: followUpInputLimit } = tutorRequestLimits(configState.config, responseProfile);
+    const started = startTutorAction({
+      mode,
+      prompt: item.prompt,
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      historyWindow: tutorFollowUpWindow(followUpPair(question, answerText), { inputLimit: followUpInputLimit }),
+      // A chip's own wording names no topic, so a follow-up of a follow-up
+      // searches with the learner's question behind the chain.
+      retrievalQuery: followUpRetrievalQuery(topicQuestionFor(history, message.id), message),
+      selectedDocumentId: citedDocumentId(message),
+      webSearch: false,
+    });
+    // "Check my understanding" asks a question: the learner answers it in
+    // the same mode, so the session continues from the composer.
+    if (started && SESSION_MODES.includes(mode.id) && modeId !== mode.id) {
+      setModeId(mode.id);
+      if (isDefaultPrompt(prompt.trim())) setPrompt("");
+    }
+  };
+
+  /**
+   * A Socratic or Interview session's own actions (TFEAT-05). A hint, a
+   * reveal and the next question retrieve with the tutor's last question and
+   * favour the lesson it cited, with the session as memory. Wrap up recaps
+   * the session's turns alone: no library text, no older summary. None of
+   * them grades a free-form answer, and none uses the web.
+   */
+  const runSessionAction = (kind) => {
+    if (!session || requestState.status === "loading") return;
+    if (kind === "wrap-up") {
+      const { inputLimit: wrapUpInputLimit } = tutorRequestLimits(configState.config, responseProfile);
+      const wrapUp = sessionWrapUp(session.messages, { inputLimit: wrapUpInputLimit });
+      startTutorAction({ mode: modeById("summarize"), prompt: wrapUp.prompt, sourceMode: "none", historyWindow: wrapUp.historyWindow, webSearch: false });
+      return;
+    }
+    const question = session.lastQuestion;
+    const scope = followUpScope(question, normalizedSources);
+    const action = {
+      hint: { mode: modeById("hint"), prompt: HINT_PROMPT },
+      reveal: { mode: modeById("reveal"), prompt: REVEAL_PROMPT },
+      next: { mode: modeById(session.mode), prompt: NEXT_QUESTION_PROMPT },
+    }[kind];
+    if (!action) return;
+    // The conversation is the memory, without the [S#]/[W#] labels of earlier
+    // requests: this one is grounded in freshly retrieved passages.
+    const { inputLimit: sessionInputLimit } = tutorRequestLimits(configState.config, responseProfile);
+    const unlabelled = history.slice(tutorContextStart(history, Date.now())).map((message) => ({ ...message, content: withoutCitationLabels(message.content) }));
+    startTutorAction({
+      ...action,
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      historyWindow: tutorConversationWindow(unlabelled, { prompt: action.prompt, sources: scope.sourceMode !== "none", inputLimit: sessionInputLimit }),
+      retrievalQuery: sessionRetrievalQuery(question),
+      selectedDocumentId: citedDocumentId(question),
+      webSearch: false,
+    });
+  };
+
+  // "Explain my mistake" for one keyed quiz miss: a Fast answer check that
+  // retrieves with the question itself and favours the quiz's lesson. Its
+  // question id is recorded on the quiz so the answer can be found again.
+  const noHistory = { messages: [], conversationSummary: "", compactedMessages: 0 };
+  const explainMistake = (quizMessage, question, chosenIndex) => {
+    if (requestState.status === "loading") return;
+    const { promptLimit: fastPromptLimit } = tutorRequestLimits(configState.config, "fast");
+    const scope = followUpScope(quizMessage, normalizedSources);
+    const userMessageId = createId();
+    const started = startTutorAction({
+      mode: modeById("feedback"),
+      prompt: answerFeedbackPrompt(question, chosenIndex, { maxChars: fastPromptLimit }),
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      historyWindow: noHistory,
+      responseProfile: "fast",
+      webSearch: false,
+      retrievalQuery: feedbackRetrievalQuery(question),
+      selectedDocumentId: citedDocumentId(quizMessage),
+      userMessageId,
+      stageHint: "Checking your answer against your library (about 20 s)",
+    });
+    if (started) updateQuizState(quizMessage.id, (current) => ({ ...current, explained: { ...current.explained, [question.id]: userMessageId } }));
+  };
+
+  const quizWeakSpots = (quizMessage, misses) => {
+    if (requestState.status === "loading") return;
+    const next = weakSpotQuiz(misses);
+    const scope = followUpScope(quizMessage, normalizedSources);
+    startTutorAction({
+      mode: modeById("quiz"),
+      prompt: next.prompt,
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      historyWindow: noHistory,
+      retrievalQuery: next.retrievalQuery,
+      selectedDocumentId: citedDocumentId(quizMessage),
+      webSearch: false,
+    });
+  };
+
+  const showExplanation = (answerId) => {
+    pendingFocusRef.current = { kind: "message", id: answerId, focus: true, scroll: true };
+    setFocusRequest((count) => count + 1);
+  };
+
+  // "Answer this" puts a question in the box in its mode, with the cursor
+  // after "My answer:". A draft the learner wrote is kept above.
+  const prefillAnswer = ({ modeId: nextModeId, text, documentId = "", notice }) => {
+    const draft = prompt.trim();
+    const keepDraft = Boolean(draft) && !MODE_OPTIONS.some((mode) => mode.prompt === draft);
+    setModeId(nextModeId);
+    setPrompt((keepDraft ? `${draft}\n\n${text}` : text).slice(0, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = asTrimmedString(documentId, 240);
+    outboundChanged();
+    setComposerNotice(notice);
+    window.setTimeout(() => {
+      focusComposer();
+      const field = promptRef.current;
+      field?.setSelectionRange?.(field.value.length, field.value.length);
+    }, 0);
+  };
+
+  // An answer check's own question, answered in Socratic mode.
+  const answerCheck = (feedbackMessage, nextQuestion) => {
+    if (requestState.status === "loading") return;
+    prefillAnswer({ modeId: "socratic", text: `${withoutCitationLabels(nextQuestion)}\n\nMy answer: `, documentId: citedDocumentId(feedbackMessage), notice: "Write your answer after “My answer:”, then send." });
+  };
+
+  // Interview practice (TFEAT-06): the views in TutorPractice.jsx pick and
+  // show the question; grading sends the answer with the question's model
+  // answer and rubric as its one supplied source, never the library or the
+  // web, and never without the whole rubric. The reference keeps one [S#]
+  // number for the tab, like any other source.
+  const citationNumberFor = useCallback((id) => sourceNumbersRef.current.get(id) ?? nextSourceNumberRef.current, []);
+  const gradePractice = ({ prompt: gradingPrompt, reference }) => {
+    if (!sourceNumbersRef.current.has(reference.id)) {
+      sourceNumbersRef.current.set(reference.id, nextSourceNumberRef.current);
+      nextSourceNumberRef.current += 1;
+    }
+    const userMessageId = createId();
+    const issue = runTutorAction({
+      mode: modeById("interview-practice"),
+      prompt: gradingPrompt,
+      sourceMode: "choose",
+      sources: [{ ...reference, citationNumber: sourceNumbersRef.current.get(reference.id) }],
+      historyWindow: noHistory,
+      webSearch: false,
+      requireWholeSources: true,
+      userMessageId,
+      stageHint: "Checking your answer against the rubric…",
+      focus: "stream",
+    });
+    if (issue) setComposerNotice(`Your answer was not graded. ${tutorActionIssueReason(issue, { configMessage: configState.status === "ready" ? "" : configState.message })}`.trim());
+    else updatePractice({ pendingId: userMessageId });
+  };
+  // A mode's default text is not the learner's draft; clearing it keeps the
+  // docked composer to one line while they answer in the practice card.
+  const clearDefaultPrompt = () => { if (isDefaultPrompt(prompt.trim())) setPrompt(""); };
+
+  // An authored follow-up is answered in Interview mode, to the tutor.
+  const answerPracticeFollowUp = (followUp, question) => {
+    if (requestState.status === "loading") return;
+    prefillAnswer({ modeId: "interview", text: `Interview follow-up: ${followUp}\n\nMy answer: `, documentId: question?.documentId, notice: "Write your answer after “My answer:”, then send it to the interviewer." });
+  };
 
   const submit = (event) => {
     event?.preventDefault?.();
-    if (!requestReady) return;
-    const sourceSnapshot = selectedSources.map((source) => ({ ...source }));
-    const included = new Set(requestPreview.includedCitationNumbers);
-    const citationSources = sourceSnapshot.filter((source) => included.has(source.citationNumber)).map(citationSnapshot);
-    const createdAt = new Date().toISOString();
-    const displayPrompt = prompt.trim();
-    // "Explain this lesson", an unedited mode default or an Ask AI excerpt
-    // is about the open lesson; generic wording alone never retrieves it.
-    const aboutOpenLesson = sourceMode === "library-first" && openLesson
-      && (displayPrompt === currentMode.prompt || refersToOpenLesson(displayPrompt));
-    const requestSpec = {
-      userMessageId: createId(),
-      createdAt,
-      displayPrompt,
-      mode: currentMode,
-      sources: citationSources,
-      contextSources: sourceSnapshot,
-      openLessonId: aboutOpenLesson ? asTrimmedString(openLesson.original?.documentId || openLesson.id, 240) : "",
-      openLessonTitle: aboutOpenLesson ? openLesson.title : "",
-      sourceMode,
-      webSearch: effectiveWebSearch,
-      responseProfile,
-      retrievalMaxBytes: Math.max(512, requestPreview.contextBudget),
-      conversationHistory: outboundHistory.map((message) => ({ ...message })),
-      conversationMemory: conversationWindow.compactedMessages ? {
-        compactedMessages: conversationWindow.compactedMessages,
-        summary: conversationWindow.conversationSummary,
-      } : null,
-      config: configState.config,
-      // requestPayloadPreview is the exact UTF-8/JSON-fitted payload that
-      // enabled the Send button. Rebuilding context here would reintroduce the
-      // unfitted character budget and can exceed the server byte limit for
-      // CJK, emoji, quotes, or backslash-heavy lesson text.
-      payload: { ...requestPayloadPreview },
-    };
-    lastRequestRef.current = requestSpec;
-    if (effectiveWebSearch) setWebSearch(false);
+    if (!requestReady) {
+      // Enter with a question that cannot be sent yet: when its reason is
+      // not drawn under the box (the local-model permission), say it.
+      if (event?.type === "keydown" && prompt.trim() && quietReason && disabledReason) setComposerNotice(disabledReason);
+      return;
+    }
     focusStopOnMountRef.current = document.activeElement !== promptRef.current;
-    runRequest(requestSpec);
+    const selectedDocumentId = retrievalHintRef.current;
+    const placed = retrievalQueryHintRef.current;
+    const retrievalQuery = placed.query && placed.prompt === prompt.trim() ? placed.query : "";
+    const issue = runTutorAction({ webSearch: effectiveWebSearch, selectedDocumentId, retrievalQuery });
+    if (!issue) {
+      retrievalHintRef.current = "";
+      retrievalQueryHintRef.current = { prompt: "", query: "" };
+      return;
+    }
+    // The send-time check re-reads the clock and the config; a request the
+    // composer's preview allowed can still be refused, never silently.
+    focusStopOnMountRef.current = false;
+    setComposerNotice(tutorActionIssueReason(issue, { configMessage: configState.status === "ready" ? "" : configState.message }));
   };
 
   const retry = () => {
@@ -2027,22 +2681,53 @@ export default function AiTutor({
     const previousDefault = currentMode.prompt;
     setModeId(nextMode.id);
     outboundChanged();
-    setPrompt((current) => (!current.trim() || current === previousDefault ? nextMode.prompt : current));
+    if (!prompt.trim() || prompt === previousDefault) {
+      setPrompt(nextMode.prompt);
+      retrievalHintRef.current = "";
+    }
   };
+
+  // A graded practice answer is edited where it was written: in the practice
+  // card, under its question, in Interview mode. Its grading question names
+  // a reference that only the card supplies, so it never returns to the box.
+  const reopenPractice = (message) => {
+    const questionId = practiceQuestionIdFrom(message);
+    setModeId("interview");
+    lastRequestRef.current = null;
+    setRequestState({ status: "idle", error: null });
+    if (isDefaultPrompt(prompt.trim())) setPrompt("");
+    if (!questionId || (practiceKit && !practiceKit.questions.has(questionId))) {
+      setComposerNotice("That practice question is not in this version of Lumen’s interview bank. Pick a question in the practice card.");
+      window.setTimeout(focusComposer, 0);
+      return;
+    }
+    updatePractice((current) => ({ ...current, questionId, answer: practiceAnswerFrom(message.content), pendingId: "" }));
+    setComposerNotice("Your answer is back in the practice card. Edit it, then grade it again.");
+    window.setTimeout(() => {
+      const field = conversationRef.current?.querySelector(".ai-tutor__practice textarea");
+      if (!field) return focusComposer();
+      field.focus({ preventScroll: true });
+      field.scrollIntoView({ block: "nearest", behavior: "instant" });
+      return undefined;
+    }, 0);
+  };
+  const reopenPracticeRef = useRef(reopenPractice);
+  reopenPracticeRef.current = reopenPractice;
 
   const preparePrompt = useCallback((message, notice) => {
     if (!message || requestState.status === "loading") return;
-    const nextMode = modeById(message.mode);
+    if (message.mode === "interview-practice") {
+      reopenPracticeRef.current(message);
+      return;
+    }
+    const nextMode = composerModeFor(message.mode);
     setModeId(nextMode.id);
     setPrompt(asTrimmedString(message.content, MAX_PROMPT_CHARS));
     setComposerNotice(notice);
     lastRequestRef.current = null;
     setRequestState({ status: "idle", error: null });
-    window.setTimeout(() => {
-      promptRef.current?.focus();
-      promptRef.current?.scrollIntoView?.({ behavior: scrollBehavior(), block: "center" });
-    }, 0);
-  }, [requestState.status]);
+    window.setTimeout(focusComposer, 0);
+  }, [focusComposer, requestState.status]);
 
   const prepareRegenerate = useCallback((assistantMessage) => {
     const index = history.findIndex((message) => message.id === assistantMessage.id);
@@ -2134,7 +2819,11 @@ export default function AiTutor({
   const confirmClear = () => {
     setConfirmClearOpen(false);
     publishHistory([]);
+    setQuizStates({});
+    updatePractice((current) => ({ ...current, pendingId: "", ticks: {}, outcomes: {} }));
+    stopTutorSpeech();
     lastRequestRef.current = null;
+    retrievalHintRef.current = "";
     setRequestState({ status: "idle", error: null });
     // The Clear button disappears with the conversation; the tutor heading
     // takes focus instead of <body>.
@@ -2183,6 +2872,11 @@ export default function AiTutor({
   // Nothing can be generated until the server is set up or this browser is
   // paired, so those states show a focused card instead of the full composer.
   const setupRequired = configState.status === "disabled" || configState.status === "pairing";
+  // Losing the server or its pairing closes the options sheet for good; it
+  // must not reopen by itself once the tutor is available again.
+  useEffect(() => {
+    if (setupRequired) setOptionsOpen(false);
+  }, [setupRequired]);
 
   // Conversation export (Markdown) and session statistics (AI-002/PERF-002).
   const sessionStats = (() => {
@@ -2222,8 +2916,270 @@ export default function AiTutor({
                   : requestTooLarge
                     ? `This request is ${requestPayloadBytes.toLocaleString()} UTF-8 bytes; reduce it below the server's ${configuredRequestByteLimit.toLocaleString()}-byte local-model budget.`
                     : !localDisclosureAcknowledged
-                      ? "Review and acknowledge the local-model disclosure once on this browser to enable generation."
+                      ? DISCLOSURE_REASON
                       : "";
+  // An empty box (its placeholder and the dimmed Send say so) and the
+  // disclosure (its checkbox sits right above the question) need no visible
+  // line in the docked composer; screen readers still get the reason.
+  const quietReason = configState.status === "ready" && (!prompt.trim() || disabledReason === DISCLOSURE_REASON);
+
+  // "Jump to latest" while an answer streams out of view after the learner
+  // scrolled away; "Answer ready" for a while after it lands out of view.
+  const jumpLabel = requestState.status === "loading" && activeResponse && !atLatest && !following
+    ? "Jump to latest"
+    : readyAnswerId && !atLatest && history.some((message) => message.id === readyAnswerId) ? "Answer ready" : "";
+  const jumpToLatest = () => {
+    if (requestState.status === "loading") {
+      setFollowing(true);
+      conversationEndRef.current?.scrollIntoView({ block: "end", behavior: scrollBehavior() });
+      // The pill disappears; focus goes to the answer it jumped to.
+      streamingArticleRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const id = readyAnswerId;
+    setReadyAnswerId("");
+    pendingFocusRef.current = { kind: "message", id, focus: true, scroll: true };
+  };
+
+  const reuseNotice = `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`;
+
+  // Each "Explain my mistake" a quiz sent, found again in the conversation:
+  // the answer right after its question (and whether it disputed the key),
+  // or still pending while that request runs.
+  const loading = requestState.status === "loading";
+  const quizExplanations = useMemo(() => {
+    const byQuiz = {};
+    Object.entries(quizStates).forEach(([quizId, state]) => {
+      byQuiz[quizId] = Object.fromEntries(Object.entries(state.explained).map(([questionId, questionMessageId]) => {
+        const index = history.findIndex((message) => message.id === questionMessageId);
+        const answer = index >= 0 ? history[index + 1] : null;
+        if (answer?.role === "assistant" && answer.mode === "feedback" && validateTutorAnswerFeedback(answer.data)) {
+          return [questionId, { answerId: answer.id, disputed: answer.data.correct === true }];
+        }
+        return [questionId, { pending: loading && index >= 0 && index === history.length - 1 }];
+      }));
+    });
+    return byQuiz;
+  }, [history, loading, quizStates]);
+  // The quiz question an answer check is about.
+  const feedbackQuestionFor = (message) => {
+    const asked = questionForAnswer(history, message.id);
+    if (!asked) return null;
+    for (const [quizId, state] of Object.entries(quizStates)) {
+      const questionId = Object.keys(state.explained).find((id) => state.explained[id] === asked.id);
+      if (!questionId) continue;
+      return history.find((item) => item.id === quizId)?.data?.questions?.find((question) => question.id === questionId) || null;
+    }
+    return null;
+  };
+  // Answer checks are a separate server task; a server without it keeps the
+  // button, disabled with the reason.
+  const serverTasks = configState.config?.supportedTasks;
+  const serverStructuredTasks = configState.config?.structuredTasks;
+  const feedbackUnavailable = configState.status === "ready"
+    && (!Array.isArray(serverTasks) || !serverTasks.includes("answer_feedback")
+      || (Array.isArray(serverStructuredTasks) && !serverStructuredTasks.includes("answer_feedback")))
+    ? "This AI server cannot check quiz answers."
+    : "";
+  // Why the tutor cannot grade a practice answer at all right now.
+  const practiceVisible = !setupRequired && currentMode.id === "interview";
+  const practiceBlocked = configState.status !== "ready" ? configState.message || "The tutor is not ready yet."
+    : feedbackUnavailable ? "This AI server cannot grade answers."
+      : !localDisclosureAcknowledged ? "Tick the local-model permission under the question box, then grade your answer." : "";
+  const InterviewPractice = interviewBank.ui?.InterviewPractice;
+  const practiceCard = practiceVisible && (InterviewPractice && practiceKit.tracks.length ? (
+    <InterviewPractice
+      kit={practiceKit}
+      practice={practice}
+      updatePractice={updatePractice}
+      mistakes={Array.isArray(studyContext?.mistakes) ? studyContext.mistakes : []}
+      request={{ config: configState.config, responseProfile, difficulty }}
+      citationNumberFor={citationNumberFor}
+      blocked={practiceBlocked}
+      busy={loading}
+      onGrade={gradePractice}
+      onQuestion={clearDefaultPrompt}
+    />
+  ) : interviewBank.status === "error" ? (
+    <div className="ai-tutor__practice"><p className="ai-tutor__practice-intro">The authored interview questions could not be loaded.</p><button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => setInterviewBank({ status: "idle", ui: null, kit: null })}><RefreshCw size={15} aria-hidden="true" /> Try again</button></div>
+  ) : <p className="ai-tutor__practice-intro ai-tutor__practice-loading">Loading the authored interview questions…</p>);
+  // The divider where the model's memory now starts.
+  const contextBreak = (
+    <div className="ai-tutor__context-break" role="note">
+      <strong>Earlier turns are not sent to the model</strong>
+      <span>More than 3 hours passed, so the tutor starts fresh from here.</span>
+    </div>
+  );
+
+  // Completed prose answers can be heard; speak() runs inside the click so
+  // iOS treats it as the learner's gesture. Unsupported speech hides it.
+  const listenFor = (message) => {
+    if (!speech || speech.status === "unsupported" || message.role !== "assistant" || message.incomplete || message.data) return null;
+    const state = speakingMessageId === message.id ? tutorSpeechState : "idle";
+    return {
+      state,
+      error: listenError.id === message.id ? listenError.text : speakingMessageId === message.id ? tutorSpeechError : "",
+      onListen: () => {
+        const spoken = tutorSpeechText(message.content);
+        const started = spoken.text && speech.speak(spoken.text, { label: TUTOR_SPEECH_LABEL, sections: spoken.sections });
+        setSpeakingMessageId(started ? message.id : "");
+        setListenError(started ? { id: "", text: "" } : { id: message.id, text: "This answer could not be read aloud on this device." });
+      },
+      onTogglePause: () => speech.togglePause(),
+      onStop: () => {
+        speech.stop();
+        setSpeakingMessageId("");
+      },
+    };
+  };
+  const studyFor = (message) => (message.mode === "quiz" ? {
+    QuizView: quizViews.ui?.QuizResult,
+    viewStatus: quizViews.status,
+    onRetryView: retryQuizViews,
+    quizState: quizStates[message.id],
+    onQuizStateChange: updateQuizState,
+    onAnnounce: announce,
+    explanations: quizExplanations[message.id] || {},
+    explainUnavailable: feedbackUnavailable,
+    requestBusy: loading,
+    onExplainMistake: explainMistake,
+    onShowExplanation: showExplanation,
+    onSaveMisses: onSaveMistakes,
+    onWeakSpotQuiz: quizWeakSpots,
+  } : message.mode === "feedback" ? { FeedbackView: quizViews.ui?.FeedbackResult, viewStatus: quizViews.status, onRetryView: retryQuizViews, feedbackQuestion: feedbackQuestionFor(message), onAnswerCheck: answerCheck } : message.mode === "interview-practice" ? {
+    Rubric: interviewBank.ui?.RubricFeedback,
+    bankStatus: interviewBank.status,
+    question: practiceKit?.questions.get(practiceQuestionIdFrom(message)) || null,
+    messageId: message.id,
+    answer: practiceAnswerFrom(questionForAnswer(history, message.id)?.content),
+    trackId: practice.trackId,
+    kit: practiceKit,
+    practice,
+    updatePractice,
+    onSaveMistakes,
+    onFollowUp: (followUp) => answerPracticeFollowUp(followUp, practiceKit?.questions.get(practiceQuestionIdFrom(message))),
+  } : undefined);
+
+  // Suggested starts (TFEAT-04): four on a phone, six on wider screens,
+  // using lesson headings only when that lesson's text is already loaded.
+  const starters = useMemo(() => buildStarterPrompts(studyContext, {
+    limit: compactModes ? 4 : 6,
+    lessonText: (id) => {
+      const loaded = (Array.isArray(sources) ? sources : []).find((source) => (source?.documentId || source?.id) === id);
+      return loaded ? sourceText(loaded) : "";
+    },
+  }), [compactModes, sources, studyContext]);
+  const [pendingStarter, setPendingStarter] = useState(null);
+  const keepDraftRef = useRef(null);
+  // A mode's default text or an earlier starter is not the learner's draft.
+  const isDefaultPrompt = (text) => MODE_OPTIONS.some((mode) => mode.prompt === text) || starters.some((starter) => starter.prompt === text);
+  const applyStarter = (starter) => {
+    setPendingStarter(null);
+    setModeId(composerModeFor(starter.modeId).id);
+    setPrompt(asTrimmedString(starter.prompt, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = asTrimmedString(starter.documentId, 240);
+    outboundChanged();
+    window.setTimeout(focusComposer, 0);
+  };
+  // A starter fills the question box and never sends. A draft the learner
+  // wrote is replaced only when they say so.
+  const chooseStarter = (starter) => {
+    if (requestState.status === "loading") return;
+    const draft = prompt.trim();
+    if (draft && draft !== starter.prompt && !isDefaultPrompt(draft)) {
+      setPendingStarter(starter);
+      window.setTimeout(() => keepDraftRef.current?.focus(), 0);
+      return;
+    }
+    applyStarter(starter);
+  };
+  // The session strip (TFEAT-05) shows while the composer is in a practice
+  // mode; choosing another mode leaves the session. While a tutor question
+  // waits, the question box is where the learner answers it.
+  const sessionStrip = !setupRequired && session && SESSION_MODES.includes(currentMode.id) ? session : null;
+  const answering = Boolean(sessionStrip && !sessionStrip.revealed);
+  // A prepared question from another screen, such as a mistake-notebook
+  // entry (TFEAT-07): consumed once and never sent. It sets its mode and
+  // keeps its lesson as the retrieval hint for the next Send; a draft the
+  // learner wrote is replaced only when they say so.
+  const [pendingPrefill, setPendingPrefill] = useState(null);
+  const keepPrefillDraftRef = useRef(null);
+  // "From mistake notebook: “Why …?”", ended as a sentence.
+  const prefillOrigin = (prefill) => {
+    const origin = `From ${prefill.origin || "another screen"}${prefill.label ? `: “${prefill.label}”` : ""}`;
+    return /[.?!…]$/.test(prefill.label) ? origin : `${origin}.`;
+  };
+  const applyPrefill = (prefill) => {
+    setPendingPrefill(null);
+    setPendingStarter(null);
+    setModeId(composerModeFor(prefill.modeId).id);
+    setPrompt(prefill.prompt);
+    outboundChanged();
+    retrievalHintRef.current = prefill.documentId;
+    retrievalQueryHintRef.current = { prompt: prefill.prompt, query: prefill.retrievalQuery };
+    setComposerNotice(`${prefillOrigin(prefill)} Review the question, then send.`);
+    window.setTimeout(focusComposer, 0);
+  };
+  const applyPrefillRef = useRef(applyPrefill);
+  applyPrefillRef.current = applyPrefill;
+  const isDefaultPromptRef = useRef(isDefaultPrompt);
+  isDefaultPromptRef.current = isDefaultPrompt;
+  useEffect(() => {
+    if (insertPrompt?.kind !== "prompt" || !insertPrompt.nonce || consumedInsertRef.current === insertPrompt.nonce) return;
+    consumedInsertRef.current = insertPrompt.nonce;
+    onInsertConsumedRef.current?.(insertPrompt.nonce);
+    const prefill = {
+      modeId: asTrimmedString(insertPrompt.modeId, 40),
+      prompt: asTrimmedString(insertPrompt.prompt, MAX_PROMPT_CHARS),
+      origin: asTrimmedString(insertPrompt.origin, 60),
+      label: asTrimmedString(insertPrompt.label, 100),
+      documentId: asTrimmedString(insertPrompt.documentId, 240),
+      retrievalQuery: asTrimmedString(insertPrompt.retrievalQuery, 300),
+    };
+    if (!prefill.prompt) return;
+    const draft = latestPromptRef.current.trim();
+    if (draft && draft !== prefill.prompt && !isDefaultPromptRef.current(draft)) {
+      setPendingPrefill(prefill);
+      window.setTimeout(() => keepPrefillDraftRef.current?.focus(), 0);
+      return;
+    }
+    applyPrefillRef.current(prefill);
+  }, [insertPrompt]);
+
+  const codeMode = currentMode.id === "code-review";
+  const keyHint = setupRequired ? "" : composerKeyHint({ finePointer, codeMode, platform: currentPlatform() });
+
+  const onPromptKeyDown = (event) => {
+    if (composerEnterAction(event, { finePointer, codeMode }) === "send") {
+      // Not ready: nothing is sent, the new line is not typed either, and
+      // the reason stays visible under the box.
+      event.preventDefault();
+      submit(event);
+      return;
+    }
+    if (shouldRecallLastQuestion(event, event.currentTarget) && requestState.status !== "loading") {
+      const lastQuestion = [...history].reverse().find((message) => message.role === "user");
+      if (!lastQuestion) return;
+      event.preventDefault();
+      preparePrompt(lastQuestion, reuseNotice);
+    }
+  };
+
+  // Esc stops a running answer from anywhere in the tutor, but never from
+  // the options sheet, the Clear dialog or an open disclosure.
+  const stopOnEscape = (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented || requestState.status !== "loading" || optionsOpen || confirmClearOpen) return;
+    if (event.target?.closest?.("details[open], [role='dialog'], [role='alertdialog']")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    requestControllerRef.current?.abort();
+  };
+
+  // Non-default request options, shown on the Options button.
+  const optionsSummary = [
+    difficulty !== "intermediate" ? DIFFICULTIES.find((item) => item.id === difficulty)?.label : "",
+    responseProfile !== "balanced" ? profileLabel(responseProfile) : "",
+  ].filter(Boolean).join(" · ");
 
   const cancelled = requestState.status === "cancelled";
   const requestNotice = (requestState.status === "error" || cancelled) && (
@@ -2242,7 +3198,7 @@ export default function AiTutor({
   );
 
   return (
-    <section className={`ai-tutor ${className}`.trim()} aria-labelledby={headingId}>
+    <section className={`ai-tutor ${className}`.trim()} aria-labelledby={headingId} onKeyDown={stopOnEscape}>
       <header className="ai-tutor__header">
         <div className="ai-tutor__identity">
           <span className="ai-tutor__mark" aria-hidden="true"><BrainCircuit size={24} /></span>
@@ -2250,7 +3206,8 @@ export default function AiTutor({
         </div>
         <div className="ai-tutor__header-actions">
           {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={exportConversation} aria-label="Export conversation as Markdown" title="Export conversation"><Download size={18} /></button>}
-          {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={clearHistory} disabled={requestState.status === "loading"} aria-label="Clear AI tutor conversation" title="Clear conversation"><Trash2 size={18} /></button>}
+          {history.length > 0 && <button className="ai-tutor__new-topic" type="button" onClick={clearHistory} disabled={requestState.status === "loading"} aria-describedby={newTopicHintId}><MessageSquarePlus size={17} aria-hidden="true" /><span className="ai-tutor__new-topic-label">New topic</span></button>}
+          {history.length > 0 && <span className="visually-hidden" id={newTopicHintId}>Clears this conversation, with an option to export it first.</span>}
           {onClose && <button className="ai-tutor__button ai-tutor__button--ghost" type="button" onClick={onClose}>Close</button>}
         </div>
       </header>
@@ -2288,10 +3245,19 @@ export default function AiTutor({
       )}
 
       {!setupRequired && <>
-        <div className="ai-tutor__mode-tabs" role="group" aria-label="Tutor mode">
-          {MODE_OPTIONS.map((mode) => <button aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-active" : ""} type="button" disabled={requestState.status === "loading"} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
-        </div>
-        <p className="ai-tutor__mode-description">{currentMode.description}</p>
+        {compactModes ? (
+          <label className="ai-tutor__mode-select">
+            <span>Mode</span>
+            <select value={modeId} disabled={requestState.status === "loading"} aria-describedby={modeDescriptionId} onChange={(event) => selectMode(event.target.value)}>
+              {MODE_OPTIONS.map((mode) => <option value={mode.id} key={mode.id}>{mode.label}</option>)}
+            </select>
+          </label>
+        ) : (
+          <div className="ai-tutor__mode-tabs" role="group" aria-label="Tutor mode" aria-describedby={modeDescriptionId}>
+            {MODE_OPTIONS.map((mode) => <button aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-active" : ""} type="button" disabled={requestState.status === "loading"} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
+          </div>
+        )}
+        <p className="ai-tutor__mode-description" id={modeDescriptionId}>{currentMode.description}</p>
       </>}
 
       <div className={`ai-tutor__workspace${setupRequired ? " is-setup" : ""}`}>
@@ -2369,10 +3335,10 @@ export default function AiTutor({
           // settling back from past the end is not a move up.
           if (top < -1 || top > end + 1) return;
           if (top < Math.min(previous.top, end) - 1 && surface.scrollHeight >= previous.height) {
-            followStreamRef.current = false;
+            if (followStreamRef.current) setFollowing(false);
             return;
           }
-          if (end - top < 140) followStreamRef.current = true;
+          if (end - top < 140 && !followStreamRef.current) setFollowing(true);
         }}>
           {setupRequired && <div className="ai-tutor__setup-card">
               {configState.status === "pairing" ? <LockKeyhole size={26} aria-hidden="true" /> : <ServerOff size={26} aria-hidden="true" />}
@@ -2382,69 +3348,201 @@ export default function AiTutor({
                 : "The host has not enabled the local model, so the Mac tutor cannot answer here. Your lessons, notes and reviews work as usual."}</p>
               {configState.status === "disabled" && onUseOnDevice && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={onUseOnDevice}><Cpu size={16} aria-hidden="true" /> Use On-device Lite instead</button>}
             </div>}
-          {history.length === 0 && !activeResponse ? (setupRequired ? null : (
-            <div className="ai-tutor__welcome"><MessageCircleQuestion size={28} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a question or choose a study mode.</p></div>
+          {history.length === 0 && !activeResponse ? (setupRequired || (practiceVisible && practiceQuestion) ? null : (
+            <div className={`ai-tutor__welcome${starters.length ? " has-starters" : ""}`}>
+              <MessageCircleQuestion size={28} aria-hidden="true" />
+              <h3>What would you like to learn?</h3>
+              <p>{starters.length ? "Pick a suggested start or ask your own question." : "Ask a question or choose a study mode."}</p>
+              {starters.length > 0 && (
+                <div className="ai-tutor__starters" role="group" aria-labelledby={startersHeadingId}>
+                  <h4 className="ai-tutor__starters-title" id={startersHeadingId}>Suggested starts</h4>
+                  <ul>
+                    {starters.map((starter) => (
+                      <li key={starter.id}>
+                        <button className="ai-tutor__starter" type="button" disabled={requestState.status === "loading"} onClick={() => chooseStarter(starter)}>
+                          <span className="ai-tutor__starter-mode">{modeById(starter.modeId).label}</span>
+                          <span className="ai-tutor__starter-title">{starter.label}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {pendingStarter && (
+                    <div className="ai-tutor__starter-confirm" role="group" aria-label="Replace your unsent question?">
+                      <p>Your unsent question is in the box. Replace it with “{pendingStarter.label}”?</p>
+                      <div>
+                        <button className="ai-tutor__button ai-tutor__button--secondary" type="button" ref={keepDraftRef} onClick={() => { setPendingStarter(null); window.setTimeout(focusComposer, 0); }}>Keep my draft</button>
+                        <button className="ai-tutor__button ai-tutor__button--primary" type="button" onClick={() => applyStarter(pendingStarter)}>Replace draft</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )) : (
             <div className="ai-tutor__messages" role="group" aria-label="AI tutor conversation">
               {history.map((message, index) => {
                 const titleId = `${headingId}-message-${index}`;
                 const modeLabel = modeById(message.mode).label;
+                // A session recap says which turns it covers.
+                const recapLabel = message.role === "assistant" && message.mode === "summarize" ? wrapUpLabel(questionForAnswer(history, message.id)?.content) : "";
                 return (
-                  <article className={`ai-tutor__message ai-tutor__message--${message.role}`} key={message.id} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined} aria-labelledby={titleId}>
+                  <Fragment key={message.id}>
+                  {index === contextStart && index > 0 && contextBreak}
+                  <article className={`ai-tutor__message ai-tutor__message--${message.role}`} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined} aria-labelledby={titleId}>
                     <h3 className="visually-hidden" id={titleId}>{message.role === "assistant" ? `Tutor answer, ${modeLabel}${message.incomplete ? ", stopped early" : ""}` : `Your question, ${modeLabel}`}</h3>
-                    <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeLabel}</span>{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
+                    <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeLabel}</span>{recapLabel && <span className="ai-tutor__recap-label">{recapLabel}</span>}{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
                     {message.role === "assistant"
-                      ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
+                      ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} study={studyFor(message)} />
                       : <p className="ai-tutor__user-prompt">{message.content}</p>}
-                    <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`)} onSaveAnswerNote={onSaveAnswerNote} />
+                    <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, reuseNotice)} onSaveAnswerNote={onSaveAnswerNote} listen={listenFor(message)} />
+                    {(() => {
+                      // A follow-up sends its answer as memory, so an answer
+                      // from before a long break (below the divider's "not
+                      // sent") offers none.
+                      const followUps = followUpsForMessage(message, { isLast: index === history.length - 1 && index >= contextStart });
+                      return followUps.length > 0 && <FollowUps items={followUps} disabled={requestState.status === "loading"} onChoose={(item) => runFollowUp(message, item)} />;
+                    })()}
                   </article>
+                  </Fragment>
                 );
               })}
+              {contextStart > 0 && contextStart === history.length && contextBreak}
               {activeResponse && (
-                <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true" ref={streamingArticleRef}>
+                <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true" tabIndex={-1} aria-label="Tutor answer, in progress" ref={streamingArticleRef}>
                   <div className="ai-tutor__message-meta"><strong>Lumen Tutor</strong><span>{modeById(activeResponse.mode).label}</span><span>{RESPONSE_PROFILES.find((item) => item.id === activeResponse.responseProfile)?.label || "Balanced"}</span><span className="ai-tutor__live-badge"><i aria-hidden="true" /> Live</span><WebFallbackBadge status={activeResponse.webFallbackStatus} /></div>
-                  <div className="ai-tutor__stream-status"><span>{activeResponse.stage || "Generating response…"}</span><small aria-hidden="true">{requestElapsed}s</small></div>
+                  <div className={`ai-tutor__stream-status${progressSteps.length ? " has-progress" : ""}`}><span>{activeResponse.stage || "Generating response…"}</span><small aria-hidden="true">{requestElapsed}s</small></div>
+                  {progressSteps.length > 0 && (
+                    <ol className="ai-tutor__progress" aria-label="Answer progress">
+                      {progressSteps.map((step) => (
+                        <li className={`is-${step.state}`} key={step.id}>
+                          <span className="ai-tutor__progress-mark" aria-hidden="true">{step.state === "done" ? <Check size={13} /> : step.state === "active" ? <LoaderCircle className="ai-tutor__spin" size={13} /> : null}</span>
+                          {step.label}<span className="visually-hidden">{{ done: ", done", active: ", in progress", skipped: ", skipped" }[step.state] || ""}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {progressSteps.length > 0 && activeResponse.citationSources.length > 0 && (
+                    <ul className="ai-tutor__progress-sources" aria-label="Sources for this answer">
+                      {activeResponse.citationSources.slice(0, 4).map((source) => <li key={source.id}><span>[S{source.citationNumber}]</span> {source.title}</li>)}
+                      {activeResponse.citationSources.length > 4 && <li>+{activeResponse.citationSources.length - 4} more</li>}
+                    </ul>
+                  )}
                   {activeResponse.content
                     ? <AssistantMessage message={activeResponse} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} streaming />
-                    : <div className="ai-tutor__response-skeleton" aria-hidden="true"><i /><i /><i /></div>}
-                  <div className="ai-tutor__stream-actions"><span>{activeResponse.content
+                    : progressSteps.length === 0 && <div className="ai-tutor__response-skeleton" aria-hidden="true"><i /><i /><i /></div>}
+                  {/* While the steps describe the wait, a status line would repeat them. */}
+                  {(activeResponse.content || progressSteps.length === 0) && <div className="ai-tutor__stream-actions"><span>{activeResponse.content
                     ? `${activeResponse.content.length.toLocaleString()} characters received`
                     : activeResponse.sourceMode === "none" && !["searching", "used"].includes(activeResponse.webFallbackStatus)
                       ? "Waiting for the first token…"
-                      : "Preparing your answer and checking sources…"}</span><button className="ai-tutor__button ai-tutor__button--secondary" type="button" ref={stopButtonRef} onClick={() => requestControllerRef.current?.abort()}><CircleStop size={16} aria-hidden="true" /> Stop generating</button></div>
+                      : "Preparing your answer and checking sources…"}</span></div>}
                 </article>
               )}
             </div>
           )}
+          {practiceCard}
           {requestNotice}
+          <div className="ai-tutor__conversation-end" ref={conversationEndRef} aria-hidden="true" />
         </section>
       </div>
 
       <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement.text}{announcement.id % 2 ? " " : ""}</p>
 
-      <form className={`ai-tutor__composer${setupRequired ? " is-collapsed" : ""}`} onSubmit={submit}>
-        {!setupRequired && <>
-          <div className="ai-tutor__composer-row">
-            <label className="ai-tutor__difficulty"><span>Depth</span><select value={difficulty} disabled={requestState.status === "loading"} onChange={(event) => { setDifficulty(event.target.value); outboundChanged(); }}>{DIFFICULTIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-            <span className="ai-tutor__model">{configState.config?.model ? `Local model: ${configState.config.model}` : "Local model is host-managed"}</span>
+      <form className={`ai-tutor__composer${setupRequired ? " is-collapsed" : ""}`} onSubmit={submit} ref={composerRef} aria-label="Ask the tutor">
+        {jumpLabel && <button className="ai-tutor__jump" type="button" onClick={jumpToLatest}><ArrowDown size={16} aria-hidden="true" /> {jumpLabel}</button>}
+        {composerNotice && <p className="ai-tutor__composer-notice" role="status">{composerNotice}</p>}
+        {pendingPrefill && (
+          <div className="ai-tutor__prefill-confirm" role="group" aria-label="Replace your unsent question?">
+            <p>{prefillOrigin(pendingPrefill)} Your unsent question is in the box. Replace it?</p>
+            <div>
+              <button className="ai-tutor__button ai-tutor__button--secondary" type="button" ref={keepPrefillDraftRef} onClick={() => { setPendingPrefill(null); setComposerNotice(`Your draft was kept; the question from the ${pendingPrefill.origin || "other screen"} was not added.`); window.setTimeout(focusComposer, 0); }}>Keep my draft</button>
+              <button className="ai-tutor__button ai-tutor__button--primary" type="button" onClick={() => applyPrefill(pendingPrefill)}>Replace draft</button>
+            </div>
           </div>
-          <fieldset className="ai-tutor__response-profiles" disabled={requestState.status === "loading"}>
-            <legend>Response</legend>
-            <div>{RESPONSE_PROFILES.map((item) => {
-              const unavailable = item.id === "deep" && !deepProfileAvailable;
-              return <label className={`${responseProfile === item.id ? "is-active" : ""}${unavailable ? " is-unavailable" : ""}`} key={item.id}><input type="radio" name={`${headingId}-response-profile`} value={item.id} checked={responseProfile === item.id} disabled={unavailable} onChange={() => { setResponseProfile(item.id); outboundChanged(); }} /><span><strong>{item.label}</strong><small>{unavailable ? "Requires a local model that attests thinking support" : item.detail}</small></span></label>;
-            })}</div>
-          </fieldset>
-          <label className={`ai-tutor__web-search ${effectiveWebSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={effectiveWebSearch} disabled={!webSearchAvailable || !libraryWebEligible || requestState.status === "loading"} onChange={(event) => changeWebSearch(event.target.checked)} /><span><strong>Allow current-web fallback for this request</strong><small>{!libraryWebEligible ? "Select Library first to use web fallback." : webSearchAvailable ? "Searches only when needed. Queries go to public search engines." : configState.config?.service?.toolCallingCapable === false ? "This model does not support web search." : configState.config?.webSearch?.configured ? "Search is offline. Start SearXNG on your Mac, then refresh." : "Web search is not configured."}</small></span></label>
-          {effectiveWebSearch && <WebFallbackBadge status="armed" />}
-        </>}
+        )}
+        {/* The one-time local-model disclosure stays in the composer, never
+            only in the options sheet, until it is acknowledged. */}
+        {!setupRequired && !localDisclosureAcknowledged && (
+          <div className="ai-tutor__consent-card">
+            <label className="ai-tutor__consent"><input type="checkbox" checked={false} onChange={(event) => { const acknowledged = event.target.checked; setLocalDisclosureAcknowledged(acknowledged); rememberLocalDisclosureAcknowledgement(acknowledged); }} /><span>Allow prompts and attached notes to use the local model on your Mac. Remember on this browser.</span></label>
+          </div>
+        )}
+        {sessionStrip && (
+          <div className="ai-tutor__session" role="group" aria-labelledby={sessionTitleId}>
+            <p className="ai-tutor__session-status" id={sessionTitleId}>
+              <strong>{modeById(sessionStrip.mode).label} session</strong> · question {sessionStrip.questions}
+              {sessionStrip.revealed && <> <span className="ai-tutor__session-revealed"><span className="visually-hidden">· </span>Answer revealed</span></>}
+              {sessionStrip.suggestWrapUp && <span className="ai-tutor__session-tip"> · time to wrap up</span>}
+            </p>
+            <div className="ai-tutor__session-actions">
+              {sessionStrip.revealed
+                ? <button type="button" disabled={requestState.status === "loading"} onClick={() => runSessionAction("next")}>Next question</button>
+                : <>
+                  {/* Phones keep the three actions on one row. */}
+                  <button type="button" disabled={requestState.status === "loading"} onClick={() => runSessionAction("hint")}>{compactModes ? "Hint" : "Give me a hint"}</button>
+                  <button type="button" disabled={requestState.status === "loading"} onClick={() => runSessionAction("reveal")}>{compactModes ? "I’m stuck" : "I’m stuck, explain it"}</button>
+                </>}
+              <button type="button" className={sessionStrip.suggestWrapUp ? "is-suggested" : undefined} disabled={requestState.status === "loading"} onClick={() => runSessionAction("wrap-up")}>Wrap up</button>
+            </div>
+          </div>
+        )}
         {/* The question box stays in setup states so a draft or an Ask AI
             excerpt is kept for when the tutor becomes available. */}
-        <label className="ai-tutor__prompt-label" htmlFor={promptId}>Your question</label>
-        <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} maxLength={promptLimit} rows={4} placeholder="Ask anything about AI/ML, your library, or the current lesson…" />
-        {composerNotice && <p className="ai-tutor__composer-notice" role="status">{composerNotice}</p>}
-        <div className="ai-tutor__character-count"><span id={counterId}>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>{contextPreview.length > 0 && <span>{contextPreview.length.toLocaleString()} source characters prepared</span>}{conversationWindow.compactedMessages > 0 && <span>{conversationWindow.compactedMessages} older messages will be visibly compacted</span>}</div>
+        <label className="ai-tutor__prompt-label" htmlFor={promptId}>{answering ? "Your answer" : "Your question"}</label>
+        <div className="ai-tutor__submit-row">
+          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}${keyHint ? ` ${keyHintId}` : ""}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={onPromptKeyDown} maxLength={promptLimit} rows={1} placeholder={answering ? "Type your answer…" : "Ask a question…"} />
+          {requestState.status === "loading" ? (
+            <button
+              className="ai-tutor__button ai-tutor__button--secondary ai-tutor__send is-stop"
+              type="button"
+              ref={sendButtonRef}
+              onClick={(event) => {
+                // Stopping re-renders this button as Send before the click's
+                // default action runs; cancel it so Stop never re-sends.
+                event.preventDefault();
+                // A second tap of a double tap on Send is not a Stop.
+                if (event.detail > 0 && (globalThis.performance?.now?.() ?? Date.now()) - requestStartedAtRef.current < 500) return;
+                requestControllerRef.current?.abort();
+              }}
+            ><CircleStop size={18} aria-hidden="true" /><span className="ai-tutor__send-label">Stop generating</span></button>
+          ) : (
+            <button className="ai-tutor__button ai-tutor__button--primary ai-tutor__send" type="submit" ref={sendButtonRef} disabled={!requestReady} aria-describedby={`${sendSummaryId} ${sendReasonId}`}><Send size={18} aria-hidden="true" /><span className="ai-tutor__send-label">{answering ? "Send answer" : `Generate ${currentMode.label}`}</span></button>
+          )}
+        </div>
+        <div className="ai-tutor__composer-meta">
+          {!setupRequired && <button className="ai-tutor__options-toggle" type="button" aria-haspopup="dialog" aria-expanded={optionsOpen} aria-describedby={optionsSummary ? optionsSummaryId : undefined} onClick={() => setOptionsOpen(true)}><SlidersHorizontal size={16} aria-hidden="true" /> Options{optionsSummary && <span className="ai-tutor__options-summary" id={optionsSummaryId}>{optionsSummary}</span>}</button>}
+          {!setupRequired && !localDisclosureAcknowledged && <button type="button" className="ai-tutor__text-button" onClick={() => { setPrivacyOpen(true); setOptionsOpen(true); }}>What is sent?</button>}
+          {!setupRequired && effectiveWebSearch && <WebFallbackBadge status="armed" />}
+          {keyHint && <span className="ai-tutor__key-hint" id={keyHintId}>{keyHint}</span>}
+          <span className="ai-tutor__character-count" id={counterId}>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>
+        </div>
+        <span className="visually-hidden" id={sendSummaryId}>{effectiveWebSearch ? "Sends to the local model on the Lumen server, with current-web fallback allowed for this request." : "Sends to the local model on the Lumen server. Web fallback is off."}</span>
+        <p className={`ai-tutor__disabled-reason${quietReason ? " is-quiet" : ""}`} id={sendReasonId} role="status">{disabledReason}</p>
+      </form>
 
+      <TutorSheet
+        open={optionsOpen && !setupRequired}
+        title="Request options"
+        description="Depth, answer length, web fallback and privacy for your next question."
+        closeLabel="Close request options"
+        className="ai-tutor-sheet"
+        onClose={() => setOptionsOpen(false)}
+      >
+        <div className="ai-tutor__composer-row">
+          <label className="ai-tutor__difficulty"><span>Depth</span><select value={difficulty} disabled={requestState.status === "loading"} onChange={(event) => { setDifficulty(event.target.value); outboundChanged(); }}>{DIFFICULTIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+          <span className="ai-tutor__model">{configState.config?.model ? `Local model: ${configState.config.model}` : "Local model is host-managed"}</span>
+        </div>
+        <fieldset className="ai-tutor__response-profiles" disabled={requestState.status === "loading"}>
+          <legend>Response</legend>
+          <div>{RESPONSE_PROFILES.map((item) => {
+            const unavailable = item.id === "deep" && !deepProfileAvailable;
+            return <label className={`${responseProfile === item.id ? "is-active" : ""}${unavailable ? " is-unavailable" : ""}`} key={item.id}><input type="radio" name={`${headingId}-response-profile`} value={item.id} checked={responseProfile === item.id} disabled={unavailable} onChange={() => { setResponseProfile(item.id); outboundChanged(); }} /><span><strong>{item.label}</strong><small>{unavailable ? "Requires a local model that attests thinking support" : item.detail}</small></span></label>;
+          })}</div>
+        </fieldset>
+        <label className={`ai-tutor__web-search ${effectiveWebSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={effectiveWebSearch} disabled={!webSearchAvailable || !libraryWebEligible || requestState.status === "loading"} onChange={(event) => changeWebSearch(event.target.checked)} /><span><strong>Allow current-web fallback for this request</strong><small>{!libraryWebEligible ? "Select Library first to use web fallback." : webSearchAvailable ? "Searches only when needed. Queries go to public search engines." : configState.config?.service?.toolCallingCapable === false ? "This model does not support web search." : configState.config?.webSearch?.configured ? "Search is offline. Start SearXNG on your Mac, then refresh." : "Web search is not configured."}</small></span></label>
+        {localDisclosureAcknowledged
+          ? <div className="ai-tutor__consent ai-tutor__consent--acknowledged"><ShieldCheck size={18} aria-hidden="true" /><span>Local model enabled</span><button type="button" className="ai-tutor__text-button" onClick={() => { rememberLocalDisclosureAcknowledgement(false); setLocalDisclosureAcknowledged(false); setPrivacyOpen(true); }}>Review again</button></div>
+          : <p className="ai-tutor__consent-note">Tick the local-model permission under your question to enable sending.</p>}
         <div className="ai-tutor__privacy">
           <button className="ai-tutor__privacy-toggle" type="button" aria-expanded={privacyOpen} onClick={() => setPrivacyOpen((open) => !open)}><span><LockKeyhole size={18} aria-hidden="true" /><strong>Privacy and request details</strong></span><ChevronDown size={18} aria-hidden="true" /></button>
           {privacyOpen && <div className="ai-tutor__privacy-body">
@@ -2452,26 +3550,23 @@ export default function AiTutor({
             {effectiveWebSearch && <p><strong>Consented web fallback:</strong> {AI_DATA_DISCLOSURE.webSearch.destination} Local-library retrieval runs first. Only when it recommends fallback may Lumen send up to {configState.config?.webSearch?.maxRounds || 1} focused queries derived from this prompt, selected context, and bounded history. If the local model skips its required tool call, the server uses a bounded form of your question so the authorized fallback still runs. Query text is sent without a separate preview in Mac-local mode. Use On-device Lite when you need to approve the exact query first.</p>}
             {responseProfile === "deep" && <p><strong>Deep response:</strong> The local model may use private internal thinking to plan a stronger answer. That private thinking is never returned to this UI, saved in history, or shown by the Approach toggle; Approach contains only disclosure-safe orchestration and evidence metadata.</p>}
             <div className="ai-tutor__disclosure-grid">
-              <div><h4>This request sends to the local model</h4><ul><li>Your {prompt.trim().length.toLocaleString()}-character prompt</li><li>Difficulty: {DIFFICULTIES.find((item) => item.id === difficulty)?.label}</li><li>Response profile: {RESPONSE_PROFILES.find((item) => item.id === responseProfile)?.label} (up to {selectedMaxOutputTokens.toLocaleString()} output tokens)</li><li>Grounding: {SOURCE_MODES.find((item) => item.id === sourceMode)?.label}</li><li>{selectedSources.length ? `${selectedSources.length} prepared source${selectedSources.length === 1 ? "" : "s"}: ${selectedSources.map((source) => `[S${source.citationNumber}] ${source.title}`).join(", ")}` : "No curriculum source text is currently prepared"}</li><li>{outboundHistory.length} recent conversation message{outboundHistory.length === 1 ? "" : "s"} (maximum {MAX_SERVER_HISTORY}){conversationWindow.compactedMessages ? `; ${conversationWindow.compactedMessages} older messages form a visible bounded memory` : ""}</li><li>A fixed grounding instruction requiring valid [S#] citations</li><li>Web fallback: {effectiveWebSearch ? "consented; used only when local retrieval recommends it" : "off"}</li></ul></div>
+              <div><h4>This request sends to the local model</h4><ul><li>Your {prompt.trim().length.toLocaleString()}-character prompt</li><li>Difficulty: {DIFFICULTIES.find((item) => item.id === difficulty)?.label}</li><li>Response profile: {RESPONSE_PROFILES.find((item) => item.id === responseProfile)?.label} (up to {selectedMaxOutputTokens.toLocaleString()} output tokens)</li><li>Grounding: {SOURCE_MODES.find((item) => item.id === sourceMode)?.label}</li><li>{selectedSources.length ? `${selectedSources.length} prepared source${selectedSources.length === 1 ? "" : "s"}: ${selectedSources.map((source) => `[S${source.citationNumber}] ${source.title}`).join(", ")}` : "No curriculum source text is currently prepared"}{contextPreview.length > 0 ? ` (${contextPreview.length.toLocaleString()} source characters prepared)` : ""}</li><li>{outboundHistory.length} recent conversation message{outboundHistory.length === 1 ? "" : "s"} (maximum {MAX_SERVER_HISTORY}){conversationWindow.compactedMessages ? `; ${conversationWindow.compactedMessages} older messages form a visible bounded memory` : ""}{contextStart > 0 ? `; ${contextStart} earlier message${contextStart === 1 ? "" : "s"} from before a break of more than 3 hours ${contextStart === 1 ? "is" : "are"} not sent` : ""}</li><li>A fixed grounding instruction requiring valid [S#] citations</li><li>Web fallback: {effectiveWebSearch ? "consented; used only when local retrieval recommends it" : "off"}</li></ul></div>
               <div><h4>This client does not send</h4><ul>{AI_DATA_DISCLOSURE.neverSentByThisClient.map((item) => <li key={item}>{item}</li>)}</ul></div>
             </div>
-            <p className="ai-tutor__retention"><ShieldCheck size={16} aria-hidden="true" />The Lumen server reports no prompt or response storage and no paid remote-model API. {effectiveWebSearch ? "Search engines can observe the search query and ordinary request metadata according to their own policies. " : "No web-search service is contacted for this request. "}{onHistoryChange ? `This app saves up to ${MAX_VISIBLE_HISTORY} normalized tutor messages and web-source links locally and includes them in exported backups. Full source text and search-result bodies are not duplicated in that history. Use “Clear conversation” in the tutor header to remove it.` : "Conversation history stays only in this component for the current visit."}</p>
+            <p className="ai-tutor__retention"><ShieldCheck size={16} aria-hidden="true" />The Lumen server reports no prompt or response storage and no paid remote-model API. {effectiveWebSearch ? "Search engines can observe the search query and ordinary request metadata according to their own policies. " : "No web-search service is contacted for this request. "}{onHistoryChange ? `This app saves up to ${MAX_VISIBLE_HISTORY} normalized tutor messages and web-source links locally and includes them in exported backups. Full source text and search-result bodies are not duplicated in that history. Use “New topic” in the tutor header to clear it, with an option to export it first.` : "Conversation history stays only in this component for the current visit."}</p>
             {providerControlsUrl && <a href={providerControlsUrl} target="_blank" rel="noreferrer">Review provider data controls <ExternalLink size={13} aria-hidden="true" /></a>}
           </div>}
         </div>
+      </TutorSheet>
 
-        <div className="ai-tutor__submit-row">
-          {setupRequired ? null : !localDisclosureAcknowledged ? <label className="ai-tutor__consent"><input type="checkbox" checked={false} onChange={(event) => { const acknowledged = event.target.checked; setLocalDisclosureAcknowledged(acknowledged); rememberLocalDisclosureAcknowledgement(acknowledged); }} /><span>Allow prompts and attached notes to use the local model on your Mac. Remember on this browser.</span></label> : <div className="ai-tutor__consent ai-tutor__consent--acknowledged"><ShieldCheck size={18} aria-hidden="true" /><span>Local model enabled</span><button type="button" className="ai-tutor__text-button" onClick={() => { rememberLocalDisclosureAcknowledgement(false); setLocalDisclosureAcknowledged(false); setPrivacyOpen(true); }}>Review again</button></div>}
-          <button className="ai-tutor__button ai-tutor__button--primary ai-tutor__send" type="submit" ref={sendButtonRef} disabled={!requestReady} aria-describedby={`${sendSummaryId} ${sendReasonId}`}>{requestState.status === "loading" ? <LoaderCircle className="ai-tutor__spin" size={18} aria-hidden="true" /> : <Send size={18} aria-hidden="true" />} {requestState.status === "loading" ? "Working…" : `Generate ${currentMode.label}`}</button>
-        </div>
-        <span className="visually-hidden" id={sendSummaryId}>{effectiveWebSearch ? "Sends to the local model on the Lumen server, with current-web fallback allowed for this request." : "Sends to the local model on the Lumen server. Web fallback is off."}</span>
-        <p className="ai-tutor__disabled-reason" id={sendReasonId} role="status">{disabledReason}</p>
-      </form>
-
+      {/* New topic (TFEAT-13, interim): one conversation, so starting fresh
+          clears it; exporting first keeps a full copy. */}
       <TutorConfirmDialog
         open={confirmClearOpen}
-        title="Clear this conversation?"
-        body="This removes the saved tutor messages on this device. Your lessons, notes and review cards are not deleted."
+        title="Start a new topic?"
+        body="This clears the saved tutor conversation on this device so the tutor starts fresh. Export it first to keep a copy. Your lessons, notes and review cards are not deleted."
+        secondaryLabel="Export, then clear"
+        onSecondary={() => { exportConversation(); confirmClear(); }}
         confirmLabel="Clear conversation"
         onConfirm={confirmClear}
         onCancel={() => setConfirmClearOpen(false)}

@@ -107,6 +107,16 @@ export async function auditViewportScrolling({ browser, baseUrl, artifactDirecto
         if (atBottom && Math.abs(scrollY + innerHeight - root.scrollHeight) > 2) problems.push("Page bottom is not reachable after resizing or collapsing details");
         const composer = document.querySelector(".ai-tutor__submit-row")?.getBoundingClientRect();
         if (atBottom && composer && (composer.bottom < 0 || composer.top > innerHeight)) problems.push("AI composer is outside the viewport at the page bottom");
+        // The docked composer (issue #57) keeps the question box between the
+        // top bar and the bottom navigation wherever the page is scrolled.
+        const dock = document.querySelector(".ai-tutor__composer");
+        if (dock && getComputedStyle(dock).position === "sticky") {
+          const field = dock.querySelector("textarea").getBoundingClientRect();
+          const top = Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0);
+          const nav = document.querySelector(".bottom-nav");
+          const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+          if (field.top < top - 1 || field.bottom > bottom + 1) problems.push("AI question box is not visible above the bottom navigation");
+        }
         return { problems, scrollY, viewportHeight: viewport?.height, bounds: { top: main.top, bottom: main.bottom }, width: innerWidth, height: innerHeight };
       }, { atTop, atBottom });
       const result = { device, surface, theme, ok: finding.problems.length === 0, ...finding };
@@ -135,12 +145,16 @@ export async function auditViewportScrolling({ browser, baseUrl, artifactDirecto
         await inspect("ai-navigation", theme, { atTop: true });
         await bottom();
         await inspect("ai-bottom", theme, { atBottom: true });
-        await page.click(".ai-tutor__privacy-toggle");
+        // Expanding and collapsing details must leave the page bottom
+        // reachable. The engine notes sit above the tutor; privacy details
+        // moved into the tutor's options sheet (issue #57).
+        await page.$eval(".ai-engine-picker__note summary", (node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+        await page.click(".ai-engine-picker__note summary");
         await bottom();
-        // The toggle is above the viewport while details are expanded. Scroll
-        // it into view exactly as a user would before collapsing the panel.
-        await page.$eval(".ai-tutor__privacy-toggle", (node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
-        await page.click(".ai-tutor__privacy-toggle");
+        // The summary is above the viewport while the notes are open. Scroll
+        // it into view exactly as a user would before collapsing them.
+        await page.$eval(".ai-engine-picker__note summary", (node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+        await page.click(".ai-engine-picker__note summary");
         await bottom();
         await inspect("ai-details-collapsed", theme, { atBottom: true });
         await resize(sizes[1]);

@@ -529,6 +529,197 @@ confirmed against the preceding build:
 - The Depth select and the source filter were 42px tall on phones.
   `audit:ai-ui` now checks every Mac tutor control on a 393px phone.
 
+## AI tutor depth checked on 2026-09-24 (#57)
+
+Issue #57 made the Mac tutor phone-first and added study features on top of
+the #56 fixes. The request contract, the server and the persisted profile
+shape are unchanged: every feature is a visible question sent through the
+one shared fit path (`src/lib/tutorRequest.js`), or local UI state. Each item
+below has regressions in the named audit.
+
+Layout and input:
+
+- The composer docks above the bottom navigation. `audit:ai-ui` checks five
+  viewports (393×852, 320×640, 375×667, 820×1180, 1280×800) on first load,
+  with an eight-line draft, while streaming, after an answer, at the page
+  top, with an over-long prompt and with a Socratic session strip: the
+  question box and Send stay between the top bar and the navigation, the
+  page never scrolls sideways, and below 981px the page is the only
+  vertical scroller.
+- Depth, answer length, web fallback and privacy moved to an Options sheet
+  (focus trap, Escape, focus return, 44px targets). The consent card stays in
+  the dock until acknowledged; an armed web permission stays visible there.
+- The engine picker is one line; phones pick the mode from a native select.
+- Enter sends only with a fine pointer; Shift+Enter, IME composition and Code
+  review keep new lines; Up arrow recalls the last question; Esc stops an
+  answer but never from a sheet, dialog or open disclosure.
+- Scrolling back while an answer streams stops following (iOS rubber-banding
+  ignored); Jump to latest and Answer ready bring the learner back and move
+  focus to the answer.
+- Grounded answers show steps (finding passages, drafting, checking
+  citations) with the lessons found; each step is announced once.
+- Deliberate deviation: an empty box and the unacknowledged disclosure do not
+  draw their disabled reason in the dock (it covered the tutor header on 320px
+  phones); it stays linked from Send and in the status region.
+
+Study features:
+
+- Suggested starts come from the open and next lessons, open mistakes and
+  lapsed cards; a fresh profile never names the roadmap. A start fills the box
+  and never sends; a real draft is replaced only on request.
+- Follow-ups under the newest answer remember only that question and answer,
+  keep its grounding, retrieve with its topic (the learner's question behind
+  any chain of follow-ups) and never use the web.
+- Quizzes take an optional confidence, show the score once every question is
+  checked (announced once, confident misses first), explain a miss through a
+  Fast answer check with no score or strengths shown, save misses to the
+  mistake notebook once and build a new quiz on the weak spots.
+- Listen reads finished answers through the app's speech engine and stops on a
+  new question, New topic or leaving the tutor.
+- New topic replaces the header's Clear and can export first. Turns before a
+  break of more than three hours are neither sent nor summarised; a divider and
+  the privacy panel say so.
+
+Practice features:
+
+- A Socratic or Interview session (derived from the conversation, never
+  stored) shows a strip in the dock: the question count, Hint, I'm stuck and
+  Wrap up; while a question waits, the box becomes the answer box. Hints and
+  reveals are hidden modes, so they stay in the session without counting as
+  questions; they retrieve with the tutor's last question and its lesson and
+  never use the web. Wrap up sends only the session's turns (up to 12
+  messages, 60% of the input budget, no summary, no library text) and names
+  the covered turns when the session is longer. `audit:ai-ui` checks each
+  payload, the counter, the reveal note, the Wrap up suggestion at ten
+  messages, the strip hiding in another mode, 44px actions on one phone row,
+  and Save to notes and Make flashcards on the recap. Nothing is graded.
+- Interview practice draws authored questions (missed first) and grades a
+  typed answer with a hidden `answer_feedback` mode whose only source is the
+  question's model answer and rubric. `audit:ai-ui` checks that the model
+  answer is not in the page before grading, that an answer crowding out the
+  rubric is blocked with a reason, the payload (no library, web or history,
+  one whole reference), the rubric checklist without the model's score, the
+  reference behind a button, ticks surviving a reload, and a miss merging with
+  a timed round's miss of the same question. The practice views and track
+  helpers load with the bank, off the precached tutor route: the first build
+  put a shared `interviewTracks` chunk in the offline route list and route
+  screens at 912,997 bytes, which `audit:app` rejected; they are now
+  897,679 bytes (budget 900,000).
+- Work through with tutor (mistake notebook) and Review my misses with tutor
+  (readiness check) put a prepared question in the box: consumed once, never
+  sent, a draft kept unless replaced, focus in the box, hidden with AI features
+  off, and short enough for On-device Lite's 1,800-character box.
+  `audit:phone-ai-ui` applies one on On-device Lite.
+- A Library-first request names its first attached lesson as its topic
+  ("Chapter 1 — Linear Regression and Regularization (+7 related passages)")
+  instead of "8 selected Lumen sources".
+- Deliberate deviations: phones label the session actions Hint and I'm stuck
+  so they share one row; after a reveal the strip offers Next question instead
+  of a hint; a tutor question gets the strip instead of answer follow-ups;
+  interview answers are typed in the practice card, not the dock; an unsent
+  question from an earlier bridge counts as a draft.
+
+Live `qwen3.5:4b` runs on a 393px phone (about 8 generations per stage):
+
+- Stage 1: a grounded answer found 7 passages and landed after 35 s with the
+  composer in view. The "Checking citations" step never lit up live: the
+  server sent no validating phase before completion (a #58 question).
+- Stage 2: Simpler finished in 19 s with 12 resolved citations and a history
+  of exactly the followed pair; a Fast answer check took 17 s, schema-valid,
+  with 4 resolved citations.
+- Stage 3, Socratic: start 12 s, an answer turn 10 s and Hint 12 s, each one
+  question with resolved citations; the hint did not state the answer. The
+  server prompt still opened the first reply with "Your previous answer
+  correctly identified…" and called the hint request "your hint" (#58). The
+  first live Wrap up failed its grounding check: the session's turns kept
+  their `[S#]` labels and the model copied one into a recap sent without
+  evidence. Session memory now drops those labels (unit and `audit:ai-ui`
+  regressions); the rerun took 21 s and offered Save to notes and Make
+  flashcards. It credited the learner with a point the tutor had revealed, so
+  the Wrap up question now asks for credit on the learner's own answers.
+- Stage 3, interview practice: a partial answer to `mle-01` graded in 17 s,
+  schema-valid, 2 resolved citations; its gaps named exactly the three rubric
+  points the answer missed (hand grade: 1 of 4; hidden model score 35). A
+  vague answer to `mle-02` graded in 20 s with no credit and all four rubric
+  points as gaps (hidden score 10). Neither was generous.
+- Stage 3, Work through with tutor: the sent mistake answered in 13 s with 3
+  resolved citations, but it retrieved the question bank and case studies,
+  because the instructions ("work through this mistake") outweighed the
+  topic. A prepared question now searches with the mistake's question and
+  expected answer while it is sent as placed; `audit:ai-ui` expects the
+  regularization chapter for it. The model also explained the answer instead
+  of first asking what went wrong, the Socratic prompt issue above.
+
+The branch was rebased onto the #69 citation-forgery fix. The answer-check
+and rubric results render model text through the same inline renderer, so
+model-authored HTML shows there as text and only the renderer's own `[S#]`
+controls are buttons. On the docked phone layout the forged route label in
+that fix's audit wraps, and the middle of its two-line box sat on the genuine
+`[S#]` beside it; the audit now clicks the label's first line.
+
+Review follow-up. An adversarial pass over the branch confirmed each defect
+against the preceding build (or live) before fixing it, with a regression in
+the named audit or unit test:
+
+- A follow-up of a follow-up searched with the chip's own wording. Live,
+  Check my understanding after Give an example on a ridge answer retrieved
+  "Chapter 2 — Problem Framing" and quizzed on customer churn; in
+  `audit:ai-ui` the chained quiz retrieved chapters 6, 2 and 7. Follow-ups
+  now search with the learner's question behind the chain, on both engines.
+  Live rerun: Chapter 1 (+6 related passages), a ridge question in 13 s.
+- Wrap up with no answer of the learner's credited them with the hint's
+  points; the recap question now says there is nothing to credit (live
+  rerun: a "what this session covered" recap in 20 s, no false credit).
+- An answer from before a three-hour break offered follow-ups, which would
+  send it as memory against the divider.
+- Edit & reuse, Edit & regenerate and Up arrow on a graded practice answer put
+  the grading question in the box as an Explain question, to be sent without
+  its rubric. They now reopen the practice card with the answer.
+- A long mistake or readiness check produced up to about 3,000 characters and
+  On-device Lite cut it off mid-word at 1,800; fields now give way, the
+  learner's answer first.
+- "?" with focus in Request options or the New topic dialog opened the
+  shortcut sheet underneath them and moved focus there, out of sight.
+- At 200% text on a 320×640 phone a dock holding a session strip was 768px
+  tall and pinned itself over the whole tutor, header included. Past 60% of
+  the room above the navigation (not counting the question box's growth) it
+  now stays in the page flow, and docks again below 50%.
+- Enter with the local-model permission unticked did nothing visible, and a
+  send refused at send time failed silently; both now give the reason.
+- A reading that failed part-way showed Listen again with no reason; the
+  engine's message now shows under the answer (a notice on On-device Lite).
+- The quiz dispute note said a miss was "not saved" when it had been saved
+  before the check; the disputed path now has a browser regression.
+
+Live `qwen3.5:4b` for the review (8 generations, 393px phone): Explain 50 s
+with 16 resolved citations and the topic cue; Give an example 44 s, history
+exactly the followed pair (45 and 3,000 characters); then the two failures
+above and their reruns (Check my understanding 13 s, Hint 9 s, Wrap up 20 s,
+all citations resolved). The first Socratic replies still praised a
+"previous answer" the learner never gave, and "Checking citations" never lit
+up (#58). The branch was then rebased onto #83 (saved AI output rendered as
+untrusted text); the difference from the pre-rebase tip is exactly #83's 22
+files. Together they put the precached route screens at 903,321 bytes, over
+the 900,000 budget, so the quiz and answer-check views and their styles now
+load with the first quiz, as interview practice does (890,629 bytes; the quiz
+state and requests stay in the tutor, and screenshots in Paper, Night and
+Contrast match the stage-2 ones). Gate on the final tip: `npm run check`
+(524 AI/data tests; AI eval 27 cases, hit@1 0.913; startup entry 715,643
+bytes; route screens 890,629 bytes) and all 13 `npm run check:browser`
+suites on the first attempt (`audit:ai-ui` 109 s, `audit:responsive` 434
+layout and 367 control checks, `audit:a11y` 57 axe runs).
+
+Still open: hiding the bottom navigation while typing (needs a physical
+iPhone); a docked composer, a session strip, interview practice and quiz
+follow-through on On-device Lite; titled multi-topic threads (designed in
+`docs/TUTOR_THREADS_DESIGN.md`); and the server-side Socratic prompt fixes
+(#58) seen live: a first reply that praises a "previous answer" the learner
+never gave, a hint request answered as "your hint", and a mistake explained
+before the learner is asked what went wrong. Below 481px of height, or with
+very large text on a small phone, the composer is not docked, so the strip
+scrolls with the page there. At 200% text on a 320px phone the tutor title
+runs under the header's two 44px buttons, which are the same size as on main.
+
 ## Offline route screens reproduced on 2026-09-24
 
 - With the app server stopped, a fresh install that had opened only Home

@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import PhoneLocalAiTutor from "../src/components/PhoneLocalAiTutor.jsx";
+import { useSpeech } from "../src/hooks/useSpeech.js";
 import {
   makeDeterministicPhoneSearchPlan,
   PHONE_LOCAL_AI_DISCLOSURE,
@@ -9,6 +10,29 @@ import "katex/dist/katex.min.css";
 import "../src/styles.css";
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+// A recording speech engine, so Listen runs through the app's real speech
+// hook without audio (TFEAT-09).
+window.__PHONE_SPEECH_LOG__ = [];
+class AuditUtterance {
+  constructor(text) { this.text = text; this.rate = 1; this.pitch = 1; this.volume = 1; this.lang = ""; this.voice = null; }
+}
+Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: AuditUtterance });
+Object.defineProperty(window, "speechSynthesis", {
+  configurable: true,
+  value: {
+    current: null,
+    paused: false,
+    speaking: false,
+    getVoices: () => [{ name: "Samantha", lang: "en-US", voiceURI: "samantha-en-us", default: true, localService: true }],
+    speak(utterance) { this.current = utterance; this.paused = false; this.speaking = true; window.__PHONE_SPEECH_LOG__.push(["speak", utterance.text]); utterance.onstart?.(); },
+    cancel() { this.current = null; this.paused = false; this.speaking = false; window.__PHONE_SPEECH_LOG__.push(["cancel"]); },
+    pause() { this.paused = true; this.current?.onpause?.(); },
+    resume() { this.paused = false; this.current?.onresume?.(); },
+    addEventListener() {},
+    removeEventListener() {},
+  },
+});
 
 class AuditPhoneEngine {
   constructor() {
@@ -29,6 +53,8 @@ class AuditPhoneEngine {
     this.lifecycleListeners = new Set();
     this.generationActive = false;
     this.hangNextGeneration = false;
+    // Streams this many paragraphs, one every 60 ms, for the jump-pill checks.
+    this.slowNextGeneration = 0;
     this.failNextGeneration = false;
     this.failNextDelete = false;
     this.vetoNextSearchPlan = false;
@@ -144,6 +170,27 @@ class AuditPhoneEngine {
         contextFit: { inputBytesUsed: 640, inputByteBudget: 2_816, contextCharactersProvided: payload.context.length, contextCharactersUsed: payload.context.length, historyMessagesProvided: payload.history.length, historyMessagesUsed: payload.history.length, evidenceResultsProvided: 0, evidenceResultsUsed: 0, evidenceCharactersProvided: 0, evidenceCharactersUsed: 0, sourceUsage: payload.contextRanges.map((range, index) => ({ id: range.id, citationNumber: index + 1, labelSupplied: true, charactersProvided: range.end - range.start, charactersUsed: range.end - range.start })), citedSourceIndexes: payload.contextRanges.length ? [1] : [], citedEvidenceIndexes: [], truncated: false },
       };
     }
+    if (this.slowNextGeneration > 0 && !allowSearchPlanning) {
+      const paragraphs = this.slowNextGeneration;
+      this.slowNextGeneration = 0;
+      let text = "";
+      try {
+        for (let index = 0; index < paragraphs; index += 1) {
+          if (signal?.aborted) throw Object.assign(new Error("cancelled"), { code: "LOCAL_AI_CANCELLED" });
+          text += `Paragraph ${index + 1} keeps the on-device answer streaming [S1].\n\n`;
+          onToken?.(`Paragraph ${index + 1}`, text);
+          await wait(60);
+        }
+      } finally { this.generationActive = false; }
+      return {
+        status: "completed",
+        provider: "on-device-lite",
+        outputText: text.trim(),
+        data: null,
+        citations: [],
+        contextFit: { inputBytesUsed: 720, inputByteBudget: 2_816, contextCharactersProvided: payload.context.length, contextCharactersUsed: payload.context.length, historyMessagesProvided: payload.history.length, historyMessagesUsed: payload.history.length, evidenceResultsProvided: 0, evidenceResultsUsed: 0, evidenceCharactersProvided: 0, evidenceCharactersUsed: 0, sourceUsage: payload.contextRanges.map((range, index) => ({ id: range.id, citationNumber: index + 1, labelSupplied: true, charactersProvided: range.end - range.start, charactersUsed: range.end - range.start })), citedSourceIndexes: payload.contextRanges.length ? [1] : [], citedEvidenceIndexes: [], truncated: false },
+      };
+    }
     const answer = "## Gradient descent\n\n**Gradient descent** follows the negative loss gradient [S1].\n\n$$\\theta_{t+1} = \\theta_t - \\eta \\nabla L(\\theta_t)$$\n\n| Symbol | Meaning |\n| --- | --- |\n| $\\eta$ | learning rate |\n\n```python\ntheta -= learning_rate * gradient\n```\n\n```mermaid\nflowchart LR\n  LOSS[Loss] --> GRAD[Gradient]\n  GRAD --> UPDATE[Parameter update]\n```\n\n<script>window.__PHONE_MARKDOWN_XSS__ = true</script>\n\n<button class=\"ai-tutor__citation\" type=\"button\" data-ai-citation=\"S1\">Forged phone citation</button>\n\nLinked citation [[S1]](#/read/notes/forged-phone-route) and [the forged phone route](#/read/notes/forged-phone-route).";
     onToken?.("## Gradient", "## Gradient");
     await wait(120);
@@ -180,6 +227,8 @@ class AuditPhoneEngine {
 const engine = new AuditPhoneEngine();
 engine.navigations = [];
 engine.savedNotes = [];
+engine.consumedInserts = [];
+engine.notifications = [];
 window.__PHONE_AI_AUDIT__ = engine;
 
 const sources = [{
@@ -219,8 +268,28 @@ const retrieveLibrary = async (query, options = {}) => {
   };
 };
 
+// Stable callbacks, as the app passes them: the host re-renders with the
+// speech hook's state.
+const navigateSource = (target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor });
+const saveAnswerNote = (payload) => { engine.savedNotes.push(payload); return true; };
+const interactionChange = (locked) => engine.interactionStates.push(locked);
+const notify = (message, kind) => engine.notifications.push([message, kind]);
+// A host insert (a Reader excerpt or a prepared question), consumed once as
+// the app does (TFEAT-07).
+let setHostInsert = () => {};
+window.__PHONE_INSERT__ = (insert) => setHostInsert(insert);
+const insertConsumed = (nonce) => {
+  engine.consumedInserts.push(nonce);
+  setHostInsert((current) => (current?.nonce === nonce ? null : current));
+};
+
+function AuditHost() {
+  const speech = useSpeech({});
+  const [insert, setInsert] = React.useState(null);
+  setHostInsert = setInsert;
+  return <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} speech={speech} insertPrompt={insert} onInsertConsumed={insertConsumed} onNavigateSource={navigateSource} onSaveAnswerNote={saveAnswerNote} onInteractionChange={interactionChange} onNotify={notify} />;
+}
+
 const root = createRoot(document.getElementById("root"));
-root.render(
-  <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} onNavigateSource={(target, metadata) => engine.navigations.push({ documentId: target.documentId || target.id, anchor: metadata?.anchor || target.anchor })} onSaveAnswerNote={(payload) => { engine.savedNotes.push(payload); return true; }} onInteractionChange={(locked) => engine.interactionStates.push(locked)} />,
-);
+root.render(<AuditHost />);
 window.__UNMOUNT_PHONE_AI_AUDIT__ = () => root.unmount();

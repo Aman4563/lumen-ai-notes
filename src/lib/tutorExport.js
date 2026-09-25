@@ -13,6 +13,7 @@ const letter = (index) => String.fromCharCode(65 + index);
 const isQuiz = (data) => Array.isArray(data?.questions) && data.questions.every((question) => Array.isArray(question?.options));
 const isFlashcards = (data) => Array.isArray(data?.cards);
 const isStudyPlan = (data) => Array.isArray(data?.milestones);
+const isAnswerFeedback = (data) => typeof data?.feedback === "string" && typeof data?.improvedAnswer === "string" && Array.isArray(data?.gaps);
 
 const quizMarkdown = (quiz, level) => {
   const lines = [heading(level, `Quiz: ${text(quiz.title) || "Check your understanding"}`)];
@@ -55,12 +56,38 @@ const studyPlanMarkdown = (plan, level) => {
   return lines.join("\n");
 };
 
+// An answer check reads as the learner saw it: no score or strengths, which
+// the tutor hides for keyed quiz questions.
+const answerFeedbackMarkdown = (data, level) => {
+  const lines = [heading(level, "Answer check")];
+  if (data.correct === true) lines.push("", "*The tutor's second look disagreed with the quiz key.*");
+  lines.push("", `**Why:** ${text(data.feedback)}`);
+  const gaps = data.gaps.map(text).filter(Boolean);
+  if (gaps.length) lines.push("", "**What was missing:**", "", ...gaps.map((gap) => `- ${gap}`));
+  lines.push("", `**Correct reasoning:** ${text(data.improvedAnswer)}`);
+  if (text(data.nextQuestion)) lines.push("", `**Check yourself:** ${text(data.nextQuestion)}`);
+  return lines.join("\n");
+};
+
+// Interview practice feedback (TFEAT-06): no score, and the reminder that the
+// authored rubric, not the model, decides.
+const interviewFeedbackMarkdown = (data, level) => {
+  const lines = [heading(level, "Interview practice feedback"), "", "*AI feedback can be generous; trust the rubric.*"];
+  const covered = data.strengths.map(text).filter(Boolean);
+  if (covered.length) lines.push("", "**What you covered:**", "", ...covered.map((item) => `- ${item}`));
+  const gaps = data.gaps.map(text).filter(Boolean);
+  if (gaps.length) lines.push("", "**You may have missed:**", "", ...gaps.map((gap) => `- ${gap}`));
+  lines.push("", `**Feedback:** ${text(data.feedback)}`, "", `**A stronger answer:** ${text(data.improvedAnswer)}`);
+  return lines.join("\n");
+};
+
 /** Markdown for a validated structured result, or "" when `data` is not one. */
 export const structuredResultMarkdown = (data, { headingLevel = 3 } = {}) => {
   if (!data || typeof data !== "object") return "";
   if (isQuiz(data)) return quizMarkdown(data, headingLevel);
   if (isFlashcards(data)) return flashcardsMarkdown(data, headingLevel);
   if (isStudyPlan(data)) return studyPlanMarkdown(data, headingLevel);
+  if (isAnswerFeedback(data)) return answerFeedbackMarkdown(data, headingLevel);
   return "";
 };
 
@@ -88,7 +115,10 @@ export const tutorSourceList = ({ citationSources = [], webSources = [] } = {}) 
 /** The body of one tutor message as readable Markdown, without a heading. */
 export const tutorMessageMarkdown = (message, { headingLevel = 3, includeSources = true } = {}) => {
   if (!message || typeof message !== "object") return "";
-  const body = (message.role === "assistant" ? structuredResultMarkdown(message.data, { headingLevel }) : "") || text(message.content);
+  const practice = message.role === "assistant" && message.mode === "interview-practice" && isAnswerFeedback(message.data);
+  const body = (practice
+    ? interviewFeedbackMarkdown(message.data, headingLevel)
+    : message.role === "assistant" ? structuredResultMarkdown(message.data, { headingLevel }) : "") || text(message.content);
   const parts = [];
   if (message.incomplete === true) parts.push("> **Incomplete answer:** generation stopped before it finished.");
   if (message.truncated === true) parts.push("> **Display capped:** the answer was shortened to the tutor's display limit.");

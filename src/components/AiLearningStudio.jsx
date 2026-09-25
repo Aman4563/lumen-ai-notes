@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useState } from "react";
-import { Cpu, Laptop } from "lucide-react";
+import { Cpu, Info, Laptop } from "lucide-react";
 import { recoverableImport } from "../lib/chunkRecovery.js";
 import "../ai-learning-studio.css";
 
@@ -50,12 +50,10 @@ export default function AiLearningStudio(props) {
 
   return (
     <section className="ai-learning-studio" data-ai-engine={engineMode}>
+      {/* One line: a segmented control, with the engine notes behind a
+          disclosure, so the tutor itself starts near the top of a phone. */}
       <div className="ai-engine-picker" role="group" aria-labelledby="ai-engine-picker-title">
-        <div className="ai-engine-picker__heading">
-          <div>
-            <h2 id="ai-engine-picker-title">Tutor engine</h2>
-          </div>
-        </div>
+        <h2 id="ai-engine-picker-title">Tutor engine</h2>
         <div className="ai-engine-picker__options">
           {AI_ENGINE_OPTIONS.map((option) => {
             const selected = engineMode === option.id;
@@ -70,14 +68,15 @@ export default function AiLearningStudio(props) {
                 disabled={interactionLocked}
                 onClick={() => { if (!interactionLocked) setEngineMode(option.id); }}
               >
-                <Icon size={20} aria-hidden="true" />
-                <span><strong>{option.title}</strong><small>{option.detail}</small></span>
+                <Icon size={18} aria-hidden="true" />
+                <strong>{option.title}</strong><span className="visually-hidden">, {option.detail.toLocaleLowerCase()}</span>
               </button>
             );
           })}
         </div>
-        <details className="ai-engine-picker__note"><summary>About the engines</summary>
-          <p>Mac local uses Ollama on your Mac. On-device Lite uses a smaller model on this device and asks before downloading about 710 MB. Its conversation clears on reload. Neither engine uses a paid model API.</p>
+        <details className="ai-engine-picker__note">
+          <summary><Info size={18} aria-hidden="true" /><span>About the engines</span></summary>
+          <p>Mac local uses Ollama on your Mac and suits detailed study. On-device Lite uses a smaller model on this device for short questions and asks before downloading about 710 MB. Its conversation clears on reload. Neither engine uses a paid model API.</p>
         </details>
       </div>
 
@@ -97,6 +96,7 @@ export default function AiLearningStudio(props) {
             onNavigateSource={props.onNavigateSource}
             onCreateFlashcardDrafts={props.onCreateFlashcardDrafts}
             onSaveAnswerNote={props.onSaveAnswerNote}
+            speech={props.speech}
             onNotify={props.onNotify}
             onInteractionChange={setInteractionLocked}
           />

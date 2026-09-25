@@ -30,7 +30,8 @@ export const retrievalTraceCounts = (trace) => ({
 });
 
 const PROFILE_FALLBACKS = Object.freeze({ fast: 1_200, balanced: 3_000, deep: 8_192 });
-const SOURCE_CLIP_MARKER = "\n\n[… source excerpt clipped by Lumen …]\n\n";
+// Marks the middle of a source excerpt shortened to fit a request.
+export const SOURCE_CLIP_MARKER = "\n\n[… source excerpt clipped by Lumen …]\n\n";
 
 const neutralizeSourceLabels = (value) => String(value ?? "")
   // Source text is untrusted and may itself contain label-shaped lines. Use

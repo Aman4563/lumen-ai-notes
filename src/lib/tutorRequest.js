@@ -1,0 +1,224 @@
+import { AI_REQUEST_CONTRACT_ID } from "./aiContract.js";
+import { fitAiRequestContext } from "./aiRequestBudget.js";
+import { buildConversationWindow } from "./conversationMemory.js";
+import { SOURCE_CLIP_MARKER, buildTutorContext, outputTokensForProfile } from "./tutorGrounding.js";
+
+/**
+ * The Mac tutor's one request path. A learner's Send and every programmatic
+ * tutor action (follow-ups, hints, wrap-up, grading) build their canonical
+ * body here, so each is measured, fitted and checked the same way: the
+ * selected response profile owns the byte budget, the prompt is kept whole,
+ * and only complete source blocks and older conversation turns are dropped.
+ */
+
+export const TUTOR_MAX_PROMPT_CHARS = 5_700;
+export const TUTOR_MAX_SERVER_HISTORY = 12;
+export const TUTOR_MAX_HISTORY_MESSAGE_CHARS = 3_000;
+const DEFAULT_INPUT_LIMIT = 16_000;
+const DEFAULT_CONTEXT_LIMIT = 16_000;
+
+/** Input, byte and prompt limits for one response profile. */
+export const tutorRequestLimits = (config, responseProfile) => {
+  const configuredInputLimit = config?.limits?.maxInputChars;
+  const maximumBytes = config?.responseProfiles?.maxRequestUtf8Bytes?.[responseProfile]
+    ?? config?.limits?.profileMaxRequestUtf8Bytes?.[responseProfile]
+    ?? config?.limits?.maxRequestUtf8Bytes;
+  const inputLimit = Number.isSafeInteger(configuredInputLimit) && configuredInputLimit >= 2_000 && configuredInputLimit <= 100_000
+    ? Math.min(configuredInputLimit, maximumBytes || configuredInputLimit)
+    : DEFAULT_INPUT_LIMIT;
+  const promptLimit = Math.min(TUTOR_MAX_PROMPT_CHARS, Math.max(800, Math.floor(inputLimit * 0.48)));
+  return { inputLimit, maximumBytes, promptLimit };
+};
+
+/** Appends the fixed grounding instruction; `sources` is a list or a boolean. */
+export const promptForSources = (promptText, sources) => {
+  const grounded = Array.isArray(sources) ? sources.length > 0 : Boolean(sources);
+  const citationInstruction = grounded
+    ? "Use the supplied [S#] labels to cite every source-grounded claim. Do not cite a label that was not supplied."
+    : "No relevant library evidence was supplied. Clearly label claims that rely on general knowledge or attached web evidence.";
+  return `${String(promptText || "").trim()}\n\n${citationInstruction}`;
+};
+
+/** The smallest context that still carries a usable block for every source. */
+export const minimumContextBudget = (sources) => (Array.isArray(sources) ? sources : []).reduce(
+  (total, source) => total + String(source?.title || "").length + String(source?.section || "").length + 24 + 180,
+  0,
+);
+
+/**
+ * Recent complete turns (whole question/answer pairs) plus a bounded,
+ * deterministic memory of older ones, sized around the prompt and any
+ * source context the request will carry.
+ */
+export const tutorConversationWindow = (history, { prompt = "", sources = false, inputLimit = DEFAULT_INPUT_LIMIT } = {}) => {
+  const grounded = Array.isArray(sources) ? sources.length > 0 : Boolean(sources);
+  const outboundPrompt = promptForSources(prompt, grounded);
+  const reservedContext = grounded ? Math.min(4_000, Math.max(600, Math.floor(inputLimit * 0.35))) : 0;
+  const characterBudget = Math.max(0, Math.min(
+    Math.floor(inputLimit * 0.25),
+    inputLimit - outboundPrompt.length - reservedContext - 300,
+  ));
+  return buildConversationWindow(Array.isArray(history) ? history : [], {
+    maxMessages: TUTOR_MAX_SERVER_HISTORY,
+    characterBudget,
+    maxMessageCharacters: TUTOR_MAX_HISTORY_MESSAGE_CHARS,
+    summaryBudget: Math.min(2_400, Math.max(800, Math.floor(inputLimit * 0.12))),
+  });
+};
+
+/** A break longer than this starts a new sitting (TFEAT-13, interim). */
+export const TUTOR_CONTEXT_GAP_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Where the conversation the model may still see begins: after the latest
+ * break of more than three hours between turns, where the question about to
+ * be asked (`now`) counts as the next turn. 0 when there was no such break;
+ * `history.length` when even the last turn is older than the break. Turns
+ * before it are left out of the sent history and of the compacted summary,
+ * so yesterday's topic does not steer today's answer. A turn without a
+ * readable time never starts a break; it stays with the turns after it.
+ */
+export const tutorContextStart = (history, now = Date.now(), gapMs = TUTOR_CONTEXT_GAP_MS) => {
+  const list = Array.isArray(history) ? history : [];
+  let next = Number.isFinite(now) ? now : Date.now();
+  for (let index = list.length; index > 0; index -= 1) {
+    const time = Date.parse(list[index - 1]?.createdAt || "");
+    if (!Number.isFinite(time)) continue;
+    if (next - time > gapMs) return index;
+    next = time;
+  }
+  return 0;
+};
+
+/**
+ * The memory for a follow-up about one answer (TFEAT-02): only that
+ * question/answer pair, with up to 3,000 characters of the answer and half
+ * the input budget, and no summary of older turns. The fitter then shrinks
+ * source context around it, dropping only whole [S#] blocks.
+ */
+export const tutorFollowUpWindow = (pair, { inputLimit = DEFAULT_INPUT_LIMIT } = {}) => {
+  const window = buildConversationWindow(Array.isArray(pair) ? pair : [], {
+    maxMessages: 2,
+    characterBudget: Math.floor(inputLimit * 0.5),
+    maxMessageCharacters: TUTOR_MAX_HISTORY_MESSAGE_CHARS,
+    summaryBudget: 0,
+  });
+  return { messages: window.messages, conversationSummary: "", compactedMessages: 0 };
+};
+
+/**
+ * What a learner reads when a one-tap action (a follow-up, a starter, an
+ * answer check) cannot start and its prompt is put in the question box
+ * instead. `configMessage` explains a tutor that is not ready.
+ */
+export const tutorActionIssueReason = (issue, { configMessage = "" } = {}) => ({
+  "not-ready": configMessage || "The tutor is not ready yet.",
+  disclosure: "Tick the local-model permission above your question, then send it.",
+  busy: "Wait for the current answer to finish, then send it.",
+  "web-unavailable": "Web search is not available right now. Send it without the web.",
+  "empty-prompt": "Write your question, then send it.",
+  "prompt-too-long": "It is longer than this server accepts. Shorten it, then send it.",
+  "context-too-small": "Its sources do not all fit. Choose fewer sources, then send it.",
+  "request-too-large": "It does not fit the local model's request limit. Shorten it, then send it.",
+  "source-clipped": "Its reference does not fit whole. Shorten it, then send it.",
+}[issue] || "");
+
+/**
+ * The model's topic cue for the attached evidence: the title of the first
+ * included source, and how many more passages came with it ("Linear
+ * regression (+7 related passages)"), instead of a bare count. Server
+ * limit: 200 characters.
+ */
+export const tutorDocumentTitle = (sources, includedCitationNumbers) => {
+  const included = new Set(includedCitationNumbers);
+  const attached = (Array.isArray(sources) ? sources : []).filter((source) => included.has(source?.citationNumber));
+  if (!attached.length) return "General AI/ML learning question";
+  const title = String(attached[0].title || "").replace(/\s+/g, " ").trim() || "Lumen source";
+  const more = attached.length - 1;
+  const suffix = more ? ` (+${more} related passage${more === 1 ? "" : "s"})` : "";
+  const room = 200 - suffix.length;
+  return `${title.length <= room ? title : `${title.slice(0, room - 1).trimEnd()}…`}${suffix}`;
+};
+
+/**
+ * Builds and fits the exact canonical request body. `mode` is the request's
+ * own mode ({ task, structured, contextLimit }), never whatever the composer
+ * shows, and the byte budget is that of `responseProfile`. Sources are
+ * labelled blocks ({ citationNumber, title, section, text }); only complete
+ * blocks enter the context and `includedCitationNumbers` lists exactly those.
+ */
+export const fitTutorRequest = ({
+  mode,
+  prompt,
+  sources = [],
+  history = [],
+  conversationSummary = "",
+  webSearch = false,
+  difficulty = "intermediate",
+  responseProfile = "balanced",
+  config = null,
+}) => {
+  const { inputLimit, maximumBytes } = tutorRequestLimits(config, responseProfile);
+  const sourceList = Array.isArray(sources) ? sources : [];
+  const historyList = Array.isArray(history) ? history : [];
+  const summary = String(conversationSummary || "");
+  const structured = mode?.structured === true;
+  const maxOutputTokens = outputTokensForProfile({
+    profile: responseProfile,
+    responseProfiles: config?.responseProfiles,
+    maximum: config?.limits?.maxOutputTokens,
+    structured,
+  });
+  const preparedPrompt = promptForSources(prompt, sourceList);
+  const historyCharacters = historyList.reduce((total, message) => total + String(message?.content || "").length, 0);
+  const availableContextBudget = Math.max(0, Math.min(
+    mode?.contextLimit || DEFAULT_CONTEXT_LIMIT,
+    inputLimit - preparedPrompt.length - historyCharacters - summary.length - 300,
+  ));
+  let includedCitationNumbers = [];
+  const fitted = fitAiRequestContext({
+    maximumBytes,
+    maximumContextCharacters: availableContextBudget,
+    buildContext: (budget) => {
+      const built = buildTutorContext(sourceList, budget);
+      includedCitationNumbers = built.includedCitationNumbers;
+      return built.context;
+    },
+    buildPayload: (context) => ({
+      contract: AI_REQUEST_CONTRACT_ID,
+      task: mode?.task,
+      prompt: preparedPrompt,
+      context,
+      contextCitations: [...includedCitationNumbers],
+      documentTitle: tutorDocumentTitle(sourceList, includedCitationNumbers),
+      difficulty,
+      responseProfile,
+      history: historyList,
+      conversationSummary: summary.slice(0, 3_000),
+      responseFormat: structured ? "structured" : "markdown",
+      webSearch: webSearch === true,
+      maxOutputTokens,
+    }),
+  });
+  return { ...fitted, includedCitationNumbers: [...includedCitationNumbers], maxOutputTokens, inputLimit };
+};
+
+/**
+ * Why a fitted request must not be sent, or "" when it can be. Sources that
+ * the learner attached by hand must all fit (`requireAllSources`); retrieved
+ * Library-first passages are refitted at send time instead. A request whose
+ * source is its answer key (an interview rubric) must carry every source
+ * whole, never dropped or clipped (`requireWholeSources`).
+ */
+export const tutorRequestIssue = ({ prompt, promptLimit, fitted, sources = [], requireAllSources = false, requireWholeSources = false }) => {
+  const text = String(prompt || "").trim();
+  if (!text) return "empty-prompt";
+  if (text.length > promptLimit) return "prompt-too-long";
+  if (requireAllSources && sources.length > 0 && fitted.contextBudget < minimumContextBudget(sources)) return "context-too-small";
+  if (requireWholeSources && sources.length > 0) {
+    const included = new Set(fitted.includedCitationNumbers);
+    if (!sources.every((source) => included.has(source.citationNumber)) || String(fitted.context || "").includes(SOURCE_CLIP_MARKER.trim())) return "source-clipped";
+  }
+  if (Number.isSafeInteger(fitted.maximumBytes) && fitted.bytes > fitted.maximumBytes) return "request-too-large";
+  return "";
+};

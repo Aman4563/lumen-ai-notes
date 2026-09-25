@@ -7,9 +7,10 @@ import "../tutor-dialog.css";
  * starts on the safe choice, Tab stays inside, Escape and the scrim cancel,
  * and cancelling returns focus to the control that opened it. After a
  * confirmation the caller decides where focus goes, because that control
- * usually disappears.
+ * usually disappears. An optional second choice (for example "Export, then
+ * clear") sits between the two.
  */
-export default function TutorConfirmDialog({ open, title, body, confirmLabel, cancelLabel = "Cancel", onConfirm, onCancel }) {
+export default function TutorConfirmDialog({ open, title, body, confirmLabel, cancelLabel = "Cancel", secondaryLabel = "", onSecondary, onConfirm, onCancel }) {
   const titleId = useId();
   const bodyId = useId();
   const dialogRef = useRef(null);
@@ -24,6 +25,12 @@ export default function TutorConfirmDialog({ open, title, body, confirmLabel, ca
     restoreFocusRef.current = true;
     cancelRef.current?.focus();
     const onKeyDown = (event) => {
+      // The app's "?" shortcut sheet would open underneath this dialog and
+      // take focus there, out of sight.
+      if (event.key === "?") {
+        event.stopPropagation();
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -61,6 +68,7 @@ export default function TutorConfirmDialog({ open, title, body, confirmLabel, ca
         <p id={bodyId}>{body}</p>
         <div className="tutor-dialog__actions">
           <button ref={cancelRef} className="tutor-dialog__button" type="button" onClick={() => onCancel?.()}>{cancelLabel}</button>
+          {secondaryLabel && onSecondary && <button className="tutor-dialog__button" type="button" onClick={() => { restoreFocusRef.current = false; onSecondary(); }}>{secondaryLabel}</button>}
           <button className="tutor-dialog__button tutor-dialog__button--danger" type="button" onClick={() => { restoreFocusRef.current = false; onConfirm?.(); }}>{confirmLabel}</button>
         </div>
       </div>

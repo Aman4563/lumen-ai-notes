@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, CheckCircle2, ChevronRight, ClipboardCheck, Eye, RotateCcw, X } from "lucide-react";
-import { gradeAssessmentAnswer, recommendationForAssessment, scoreAssessment } from "../lib/assessment.js";
+import { BookOpen, CheckCircle2, ChevronRight, ClipboardCheck, Eye, MessageCircleQuestion, RotateCcw, X } from "lucide-react";
+import { assessmentMistakeDrafts, gradeAssessmentAnswer, recommendationForAssessment, scoreAssessment } from "../lib/assessment.js";
+import { assessmentMissesRequest } from "../lib/tutorBridge.js";
 
 // Roving-tabindex options (tabIndex -1) stay out of the trap's first/last.
 const FOCUSABLE = "button:not(:disabled):not([tabindex='-1']), input:not(:disabled), [tabindex]:not([tabindex='-1'])";
@@ -11,7 +12,7 @@ const FOCUSABLE = "button:not(:disabled):not([tabindex='-1']), input:not(:disabl
  * per-category scoring and an advisory recommendation. Every answer with less
  * than full credit is reported to the caller as mistake drafts on finish.
  */
-export default function AssessmentDialog({ assessment, onFinish, onClose, onOpenSource }) {
+export default function AssessmentDialog({ assessment, onFinish, onClose, onOpenSource, onAskTutor }) {
   const [stage, setStage] = useState("intro");
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState([]);
@@ -244,6 +245,8 @@ export default function AssessmentDialog({ assessment, onFinish, onClose, onOpen
                 })}
               </div>
             )}
+            {/* With AI features on, the misses open in the tutor as one question to review and send. */}
+            {missedCount > 0 && onAskTutor && <button className="button secondary assessment-tutor" onClick={() => onAskTutor(assessmentMissesRequest(assessmentMistakeDrafts(questions, answers), { partTitle: evidence.partTitle }))} type="button"><MessageCircleQuestion size={16} /> Review my misses with tutor</button>}
             <div className="modal-actions"><button className="button ghost" onClick={retry} type="button"><RotateCcw size={16} /> Retry this check</button><button className="button primary" onClick={onClose} type="button">Done</button></div>
           </>
         )}

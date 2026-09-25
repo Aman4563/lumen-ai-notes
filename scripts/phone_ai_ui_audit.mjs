@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
+import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
 
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-phone-ai-ui-profile-"));
@@ -19,6 +20,22 @@ const clickByText = async (page, selector, text) => {
   }, text);
   assert.ok(clicked, `could not find ${selector} containing “${text}”`);
 };
+
+// Phones pick the mode from a native select; wider screens show chips.
+const chooseMode = async (page, label) => {
+  if (await page.$(".phone-tutor__mode-select select")) {
+    const value = await page.$$eval(".phone-tutor__mode-select option", (options, text) => options.find((option) => option.textContent.trim() === text)?.value || "", label);
+    assert.ok(value, `the On-device mode select has no “${label}” option`);
+    await page.select(".phone-tutor__mode-select select", value);
+    return;
+  }
+  await clickByText(page, ".phone-tutor__mode-tabs button", label);
+};
+
+const activeMode = (page) => page.evaluate(() => {
+  const select = document.querySelector(".phone-tutor__mode-select select");
+  return (select ? select.selectedOptions[0]?.textContent : document.querySelector(".phone-tutor__mode-tabs button[aria-pressed='true']")?.textContent)?.trim() || "";
+});
 
 const touchSize = (page, selector) => page.$$eval(selector, (nodes) => nodes.filter((node) => {
   const style = getComputedStyle(node);
@@ -282,7 +299,7 @@ try {
 
   // Structured-field citations (AI-001): [S#] labels inside flashcard fields
   // are the same navigable controls as prose citations, not inert text.
-  await clickByText(page, ".phone-tutor__mode-tabs button", "Flashcards");
+  await chooseMode(page, "Flashcards");
   await page.click(sendButtonSelector);
   await page.waitForSelector(".phone-tutor__flashcards", { timeout: 10_000 });
   const structuredCitationText = await page.$eval(".phone-tutor__flashcards button.ai-tutor__citation", (node) => node.textContent.trim());
@@ -295,8 +312,8 @@ try {
     { documentId: "notes/audit-gradient-descent.md", anchor: "optimization" },
     "structured [S1] citation did not resolve to its exact source anchor",
   );
-  await clickByText(page, ".phone-tutor__mode-tabs button", "Explain");
-  assert.match(await page.$eval(".phone-tutor__mode-tabs button[aria-pressed='true']", (node) => node.textContent), /Explain/, "mode did not return to Explain after the structured citation check");
+  await chooseMode(page, "Explain");
+  assert.match(await activeMode(page), /Explain/, "mode did not return to Explain after the structured citation check");
 
   await page.click(".phone-tutor__sources summary");
   await clickByText(page, ".phone-tutor__source-modes button", "No library");
@@ -441,6 +458,159 @@ try {
   const controls = await touchSize(page, ".phone-tutor button, .phone-tutor select, .phone-tutor textarea, .phone-tutor input");
   const undersizedButtons = controls.filter((control) => ["button", "select", "textarea"].includes(control.tag) && control.height < 44);
   assert.deepEqual(undersizedButtons, [], `undersized phone AI controls: ${JSON.stringify(undersizedButtons)}`);
+
+  // One-tap follow-ups (TFEAT-02): On-device Lite offers three under its
+  // newest prose answer. A tap sends a visible question with that answer as
+  // memory, searches with the question it follows, never plans a web
+  // search, and moves focus to Cancel and then to the new answer.
+  assert.equal(await page.$$eval(".phone-tutor__follow-ups", (nodes) => nodes.length), 1, "On-device follow-ups were not shown once");
+  assert.equal(await page.$eval(".phone-tutor__follow-ups", (node) => node.closest(".phone-tutor__message") === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1)), true, "On-device follow-ups were not under the newest answer");
+  assert.deepEqual(await page.$$eval(".phone-tutor__follow-ups button", (nodes) => nodes.map((node) => [node.textContent, node.getBoundingClientRect().height >= 44])), [["Simpler", true], ["Quiz me on this", true], ["Make flashcards", true]]);
+  const followedQuestion = await page.$$eval(".phone-tutor__message.is-user .phone-tutor__user-text", (nodes) => nodes.at(-1).textContent);
+  const callsBeforeFollowUp = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length);
+  const answersBeforeFollowUp = await page.$$eval(".phone-tutor__message.is-assistant", (nodes) => nodes.length);
+  await clickByText(page, ".phone-tutor__follow-ups button", "Simpler");
+  await page.waitForFunction((count) => document.querySelectorAll(".phone-tutor__message.is-assistant:not(.is-streaming)").length > count && !document.querySelector(".phone-tutor__working"), { timeout: 10_000 }, answersBeforeFollowUp);
+  const followUpCall = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.at(-1));
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length), callsBeforeFollowUp + 1, "an On-device follow-up was not sent exactly once");
+  assert.equal(followUpCall.payload.task, "explain");
+  assert.match(followUpCall.payload.prompt, /^Explain your previous answer more simply/);
+  assert.equal(followUpCall.allowSearchPlanning, false, "an On-device follow-up planned a web search");
+  assert.equal(followUpCall.payload.history.length, 2, "an On-device follow-up did not remember the answer it follows");
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.retrievalCalls.at(-1).query), followedQuestion, "an On-device follow-up searched with its topic-less wording");
+  assert.match(await page.$$eval(".phone-tutor__message.is-user .phone-tutor__user-text", (nodes) => nodes.at(-1).textContent), /^Explain your previous answer more simply/, "the On-device follow-up was not a visible question");
+  await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("focus did not move to the On-device follow-up's answer"));
+
+  // Listen (TFEAT-09): an On-device answer is read by the app's speech
+  // hook without code, math or labels; Pause/Stop follow it, and the next
+  // question stops it.
+  const phoneListen = () => page.$$eval(".phone-tutor__message.is-assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".phone-tutor__message-actions button")].map((node) => node.textContent.trim()).filter((text) => /^(Listen|Pause|Resume|Stop)/.test(text)));
+  assert.deepEqual(await phoneListen(), ["Listen to this answer"], "an On-device answer offered no Listen");
+  await page.$$eval(".phone-tutor__message.is-assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".phone-tutor__message-actions button")].find((node) => node.textContent.startsWith("Listen")).click());
+  await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message-actions button")].some((node) => node.textContent.startsWith("Pause")), { timeout: 3_000 });
+  assert.deepEqual(await phoneListen(), ["Pause reading this answer", "Stop reading"]);
+  const firstSpoken = await page.evaluate(() => window.__PHONE_SPEECH_LOG__.find(([type]) => type === "speak")?.[1] || "");
+  assert.match(firstSpoken, /^Gradient descent\. Gradient descent follows the negative loss gradient\./, `On-device Listen read: ${firstSpoken}`);
+  assert.equal(/\[S\d|\$|\\theta/.test(firstSpoken), false, "On-device Listen read math or a citation label");
+  const phoneCancels = () => page.evaluate(() => window.__PHONE_SPEECH_LOG__.filter(([type]) => type === "cancel").length);
+  const cancelsBeforeNext = await phoneCancels();
+  await clickByText(page, ".phone-tutor__follow-ups button", "Simpler");
+  await page.waitForFunction((before) => window.__PHONE_SPEECH_LOG__.filter(([type]) => type === "cancel").length > before, { timeout: 5_000 }, cancelsBeforeNext).catch(() => assert.fail("a new On-device question did not stop the answer being read"));
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__working"), { timeout: 10_000 });
+  // That second Simpler follows a follow-up: it still searches with the
+  // learner's own question, not the first chip's wording.
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.retrievalCalls.at(-1).query), followedQuestion, "a chained On-device follow-up searched with a chip's wording");
+  assert.deepEqual(await phoneListen(), ["Listen to this answer"], "Listen did not reset after reading stopped");
+  // A reading the speech engine stops by itself says why.
+  await page.$$eval(".phone-tutor__message.is-assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".phone-tutor__message-actions button")].find((node) => node.textContent.startsWith("Listen")).click());
+  await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message-actions button")].some((node) => node.textContent.startsWith("Pause")), { timeout: 3_000 });
+  await page.evaluate(() => speechSynthesis.current?.onerror?.({ error: "synthesis-failed" }));
+  await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.notifications.some(([, kind]) => kind === "error"), { timeout: 3_000 }).catch(() => assert.fail("an On-device reading that failed part-way did not say why"));
+  assert.deepEqual(await phoneListen(), ["Listen to this answer"], "a failed On-device reading left Pause and Stop behind");
+
+  // A long answer streams while the learner reads elsewhere (TFEAT-08):
+  // "Jump to latest" brings its newest text into view at once under reduced
+  // motion, and an answer that lands out of view is offered as "Answer
+  // ready", which moves focus to it. Web fallback is off for these turns.
+  await page.click(".phone-tutor__search-toggle input");
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 60; });
+  await page.click(sendButtonSelector);
+  await page.waitForFunction(() => document.querySelector(".phone-tutor__message.is-streaming")?.getBoundingClientRect().height > 700, { timeout: 8_000 });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.waitForFunction(() => document.querySelector(".phone-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 3_000 }).catch(() => assert.fail("On-device Lite offered no Jump to latest while the learner read elsewhere"));
+  assert.deepEqual(await page.$eval(".phone-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the On-device jump pill was a live region or too small to tap");
+  await page.click(".phone-tutor__jump");
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => {
+    const end = document.querySelector(".phone-tutor__conversation-end").getBoundingClientRect();
+    return end.bottom > 0 && end.bottom <= innerHeight && document.activeElement?.classList.contains("is-streaming");
+  }), true, "Jump to latest did not bring the streaming answer's end into view and focus it");
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming"), { timeout: 10_000 });
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 30; });
+  await page.click(sendButtonSelector);
+  await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming") && document.querySelector(".phone-tutor__jump")?.textContent.includes("Answer ready"), { timeout: 10_000 }).catch(() => assert.fail("an On-device answer that landed out of view was not offered"));
+  await page.click(".phone-tutor__jump");
+  await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("Answer ready did not move focus to the new On-device answer"));
+  assert.equal(await page.$(".phone-tutor__jump"), null, "the On-device pill stayed after it was used");
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+
+  // Keyboard (TFEAT-10). On a touch screen Return stays a new line and no
+  // hint is shown; Up arrow in an empty box brings back the last question;
+  // Esc stops a running answer, which (like Cancel) releases the model, so
+  // it is then loaded again explicitly.
+  const phoneField = ".phone-tutor__composer textarea";
+  const lastQuestion = await page.$$eval(".phone-tutor__message.is-user .phone-tutor__user-text", (nodes) => nodes.at(-1).textContent);
+  const callsBeforeKeys = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length);
+  assert.equal(await page.$(".phone-tutor__key-hint"), null, "a phone showed the keyboard hint");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Phone line");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+  });
+  await page.keyboard.press("Enter");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.$eval(phoneField, (field) => field.value), "Phone line\n", "Return did not start a new line in On-device Lite on a phone");
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length), callsBeforeKeys, "Return sent the question in On-device Lite on a phone");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.focus();
+    field.setSelectionRange(0, 0);
+  });
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await page.$eval(phoneField, (field) => field.value), lastQuestion, "Up arrow did not bring back the last On-device question");
+  // A prepared question from another screen (TFEAT-07) reaches On-device
+  // Lite too: applied once, in its mode, below a draft, and never sent.
+  const modeBeforeInsert = await activeMode(page);
+  const preparedQuestion = "Work through this mistake with me, one question at a time.\n\nQuestion: Why does gradient descent step against the gradient?";
+  const preparedCallsBefore = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length);
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "My phone draft");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate((prompt) => window.__PHONE_INSERT__({ kind: "prompt", prompt, modeId: "socratic", origin: "mistake notebook", label: "Why does gradient descent step against the gradient?", nonce: 4242 }), preparedQuestion);
+  await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.consumedInserts.includes(4242), { timeout: 5_000 });
+  assert.equal(await activeMode(page), "Socratic", "a prepared question did not set its On-device mode");
+  assert.equal(await page.$eval(phoneField, (field) => field.value), `My phone draft\n\n${preparedQuestion}`, "a prepared question replaced the On-device draft");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate((prompt) => window.__PHONE_INSERT__({ kind: "prompt", prompt, modeId: "socratic", nonce: 4242 }), preparedQuestion);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.$eval(phoneField, (field) => field.value), "", "a consumed prepared question was applied again");
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length), preparedCallsBefore, "a prepared question was sent");
+  // A long notebook entry is shortened to fit On-device Lite's box whole,
+  // never cut off mid-word by the box itself.
+  const longMistake = mistakeTutorRequest({ prompt: `Why ${"does lasso zero out weights ".repeat(40)}?`, expected: "the L1 corners sit at zero ".repeat(60), response: "because it squares them ".repeat(60) });
+  await page.evaluate((request) => window.__PHONE_INSERT__({ kind: "prompt", ...request, nonce: 4343 }), longMistake);
+  await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.consumedInserts.includes(4343), { timeout: 5_000 });
+  assert.equal(await page.$eval(phoneField, (field) => field.value), longMistake.prompt, "a long prepared question was cut off in On-device Lite");
+  assert.match(longMistake.prompt, /\nMy answer: .+…$/, "the long prepared question lost the learner's answer");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await chooseMode(page, modeBeforeInsert);
+  await page.$eval(phoneField, (field, text) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }, lastQuestion);
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 60; });
+  await page.click(sendButtonSelector);
+  await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
+  await page.$eval(".phone-tutor__working button", (button) => button.focus());
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".phone-tutor__request-state.is-cancelled", { timeout: 5_000 }).catch(() => assert.fail("Escape did not stop the On-device answer"));
+  await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Available"), { timeout: 5_000 });
+  await (await page.$(".phone-local-ai-actions .button.primary")).click();
+  await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Loaded"), { timeout: 10_000 });
+  await page.click(".phone-tutor__search-toggle input");
+
   await page.click(sendButtonSelector);
   await page.waitForSelector(".phone-tutor__search-consent");
   // Leaving releases the model after a short grace period, so a quick return
@@ -457,7 +627,7 @@ try {
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.loaded), false, "leaving On-device Lite retained its hidden GPU model");
   assert.equal((await page.evaluate(() => window.__PHONE_AI_AUDIT__.interactionStates)).at(-1), false, "unmount left the parent engine picker locked");
   assert.equal(runtimeErrors.length, 0, `phone AI browser errors: ${runtimeErrors.join(" | ")}`);
-  console.log("Phone AI UI audit passed: library-first bounded retrieval, token-streamed sanitized GFM/KaTeX, citation and context-fit evidence, strict worker/model lifecycle, and one-shot web-search consent/decline/approval.");
+  console.log("Phone AI UI audit passed: library-first bounded retrieval, token-streamed sanitized GFM/KaTeX, citation and context-fit evidence, strict worker/model lifecycle, prepared questions from other screens applied once, and one-shot web-search consent/decline/approval.");
 } finally {
   await browser?.close();
   await vite?.close();

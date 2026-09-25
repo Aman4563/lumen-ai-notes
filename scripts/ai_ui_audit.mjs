@@ -5,6 +5,12 @@ import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
+import { buildTrackRound, normalizeTrackBank } from "../src/lib/interviewTracks.js";
+import { createMistake } from "../src/lib/mistakes.js";
+import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
+import { createReviewItem } from "../src/lib/review.js";
+import contentIndex from "../src/generated/content-index.json" with { type: "json" };
+import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -155,6 +161,61 @@ const clickByText = async (page, selector, text) => {
   assert.ok(clicked, `could not find ${selector} containing “${text}”`);
 };
 
+// Depth, response profile, web fallback and privacy live in the Request
+// options sheet (issue #57); the question box, Send and the armed-web badge
+// stay in the sticky composer.
+const openOptions = async (page) => {
+  if (await page.$(".tutor-sheet")) return;
+  await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
+  await page.waitForSelector(".tutor-sheet .ai-tutor__web-search input", { timeout: 5_000 });
+};
+
+const closeOptions = async (page) => {
+  if (!(await page.$(".tutor-sheet"))) return;
+  await page.$eval(".tutor-sheet__done", (button) => button.click());
+  await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+};
+
+const withOptions = async (page, action) => {
+  await openOptions(page);
+  try {
+    return await action();
+  } finally {
+    await closeOptions(page);
+  }
+};
+
+// Phones pick the mode from a native select; wider screens show chips.
+const chooseMode = async (page, label) => {
+  if (await page.$(".ai-tutor__mode-select select")) {
+    const value = await page.$$eval(".ai-tutor__mode-select option", (options, text) => options.find((option) => option.textContent.trim() === text)?.value || "", label);
+    assert.ok(value, `the mode select has no “${label}” option`);
+    await page.select(".ai-tutor__mode-select select", value);
+    return;
+  }
+  await clickByText(page, ".ai-tutor__mode-tabs button", label);
+};
+
+const activeMode = (page) => page.evaluate(() => {
+  const select = document.querySelector(".ai-tutor__mode-select select");
+  return (select ? select.selectedOptions[0]?.textContent : document.querySelector(".ai-tutor__mode-tabs button[aria-pressed='true']")?.textContent)?.trim() || "";
+});
+
+// A finished answer is brought into view with a smooth page scroll on
+// phones (issue #57); pointer clicks wait until the page has settled.
+const settleScroll = (page) => page.evaluate(() => new Promise((resolve) => {
+  let last = -1;
+  let stable = 0;
+  const started = performance.now();
+  const check = () => {
+    stable = Math.abs(scrollY - last) < 0.5 ? stable + 1 : 0;
+    last = scrollY;
+    if (stable >= 3 || performance.now() - started > 2_000) resolve();
+    else requestAnimationFrame(check);
+  };
+  requestAnimationFrame(check);
+}));
+
 const readProfile = (page) => page.evaluate(() => new Promise((resolve, reject) => {
   const request = indexedDB.open("lumen-ai-notes", 1);
   request.onerror = () => reject(request.error);
@@ -190,7 +251,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, flashcards = flashcardData } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -245,12 +306,27 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
           webSearch: { requested: false, used: false, rounds: 0 },
           sources: [],
         }));
+      } else if (body.task === "answer_feedback") {
+        // An answer check: a function of the request, so a scenario can
+        // return a valid result or one that breaks the schema.
+        const data = typeof feedback === "function" ? feedback(body) : feedback;
+        reply(jsonResponse({
+          ok: true,
+          requestId: "audit-feedback-request",
+          outputText: JSON.stringify(data),
+          data,
+          status: "completed",
+          model: "audit-local-model",
+          usage: { inputTokens: 300, outputTokens: 160, totalTokens: 460 },
+          webSearch: { requested: false, used: false, rounds: 0 },
+          sources: [],
+        }));
       } else if (body.task === "quiz") {
         reply(jsonResponse({
           ok: true,
           requestId: "audit-quiz-request",
-          outputText: JSON.stringify(quizData),
-          data: quizData,
+          outputText: JSON.stringify(quiz),
+          data: quiz,
           status: "completed",
           model: "audit-local-model",
           usage: { inputTokens: 320, outputTokens: 180, totalTokens: 500 },
@@ -263,7 +339,7 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         // kept no usable web evidence, so the answer is library-only and
         // opens with the server-written notice (docs/AI_STREAMING.md).
         const webDegraded = webSearchUnavailable && body.webSearch === true;
-        const outputText = webDegraded ? `> **Current-web evidence unavailable.** The approved web search returned no usable public results, so this answer uses only your library sources and may not reflect the latest information.\n\nRepeated test inspection causes evaluation leakage. [${localCitation}]` : answerText ? answerText(localCitation) : `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
+        const outputText = webDegraded ? `> **Current-web evidence unavailable.** The approved web search returned no usable public results, so this answer uses only your library sources and may not reflect the latest information.\n\nRepeated test inspection causes evaluation leakage. [${localCitation}]` : answerText ? answerText(localCitation, body) : `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
         const sources = body.webSearch && !webDegraded ? [{ title: "PyTorch release notes", url: "https://pytorch.org/blog/releases/#stable", snippet: "Current release evidence." }] : [];
         const approach = { summary: "Ground in the local library, then use approved current evidence where needed.", steps: ["Locate relevant library evidence.", "Attach the approved web result.", "Present a concise answer with citations."] };
         const response = {
@@ -298,6 +374,85 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
   return calls;
 };
 
+// An in-page stream that delivers deltas over time, armed per request with
+// window.__lumenAuditSlowStream = { paragraphs, phases }. It checks
+// following, scrolling back, Stop and Esc without a real model.
+const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    const slow = window.__lumenAuditSlowStream;
+    if (!slow || !url.includes("/api/ai/respond/stream")) return nativeFetch(input, init);
+    window.__lumenAuditSlowStream = null;
+    const encoder = new TextEncoder();
+    const paragraphs = Number.isSafeInteger(slow?.paragraphs) ? slow.paragraphs : 40;
+    const text = Array.from({ length: paragraphs }, (_, index) => `Paragraph ${index + 1} explains why a final holdout must stay untouched.\n\n`).join("");
+    const approach = { summary: "Stream a long answer.", steps: ["Answer in parts."] };
+    const response = { ok: true, requestId: "audit-slow-stream", outputText: text, data: null, status: "completed", model: "audit-local-model", usage: { inputTokens: 10, outputTokens: 400, totalTokens: 410 }, webSearch: { requested: false, used: false, rounds: 0 }, sources: [], approach };
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (event) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)); } catch { /* aborted */ } };
+        send({ type: "start", protocol: "lumen.ai.ndjson.v1", requestId: response.requestId, model: response.model, responseFormat: "markdown", responseProfile: "balanced", startedAt: new Date().toISOString() });
+        send({ type: "approach", requestId: response.requestId, approach });
+        for (const [phase, message] of Array.isArray(slow?.phases) ? slow.phases : []) {
+          await new Promise((resolve) => setTimeout(resolve, slow.phaseDelayMs || 400));
+          if (init.signal?.aborted) return;
+          send({ type: "phase", requestId: response.requestId, phase, message });
+        }
+        const pieces = text.match(/[\s\S]{1,120}/g);
+        for (let index = 0; index < pieces.length; index += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          if (init.signal?.aborted) return;
+          send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
+        }
+        send({ type: "complete", requestId: response.requestId, response });
+        try { controller.close(); } catch { /* aborted */ }
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" } });
+  };
+});
+
+// A page in its own browser context: no conversation, consent, quiz state
+// or profile data left by the scenarios before it.
+const phoneViewport = { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true };
+const newIsolatedPage = async (label, { viewport = phoneViewport, acknowledged = true, configFactory = () => secureConfig, mocks = {} } = {}) => {
+  const context = await browser.createBrowserContext();
+  const page = await context.newPage();
+  await page.setViewport(viewport);
+  attachDiagnostics(page, label);
+  if (acknowledged) {
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+    });
+  }
+  const calls = await installAiMocks(page, configFactory, mocks);
+  return { context, page, calls };
+};
+
+// Merges fields into the stored profile; the app reads them on reload.
+const patchStoredProfile = (page, patch) => page.evaluate((patchJson) => new Promise((resolve, reject) => {
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const transaction = request.result.transaction("study-data", "readwrite");
+    const store = transaction.objectStore("study-data");
+    const get = store.get("profile");
+    get.onerror = () => reject(get.error);
+    get.onsuccess = () => { store.put({ ...get.result, ...JSON.parse(patchJson) }, "profile"); };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  };
+}), JSON.stringify(patch));
+
+const setComposerPrompt = (page, value) => page.$eval(".ai-tutor__composer textarea", (field, text) => {
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}, value);
+
+const waitForAnswers = (page, count) => page.waitForFunction((expected) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= expected
+  && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 }, count);
+
 const newAuditPage = async (label, configFactory, options) => {
   const page = await browser.newPage();
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
@@ -311,7 +466,11 @@ try {
     executablePath: chromePath,
     headless: true,
     userDataDir: profileDirectory,
-    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check"],
+    // Headless Chrome on Linux reports no mouse (hover: none, pointer: none)
+    // while macOS reports one. Give desktop pages an explicit fine, hovering
+    // pointer so the keyboard-send checks behave the same on every OS; phone
+    // viewports still emulate touch, which overrides this.
+    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check", "--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"],
   });
 
   const ready = await newAuditPage("ready", () => secureConfig);
@@ -323,13 +482,31 @@ try {
   assert.match(await page.$eval(".ai-tutor__connection--ready", (node) => node.textContent), /local Ollama model ready/i);
   assert.equal(calls.config.length, 1, "AI configuration was not checked exactly once on initial mount");
   assert.equal(new URL(calls.config[0].url).origin, new URL(baseUrl).origin, "configuration request was not same-origin");
+  await page.waitForSelector(".ai-tutor__source.is-selected", { timeout: 10_000 });
+  // Until acknowledged, the local-model disclosure is in the composer
+  // itself, never only inside the options sheet.
+  assert.equal(await page.$eval(".ai-tutor__composer .ai-tutor__consent-card", (node) => node.getBoundingClientRect().height > 0), true, "the unacknowledged disclosure was not shown in the composer");
+  // The checkbox above the question is the visible reason; the repeated
+  // sentence is not drawn in the dock but still names why Send is off.
+  assert.deepEqual(await page.$eval(".ai-tutor__disabled-reason", (node) => ({
+    text: /acknowledge the local-model disclosure/.test(node.textContent),
+    drawn: node.getBoundingClientRect().height > 1,
+    linked: document.querySelector(".ai-tutor__send").getAttribute("aria-describedby").split(" ").includes(node.id),
+  })), { text: true, drawn: false, linked: true }, "the disclosure reason was lost, drawn twice or unlinked from Send");
+  const optionsFocus = await page.evaluate(() => {
+    const opener = document.querySelector(".ai-tutor__options-toggle");
+    opener.focus();
+    opener.click();
+    return { expanded: opener.getAttribute("aria-haspopup") };
+  });
+  assert.equal(optionsFocus.expanded, "dialog", "the Options button does not announce its dialog");
+  await page.waitForSelector(".tutor-sheet[role='dialog'][aria-modal='true']", { timeout: 5_000 });
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("tutor-sheet")), true, "opening Options did not move focus into the sheet");
   assert.equal(
     await page.$eval('.ai-tutor__response-profiles input[value="deep"]', (input) => input.disabled),
     false,
     "Deep profile was unavailable although the model attests thinking support",
   );
-
-  await page.waitForSelector(".ai-tutor__source.is-selected", { timeout: 10_000 });
   assert.equal(await page.$(".ai-tutor__privacy-body"), null, "request details should be collapsed by default");
   await page.click(".ai-tutor__privacy-toggle");
   const disclosure = await page.$eval(".ai-tutor__privacy-body", (node) => node.textContent.replace(/\s+/g, " "));
@@ -337,18 +514,40 @@ try {
   assert.match(disclosure, /no paid remote-model API/i);
   assert.match(disclosure, /saves up to 50 normalized tutor messages and web-source links locally/i);
   assert.match(disclosure, /includes them in exported backups/i);
-  assert.match(disclosure, /Clear conversation/i);
+  assert.match(disclosure, /Use “New topic” in the tutor header to clear it/i);
   assert.match(disclosure, /no paid-provider key is accepted or exposed/i);
 
   // Web egress is available only after the complete-library sufficiency
   // check. Moving to any narrower source scope must clear and disable it.
   await page.locator(".ai-tutor__web-search input").click();
+  // The sheet keeps Tab inside, closes with Escape and returns focus to the
+  // Options button; the armed permission stays visible on the composer.
+  for (let step = 0; step < 14; step += 1) await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest(".tutor-sheet"))), true, "Tab escaped the options sheet");
+  // The app's "?" shortcut sheet must not open underneath and take focus.
+  await page.$eval(".tutor-sheet__done", (button) => button.focus());
+  await page.keyboard.type("?");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(await page.evaluate(() => ({ shortcuts: Boolean(document.querySelector(".shortcuts-dialog")), inSheet: Boolean(document.activeElement?.closest(".tutor-sheet")) })), { shortcuts: false, inSheet: true }, "“?” opened the shortcut sheet under the options sheet");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("ai-tutor__options-toggle")), true, "closing the options sheet did not return focus to Options");
+  assert.match(await page.$eval(".ai-tutor__composer .ai-tutor__web-status.is-armed", (node) => node.textContent), /armed for this request/i, "the armed web permission was not visible on the composer");
   await page.click(".ai-tutor__source-panel-toggle");
   await clickByText(page, ".ai-tutor__source-modes button", "No library");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "leaving Library first did not clear web fallback");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), true, "web fallback remained enabled without whole-library retrieval");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "leaving Library first did not clear web fallback");
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), true, "web fallback remained enabled without whole-library retrieval");
+  });
+  assert.equal(await page.$(".ai-tutor__composer .ai-tutor__web-status.is-armed"), null, "a withdrawn web permission still showed as armed");
   await clickByText(page, ".ai-tutor__source-modes button", "Library first");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), false, "Library first did not restore the eligible web-fallback control");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.disabled), false, "Library first did not restore the eligible web-fallback control");
+    const undersizedSheetControls = await page.$$eval(".tutor-sheet button, .tutor-sheet select", (nodes) => nodes
+      .map((node) => ({ name: (node.getAttribute("aria-label") || node.textContent || node.tagName).trim().slice(0, 40), height: Math.round(node.getBoundingClientRect().height) }))
+      .filter((control) => control.height > 0 && control.height < 44));
+    assert.deepEqual(undersizedSheetControls, [], `undersized options-sheet controls on a phone: ${JSON.stringify(undersizedSheetControls)}`);
+  });
   // Phone targets (TC-21): every tutor control on this 393px phone is at
   // least 44px tall, the source filter included. Inline citations extend
   // their hit area with a pseudo-element instead.
@@ -366,11 +565,13 @@ try {
     setter.call(field, "How does Double DQN reduce overestimation bias, and what is the latest implementation guidance?");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "web search was not off by default");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "web search was not off by default");
+  });
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), true, "send was enabled before explicit consent");
   await page.click(".ai-tutor__consent input");
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "one-time local disclosure acknowledgement did not enable a valid grounded request");
-  await page.locator(".ai-tutor__web-search input").click();
+  await withOptions(page, () => page.locator(".ai-tutor__web-search input").click());
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "the web-fallback checkbox did not act as its own one-request authorization");
   assert.match(await page.$eval(".ai-tutor__web-status.is-armed", (node) => node.textContent), /armed for this request/i);
   await page.$eval(sendSelector, (button) => button.click());
@@ -437,7 +638,9 @@ try {
   await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Approach");
   assert.match(await page.$eval(".ai-tutor__approach", (node) => node.textContent.replace(/\s+/g, " ")), /Library retrieval attached [1-9]/i, "whole-library retrieval trace was not visible in the Approach panel");
   assert.equal((await page.$$(".ai-tutor__consent input")).length, 0, "remembered local disclosure unexpectedly asked for every request");
-  assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "one-request web authorization was not consumed");
+  await withOptions(page, async () => {
+    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "one-request web authorization was not consumed");
+  });
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), true, "send stayed enabled after the completed prompt was cleared");
   await waitForStoredHistory(page, "nonempty");
 
@@ -508,8 +711,8 @@ try {
   await page.evaluate(() => { window.location.hash = "#/ai"; });
   await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
   await page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
-  await clickByText(page, ".ai-tutor__mode-tabs button", "Quiz");
-  assert.equal(await page.$eval(".ai-tutor__mode-tabs button[aria-pressed='true']", (button) => button.textContent.trim()), "Quiz");
+  await chooseMode(page, "Quiz");
+  assert.equal(await activeMode(page), "Quiz");
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "remembered local acknowledgement did not carry into a local-only follow-up");
   await page.$eval(sendSelector, (button) => button.click());
   await page.waitForSelector(".ai-tutor__quiz", { timeout: 10_000 });
@@ -523,6 +726,7 @@ try {
   assert.ok(quizRequest.body.history.length >= 2 && quizRequest.body.history.length <= 12, "bounded conversation history was not sent to the follow-up quiz");
   assert.equal((await page.$$(".ai-tutor__quiz-question")).length, 1, "validated quiz did not render exactly one question");
   assert.equal((await page.$$(".ai-tutor__quiz-options label")).length, 3, "quiz options did not match the validated structure");
+  await settleScroll(page);
   await page.click(".ai-tutor__quiz-options label:nth-child(2) input");
   await clickByText(page, ".ai-tutor__quiz-question button", "Check answer");
   await page.waitForSelector(".ai-tutor__quiz-feedback.is-correct");
@@ -607,7 +811,7 @@ try {
     setter.call(field, "What is the latest current guidance on evaluation leakage?");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await retryConsent.page.locator(".ai-tutor__web-search input").click();
+  await withOptions(retryConsent.page, () => retryConsent.page.locator(".ai-tutor__web-search input").click());
   await retryConsent.page.$eval(sendSelector, (button) => button.scrollIntoView({ block: "nearest", behavior: "instant" }));
   assert.equal(await retryConsent.page.$eval(sendSelector, (button) => {
     const box = button.getBoundingClientRect();
@@ -621,13 +825,15 @@ try {
   assert.equal(retryConsent.calls.respond.length, 1, "initial retry fixture request count was wrong");
   assert.match(await retryConsent.page.$eval(".ai-tutor__request-error .ai-tutor__web-status.is-failed", (node) => node.textContent), /fallback failed/i, "failed current-web request did not visibly identify the failed fallback");
   assert.equal(await retryConsent.page.$eval(".ai-tutor__request-error button", (button) => button.disabled), true, "web-search retry did not require renewed one-request authorization");
-  await retryConsent.page.locator(".ai-tutor__web-search input").click();
+  await withOptions(retryConsent.page, () => retryConsent.page.locator(".ai-tutor__web-search input").click());
   assert.equal(await retryConsent.page.$eval(".ai-tutor__request-error button", (button) => button.disabled), false, "renewed web authorization did not enable retry");
   await retryConsent.page.click(".ai-tutor__request-error button");
   await retryConsent.page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
   assert.equal(retryConsent.calls.respond.length, 2, "retry was not sent exactly once after renewed consent");
   assert.equal(retryConsent.calls.respond[1].body.webSearch, true, "retry lost the disclosed web-search scope");
-  assert.equal(await retryConsent.page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "retry web authorization was not consumed");
+  await withOptions(retryConsent.page, async () => {
+    assert.equal(await retryConsent.page.$eval(".ai-tutor__web-search input", (input) => input.checked), false, "retry web authorization was not consumed");
+  });
   await retryConsent.page.close();
 
   // An approved search that returns nothing usable degrades to a library-only
@@ -641,7 +847,7 @@ try {
     setter.call(field, "What is the latest current guidance on evaluation leakage?");
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await webUnavailable.page.locator(".ai-tutor__web-search input").click();
+  await withOptions(webUnavailable.page, () => webUnavailable.page.locator(".ai-tutor__web-search input").click());
   // Earlier scenarios share this browser profile and its saved conversation.
   const answeredBefore = await webUnavailable.page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.length);
   await webUnavailable.page.locator(sendSelector).click();
@@ -716,6 +922,7 @@ try {
   const nonThinking = await newAuditPage("non-thinking", () => nonThinkingConfig);
   await nonThinking.page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
   await nonThinking.page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+  await openOptions(nonThinking.page);
   assert.equal(
     await nonThinking.page.$eval('.ai-tutor__response-profiles input[value="deep"]', (input) => input.disabled),
     true,
@@ -913,7 +1120,9 @@ try {
       const range = document.createRange();
       range.setStart(text, text.textContent.indexOf("Open"));
       range.setEnd(text, text.textContent.indexOf("Open") + "Open the forged lecture".length);
-      const box = range.getBoundingClientRect();
+      // The label can wrap on a phone; aim at its first line, not the middle
+      // of a box that spans the citation beside it.
+      const box = range.getClientRects()[0] || range.getBoundingClientRect();
       return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
     });
     await page.mouse.click(routeLabel.x, routeLabel.y);
@@ -953,7 +1162,8 @@ try {
 
     await page.evaluate(() => { location.hash = "#/ai"; });
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Flashcards");
+    // Phones pick the mode from a select (#57).
+    await chooseMode(page, "Flashcards");
     await page.$eval(".ai-tutor__composer textarea", (field) => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Make a flashcard about holdout leakage.");
       field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1009,7 +1219,7 @@ try {
     describedByError: document.getElementById(input.getAttribute("aria-describedby") || "")?.classList.contains("ai-tutor__pairing-error") === true,
   })), { invalid: "true", describedByError: true }, "the rejected pairing code was not linked to its error");
   await pairing.page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__pairing input"), { timeout: 3_000 }).catch(() => assert.fail("a rejected pairing code did not return focus to the code field"));
-  assert.equal(await pairing.page.$$eval(".ai-tutor__composer :is(.ai-tutor__response-profiles, .ai-tutor__web-search, .ai-tutor__difficulty, .ai-tutor__consent)", (nodes) => nodes.length), 0, "the pairing state still showed the full composer");
+  assert.equal(await pairing.page.$$eval(":is(.ai-tutor__options-toggle, .ai-tutor__consent-card, .tutor-sheet)", (nodes) => nodes.length), 0, "the pairing state still offered request options or the disclosure");
   await pairing.page.$eval(".ai-tutor__pairing input", (input) => { input.value = ""; });
   await pairing.page.type(".ai-tutor__pairing input", "correct-horse-battery");
   await pairing.page.$eval(".ai-tutor__pairing button[type='submit']", (button) => button.click());
@@ -1043,8 +1253,8 @@ try {
   // A server without AI shows one focused card and a reason next to the
   // disabled Generate button instead of the whole composer.
   assert.match(await disabled.page.$eval(".ai-tutor__setup-card", (node) => node.textContent), /not set up on this server/i, "the AI-disabled state did not explain itself");
-  assert.deepEqual(await disabled.page.$$eval(".ai-tutor__composer :is(.ai-tutor__response-profiles, .ai-tutor__web-search, .ai-tutor__difficulty, .ai-tutor__consent)", (nodes) => nodes.length), 0, "the AI-disabled state still showed the full composer");
-  assert.equal(await disabled.page.$(".ai-tutor__mode-tabs"), null, "the AI-disabled state still offered study modes");
+  assert.deepEqual(await disabled.page.$$eval(":is(.ai-tutor__options-toggle, .ai-tutor__consent-card, .tutor-sheet)", (nodes) => nodes.length), 0, "the AI-disabled state still offered request options or the disclosure");
+  assert.equal(await disabled.page.$(":is(.ai-tutor__mode-tabs, .ai-tutor__mode-select)"), null, "the AI-disabled state still offered study modes");
   assert.match(await disabled.page.$eval(".ai-tutor__disabled-reason", (node) => node.textContent), /not set up on this server/i, "the disabled Generate button had no reason");
   await clickByText(disabled.page, ".ai-tutor__connection button", "Check again");
   await disabled.page.waitForFunction(() => document.querySelector(".ai-tutor__connection--disabled"), { timeout: 8_000 });
@@ -1214,7 +1424,7 @@ try {
     assert.doesNotMatch(await promptValue(), /Explain this excerpt/, "a sent Ask AI excerpt came back after the tutor remounted");
 
     // An unsent draft, its mode and its grounding survive a route change.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Quiz");
+    await chooseMode(page, "Quiz");
     await page.click(".ai-tutor__source-panel-toggle");
     await clickByText(page, ".ai-tutor__source-modes button", "No library");
     const draft = "My unsent draft about ridge penalties";
@@ -1222,7 +1432,7 @@ try {
     await visit("#/library", ".library-page");
     await visit("#/ai", ".ai-tutor__connection--ready");
     assert.equal(await promptValue(), draft, "an unsent draft was lost on a route change");
-    assert.equal(await page.$eval(".ai-tutor__mode-tabs button[aria-pressed='true']", (button) => button.textContent.trim()), "Quiz", "the draft's mode was lost on a route change");
+    assert.equal(await activeMode(page), "Quiz", "the draft's mode was lost on a route change");
     assert.match(await page.$eval(".ai-tutor__source-panel-toggle small", (node) => node.textContent), /^No library/, "the draft's grounding was lost on a route change");
 
     // A new excerpt is added below the learner's draft, not over it.
@@ -1233,7 +1443,7 @@ try {
 
     // Leaving mid-answer records the interrupted turn visibly; it is never
     // sent back to the model as memory. No library shows the source-free wait.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Explain");
+    await chooseMode(page, "Explain");
     const interruptedPrompt = "Lifecycle check: explain weight decay.";
     await setPrompt(interruptedPrompt);
     const answersBefore = await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.length);
@@ -1264,7 +1474,7 @@ try {
 
     // Flashcards: success is reflected on the button; duplicates are reported
     // as already in Review, never as a failure.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Flashcards");
+    await chooseMode(page, "Flashcards");
     await page.$eval(sendSelector, (button) => button.click());
     await waitForAnswers(answersBefore + 3);
     await page.waitForSelector(".ai-tutor__flashcards", { timeout: 8_000 });
@@ -1286,9 +1496,9 @@ try {
     assert.equal((await readProfile(page)).reviewItems.filter((item) => (item.tags || []).includes("ai-draft")).length, flashcardData.cards.length, "duplicate flashcards were saved twice");
 
     // A configuration refresh keeps the armed one-request web permission.
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Explain");
+    await chooseMode(page, "Explain");
     await clickByText(page, ".ai-tutor__source-modes button", "Library first");
-    await page.$eval(".ai-tutor__web-search input", (input) => input.click());
+    await withOptions(page, () => page.$eval(".ai-tutor__web-search input", (input) => input.click()));
     const configChecks = calls.config.length;
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 8_000 }).catch(async (error) => {
       error.message += `\nPage: ${await page.evaluate(() => `${location.hash} ${document.querySelector(".ai-tutor__connection")?.className || "no tutor"} ${document.body.innerText.slice(0, 600)}`)}\nRuntime errors: ${runtimeErrors.join(" | ") || "none"}`;
@@ -1297,8 +1507,10 @@ try {
     await clickByText(page, ".ai-tutor__connection button", "Refresh");
     await page.waitForFunction(() => document.querySelector(".ai-tutor__connection--ready"), { timeout: 8_000 });
     assert.ok(calls.config.length > configChecks, "Refresh did not recheck the server");
-    assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), true, "a configuration refresh silently withdrew the learner's web permission");
-    await page.$eval(".ai-tutor__web-search input", (input) => input.click());
+    await withOptions(page, async () => {
+      assert.equal(await page.$eval(".ai-tutor__web-search input", (input) => input.checked), true, "a configuration refresh silently withdrew the learner's web permission");
+      await page.$eval(".ai-tutor__web-search input", (input) => input.click());
+    });
 
     // The engine choice is remembered across route changes.
     await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
@@ -1332,38 +1544,8 @@ try {
     attachDiagnostics(page, "tutor-keyboard");
     await page.evaluateOnNewDocument(() => {
       try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
-      // An in-page stream that delivers deltas over time, used below to check
-      // that following an answer never scrolls the page itself and that a
-      // learner can scroll back inside the conversation while it streams.
-      const nativeFetch = window.fetch.bind(window);
-      window.fetch = async (input, init = {}) => {
-        const url = typeof input === "string" ? input : input.url;
-        const slow = window.__lumenAuditSlowStream;
-        if (!slow || !url.includes("/api/ai/respond/stream")) return nativeFetch(input, init);
-        window.__lumenAuditSlowStream = null;
-        const encoder = new TextEncoder();
-        const paragraphs = Number.isSafeInteger(slow?.paragraphs) ? slow.paragraphs : 40;
-        const text = Array.from({ length: paragraphs }, (_, index) => `Paragraph ${index + 1} explains why a final holdout must stay untouched.\n\n`).join("");
-        const approach = { summary: "Stream a long answer.", steps: ["Answer in parts."] };
-        const response = { ok: true, requestId: "audit-slow-stream", outputText: text, data: null, status: "completed", model: "audit-local-model", usage: { inputTokens: 10, outputTokens: 400, totalTokens: 410 }, webSearch: { requested: false, used: false, rounds: 0 }, sources: [], approach };
-        const stream = new ReadableStream({
-          async start(controller) {
-            const send = (event) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)); } catch { /* aborted */ } };
-            send({ type: "start", protocol: "lumen.ai.ndjson.v1", requestId: response.requestId, model: response.model, responseFormat: "markdown", responseProfile: "balanced", startedAt: new Date().toISOString() });
-            send({ type: "approach", requestId: response.requestId, approach });
-            const pieces = text.match(/[\s\S]{1,120}/g);
-            for (let index = 0; index < pieces.length; index += 1) {
-              await new Promise((resolve) => setTimeout(resolve, 60));
-              if (init.signal?.aborted) return;
-              send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
-            }
-            send({ type: "complete", requestId: response.requestId, response });
-            try { controller.close(); } catch { /* aborted */ }
-          },
-        });
-        return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" } });
-      };
     });
+    await installSlowStream(page);
     const wideAnswer =(citation) => `## Wide evidence\n\nRepeated holdout inspection leaks information. [${citation}]\n\n| Signal | Risk | Mitigation that is deliberately long | Owner |\n| --- | --- | --- | --- |\n| Repeated inspection | Optimistic estimate | Freeze every choice before the final look | Evaluation lead |\n\n$$\n\\hat{w} = \\arg\\min_w \\sum_{i=1}^{n}(y_i - x_i^T w)^2 + \\lambda \\lVert w \\rVert_2^2 + \\gamma \\lVert w \\rVert_1 + \\text{a deliberately long tail term}\n$$\n\nDone.`;
     await installAiMocks(page, () => secureConfig, { responseDelayMs: 900, answerText: wideAnswer });
     await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
@@ -1377,6 +1559,16 @@ try {
       return { tag: node?.tagName || "", className: String(node?.className || ""), text: node?.textContent?.replace(/\s+/g, " ").trim().slice(0, 60) || "", label: node?.getAttribute?.("aria-label") || "" };
     });
     const announcement = () => page.$eval(".ai-tutor > p.visually-hidden[role='status']", (node) => node.textContent.trim());
+
+    // On a touch screen Return stays a new line; Send is the button. No
+    // keyboard hint is shown there.
+    assert.equal(await page.$(".ai-tutor__key-hint"), null, "a phone showed the keyboard hint");
+    await setPrompt("Phone line");
+    await page.$eval(".ai-tutor__composer textarea", (field) => { field.focus(); field.setSelectionRange(field.value.length, field.value.length); });
+    await page.keyboard.press("Enter");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "Phone line\n", "Return did not start a new line on a phone");
+    assert.equal(await page.$(".ai-tutor__message--streaming"), null, "Return sent the question on a phone");
 
     await setPrompt("Keyboard check: why does repeated holdout inspection leak information?");
     await page.$eval(sendSelector, (button) => button.focus());
@@ -1404,8 +1596,11 @@ try {
     const chips = await page.$$eval(".ai-tutor__message-meta > span", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)));
     assert.ok(chips.every((height) => height <= 24), `message meta chips broke mid-word: ${chips}`);
 
-    // Grounding radiogroup: one Tab stop; arrows move and select.
+    // Grounding radiogroup: one Tab stop; arrows move and select. The
+    // finished answer's smooth reveal settles before the pointer click.
+    await settleScroll(page);
     await page.click(".ai-tutor__source-panel-toggle");
+    await page.waitForSelector(".ai-tutor__context.is-open", { timeout: 3_000 });
     assert.equal(await page.$$eval(".ai-tutor__source-modes [role='radio']", (nodes) => nodes.filter((node) => node.tabIndex === 0).length), 1, "the grounding radiogroup has more than one Tab stop");
     await page.$eval(".ai-tutor__source-modes [aria-checked='true']", (node) => node.focus());
     await page.keyboard.press("ArrowDown");
@@ -1414,8 +1609,9 @@ try {
     await page.keyboard.press("Home");
     assert.equal(await page.$eval(".ai-tutor__source-modes [aria-checked='true'] strong", (node) => node.textContent), "Library first", "Home did not select the first grounding scope");
 
-    // Following a streaming answer scrolls only the conversation: a learner
-    // who scrolls the page away is not pulled back, during or after it.
+    // A learner who scrolls the page away while an answer streams is not
+    // pulled back, during or after it (TFEAT-08). "Jump to latest" is offered
+    // meanwhile, and "Answer ready" once it lands out of view.
     await setPrompt("Keyboard check: stream this answer slowly.");
     await page.evaluate(() => { window.__lumenAuditSlowStream = true; });
     await page.$eval(sendSelector, (button) => button.click());
@@ -1430,12 +1626,66 @@ try {
     const scrolledTo = await page.evaluate(() => scrollY);
     await new Promise((resolve) => setTimeout(resolve, 800));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "streaming pulled the page back after the learner scrolled away");
+    const pillText = () => page.$eval(".ai-tutor__jump", (node) => node.textContent.trim()).catch(() => "");
+    assert.equal(await pillText(), "Jump to latest", "no Jump to latest was offered while the learner read elsewhere");
+    assert.deepEqual(await page.$eval(".ai-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the jump pill was a live region or too small to tap");
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
+    assert.equal(await pillText(), "Answer ready", "a finished answer out of view was not offered");
+    // From the keyboard, the pill takes focus to the new answer.
+    await page.$eval(".ai-tutor__jump", (button) => button.focus());
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.activeElement?.matches?.(".ai-tutor__message--assistant[data-message-id]") && document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant[data-message-id]")].at(-1), { timeout: 3_000 }).catch(async () => assert.fail(`Answer ready did not focus the new answer: ${JSON.stringify(await activeElement())}`));
+    assert.equal(await page.$(".ai-tutor__jump"), null, "the pill stayed after it was used");
+    await settleScroll(page);
+    const answerTop = await page.evaluate(() => document.activeElement.getBoundingClientRect().top);
+    assert.ok(answerTop >= 0 && answerTop < 852 * 0.66, `Answer ready did not bring the answer's start into view: ${answerTop}`);
 
-    // Inside the conversation, a learner who scrolls back up while text
-    // streams stays there; scrolling back to the end resumes following.
+    // Phones scroll the page (issue #57): while an answer streams its end
+    // stays just above the docked composer. A learner who scrolls up stays
+    // there; "Jump to latest" brings the end back, at once under reduced
+    // motion, and following resumes.
+    const endGap = () => page.evaluate(() => Math.round(document.querySelector(".ai-tutor__composer").getBoundingClientRect().top - document.querySelector(".ai-tutor__conversation-end").getBoundingClientRect().bottom));
+    // Following trails each new delta by one frame, so "kept in view" means
+    // the end returns just above the composer, not that every sample is.
+    const waitForEndAboveComposer = (message) => page.waitForFunction(() => {
+      const gap = document.querySelector(".ai-tutor__composer").getBoundingClientRect().top - document.querySelector(".ai-tutor__conversation-end").getBoundingClientRect().bottom;
+      return gap >= -2 && gap <= 60;
+    }, { timeout: 2_000, polling: "raf" }).catch(async () => assert.fail(`${message}: ${await endGap()}`));
+    await setPrompt("Keyboard check: stream a long answer on a phone.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && document.querySelector(".ai-tutor__message--streaming").getBoundingClientRect().height > 900, { timeout: 8_000 });
+    await waitForEndAboveComposer("the streaming answer's end was not kept just above the composer");
+    await page.evaluate(() => {
+      window.dispatchEvent(new WheelEvent("wheel", { deltaY: -500 }));
+      window.scrollBy({ top: -500, behavior: "instant" });
+    });
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 3_000 }).catch(() => assert.fail("no Jump to latest after scrolling up mid-stream"));
+    const readingAt = await page.evaluate(() => scrollY);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(await page.evaluate(() => scrollY) <= readingAt + 2, "new text pulled the page back down after the learner scrolled up");
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+    await page.click(".ai-tutor__jump");
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // Under reduced motion the jump is instant: two frames later the end is
+    // at most one new delta below the composer, not a smooth scroll away.
+    const jumpedGap = await endGap();
+    assert.ok(jumpedGap >= -200 && jumpedGap <= 60, `Jump to latest did not bring the end above the composer at once: ${jumpedGap}`);
+    assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("ai-tutor__message--streaming")), true, "Jump to latest left focus behind");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(await page.$(".ai-tutor__message--streaming"), "the long stream finished before following could be checked");
+    await waitForEndAboveComposer("following did not resume after Jump to latest");
+    assert.equal(await page.$(".ai-tutor__jump"), null, "Jump to latest came back while following");
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
+
+    // Wider screens keep the conversation's own scroller (phones scroll the
+    // page). Inside it, a learner who scrolls back up while text streams
+    // stays there; scrolling back to the end resumes following. Touch and
+    // mobile emulation stay on, so the page is not reloaded.
+    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
     await setPrompt("Keyboard check: stream a longer answer.");
     await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
     await page.$eval(sendSelector, (button) => button.click());
@@ -1445,22 +1695,32 @@ try {
     }, { timeout: 8_000 });
     await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = 0; });
     await new Promise((resolve) => setTimeout(resolve, 700));
-    const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
+    const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")), pill: document.querySelector(".ai-tutor__jump")?.textContent.trim() || "" }));
     assert.equal(readBack.streaming, true, "the long stream finished before the scroll-back check could run");
     assert.ok(readBack.top < 60, `streaming pulled the conversation back down after the learner scrolled up: ${JSON.stringify(readBack)}`);
+    assert.equal(readBack.pill, "Jump to latest", "the conversation scroller offered no Jump to latest");
     await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = surface.scrollHeight; });
     await new Promise((resolve) => setTimeout(resolve, 500));
     const resumed = await page.$eval(".ai-tutor__conversation", (surface) => ({ gap: surface.scrollHeight - surface.scrollTop - surface.clientHeight, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
     assert.ok(!resumed.streaming || resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
+    await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
 
-    // A learner's own Stop is a neutral note that receives focus.
+    // A learner's own Stop is a neutral note that receives focus. The answer
+    // streams slowly so the Stop cannot race its completion on a busy host.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await setPrompt("Keyboard check: stop this one.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 40 }; });
     await page.$eval(sendSelector, (button) => button.focus());
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => /Stop generating/.test(document.activeElement?.textContent || ""), { timeout: 3_000 });
     await page.keyboard.press("Enter");
     await page.waitForSelector(".ai-tutor__request-note", { timeout: 5_000 });
+    // Stop turns back into Send as the request ends; that same activation
+    // must not then submit the question again.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(await page.$(".ai-tutor__message--streaming"), null, "Stop sent the stopped question again");
+    assert.ok(await page.$(".ai-tutor__request-note"), "Stop sent the stopped question again");
     assert.equal(await page.$(".ai-tutor__request-error"), null, "a learner's own Stop was shown as an error");
     assert.equal(await page.$eval(".ai-tutor__request-note", (node) => node.getAttribute("role")), null, "the Stop note was an assertive alert");
     assert.equal((await activeElement()).className.includes("ai-tutor__request-note"), true, "Stop left focus on <body>");
@@ -1469,18 +1729,25 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.match(await announcement(), /Generation stopped/, "a stale phase replaced the stop announcement");
 
-    // Clear asks in an in-app dialog: focus starts on Cancel, Escape restores
-    // focus to Clear, confirming clears and focuses the tutor heading.
-    await page.$eval('[aria-label="Clear AI tutor conversation"]', (button) => button.focus());
+    // New topic (which clears) asks in an in-app dialog: focus starts on
+    // Cancel, Tab stays among its three choices, Escape restores focus to
+    // New topic, confirming clears and focuses the tutor heading.
+    await page.$eval(".ai-tutor__new-topic", (button) => button.focus());
     await page.keyboard.press("Enter");
     await page.waitForSelector(".tutor-dialog[role='alertdialog'][aria-modal='true']", { timeout: 3_000 });
     assert.equal((await activeElement()).text, "Cancel", "the confirmation did not focus its safe choice");
+    assert.deepEqual(await page.$$eval(".tutor-dialog button", (nodes) => nodes.map((node) => node.textContent)), ["Cancel", "Export, then clear", "Clear conversation"]);
+    await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     assert.equal((await activeElement()).text, "Cancel", "Tab escaped the confirmation dialog");
+    await page.keyboard.type("?");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(await page.$(".shortcuts-dialog"), null, "“?” opened the shortcut sheet under the New topic dialog");
+    assert.equal((await activeElement()).text, "Cancel", "“?” moved focus out of the New topic dialog");
     await page.keyboard.press("Escape");
     await page.waitForSelector(".tutor-dialog", { hidden: true });
-    assert.equal((await activeElement()).label, "Clear AI tutor conversation", "cancelling did not return focus to Clear");
+    assert.equal((await activeElement()).text, "New topic", "cancelling did not return focus to New topic");
     assert.ok((await page.$$(".ai-tutor__message")).length > 0, "cancelling the confirmation cleared the conversation");
     await page.keyboard.press("Enter");
     await page.waitForSelector(".tutor-dialog");
@@ -1490,6 +1757,1309 @@ try {
     await waitForStoredHistory(page, "empty");
   } finally {
     await keyboardContext.close();
+  }
+
+  // Phone-first layout (issue #57): the docked composer keeps the question
+  // box and Send in view, above the bottom navigation, on first load, with a
+  // long draft, while an answer streams and after it; the page never scrolls
+  // sideways; below 981px the page is the only vertical scroller.
+  const layoutViewports = [
+    { name: "phone", width: 393, height: 852, isMobile: true, hasTouch: true },
+    { name: "small-phone", width: 320, height: 640, isMobile: true, hasTouch: true },
+    { name: "phone-se", width: 375, height: 667, isMobile: true, hasTouch: true },
+    { name: "tablet", width: 820, height: 1180, isMobile: true, hasTouch: true },
+    { name: "desktop", width: 1280, height: 800, isMobile: false, hasTouch: false },
+  ];
+  for (const viewport of layoutViewports) {
+    const layoutContext = await browser.createBrowserContext();
+    try {
+      const page = await layoutContext.newPage();
+      await page.setViewport({ ...viewport, deviceScaleFactor: 1 });
+      attachDiagnostics(page, `layout-${viewport.name}`);
+      await page.evaluateOnNewDocument(() => {
+        try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+      });
+      await installAiMocks(page, () => secureConfig, { responseDelayMs: 1_200 });
+      await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+      const setLayoutPrompt = (value) => page.$eval(".ai-tutor__composer textarea", (field, text) => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      }, value);
+      const checkLayout = async (state) => {
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const layout = await page.evaluate(() => {
+          const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+          const span = (rect) => [Math.round(rect.top), Math.round(rect.bottom)];
+          const nav = document.querySelector(".bottom-nav");
+          const conversation = document.querySelector(".ai-tutor__conversation");
+          return {
+            field: span(box(".ai-tutor__composer textarea")),
+            send: span(box(".ai-tutor__send")),
+            navTop: Math.round(nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight),
+            topbar: Math.round(Math.max(0, box(".app-topbar")?.bottom ?? 0)),
+            scrollWidth: document.documentElement.scrollWidth,
+            innerWidth,
+            narrow: matchMedia("(max-width: 980px)").matches,
+            nestedScroll: conversation.scrollHeight - conversation.clientHeight,
+            reason: (() => {
+              const node = document.querySelector(".ai-tutor__disabled-reason");
+              const rect = node.getBoundingClientRect();
+              return { text: node.textContent, drawn: rect.height > 1 && rect.width > 1, span: span(rect), linked: document.querySelector(".ai-tutor__send").getAttribute("aria-describedby")?.split(" ").includes(node.id) === true };
+            })(),
+          };
+        });
+        const inView = ([top, bottom]) => top >= layout.topbar - 1 && bottom <= layout.navTop + 1;
+        assert.ok(inView(layout.field) && inView(layout.send), `${viewport.name} ${state}: the question box or Send left the visible area: ${JSON.stringify(layout)}`);
+        assert.equal(layout.scrollWidth, layout.innerWidth, `${viewport.name} ${state}: the page scrolls sideways`);
+        if (layout.narrow) assert.ok(layout.nestedScroll <= 1, `${viewport.name} ${state}: the conversation became a nested scroller: ${JSON.stringify(layout)}`);
+        return layout;
+      };
+      await checkLayout("first load");
+      // Suggested starts (TFEAT-04) on a fresh profile stay inside the page
+      // and, at its bottom, clear of the docked composer.
+      await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+      const starterFit = await page.evaluate(() => {
+        const inside = [...document.querySelectorAll(".ai-tutor__starter")].every((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.left >= -1 && rect.right <= innerWidth + 1 && rect.height >= 48;
+        });
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
+        const last = [...document.querySelectorAll(".ai-tutor__starter")].at(-1).getBoundingClientRect();
+        const dock = document.querySelector(".ai-tutor__composer");
+        const dockTop = getComputedStyle(dock).position === "sticky" ? dock.getBoundingClientRect().top : Number.POSITIVE_INFINITY;
+        window.scrollTo({ top: 0, behavior: "instant" });
+        return { inside, clearOfDock: last.bottom <= dockTop + 1 };
+      });
+      assert.deepEqual(starterFit, { inside: true, clearOfDock: true }, `${viewport.name}: suggested starts overflowed or sat behind the docked composer`);
+      await setLayoutPrompt(Array.from({ length: 8 }, (_, line) => `Line ${line + 1} of a long draft about ridge and lasso penalties.`).join("\n"));
+      await checkLayout("long draft");
+      await setLayoutPrompt("Layout check: why does repeated holdout inspection leak information?");
+      // A double tap on Send must not land on the Stop it turns into.
+      await page.click(".ai-tutor__send");
+      await page.click(".ai-tutor__send");
+      await page.waitForSelector(".ai-tutor__message--streaming", { timeout: 5_000 });
+      await checkLayout("streaming");
+      await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 10_000 });
+      assert.equal(await page.$(".ai-tutor__request-note"), null, `${viewport.name}: a double tap on Send stopped the answer`);
+      // An empty box needs no visible reason line in the dock (the
+      // placeholder and the dimmed Send say it), but Send still names it.
+      const emptyBox = await checkLayout("answer");
+      assert.match(emptyBox.reason.text, /Enter a learning request/, `${viewport.name}: the empty box lost its disabled reason`);
+      assert.deepEqual([emptyBox.reason.drawn, emptyBox.reason.linked], [false, true], `${viewport.name}: the empty-box reason was drawn in the dock or unlinked from Send: ${JSON.stringify(emptyBox.reason)}`);
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+      await checkLayout("answer, page top");
+      // A reason the learner must act on stays visible, above the navigation.
+      await setLayoutPrompt("Too long. ".repeat(600));
+      const tooLong = await checkLayout("prompt too long");
+      assert.match(tooLong.reason.text, /Shorten the prompt|reduce it below/, `${viewport.name}: an over-long prompt gave no reason: ${JSON.stringify(tooLong.reason)}`);
+      assert.ok(tooLong.reason.drawn && tooLong.reason.linked && tooLong.reason.span[1] <= tooLong.navTop + 1, `${viewport.name}: the over-long prompt's reason was hidden, unlinked or under the navigation: ${JSON.stringify(tooLong)}`);
+      // A Socratic session's strip (TFEAT-05) joins the dock without pushing
+      // the answer box or Send out of view.
+      await setLayoutPrompt("Teach me holdout evaluation one question at a time.");
+      await chooseMode(page, "Socratic");
+      await page.$eval(".ai-tutor__send", (button) => button.click());
+      await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= 2 && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 });
+      await page.waitForSelector(".ai-tutor__composer .ai-tutor__session", { timeout: 5_000 });
+      const sessionLayout = await checkLayout("socratic session");
+      const stripSpan = await page.$eval(".ai-tutor__session", (node) => [Math.round(node.getBoundingClientRect().top), Math.round(node.getBoundingClientRect().bottom)]);
+      assert.ok(stripSpan[0] >= sessionLayout.topbar - 1 && stripSpan[1] <= sessionLayout.navTop + 1, `${viewport.name}: the session strip left the visible area: ${JSON.stringify({ stripSpan, sessionLayout })}`);
+    } finally {
+      await layoutContext.close();
+    }
+  }
+
+  // Large text (#57 review): at 200% text on a 320px phone a dock holding a
+  // Socratic session's strip would be taller than the room above the bottom
+  // navigation and hide the whole tutor, header included; it stays in the
+  // page flow then, and docks again at normal size. A long draft alone never
+  // undocks it, so typing does not move the question box.
+  const largeTextContext = await browser.createBrowserContext();
+  try {
+    const page = await largeTextContext.newPage();
+    await page.setViewport({ width: 320, height: 640, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    attachDiagnostics(page, "large-text");
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+    });
+    await installAiMocks(page, () => secureConfig);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await chooseMode(page, "Socratic");
+    await setComposerPrompt(page, "Teach me ridge regression one question at a time.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    await page.waitForSelector(".ai-tutor__composer .ai-tutor__session", { timeout: 5_000 });
+    // The dock is re-measured a frame after the composer resizes.
+    const dockBecomes = (position, message) => page.waitForFunction((expected) => getComputedStyle(document.querySelector(".ai-tutor__composer")).position === expected, { timeout: 3_000 }, position).catch(() => assert.fail(message));
+    const settleFrames = () => page.evaluate(() => new Promise((resolve) => { let frames = 6; const tick = () => (frames -= 1) ? requestAnimationFrame(tick) : resolve(); requestAnimationFrame(tick); }));
+    await settleFrames();
+    await dockBecomes("sticky", "the composer was not docked at normal text size");
+    await setComposerPrompt(page, Array.from({ length: 8 }, (_, index) => `Line ${index + 1} of a long answer about ridge penalties.`).join("\n"));
+    await settleFrames();
+    await dockBecomes("sticky", "typing a long draft undocked the composer");
+    await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+    await dockBecomes("relative", "at 200% text the composer stayed docked over the tutor");
+    await settleFrames();
+    assert.equal(await page.evaluate(() => document.documentElement.style.getPropertyValue("--ai-composer-space")), "0px", "an undocked composer still reserved dock space");
+    await page.evaluate(() => { window.scrollTo(0, document.querySelector(".ai-tutor__header").getBoundingClientRect().top + window.scrollY - 70); });
+    assert.equal(await page.evaluate(() => document.querySelector(".ai-tutor__composer").getBoundingClientRect().top > document.querySelector(".ai-tutor__message--assistant").getBoundingClientRect().bottom), true, "at 200% text the composer covered the conversation");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320, "200% text scrolled the page sideways");
+    await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
+    await dockBecomes("sticky", "the composer did not dock again at normal text size");
+  } finally {
+    await largeTextContext.close();
+  }
+
+  // Keyboard sending with a mouse or trackpad (TFEAT-10): Enter sends and
+  // Shift+Enter starts a new line; Code review keeps Enter for code and
+  // sends with Cmd/Ctrl+Enter; Enter never sends while an input method is
+  // composing; Up arrow brings back the last question; Esc stops a running
+  // answer, but first closes the options sheet.
+  const desktopKeysContext = await browser.createBrowserContext();
+  try {
+    const page = await desktopKeysContext.newPage();
+    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+    attachDiagnostics(page, "tutor-desktop-keys");
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+    });
+    await installSlowStream(page);
+    const calls = await installAiMocks(page, () => secureConfig);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    const field = ".ai-tutor__composer textarea";
+    const setKeysPrompt = (value) => page.$eval(field, (node, text) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(node, text);
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.focus();
+      node.setSelectionRange(text.length, text.length);
+    }, value);
+    const fieldValue = () => page.$eval(field, (node) => node.value);
+    const waitForAnswerCount = (count) => page.waitForFunction((expected) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= expected
+      && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 }, count);
+    const pressWith = async (modifier, key) => {
+      await page.keyboard.down(modifier);
+      await page.keyboard.press(key);
+      await page.keyboard.up(modifier);
+    };
+
+    // The shortcuts sheet ("?") lists the tutor's keys.
+    await page.evaluate(() => document.activeElement?.blur?.());
+    await page.keyboard.type("?");
+    await page.waitForSelector(".shortcuts-dialog", { timeout: 5_000 });
+    const tutorShortcuts = await page.$$eval(".shortcuts-dialog .shortcut-group", (groups) => groups.find((group) => group.querySelector("h3")?.textContent === "AI tutor")?.textContent || "");
+    assert.match(tutorShortcuts, /Shift \+ Enter[\s\S]*⌘\/Ctrl \+ Enter[\s\S]*Esc[\s\S]*Stop the answer/, "the shortcuts sheet did not list the AI tutor keys");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".shortcuts-dialog", { hidden: true, timeout: 5_000 });
+
+    assert.equal(await page.$eval(".ai-tutor__key-hint", (node) => node.textContent), "Enter to send · Shift+Enter for a new line", "the keyboard hint was missing on a desktop");
+    assert.equal(await page.$eval(field, (node) => node.getAttribute("aria-describedby").split(" ").includes(document.querySelector(".ai-tutor__key-hint").id)), true, "the keyboard hint was not linked to the question box");
+
+    await setKeysPrompt("Keyboard send: why does repeated holdout inspection leak information?");
+    await page.keyboard.press("Enter");
+    await waitForAnswerCount(1);
+    assert.equal(calls.respond.length, 1, "Enter did not send exactly once");
+    assert.equal(await page.evaluate((selector) => document.activeElement === document.querySelector(selector), field), true, "a keyboard send moved focus out of the question box");
+
+    // Enter with a question that cannot be sent yet sends nothing and says
+    // why in the dock, even where the reason is not drawn under the box.
+    await page.click(".ai-tutor__options-toggle");
+    await page.waitForSelector(".tutor-sheet", { timeout: 5_000 });
+    await clickByText(page, ".tutor-sheet button", "Review again");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+    await page.waitForSelector(".ai-tutor__consent-card", { timeout: 5_000 });
+    await setKeysPrompt("Keyboard send before the permission is ticked");
+    await page.keyboard.press("Enter");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(calls.respond.length, 1, "Enter sent the question before the local-model permission");
+    assert.equal(await fieldValue(), "Keyboard send before the permission is ticked", "Enter typed a new line instead of explaining why nothing was sent");
+    assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /acknowledge the local-model disclosure/i, "Enter gave no reason when nothing could be sent");
+    await page.click(".ai-tutor__consent input");
+
+    await setKeysPrompt("Line one");
+    await pressWith("Shift", "Enter");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await fieldValue(), "Line one\n", "Shift+Enter did not start a new line");
+    assert.equal(calls.respond.length, 1, "Shift+Enter sent the question");
+
+    await chooseMode(page, "Code review");
+    assert.match(await page.$eval(".ai-tutor__key-hint", (node) => node.textContent), /^(⌘|Ctrl\+)Enter to send · Enter for a new line$/, "the Code review hint did not name the send shortcut");
+    await setKeysPrompt("Review this snippet:");
+    await page.keyboard.press("Enter");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await fieldValue(), "Review this snippet:\n", "Enter did not start a new line in Code review");
+    assert.equal(calls.respond.length, 1, "Enter sent the question in Code review");
+    await page.keyboard.type("total = sum(values)");
+    await pressWith("Meta", "Enter");
+    await waitForAnswerCount(2);
+    assert.equal(calls.respond.length, 2, "Cmd+Enter did not send in Code review");
+    assert.equal(calls.respond[1].body.task, "code_review");
+
+    await chooseMode(page, "Explain");
+    await setKeysPrompt("Composing text");
+    await page.$eval(field, (node) => node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, isComposing: true })));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(calls.respond.length, 2, "Enter sent the question while an input method was composing");
+
+    await setKeysPrompt("");
+    await page.keyboard.press("ArrowUp");
+    assert.equal(await fieldValue(), "Review this snippet:\ntotal = sum(values)", "Up arrow did not bring back the last question");
+    assert.equal(await activeMode(page), "Code review", "Up arrow did not restore the last question's mode");
+    await chooseMode(page, "Explain");
+
+    await setKeysPrompt("Keyboard stop: stream this one.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 60 }; });
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
+    await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
+    await page.waitForSelector(".tutor-sheet", { timeout: 5_000 });
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+    assert.ok(await page.$(".ai-tutor__message--streaming"), "Escape in the options sheet stopped the answer");
+    await page.$eval(field, (node) => node.focus());
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".ai-tutor__request-note", { timeout: 5_000 });
+    assert.equal(await page.$(".ai-tutor__message--streaming"), null, "Escape did not stop the answer");
+    assert.match(await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.at(-1).textContent), /Stopped early/, "the stopped answer was not marked as stopped early");
+    assert.match(await page.$eval(".ai-tutor > p.visually-hidden[role='status']", (node) => node.textContent), /Generation stopped/, "Escape's stop was not announced");
+
+    // Grounded answers show staged progress (TVU-18): the steps follow the
+    // library retrieval and the stream's phase events, the passages in use
+    // appear once found, and each step, not each second, is announced once.
+    await page.evaluate(() => {
+      window.__lumenAuditAnnouncements = [];
+      const region = document.querySelector(".ai-tutor > p.visually-hidden[role='status']");
+      new MutationObserver(() => window.__lumenAuditAnnouncements.push(region.textContent.trim())).observe(region, { childList: true, characterData: true, subtree: true });
+    });
+    await setKeysPrompt("Progress check: explain the bias-variance trade-off from my notes.");
+    await page.evaluate(() => {
+      window.__lumenAuditSlowStream = {
+        paragraphs: 8,
+        phaseDelayMs: 700,
+        phases: [
+          ["preparing", "Preparing the bounded local-model request."],
+          ["generating", "Generating the answer with the local model."],
+          ["validating", "Checking completion and grounding before finalizing the answer."],
+        ],
+      };
+    });
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /^Found \d+ passages?/.test(document.querySelector(".ai-tutor__progress li.is-done")?.textContent || "")
+      && document.querySelector(".ai-tutor__progress li.is-active")?.textContent.includes("Drafting the answer"), { timeout: 8_000 }).catch(async () => assert.fail(`the steps did not move from finding passages to drafting: ${await page.$eval(".ai-tutor__message--streaming", (node) => node.textContent).catch(() => "no streaming answer")}`));
+    assert.ok((await page.$$(".ai-tutor__progress-sources li")).length >= 1, "the passages in use were not shown while waiting");
+    assert.match(await page.$eval(".ai-tutor__progress-sources li", (node) => node.textContent), /^\[S\d+\] \S/, "a source chip did not show its label and title");
+    assert.equal(await page.$$eval(".ai-tutor__message--streaming [aria-live], .ai-tutor__message--streaming [role='status']", (nodes) => nodes.length), 0, "the progress steps became a live region inside the busy answer");
+    const waitingCopy = await page.$eval(".ai-tutor__message--streaming", (node) => node.textContent);
+    assert.doesNotMatch(waitingCopy, /Preparing your answer and checking sources/, "a waiting line repeated the progress steps");
+    assert.doesNotMatch(waitingCopy, /egress/i, "the waiting state used pipeline jargon");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__progress li.is-active")?.textContent.includes("Checking citations"), { timeout: 8_000 }).catch(() => assert.fail("the validating phase did not activate Checking citations"));
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
+    const progressAnnouncements = [...new Set(await page.evaluate(() => window.__lumenAuditAnnouncements))].filter(Boolean);
+    assert.ok(progressAnnouncements.some((text) => /^Found \d+ passages?\. Drafting the answer…$/.test(text)), `drafting was not announced: ${JSON.stringify(progressAnnouncements)}`);
+    assert.ok(progressAnnouncements.includes("Checking citations…"), `checking was not announced: ${JSON.stringify(progressAnnouncements)}`);
+    assert.equal(progressAnnouncements.some((text) => /Preparing the bounded|Generating the answer with/.test(text)), false, `stage messages were announced alongside the steps: ${JSON.stringify(progressAnnouncements)}`);
+    assert.ok(progressAnnouncements.length <= 5, `progress was announced too often: ${JSON.stringify(progressAnnouncements)}`);
+  } finally {
+    await desktopKeysContext.close();
+  }
+
+  // One-tap follow-ups (TFEAT-02): one group, under the newest complete
+  // answer only. A chip sends a visible question in a listed mode with only
+  // the answer it follows as memory (up to 3,000 characters of it, not the
+  // composer's quarter of the budget), retrieves with that answer's topic,
+  // never uses the web, and moves focus to the new answer. When it cannot
+  // start, its question lands in the box with the reason; nothing is sent.
+  const longAnswer = `## Ridge regression\n\n${"Ridge adds an L2 penalty that shrinks every weight toward zero and trades a little bias for lower variance. ".repeat(43)}`.slice(0, 4_600);
+  const followUpsScenario = await newIsolatedPage("follow-ups", {
+    mocks: { answerText: (citation, body) => (body.prompt.startsWith("Why does ridge") ? `${longAnswer} [${citation}]` : `## Simpler\n\nRidge keeps weights small. [${citation}]`) },
+  });
+  try {
+    const { page, calls } = followUpsScenario;
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    assert.equal(await page.$(".ai-tutor__follow-ups"), null, "follow-ups appeared before any answer");
+    await setComposerPrompt(page, "Why does ridge regression shrink the weights?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const firstRequest = calls.respond.at(-1).body;
+    const contextTitles = (body) => String(body.context).split("\n").filter((line) => /^\[S\d+\] /.test(line)).map((line) => line.replace(/^\[S\d+\] /, "").split(" — ")[0]);
+    assert.ok(contextTitles(firstRequest).length > 0, "the first answer attached no library passage");
+    // The topic cue names the first attached passage's lesson, not a count.
+    const passageHeaders = String(firstRequest.context).split("\n").filter((line) => /^\[S\d+\] /.test(line)).map((line) => line.replace(/^\[S\d+\] /, ""));
+    const moreCue = passageHeaders.length > 1 ? ` (+${passageHeaders.length - 1} related passage${passageHeaders.length === 2 ? "" : "s"})` : "";
+    const topicCue = firstRequest.documentTitle.endsWith(moreCue) ? firstRequest.documentTitle.slice(0, firstRequest.documentTitle.length - moreCue.length) : "";
+    assert.ok(topicCue && passageHeaders[0].startsWith(topicCue), `a Library-first request did not name its topic: ${firstRequest.documentTitle} for ${passageHeaders[0]}`);
+    assert.deepEqual(await page.$$eval(".ai-tutor__message", (nodes) => nodes.map((node) => Boolean(node.querySelector(".ai-tutor__follow-ups")))), [false, true], "follow-ups were not on the newest answer alone");
+    assert.deepEqual(await page.$$eval(".ai-tutor__follow-ups button", (nodes) => nodes.map((node) => node.textContent)), ["Simpler", "Give an example", "Go deeper", "Quiz me on this", "Make flashcards", "Check my understanding"]);
+    assert.equal(await page.$eval(".ai-tutor__follow-ups", (node) => node.getAttribute("role") === "group" && node.getAttribute("aria-label")), "Follow up on this answer");
+    const chipLayout = await page.evaluate(() => ({
+      heights: [...document.querySelectorAll(".ai-tutor__follow-ups button, .ai-tutor__message-actions button")].map((node) => Math.round(node.getBoundingClientRect().height)),
+      rows: new Set([...document.querySelectorAll(".ai-tutor__follow-ups button")].map((node) => Math.round(node.getBoundingClientRect().top))).size,
+      inActions: Boolean(document.querySelector(".ai-tutor__message-actions .ai-tutor__follow-ups")),
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth,
+    }));
+    assert.equal(chipLayout.heights.every((height) => height >= 44), true, `follow-up or action targets under 44px on a phone: ${chipLayout.heights}`);
+    assert.ok(chipLayout.rows <= 3, `six follow-ups took ${chipLayout.rows} rows on a 393px phone`);
+    assert.equal(chipLayout.inActions, false, "follow-ups joined the message actions row");
+    assert.equal(chipLayout.scrollWidth, chipLayout.innerWidth, "follow-ups made the phone page scroll sideways");
+
+    await clickByText(page, ".ai-tutor__follow-ups button", "Simpler");
+    await waitForAnswers(page, 2);
+    const simpler = calls.respond.at(-1).body;
+    assert.equal(simpler.task, "explain", "Simpler did not use the Explain mode");
+    assert.equal(simpler.webSearch, false, "a follow-up used the web");
+    assert.match(simpler.prompt, /^Explain your previous answer more simply/);
+    assert.deepEqual(simpler.history.map((message) => message.role), ["user", "assistant"], "a follow-up did not remember exactly the answer it follows");
+    assert.equal(simpler.history[0].content, "Why does ridge regression shrink the weights?");
+    assert.ok(simpler.history[1].content.length > 1_093 && simpler.history[1].content.length <= 3_000, `the followed answer was cut to ${simpler.history[1].content.length} characters`);
+    assert.equal(/\[S\d+\]/.test(simpler.history[1].content), false, "the remembered answer kept another request's citation labels");
+    assert.equal(simpler.conversationSummary, "", "a follow-up sent older conversation memory");
+    assert.ok(contextTitles(simpler).includes(contextTitles(firstRequest)[0]), `the follow-up did not retrieve the answer's lesson: ${JSON.stringify(contextTitles(simpler))}`);
+    assert.match(await page.$$eval(".ai-tutor__message--user .ai-tutor__user-prompt", (nodes) => nodes.at(-1).textContent), /^Explain your previous answer more simply/, "the follow-up was not shown as a visible question");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset?.messageId === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)?.dataset.messageId), true, "focus did not move to the follow-up's answer");
+    assert.deepEqual(await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.map((node) => Boolean(node.querySelector(".ai-tutor__follow-ups")))), [false, true], "follow-ups stayed on an older answer");
+
+    await clickByText(page, ".ai-tutor__follow-ups button", "Quiz me on this");
+    await page.waitForSelector(".ai-tutor__message--assistant:last-of-type .ai-tutor__quiz", { timeout: 10_000 });
+    await waitForAnswers(page, 3);
+    const quizFollowUp = calls.respond.at(-1).body;
+    assert.equal(quizFollowUp.task, "quiz");
+    assert.equal(quizFollowUp.responseFormat, "structured");
+    assert.equal(quizFollowUp.webSearch, false);
+    assert.equal(quizFollowUp.history.length, 2, "Quiz me on this did not remember only the answer it follows");
+    // A follow-up of a follow-up searches with the learner's question behind
+    // the chain (#57 review: live, "Check my understanding" after "Give an
+    // example" searched with the chip's wording and drifted to another chapter).
+    assert.equal(quizFollowUp.history[0].content, simpler.prompt.split("\n\n")[0], "a chained follow-up did not remember the chip question its answer replied to");
+    assert.deepEqual(contextTitles(quizFollowUp).slice(0, 3), contextTitles(simpler).slice(0, 3), `a chained follow-up searched a different topic: ${JSON.stringify(contextTitles(quizFollowUp))}`);
+    assert.deepEqual(await page.$$eval(".ai-tutor__follow-ups button", (nodes) => nodes.map((node) => node.textContent)), ["Harder quiz", "Explain the answers"], "a quiz did not offer its own follow-ups");
+
+    // Without the local-model permission the chip's question waits in the
+    // box, in its mode, with the reason; nothing is sent.
+    await openOptions(page);
+    await clickByText(page, ".tutor-sheet button", "Review again");
+    await closeOptions(page);
+    const sentBefore = calls.respond.length;
+    await clickByText(page, ".ai-tutor__follow-ups button", "Harder quiz");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(calls.respond.length, sentBefore, "a follow-up was sent without the local-model permission");
+    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /^Create 2 harder multiple-choice questions/);
+    assert.equal(await activeMode(page), "Quiz", "the waiting follow-up lost its mode");
+    assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /in the question box\. Tick the local-model permission/);
+  } finally {
+    await followUpsScenario.context.close();
+  }
+
+  // Suggested starts (TFEAT-04): built from the learner's own data, never
+  // naming the roadmap on a fresh profile. A tap sets the mode and the
+  // question, focuses the box and sends nothing; a draft the learner wrote
+  // is replaced only on request. Phones show four full-width rows, wider
+  // screens six in two columns.
+  const documents = Array.isArray(contentIndex) ? contentIndex : contentIndex.documents;
+  const starterChapter = documents.find((document) => document.partNumber === 1 && !document.isIndex);
+  const startersScenario = await newIsolatedPage("starters");
+  try {
+    const { page, calls } = startersScenario;
+    // This browser has no speech engine: answers offer no Listen.
+    await page.evaluateOnNewDocument(() => {
+      delete Window.prototype.speechSynthesis;
+      delete window.speechSynthesis;
+    });
+    const starterLabels = () => page.$$eval(".ai-tutor__starter", (nodes) => nodes.map((node) => [node.querySelector(".ai-tutor__starter-mode").textContent, node.querySelector(".ai-tutor__starter-title").textContent]));
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+    const freshStarters = await starterLabels();
+    assert.ok(freshStarters.length >= 1 && freshStarters.length <= 4, `a fresh phone showed ${freshStarters.length} starters`);
+    assert.equal(freshStarters.some(([, label]) => /roadmap|navigator|audit/i.test(label)), false, `a fresh profile's starters named the roadmap: ${JSON.stringify(freshStarters)}`);
+    assert.deepEqual(freshStarters[0], ["Explain", `Explain the key ideas of ${starterChapter.title}`], "a fresh profile did not start from the first lesson in the plan");
+    assert.equal(await page.$eval(".ai-tutor__starters", (node) => node.getAttribute("role") === "group" && document.getElementById(node.getAttribute("aria-labelledby"))?.textContent), "Suggested starts");
+
+    const lapsedCard = { ...createReviewItem({ type: "basic", front: "What does the ridge penalty add to the loss?", back: "The squared L2 norm of the weights.", documentId: starterChapter.id, tags: [] }), lapses: 3 };
+    await patchStoredProfile(page, {
+      recent: [starterChapter.id],
+      lastDocumentId: starterChapter.id,
+      mistakes: [
+        createMistake({ prompt: "Why does lasso produce sparse weights while ridge does not?", expected: "The L1 penalty has corners at zero.", documentId: starterChapter.id }),
+        createMistake({ prompt: "What is leakage in cross-validation?", expected: "Preprocessing fitted on every fold.", documentId: "" }),
+      ],
+      reviewItems: [lapsedCard],
+    });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__starter").length === 4, { timeout: 5_000 });
+    const seeded = await starterLabels();
+    assert.deepEqual(seeded.map(([mode]) => mode), ["Explain", "Explain", "Quiz", "Explain"], `starter modes: ${JSON.stringify(seeded)}`);
+    assert.equal(seeded[0][1], "I keep missing: Why does lasso produce sparse weights while ridge does not?", "the lesson's open mistake was not the first starter");
+    assert.equal(seeded[1][1], "Help me remember: What does the ridge penalty add to the loss?", "the lapsed card was not offered");
+    assert.match(seeded[2][1], /^Quiz me on /);
+    assert.equal(seeded[3][1], `Explain the key ideas of ${starterChapter.title}`);
+    const starterLayout = await page.evaluate(() => ({
+      heights: [...document.querySelectorAll(".ai-tutor__starter")].map((node) => Math.round(node.getBoundingClientRect().height)),
+      columns: new Set([...document.querySelectorAll(".ai-tutor__starter")].map((node) => Math.round(node.getBoundingClientRect().left))).size,
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth,
+    }));
+    assert.equal(starterLayout.heights.every((height) => height >= 48), true, `starter rows under 48px: ${starterLayout.heights}`);
+    assert.equal(starterLayout.columns, 1, "phone starters were not full-width rows");
+    assert.equal(starterLayout.scrollWidth, starterLayout.innerWidth, "starters made the phone page scroll sideways");
+
+    await clickByText(page, ".ai-tutor__starter", "I keep missing");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(await activeMode(page), "Explain");
+    const mistakePrompt = await page.$eval(".ai-tutor__composer textarea", (field) => field.value);
+    assert.match(mistakePrompt, /“Why does lasso produce sparse weights while ridge does not\?”\. The correct answer is: “The L1 penalty has corners at zero\.”/);
+    await clickByText(page, ".ai-tutor__starter", "Quiz me on");
+    assert.equal(await activeMode(page), "Quiz", "a quiz starter did not switch the mode");
+    assert.equal(await page.$(".ai-tutor__starter-confirm"), null, "replacing one starter with another asked about a draft");
+    assert.equal(calls.respond.length, 0, "a starter sent a request");
+
+    await setComposerPrompt(page, "My own question about ridge penalties");
+    await clickByText(page, ".ai-tutor__starter", "Explain the key ideas");
+    await page.waitForSelector(".ai-tutor__starter-confirm", { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Keep my draft", "the draft question did not offer the safe choice first");
+    await clickByText(page, ".ai-tutor__starter-confirm button", "Keep my draft");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "My own question about ridge penalties", "Keep my draft replaced the draft");
+    assert.equal(await page.$(".ai-tutor__starter-confirm"), null);
+    await clickByText(page, ".ai-tutor__starter", "Explain the key ideas");
+    await page.waitForSelector(".ai-tutor__starter-confirm", { timeout: 5_000 });
+    await clickByText(page, ".ai-tutor__starter-confirm button", "Replace draft");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), `Explain the key ideas of the lesson “${starterChapter.title}” with a short example and one common mistake.`);
+    assert.equal(await activeMode(page), "Explain");
+    assert.equal(calls.respond.length, 0, "choosing starters sent a request");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    assert.ok(String(calls.respond[0].body.context).includes(starterChapter.title), "the starter's lesson was not retrieved for it");
+    assert.equal(await page.$(".ai-tutor__starters"), null, "starters stayed after the conversation began");
+    assert.equal(await page.$(".ai-tutor__listen"), null, "Listen was offered without a speech engine");
+
+    // Clearing the conversation brings the starters back; wider screens
+    // show six in two columns.
+    await page.$eval(".ai-tutor__new-topic", (button) => button.click());
+    await clickByText(page, ".tutor-dialog button", "Clear conversation");
+    await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+    await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__starter").length === 6, { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => new Set([...document.querySelectorAll(".ai-tutor__starter")].map((node) => Math.round(node.getBoundingClientRect().left))).size), 2, "desktop starters were not in two columns");
+  } finally {
+    await startersScenario.context.close();
+  }
+
+  // Quiz follow-through (TFEAT-01). Answers, confidence and checks survive
+  // leaving #/ai; the score is shown and announced once; "Explain my
+  // mistake" sends a Fast answer_feedback check without the web, history or
+  // the quiz's citation labels, even with the Quiz mode selected, and its
+  // result hides the score and strengths; an invalid result is never kept;
+  // misses are saved to the mistake notebook once, confident misses first;
+  // a new quiz targets the weak spots; Regenerate never leaves the composer
+  // in the hidden answer-check mode.
+  const threeQuestionQuiz = {
+    title: "Parameters and hyperparameters",
+    instructions: "Choose the best answer.",
+    questions: [
+      { id: "q1", prompt: "Which of these is learned during training? [S1]", options: ["The learning rate", "The weights", "The batch size"], correctIndex: 1, explanation: "Weights are fitted by gradient descent; the others are chosen before training. [S1]", difficulty: "beginner" },
+      { id: "q2", prompt: "What does ridge add to the loss?", options: ["An L2 penalty", "An L1 penalty"], correctIndex: 0, explanation: "Ridge adds a squared L2 penalty.", difficulty: "intermediate" },
+      { id: "q3", prompt: "Which split must stay untouched until the end?", options: ["Validation", "Test"], correctIndex: 1, explanation: "The test split gives the final estimate.", difficulty: "beginner" },
+    ],
+  };
+  let feedbackReply = "valid";
+  const quizScenario = await newIsolatedPage("quiz-follow-through", {
+    mocks: {
+      quiz: threeQuestionQuiz,
+      feedback: (body) => {
+        const citation = String(body.context).match(/^\[(S\d+)\]/)?.[1] || "S1";
+        const valid = { score: 10, correct: false, feedback: `The learning rate is chosen before training and never updated by gradient descent. [${citation}]`, strengths: ["STRENGTH-TEXT"], gaps: ["Parameters are fitted from data; hyperparameters are set by you."], improvedAnswer: `The weights are learned; the learning rate is a hyperparameter. [${citation}]`, nextQuestion: "Is the number of layers a parameter or a hyperparameter?" };
+        if (feedbackReply === "disputed") return { ...valid, correct: true };
+        return feedbackReply === "invalid" ? { ...valid, verdict: "extra key" } : valid;
+      },
+    },
+  });
+  try {
+    const { page, calls } = quizScenario;
+    const watchAnnouncements = () => page.evaluate(() => {
+      window.__lumenAuditAnnouncements = [];
+      const region = document.querySelector(".ai-tutor > p.visually-hidden[role='status']");
+      new MutationObserver(() => window.__lumenAuditAnnouncements.push(region.textContent.trim())).observe(region, { childList: true, characterData: true, subtree: true });
+    });
+    const questionAction = (questionIndex, label) => page.$$eval(".ai-tutor__quiz-question", (nodes, [index, text]) => {
+      const button = [...nodes[index].querySelectorAll("button")].find((node) => node.textContent.trim() === text);
+      button?.click();
+      return Boolean(button);
+    }, [questionIndex, label]);
+    const choose = (questionIndex, optionIndex) => page.$$eval(".ai-tutor__quiz-question", (nodes, [index, option]) => nodes[index].querySelectorAll(".ai-tutor__quiz-options input")[option].click(), [questionIndex, optionIndex]);
+    const storedMistakes = async () => (await readProfile(page)).mistakes;
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await chooseMode(page, "Quiz");
+    await setComposerPrompt(page, "Quiz me on parameters versus hyperparameters.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    await page.waitForSelector(".ai-tutor__quiz-question", { timeout: 5_000 });
+    await watchAnnouncements();
+    await choose(0, 0);
+    assert.deepEqual(await page.$eval(".ai-tutor__quiz-question .ai-tutor__confidence", (node) => ({
+      legend: node.querySelector("legend").textContent,
+      options: [...node.querySelectorAll("label")].map((label) => [label.textContent, label.querySelector("input").type, Math.round(label.getBoundingClientRect().height) >= 44]),
+    })), { legend: "How sure are you?", options: [["Guessing", "radio", true], ["Fairly sure", "radio", true], ["Certain", "radio", true]] }, "confidence was not a native radio group of 44px choices before Check answer");
+    await page.$$eval(".ai-tutor__quiz-question", (nodes) => nodes[0].querySelectorAll(".ai-tutor__confidence input")[2].click());
+    assert.equal(await questionAction(0, "Check answer"), true);
+    assert.equal(await page.$(".ai-tutor__quiz-summary"), null, "the score appeared before every question was checked");
+    await choose(1, 0);
+    await questionAction(1, "Check answer");
+    await choose(2, 0);
+    await questionAction(2, "Check answer");
+    await page.waitForSelector(".ai-tutor__quiz-summary", { timeout: 5_000 });
+    assert.equal(await page.$eval(".ai-tutor__quiz-summary h5", (node) => node.textContent), "1 of 3 correct");
+    assert.deepEqual(await page.$$eval(".ai-tutor__quiz-misses li", (nodes) => nodes.map((node) => node.textContent)), ["Question 1You were certain", "Question 3"], "the confident miss was not listed first and marked");
+    assert.match(await page.$eval(".ai-tutor__quiz-summary", (node) => node.textContent), /You were certain about one answer you missed/);
+    assert.deepEqual((await page.evaluate(() => window.__lumenAuditAnnouncements)).filter((text) => text.startsWith("Quiz complete")), ["Quiz complete: 1 of 3 correct. You were certain about 1 of the answers you missed."], "the score was not announced exactly once");
+    assert.equal(await page.$(".ai-tutor__quiz-summary [role='status'], .ai-tutor__quiz-summary[aria-live]"), null, "the score card was its own live region");
+    assert.match(await page.$$eval(".ai-tutor__quiz-feedback", (nodes) => nodes[0].textContent), /You were certain/);
+
+    // Leaving #/ai keeps what was chosen and checked, and the score is not
+    // announced again.
+    await page.evaluate(() => { window.location.hash = "#/home"; });
+    await page.waitForSelector(".ai-tutor", { hidden: true, timeout: 10_000 });
+    await page.evaluate(() => { window.location.hash = "#/ai"; });
+    await page.waitForSelector(".ai-tutor__quiz-summary", { timeout: 10_000 });
+    await watchAnnouncements();
+    assert.deepEqual(await page.$$eval(".ai-tutor__quiz-question", (nodes) => nodes.map((node) => [
+      [...node.querySelectorAll(".ai-tutor__quiz-options input")].findIndex((input) => input.checked),
+      Boolean(node.querySelector(".ai-tutor__quiz-feedback")),
+    ])), [[0, true], [0, true], [0, true]], "quiz answers or checks were lost when the learner left #/ai");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.deepEqual(await page.evaluate(() => window.__lumenAuditAnnouncements.filter((text) => text.startsWith("Quiz complete"))), [], "the score was announced again after returning");
+
+    // Explain my mistake, with the Quiz mode still selected in the composer.
+    assert.equal(await activeMode(page), "Quiz");
+    const beforeCheck = calls.respond.length;
+    assert.equal(await questionAction(0, "Explain my mistake"), true, "a wrong answer offered no Explain my mistake");
+    await waitForAnswers(page, 2);
+    assert.equal(calls.respond.length, beforeCheck + 1);
+    const check = calls.respond.at(-1).body;
+    assert.equal(check.task, "answer_feedback", "the Library-first refit changed the answer check's task");
+    assert.equal(check.responseFormat, "structured");
+    assert.equal(check.responseProfile, "fast");
+    assert.equal(check.webSearch, false);
+    assert.equal(check.history.length, 0, "the answer check sent conversation history");
+    assert.match(check.prompt, /My answer: A\. The learning rate\nAnswer key: B\. The weights\nKey explanation: Weights are fitted/);
+    assert.equal(/\[S\d+\]/.test(check.prompt), false, "the quiz's citation labels were copied into the answer check");
+    assert.match(await page.$$eval(".ai-tutor__message--user .ai-tutor__user-prompt", (nodes) => nodes.at(-1).textContent), /^Quiz question: Which of these is learned during training\?/, "the answer check was not a visible question");
+    const feedbackCard = await page.$eval(".ai-tutor__feedback", (node) => ({
+      headings: [...node.querySelectorAll("h4, h5")].map((heading) => heading.textContent),
+      text: node.textContent,
+      citations: [...node.querySelectorAll("button.ai-tutor__citation")].length,
+    }));
+    assert.deepEqual(feedbackCard.headings, ["Why that answer missed", "Why", "What was missing", "Correct reasoning", "Check yourself"]);
+    assert.equal(/STRENGTH-TEXT|\b10\b|score/i.test(feedbackCard.text), false, "the answer check showed its score or strengths");
+    assert.ok(feedbackCard.citations >= 1, "the answer check's supplied citation did not render as a control");
+    assert.equal(await page.evaluate(() => document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)), true, "focus did not move to the answer check");
+    assert.equal(await page.$$eval(".ai-tutor__quiz-question", (nodes) => [...nodes[0].querySelectorAll("button")].map((node) => node.textContent).includes("See the explanation")), true);
+    // Regenerate reopens the check as an Explain question, never the hidden mode.
+    await page.$$eval(".ai-tutor__message--assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".ai-tutor__message-actions button")].find((node) => node.textContent.includes("Edit & regenerate")).click());
+    assert.equal(await activeMode(page), "Explain", "Regenerate left the composer in the answer-check mode");
+    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /^Quiz question: /);
+    await page.$$eval(".ai-tutor__feedback button", (nodes) => nodes.find((node) => node.textContent.includes("Answer this")).click());
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(await activeMode(page), "Socratic");
+    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /Is the number of layers a parameter or a hyperparameter\?\n\nMy answer: $/);
+    await setComposerPrompt(page, "");
+
+    // An answer check that breaks its schema is shown as an error and kept
+    // nowhere.
+    feedbackReply = "invalid";
+    await questionAction(2, "Explain my mistake");
+    await page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
+    assert.match(await page.$eval(".ai-tutor__request-error", (node) => node.textContent), /failed local safety validation/);
+    assert.equal(await page.$$eval(".ai-tutor__feedback", (nodes) => nodes.length), 1, "an invalid answer check was shown as a result");
+    await waitForStoredHistory(page, 5);
+    const storedChecks = (await readProfile(page)).aiTutorHistory.filter((message) => message.role === "assistant" && message.mode === "feedback");
+    assert.equal(storedChecks.length, 1, "an invalid answer check was saved to history");
+    feedbackReply = "valid";
+
+    // Save misses: once, confident first, linked to the quiz's lesson.
+    assert.deepEqual(await storedMistakes(), [], "a quiz logged a mistake without being asked");
+    await clickByText(page, ".ai-tutor__quiz-summary button", "Save misses for review");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__quiz-summary .ai-tutor__draft-status")?.textContent.includes("Saved 2 misses"), { timeout: 5_000 });
+    assert.match(await page.$eval(".ai-tutor__quiz-summary", (node) => node.textContent), /Saved for review/);
+    await page.waitForFunction(() => new Promise((resolve) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onsuccess = () => {
+        const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile");
+        get.onsuccess = () => resolve((get.result?.mistakes || []).length === 2);
+        get.onerror = () => resolve(false);
+      };
+      request.onerror = () => resolve(false);
+    }), { timeout: 8_000 });
+    const saved = await storedMistakes();
+    assert.deepEqual(saved.map((mistake) => [mistake.prompt, mistake.response, mistake.category, mistake.occurrences]), [
+      ["Which of these is learned during training?", "A. The learning rate", "misconception", 1],
+      ["Which split must stay untouched until the end?", "A. Validation", "misconception", 1],
+    ], "misses were not saved confident-first without citation labels");
+    assert.match(saved[0].expected, /^B\. The weights\n\nWeights are fitted by gradient descent; the others are chosen before training\.$/);
+    assert.deepEqual(saved[0].tags, ["ai-quiz", "ai-draft", "confident-miss"]);
+    assert.ok(saved.every((mistake) => mistake.documentId), "saved misses were not linked to the quiz's lesson");
+    await clickByText(page, ".ai-tutor__quiz-summary button", "Saved for review");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__quiz-summary .ai-tutor__draft-status")?.textContent.includes("already in your mistake notebook"), { timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.deepEqual((await storedMistakes()).map((mistake) => mistake.occurrences), [1, 1], "a second Save changed the notebook");
+
+    // An answer check that sides with the learner says so beside the key
+    // instead of overruling it, and never claims an already saved miss was
+    // left out of the notebook.
+    feedbackReply = "disputed";
+    await questionAction(2, "Explain my mistake");
+    await waitForAnswers(page, 3);
+    feedbackReply = "valid";
+    assert.match(await page.$$eval(".ai-tutor__feedback", (nodes) => nodes.at(-1).textContent), /second look disagrees with the quiz key/, "a check that sided with the learner did not say so");
+    const disputeNote = await page.$$eval(".ai-tutor__quiz-question", (nodes) => nodes[2].querySelector(".ai-tutor__quiz-dispute")?.textContent || "");
+    assert.match(disputeNote, /disagreed with this key/, "the disputed quiz question had no note");
+    assert.doesNotMatch(disputeNote, /not saved/, "the dispute note denied a miss that was already in the notebook");
+    assert.match(disputeNote, /saved to your mistake notebook before the check/);
+
+    // New quiz on my weak spots names the missed concepts.
+    await clickByText(page, ".ai-tutor__quiz-summary button", "New quiz on my weak spots");
+    await waitForAnswers(page, 4);
+    const weakSpots = calls.respond.at(-1).body;
+    assert.equal(weakSpots.task, "quiz");
+    assert.equal(weakSpots.webSearch, false);
+    assert.equal(weakSpots.history.length, 0);
+    assert.match(weakSpots.prompt, /ideas I got wrong in my last quiz:\n- Which of these is learned during training\?\n- Which split must stay untouched until the end\?/);
+    const quizTargets = await page.$$eval(".ai-tutor__quiz-summary button, .ai-tutor__quiz-feedback button", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)).filter((height) => height > 0));
+    assert.equal(quizTargets.every((height) => height >= 44), true, `quiz follow-through targets under 44px: ${quizTargets}`);
+
+    // The notebook shows the saved misses.
+    await page.evaluate(() => { window.location.hash = "#/review"; });
+    await page.waitForFunction(() => document.querySelectorAll(".mistake-card").length === 2, { timeout: 10_000 }).catch(() => assert.fail("the saved quiz misses were not in the mistake notebook"));
+    assert.match(await page.$eval(".mistake-card", (node) => node.textContent), /Which of these is learned during training\?/, "the confident miss was not first in the mistake notebook");
+  } finally {
+    await quizScenario.context.close();
+  }
+
+  // Listen (TFEAT-09): a completed prose answer is read by the app's speech
+  // engine, headings as sections, without code, diagrams, math or citation
+  // labels; Pause/Resume and Stop follow it; a new question and leaving the
+  // tutor stop it.
+  const listenScenario = await newIsolatedPage("listen");
+  try {
+    const { page } = listenScenario;
+    await page.evaluateOnNewDocument(() => {
+      window.__lumenSpeechLog = [];
+      class TestUtterance {
+        constructor(text) { this.text = text; this.rate = 1; this.pitch = 1; this.volume = 1; this.lang = ""; this.voice = null; }
+      }
+      const synthesis = {
+        current: null,
+        paused: false,
+        speaking: false,
+        getVoices: () => [{ name: "Samantha", lang: "en-US", voiceURI: "samantha-en-us", default: true, localService: true }],
+        speak(utterance) { this.current = utterance; this.paused = false; this.speaking = true; window.__lumenSpeechLog.push(["speak", utterance.text]); utterance.onstart?.(); },
+        cancel() { this.current = null; this.paused = false; this.speaking = false; window.__lumenSpeechLog.push(["cancel"]); },
+        pause() { this.paused = true; this.current?.onpause?.(); },
+        resume() { this.paused = false; this.current?.onresume?.(); },
+        addEventListener() {},
+        removeEventListener() {},
+      };
+      Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: TestUtterance });
+      Object.defineProperty(window, "speechSynthesis", { configurable: true, value: synthesis });
+    });
+    const listenButtons = () => page.$$eval(".ai-tutor__message--assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".ai-tutor__listen, .ai-tutor__listen-stop")].map((node) => node.textContent.trim()));
+    const cancels = () => page.evaluate(() => window.__lumenSpeechLog.filter(([type]) => type === "cancel").length);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await setComposerPrompt(page, "Why does repeated holdout inspection leak information?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    assert.deepEqual(await listenButtons(), ["Listen to this answer"], "a completed answer offered no Listen");
+    assert.ok(await page.$eval(".ai-tutor__listen", (node) => node.getBoundingClientRect().height >= 44), "Listen was under 44px on a phone");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Pause"), { timeout: 3_000 });
+    assert.deepEqual(await listenButtons(), ["Pause reading this answer", "Stop reading"]);
+    assert.match(await page.evaluate(() => window.__lumenSpeechLog.find(([type]) => type === "speak")?.[1]), /^Holdout evaluation\. A final holdout/, "reading did not start at the answer's first heading");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Resume"), { timeout: 3_000 });
+    assert.equal(await page.evaluate(() => speechSynthesis.paused), true, "Pause did not pause the speech engine");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Pause"), { timeout: 3_000 });
+    // Let the engine read to the end: the whole answer, in order.
+    const spoken = await page.evaluate(async () => {
+      for (let step = 0; step < 60 && speechSynthesis.current; step += 1) {
+        speechSynthesis.current.onend?.();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      return window.__lumenSpeechLog.filter(([type]) => type === "speak").map(([, text]) => text).join(" ");
+    });
+    assert.match(spoken, /^Holdout evaluation\. A final holdout remains useful only when development decisions cannot adapt to it\./);
+    assert.match(spoken, /The mean loss is equation\./);
+    assert.match(spoken, /Code example shown on screen\./);
+    assert.match(spoken, /Diagram shown on screen\./);
+    assert.equal(/\[[SW]\d+\]|\$|evaluate\(frozen_model|flowchart|\\frac/.test(spoken), false, `code, math or citation labels were read aloud: ${spoken}`);
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Listen"), { timeout: 3_000 });
+    // Stop, then a new question, then leaving the tutor: each stops reading.
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    let before = await cancels();
+    await page.$eval(".ai-tutor__listen-stop", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__listen")?.textContent.includes("Listen"), { timeout: 3_000 });
+    assert.ok(await cancels() > before, "Stop did not cancel speech");
+    await page.$eval(".ai-tutor__listen", (button) => button.click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    before = await cancels();
+    await setComposerPrompt(page, "And what about cross-validation?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 2);
+    assert.ok(await cancels() > before, "a new question did not stop the answer being read");
+    assert.equal(await page.$(".ai-tutor__listen-stop"), null);
+    // A reading the speech engine stops by itself says why, under the answer.
+    await page.$$eval(".ai-tutor__listen", (nodes) => nodes.at(-1).click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    await page.evaluate(() => speechSynthesis.current?.onerror?.({ error: "synthesis-failed" }));
+    await page.waitForFunction(() => {
+      const note = [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)?.querySelector(".ai-tutor__copy-status.is-visible");
+      return Boolean(note?.textContent.trim()) && note.getBoundingClientRect().height > 1;
+    }, { timeout: 3_000 }).catch(() => assert.fail("a reading that failed part-way did not say why"));
+    assert.deepEqual(await listenButtons(), ["Listen to this answer"], "a failed reading left Pause and Stop behind");
+    await page.$$eval(".ai-tutor__listen", (nodes) => nodes.at(-1).click());
+    await page.waitForSelector(".ai-tutor__listen-stop", { timeout: 3_000 });
+    before = await cancels();
+    await page.evaluate(() => { window.location.hash = "#/home"; });
+    await page.waitForSelector(".ai-tutor", { hidden: true, timeout: 10_000 });
+    assert.ok(await cancels() > before, "leaving the tutor did not stop the answer being read");
+  } finally {
+    await listenScenario.context.close();
+  }
+
+  // New topic and the three-hour break (TFEAT-13, interim). Turns before a
+  // break of more than three hours are neither sent nor summarised; a
+  // divider and the privacy panel say so. New topic can export the whole
+  // conversation before clearing it.
+  const topicScenario = await newIsolatedPage("new-topic");
+  try {
+    const { page, calls } = topicScenario;
+    const turn = (id, role, content, minutesAgo) => ({ id, role, content, mode: "explain", createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(), requestId: null, data: null, citationSources: [], webSources: [], responseProfile: "balanced" });
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await patchStoredProfile(page, { aiTutorHistory: [
+      turn("old-q", "user", "Yesterday: how does linear regression work?", 360),
+      turn("old-a", "assistant", "Linear regression fits a line by least squares.", 359),
+      turn("new-q", "user", "Today: what is attention in transformers?", 12),
+      turn("new-a", "assistant", "Attention weighs tokens by relevance.", 11),
+    ] });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.waitForSelector(".ai-tutor__context-break", { timeout: 5_000 });
+    assert.deepEqual(await page.$eval(".ai-tutor__context-break", (node) => ({
+      text: node.querySelector("strong").textContent,
+      before: node.previousElementSibling?.dataset.messageId,
+      after: node.nextElementSibling?.dataset.messageId,
+    })), { text: "Earlier turns are not sent to the model", before: "old-a", after: "new-q" }, "the break divider was not between the two sittings");
+    await withOptions(page, async () => {
+      await page.click(".ai-tutor__privacy-toggle");
+      assert.match(await page.$eval(".ai-tutor__privacy-body", (node) => node.textContent.replace(/\s+/g, " ")), /2 recent conversation messages \(maximum 12\); 2 earlier messages from before a break of more than 3 hours are not sent/);
+    });
+    await setComposerPrompt(page, "And how does multi-head attention differ?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 3);
+    const afterBreak = calls.respond.at(-1).body;
+    assert.deepEqual(afterBreak.history.map((message) => message.content), ["Today: what is attention in transformers?", "Attention weighs tokens by relevance."], "turns before the break were sent");
+    assert.equal(afterBreak.conversationSummary, "", "turns before the break were summarised");
+
+    // After a long break the next question starts fresh; the divider sits
+    // at the end until it is asked.
+    await patchStoredProfile(page, { aiTutorHistory: [
+      turn("old-q", "user", "Yesterday: how does linear regression work?", 300),
+      turn("old-a", "assistant", "Linear regression fits a line by least squares.", 299),
+    ] });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__context-break", { timeout: 10_000 });
+    assert.equal(await page.$eval(".ai-tutor__context-break", (node) => node.previousElementSibling?.dataset.messageId && !node.nextElementSibling?.dataset.messageId), true, "a stale conversation did not end with the break divider");
+    // A follow-up would send the stale answer as its memory, against the
+    // divider's promise, so the answer before the break offers none.
+    assert.equal(await page.$(".ai-tutor__follow-ups"), null, "an answer from before the break offered follow-ups");
+    await setComposerPrompt(page, "What is dropout?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 2);
+    assert.equal(calls.respond.at(-1).body.history.length, 0, "a question after a long break carried the old conversation");
+
+    // New topic → Export, then clear: the whole conversation is saved as
+    // Markdown, then cleared, and the suggested starts return.
+    await page.evaluate(() => {
+      window.__lumenAuditDownloads = [];
+      URL.createObjectURL = (blob) => { window.__lumenAuditDownloads.push(blob); return "blob:lumen-audit"; };
+      URL.revokeObjectURL = () => {};
+      const click = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function auditClick() { if (!this.download) click.call(this); };
+    });
+    await page.$eval(".ai-tutor__new-topic", (button) => button.click());
+    await page.waitForSelector(".tutor-dialog", { timeout: 3_000 });
+    assert.equal(await page.$eval(".tutor-dialog h2", (node) => node.textContent), "Start a new topic?");
+    await clickByText(page, ".tutor-dialog button", "Export, then clear");
+    await page.waitForFunction(() => window.__lumenAuditDownloads.length === 1 && !document.querySelector(".ai-tutor__message"), { timeout: 5_000 });
+    const exported = await page.evaluate(() => window.__lumenAuditDownloads[0].text());
+    assert.match(exported, /^# Lumen AI Tutor conversation/);
+    assert.match(exported, /Yesterday: how does linear regression work\?[\s\S]*What is dropout\?/, "the export did not hold the whole conversation");
+    await waitForStoredHistory(page, "empty");
+    await page.waitForSelector(".ai-tutor__starter", { timeout: 5_000 });
+    assert.equal(await page.evaluate(() => document.activeElement?.tagName), "H2", "New topic left focus on <body>");
+    assert.equal(await page.$(".ai-tutor__context-break"), null);
+  } finally {
+    await topicScenario.context.close();
+  }
+
+  // Socratic and Interview sessions (TFEAT-05). A strip in the docked
+  // composer counts the tutor's questions and offers a hint, a reveal and a
+  // wrap-up; while a question waits, the box is where the learner answers.
+  // Hints and reveals retrieve with the tutor's last question and never use
+  // the web; Wrap up recaps the session's own turns without library text or
+  // an older summary. Choosing another mode leaves the session, and
+  // "Check my understanding" starts one. Nothing is graded.
+  const sessionScenario = await newIsolatedPage("socratic-session", {
+    mocks: {
+      answerText: (citation, body) => {
+        if (body.task === "summarize") return "## Session recap\n\n**Right:** the penalty shrinks the weights.\n\n**Missed:** why that lowers variance.";
+        if (body.prompt.startsWith("Reveal the answer")) return `## The answer\n\nAs λ grows, ridge shrinks every weight toward zero, trading a little bias for lower variance. [${citation}]`;
+        if (body.task === "explain") return `## Ridge regression\n\nRidge adds an L2 penalty to the loss, so large weights cost more. [${citation}]`;
+        if (body.prompt.startsWith("Give me one hint")) return `Think about what the penalty does to a large weight. What happens to it as λ grows? [${citation}]`;
+        return `Let's check. What happens to the ridge regression weights as the penalty λ grows? [${citation}]`;
+      },
+    },
+  });
+  try {
+    const { page, calls } = sessionScenario;
+    const strip = () => page.evaluate(() => {
+      const node = document.querySelector(".ai-tutor__composer .ai-tutor__session");
+      return node ? {
+        status: node.querySelector(".ai-tutor__session-status").textContent.replace(/\s+/g, " ").trim(),
+        actions: [...node.querySelectorAll("button")].map((button) => button.textContent.trim()),
+        suggested: [...node.querySelectorAll("button.is-suggested")].map((button) => button.textContent.trim()),
+        named: node.getAttribute("role") === "group" && document.getElementById(node.getAttribute("aria-labelledby"))?.textContent.length > 0,
+        live: Boolean(node.closest("[aria-live]") || node.querySelector("[aria-live], [role='status']")),
+      } : null;
+    });
+    const composerCopy = () => page.evaluate(() => ({
+      placeholder: document.querySelector(".ai-tutor__composer textarea").placeholder,
+      send: document.querySelector(".ai-tutor__send .ai-tutor__send-label").textContent,
+    }));
+    const clickStrip = (label) => clickByText(page, ".ai-tutor__session-actions button", label);
+    const lastAnswerFocused = () => page.evaluate(() => document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1));
+    const contextTitles = (body) => String(body.context).split("\n").filter((line) => /^\[S\d+\] /.test(line)).map((line) => line.replace(/^\[S\d+\] /, "").split(" — ")[0]);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await setComposerPrompt(page, "Why does ridge regression shrink the weights?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const first = calls.respond.at(-1).body;
+    assert.equal(await strip(), null, "an Explain answer showed a session strip");
+
+    // "Check my understanding" asks a question, so the composer follows it
+    // into Socratic and the session begins.
+    await settleScroll(page);
+    await clickByText(page, ".ai-tutor__follow-ups button", "Check my understanding");
+    await waitForAnswers(page, 2);
+    assert.equal(await activeMode(page), "Socratic", "a Socratic follow-up left the composer in Explain");
+    // Phones use short labels so the three actions share one row.
+    assert.deepEqual(await strip(), { status: "Socratic session · question 1", actions: ["Hint", "I’m stuck", "Wrap up"], suggested: [], named: true, live: false }, "the session strip did not appear after the tutor's question");
+    assert.equal(await page.$(".ai-tutor__follow-ups"), null, "a tutor question offered answer follow-ups next to the session strip");
+    assert.deepEqual(await composerCopy(), { placeholder: "Type your answer…", send: "Send answer" }, "the question box did not become the answer box");
+    await setComposerPrompt(page, "They get smaller.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 3);
+    assert.equal(calls.respond.at(-1).body.task, "socratic", "the learner's answer left the session's task");
+    assert.equal((await strip()).status, "Socratic session · question 2");
+    const stripLayout = await page.evaluate(() => {
+      const nav = document.querySelector(".bottom-nav");
+      const navTop = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+      const buttons = [...document.querySelectorAll(".ai-tutor__session-actions button")].map((node) => node.getBoundingClientRect());
+      const send = document.querySelector(".ai-tutor__send").getBoundingClientRect();
+      return {
+        heights: buttons.map((rect) => Math.round(rect.height)),
+        inView: buttons.every((rect) => rect.top >= 0 && rect.bottom <= navTop + 1) && send.bottom <= navTop + 1,
+        rows: new Set(buttons.map((rect) => Math.round(rect.top))).size,
+        scrollWidth: document.documentElement.scrollWidth,
+        innerWidth,
+      };
+    });
+    assert.ok(stripLayout.heights.every((height) => height >= 44), `session actions under 44px on a phone: ${stripLayout.heights}`);
+    assert.equal(stripLayout.inView, true, "the session strip or Send sat under the bottom navigation");
+    assert.equal(stripLayout.rows, 1, `three session actions took ${stripLayout.rows} rows on a 393px phone`);
+    assert.equal(stripLayout.scrollWidth, stripLayout.innerWidth, "the session strip made the phone page scroll sideways");
+
+    // A hint: Socratic, the session as memory, retrieved with the tutor's
+    // last question and its lesson, no web. It is not a new question.
+    await clickStrip("Hint");
+    await waitForAnswers(page, 4);
+    const hint = calls.respond.at(-1).body;
+    assert.equal(hint.task, "socratic");
+    assert.equal(hint.prompt.startsWith("Give me one hint for your last question without revealing the answer."), true);
+    assert.equal(hint.webSearch, false, "a hint used the web");
+    assert.ok(hint.history.length >= 4, `a hint forgot the session: ${hint.history.length} messages`);
+    assert.match(hint.history.at(-1).content, /What happens to the ridge regression weights/, "the hint's memory did not end with the question it is about");
+    assert.equal(hint.history.some((message) => /\[[SW]\d+\]/.test(message.content)), false, "a hint remembered another request's citation labels");
+    assert.ok(contextTitles(hint).includes(contextTitles(first)[0]), `the hint did not retrieve the session's lesson: ${JSON.stringify(contextTitles(hint))}`);
+    assert.equal(await lastAnswerFocused(), true, "focus did not move to the hint");
+    assert.equal((await strip()).status, "Socratic session · question 2", "a hint counted as a new question");
+
+    // I'm stuck: an Explain answer that stays in the session, marked as a
+    // reveal; the strip then offers the next question instead of a hint.
+    await clickStrip("I’m stuck");
+    await waitForAnswers(page, 5);
+    const reveal = calls.respond.at(-1).body;
+    assert.equal(reveal.task, "explain", "I'm stuck did not ask for an explanation");
+    assert.equal(reveal.webSearch, false);
+    assert.equal(reveal.prompt.startsWith("Reveal the answer to your last question and explain it step by step."), true);
+    assert.ok(reveal.history.length >= 4 && !reveal.history.some((message) => /\[[SW]\d+\]/.test(message.content)), "a reveal forgot the session or kept its citation labels");
+    assert.deepEqual(await strip(), { status: "Socratic session · question 2 · Answer revealed", actions: ["Next question", "Wrap up"], suggested: [], named: true, live: false }, "the strip did not note the reveal");
+    assert.match(await page.$$eval(".ai-tutor__message--assistant .ai-tutor__message-meta", (nodes) => nodes.at(-1).textContent), /Answer revealed/, "the revealed answer was not labelled");
+    assert.deepEqual(await composerCopy(), { placeholder: "Ask a question…", send: "Generate Socratic" }, "the box still asked for an answer after the reveal");
+
+    // Another mode leaves the session; coming back shows it again.
+    await chooseMode(page, "Explain");
+    assert.equal(await strip(), null, "the strip stayed after choosing Explain");
+    assert.equal((await composerCopy()).send, "Generate Explain");
+    await chooseMode(page, "Socratic");
+    assert.ok(await strip(), "the strip did not return with Socratic");
+    await setComposerPrompt(page, "");
+
+    await clickStrip("Next question");
+    await waitForAnswers(page, 6);
+    assert.equal(calls.respond.at(-1).body.task, "socratic");
+    const long = await strip();
+    assert.equal(long.status, "Socratic session · question 3 · time to wrap up", "a ten-message session did not suggest Wrap up");
+    assert.deepEqual(long.suggested, ["Wrap up"]);
+
+    // Wrap up: a summary of the session's own turns, no library text.
+    await clickStrip("Wrap up");
+    await waitForAnswers(page, 7);
+    const wrap = calls.respond.at(-1).body;
+    assert.equal(wrap.task, "summarize");
+    assert.equal(wrap.prompt.startsWith("Recap this practice session: what I got right in my own answers, what I missed or needed revealed, and 3 things to review."), true);
+    assert.equal(wrap.context, "", "Wrap up sent library text");
+    assert.deepEqual(wrap.contextCitations, []);
+    assert.equal(wrap.webSearch, false);
+    assert.equal(wrap.conversationSummary, "", "Wrap up sent an older summary");
+    assert.equal(wrap.history.length, 10, `Wrap up did not remember the whole session: ${wrap.history.length} messages`);
+    assert.equal(wrap.history[0].content.startsWith("Ask me one question that checks"), true, "Wrap up's memory began before the session");
+    assert.equal(wrap.history.some((message) => /\[[SW]\d+\]/.test(message.content)), false, "Wrap up sent citation labels with no evidence to resolve them");
+    assert.equal(await strip(), null, "the strip stayed after Wrap up");
+    const recap = await page.$$eval(".ai-tutor__message--assistant", (nodes) => ({
+      meta: nodes.at(-1).querySelector(".ai-tutor__message-meta").textContent,
+      actions: [...nodes.at(-1).querySelectorAll(".ai-tutor__message-actions button, .ai-tutor__follow-ups button")].map((node) => node.textContent.trim()),
+    }));
+    assert.match(recap.meta, /Session recap/, "the recap was not labelled");
+    assert.ok(recap.actions.includes("Save to notes") && recap.actions.includes("Make flashcards"), `the recap offered no Save to notes or Make flashcards: ${recap.actions}`);
+    assert.deepEqual(await composerCopy(), { placeholder: "Ask a question…", send: "Generate Socratic" });
+  } finally {
+    await sessionScenario.context.close();
+  }
+
+  // Interview practice from the authored bank (TFEAT-06). Questions missed
+  // before come first; only the question is on the page until grading; the
+  // model answer and rubric travel as one supplied reference, never the
+  // library or the web, and never clipped; the result shows the authored
+  // rubric as a checklist, no score, and the reference answer only on
+  // request; the learner's verdict files the miss like a timed round's.
+  const practiceRound = buildTrackRound(interviewBank, { trackId: "mle", limit: 12 }).cards.map((card) => card.id);
+  const bankQuestions = new Map(normalizeTrackBank(interviewBank).questions.map((question) => [question.id, question]));
+  const weakQuestion = bankQuestions.get(practiceRound.at(-1));
+  const practiceScenario = await newIsolatedPage("interview-practice", {
+    mocks: {
+      feedback: (body) => {
+        const citation = String(body.context).match(/^\[(S\d+)\]/)?.[1] || "S1";
+        return { score: 92, correct: true, feedback: `You named the main risk and one mitigation. [${citation}]`, strengths: ["Named the main failure mode"], gaps: ["Rank the risks by severity", "Say how you would verify the fix"], improvedAnswer: `Start from the worst risk, then verify the fix with a held-out check. [${citation}]`, nextQuestion: "MODEL-NEXT-QUESTION" };
+      },
+    },
+  });
+  try {
+    const { page, calls } = practiceScenario;
+    const practiceCard = () => page.evaluate(() => {
+      const card = document.querySelector(".ai-tutor__practice");
+      return card ? {
+        heading: card.querySelector("h3").textContent,
+        prompt: card.querySelector(".ai-tutor__practice-prompt")?.textContent || "",
+        buttons: [...card.querySelectorAll("button")].map((button) => [button.textContent.trim(), button.disabled]),
+        reason: card.querySelector(".ai-tutor__practice-reason")?.textContent || "",
+      } : null;
+    });
+    const setPracticeAnswer = (value) => page.$eval(".ai-tutor__practice textarea", (field, text) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    // A timed track round's miss of the question, as InterviewRound logs it.
+    await patchStoredProfile(page, { mistakes: [createMistake({ prompt: weakQuestion.prompt, expected: weakQuestion.modelAnswer, reviewItemId: weakQuestion.id, documentId: weakQuestion.documentId, category: "interview", tags: ["interview-track", "mle", weakQuestion.roundType, "interview"] })] });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    assert.equal(await page.$(".ai-tutor__practice"), null, "practice appeared outside Interview mode");
+    await chooseMode(page, "Interview");
+    await page.waitForSelector(".ai-tutor__practice button", { timeout: 10_000 });
+    assert.deepEqual(await practiceCard(), { heading: "Practice an authored question", prompt: "", buttons: [["Next question", false]], reason: "" });
+    assert.ok(await page.$$eval(".ai-tutor__practice-track option", (options) => options.length) >= 8, "the track picker did not list the authored tracks");
+    await clickByText(page, ".ai-tutor__practice button", "Next question");
+    await page.waitForSelector(".ai-tutor__practice textarea", { timeout: 5_000 });
+    const asked = await practiceCard();
+    assert.equal(asked.heading, "Practice question");
+    assert.equal(asked.prompt, weakQuestion.prompt, "the question missed before did not come first");
+    assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".ai-tutor__practice h3")), true, "the new question did not take focus");
+    assert.equal(await page.evaluate((text) => document.body.innerHTML.includes(text), weakQuestion.modelAnswer.slice(0, 60)), false, "the model answer was in the page before grading");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "", "the Interview default stayed in the docked box while practising");
+    assert.equal(calls.respond.length, 0, "choosing a practice question sent a request");
+    const practiceTargets = await page.$$eval(".ai-tutor__practice button, .ai-tutor__practice select", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)));
+    assert.ok(practiceTargets.every((height) => height >= 44), `practice controls under 44px on a phone: ${practiceTargets}`);
+
+    // An answer that would crowd out the rubric is blocked, with the reason.
+    await setPracticeAnswer("✓".repeat(2_400));
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__practice-reason")?.textContent, { timeout: 5_000 });
+    const crowded = await practiceCard();
+    assert.equal(crowded.reason, "Shorten your answer so the rubric can be included.");
+    assert.deepEqual(crowded.buttons.find(([label]) => label === "Grade against rubric"), ["Grade against rubric", true], "an answer that clips the rubric could be graded");
+    const answer = "I would name the main failure mode first and add a check before rollout.";
+    await setPracticeAnswer(answer);
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__practice-reason"), { timeout: 5_000 });
+    await clickByText(page, ".ai-tutor__practice button", "Grade against rubric");
+    await waitForAnswers(page, 1);
+    assert.equal(calls.respond.length, 1, "the blocked answer was sent");
+    const graded = calls.respond[0].body;
+    assert.equal(graded.task, "answer_feedback");
+    assert.equal(graded.responseFormat, "structured");
+    assert.equal(graded.webSearch, false, "grading used the web");
+    assert.deepEqual(graded.history, [], "grading sent conversation history");
+    assert.equal(graded.contextCitations.length, 1, "grading sent more than its reference");
+    assert.match(graded.context, new RegExp(`^\\[S${graded.contextCitations[0]}\\] Interview reference: ${weakQuestion.id} — `), "the reference was not the one supplied source");
+    assert.ok(graded.context.includes(weakQuestion.rubric.at(-1)) && graded.context.includes(weakQuestion.modelAnswer.slice(-60)), "the reference was not sent whole");
+    assert.equal(graded.documentTitle, `Interview reference: ${weakQuestion.id}`);
+    assert.ok(graded.prompt.includes(`Interview question: ${weakQuestion.prompt}\n\nMy answer: ${answer}`), "the grading question did not carry the question and answer");
+    assert.equal(await page.evaluate(() => document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)), true, "focus did not move to the feedback");
+    const result = await page.$eval(".ai-tutor__rubric-result", (node) => ({
+      legend: node.querySelector(".ai-tutor__rubric legend")?.textContent,
+      points: [...node.querySelectorAll(".ai-tutor__rubric label")].map((label) => [label.textContent, label.querySelector("input").type, Math.round(label.getBoundingClientRect().height) >= 44]),
+      headings: [...node.querySelectorAll("h5")].map((heading) => heading.textContent),
+      caption: node.querySelector(".ai-tutor__rubric-caption")?.textContent,
+      text: node.textContent,
+      citations: node.querySelectorAll("button.ai-tutor__citation").length,
+    }));
+    assert.equal(result.legend, "Rubric");
+    assert.deepEqual(result.points, weakQuestion.rubric.map((bullet) => [bullet, "checkbox", true]), "the authored rubric was not a checklist of 44px points");
+    assert.deepEqual(result.headings, ["You may have missed", "What you covered", "Feedback", "Next question"]);
+    assert.equal(result.caption, "AI feedback can be generous; trust the rubric.");
+    assert.equal(/\b92\b|score|MODEL-NEXT-QUESTION/i.test(result.text), false, "the result showed the model's score or its own next question");
+    assert.equal(result.text.includes(weakQuestion.modelAnswer.slice(0, 60)), false, "the reference answer was shown before it was asked for");
+    assert.ok(result.citations >= 1, "the reference citation did not render as a control");
+    await page.$eval(".ai-tutor__rubric-toggle", (button) => button.click());
+    assert.equal(await page.$eval(".ai-tutor__rubric-reference", (node) => node.textContent.includes("Reference answer") && node.textContent.includes("A stronger version of your answer")), true, "Show reference answer did not reveal both answers");
+    assert.equal(await page.evaluate((text) => document.querySelector(".ai-tutor__rubric-reference").textContent.includes(text), weakQuestion.modelAnswer.slice(0, 60)), true);
+    assert.equal((await practiceCard()).heading, "Practice an authored question", "the graded question stayed in the card");
+
+    // The ticks and the rubric view survive a reload.
+    await page.$$eval(".ai-tutor__rubric input", (inputs) => inputs[0].click());
+    await waitForStoredHistory(page, 2);
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__rubric input", { timeout: 10_000 });
+    assert.deepEqual(await page.$$eval(".ai-tutor__rubric input", (inputs) => inputs.map((input) => input.checked)), weakQuestion.rubric.map((_, index) => index === 0), "a reload lost the rubric view or its ticks");
+
+    // Missed points: merged with the timed round's miss of the question.
+    await clickByText(page, ".ai-tutor__rubric-outcome button", "Missed points, log to mistake notebook");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__rubric-result [role='status']")?.textContent.includes("mistake notebook"), { timeout: 5_000 });
+    await page.waitForFunction(() => new Promise((resolve) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onsuccess = () => {
+        const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile");
+        get.onsuccess = () => resolve(get.result?.mistakes?.[0]?.occurrences === 2);
+        get.onerror = () => resolve(false);
+      };
+      request.onerror = () => resolve(false);
+    }), { timeout: 8_000 });
+    const logged = (await readProfile(page)).mistakes;
+    assert.equal(logged.length, 1, "a practice miss did not merge with the question's earlier miss");
+    assert.deepEqual([logged[0].reviewItemId, logged[0].response, logged[0].documentId], [weakQuestion.id, answer, weakQuestion.documentId]);
+    assert.ok(["interview-track", "mle", weakQuestion.roundType, "interview"].every((tag) => logged[0].tags.includes(tag)), `the miss lost its track tags: ${logged[0].tags}`);
+    assert.equal(await page.$$eval(".ai-tutor__rubric-outcome button", (buttons) => buttons.every((button) => button.getAttribute("aria-disabled") === "true")), true, "the verdict could be given twice");
+
+    // An authored follow-up is answered to the interviewer; the next bank
+    // question skips the one just practised.
+    await clickByText(page, ".ai-tutor__rubric-next button", "Answer this");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(await activeMode(page), "Interview");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), `Interview follow-up: ${weakQuestion.followUps[0]}\n\nMy answer: `);
+    await setComposerPrompt(page, "");
+    await clickByText(page, ".ai-tutor__practice button", "Next question");
+    await page.waitForSelector(".ai-tutor__practice textarea", { timeout: 5_000 });
+    assert.notEqual((await practiceCard()).prompt, weakQuestion.prompt, "the practised question came straight back");
+    assert.equal(calls.respond.length, 1);
+
+    // Edit & reuse, Edit & regenerate and Up-arrow bring a graded answer back
+    // to the practice card under its question, in Interview mode: its grading
+    // question names a reference only the card supplies, so it never lands in
+    // the question box (where it would be sent without that reference).
+    const reopened = async (label) => {
+      await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__practice textarea"), { timeout: 5_000 }).catch(() => assert.fail(`${label} did not focus the practice answer`));
+      assert.equal(await activeMode(page), "Interview", `${label} left Interview mode`);
+      assert.equal((await practiceCard()).prompt, weakQuestion.prompt, `${label} did not bring back the graded question`);
+      assert.equal(await page.$eval(".ai-tutor__practice textarea", (field) => field.value), answer, `${label} did not bring back the graded answer`);
+      assert.doesNotMatch(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /Grade my answer/, `${label} put the grading question in the question box`);
+      assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /back in the practice card/);
+    };
+    await chooseMode(page, "Explain");
+    await setComposerPrompt(page, "");
+    await clickByText(page, ".ai-tutor__message--user .ai-tutor__message-actions button", "Edit & reuse");
+    await reopened("Edit & reuse");
+    await setPracticeAnswer("");
+    await chooseMode(page, "Explain");
+    await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Edit & regenerate");
+    await reopened("Edit & regenerate");
+    await setPracticeAnswer("");
+    await setComposerPrompt(page, "");
+    await page.$eval(".ai-tutor__composer textarea", (field) => { field.focus(); field.setSelectionRange(0, 0); });
+    await page.keyboard.press("ArrowUp");
+    await reopened("Up arrow");
+    assert.equal(calls.respond.length, 1, "reopening a graded answer sent a request");
+  } finally {
+    await practiceScenario.context.close();
+  }
+
+  // "Work through with tutor" (TFEAT-07). A mistake-notebook entry opens the
+  // tutor in Socratic with its question, expected answer and the learner's
+  // answer in the box, focused and in view, and sends nothing. The insert is
+  // applied once; a draft the learner wrote is replaced only on request; a
+  // finished readiness check's misses open as one Explain question; neither
+  // bridge exists while AI features are off.
+  const bridgeScenario = await newIsolatedPage("mistake-bridge");
+  try {
+    const { page, calls } = bridgeScenario;
+    const mistake = createMistake({ prompt: "Why does lasso produce sparse weights while ridge does not?", expected: "The L1 penalty has corners at zero, so the optimum often lands on an axis.", response: "Because lasso squares the weights.", documentId: starterChapter.id });
+    const request = mistakeTutorRequest(mistake);
+    const composerState = () => page.evaluate(() => {
+      const field = document.querySelector(".ai-tutor__composer textarea");
+      const rect = field.getBoundingClientRect();
+      const nav = document.querySelector(".bottom-nav");
+      const navTop = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+      return {
+        route: location.hash,
+        value: field.value,
+        focused: document.activeElement === field,
+        inView: rect.top >= (document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0) - 1 && rect.bottom <= navTop + 1,
+        notice: document.querySelector(".ai-tutor__composer-notice")?.textContent || "",
+      };
+    });
+    const openBridge = async () => {
+      await page.evaluate(() => { location.hash = "#/review"; });
+      await page.waitForSelector(".mistake-card", { timeout: 10_000 });
+      await clickByText(page, ".mistake-card button", "Work through with tutor");
+      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    };
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await patchStoredProfile(page, { mistakes: [mistake] });
+    await page.evaluate(() => { location.hash = "#/review"; });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".mistake-card", { timeout: 10_000 });
+    assert.ok(await page.$$eval(".mistake-card button", (nodes) => nodes.find((node) => node.textContent.includes("Work through with tutor"))?.getBoundingClientRect().height >= 44), "the bridge was missing or under 44px on a phone");
+    await clickByText(page, ".mistake-card button", "Work through with tutor");
+    await page.waitForFunction((text) => document.querySelector(".ai-tutor__composer textarea")?.value === text, { timeout: 10_000 }, request.prompt);
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    const opened = await composerState();
+    assert.deepEqual(opened, { route: "#/ai", value: request.prompt, focused: true, inView: true, notice: "From mistake notebook: “Why does lasso produce sparse weights while ridge does not?” Review the question, then send." }, "the mistake did not open as a reviewed, focused question");
+    assert.match(opened.value, /Expected answer: The L1 penalty[\s\S]*My answer: Because lasso squares the weights\.$/);
+    assert.equal(await activeMode(page), "Socratic", "the mistake did not open in Socratic");
+    assert.equal(calls.respond.length, 0, "the bridge sent a request");
+
+    // Consumed once: leaving and returning keeps what the learner typed.
+    await setComposerPrompt(page, "My own draft about dropout.");
+    await page.evaluate(() => { location.hash = "#/home"; });
+    await page.waitForSelector(".ai-tutor", { hidden: true, timeout: 10_000 });
+    await page.evaluate(() => { location.hash = "#/ai"; });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal((await composerState()).value, "My own draft about dropout.", "the bridge's question came back after a remount");
+    assert.equal(await page.$(".ai-tutor__prefill-confirm"), null);
+
+    // A draft is kept unless the learner replaces it.
+    await openBridge();
+    await page.waitForSelector(".ai-tutor__prefill-confirm", { timeout: 5_000 });
+    await page.waitForFunction(() => document.activeElement?.textContent === "Keep my draft", { timeout: 5_000 });
+    assert.equal((await composerState()).value, "My own draft about dropout.", "the bridge overwrote a draft");
+    await clickByText(page, ".ai-tutor__prefill-confirm button", "Keep my draft");
+    assert.equal(await page.$(".ai-tutor__prefill-confirm"), null);
+    assert.equal((await composerState()).value, "My own draft about dropout.");
+    await openBridge();
+    await page.waitForSelector(".ai-tutor__prefill-confirm", { timeout: 5_000 });
+    await clickByText(page, ".ai-tutor__prefill-confirm button", "Replace draft");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal((await composerState()).value, request.prompt, "Replace draft did not apply the mistake");
+    assert.equal(calls.respond.length, 0);
+    // Sent as placed, it retrieves with the mistake's own topic, not the
+    // instructions around it, and favours the mistake's lesson.
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const workedThrough = calls.respond.at(-1).body;
+    assert.equal(workedThrough.task, "socratic");
+    assert.equal(workedThrough.prompt.startsWith(request.prompt), true);
+    assert.equal(workedThrough.webSearch, false);
+    assert.match(workedThrough.context, /Regularization|Regression/, `the mistake's topic was not retrieved: ${workedThrough.documentTitle}`);
+    await setComposerPrompt(page, "");
+
+    // A readiness check's misses open as one Explain question.
+    const sentBeforeCheck = calls.respond.length;
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const open = indexedDB.open("lumen-ai-notes", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const transaction = open.result.transaction("study-data", "readwrite");
+        const store = transaction.objectStore("study-data");
+        const get = store.get("profile");
+        get.onsuccess = () => {
+          const profile = get.result;
+          const stamp = new Date().toISOString();
+          profile.reviewItems = [...profile.reviewItems, ...["chain rule", "learning rate", "batch normalization"].map((answer, index) => ({
+            id: `bridge-cloze-${index}`, type: "cloze", front: `Deep learning fact ${index}: the {{${answer}}} matters.`, back: answer,
+            documentId: "notes/part-07-deep-learning/01-neural-networks-and-backprop.md", tags: [], suspended: false, archived: false, buriedOnDay: "",
+            dueAt: stamp, intervalDays: 1, ease: 2.5, repetitions: 1, reviewCount: 1, lapses: 0, createdAt: stamp, updatedAt: stamp, lastReviewedAt: stamp,
+          }))];
+          store.put(profile, "profile");
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }));
+    await page.evaluate(() => { location.hash = "#/home"; });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".mastery-grid", { timeout: 10_000 });
+    await page.evaluate(() => [...document.querySelectorAll(".mastery-row")].find((node) => node.querySelector(".mastery-part")?.textContent === "07")?.querySelector(".mastery-check")?.click());
+    await page.waitForSelector(".assessment-dialog", { timeout: 5_000 });
+    await clickByText(page, ".assessment-dialog button", "Start");
+    for (let index = 0; index < 3; index += 1) {
+      await page.waitForSelector(".assessment-cloze input", { timeout: 5_000 });
+      await page.$eval(".assessment-cloze input", (input, text) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, text);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, `wrong ${index}`);
+      await clickByText(page, ".assessment-cloze button", "Submit answer");
+    }
+    await page.waitForSelector(".assessment-tutor", { timeout: 5_000 });
+    await page.$eval(".assessment-tutor", (button) => button.click());
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea")?.value.startsWith("Explain the questions I missed in my readiness check"), { timeout: 10_000 });
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    const misses = await composerState();
+    assert.equal(misses.route, "#/ai");
+    assert.equal(await page.$(".assessment-dialog"), null, "the readiness check stayed open over the tutor");
+    assert.equal(await activeMode(page), "Explain");
+    assert.equal((misses.value.match(/^\d\. /gm) || []).length, 3, "the misses were not listed");
+    assert.match(misses.value, /Expected: chain rule[\s\S]*I answered: wrong 0/);
+    assert.equal(misses.value.includes("{{"), false, "a cloze answer leaked through its blank");
+    assert.equal(calls.respond.length, sentBeforeCheck, "the readiness-check bridge sent a request");
+
+    // AI features off: no bridge on the notebook or the check result.
+    const stored = await readProfile(page);
+    await patchStoredProfile(page, { settings: { ...stored.settings, aiFeaturesEnabled: false } });
+    await page.evaluate(() => { location.hash = "#/review"; });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".mistake-card", { timeout: 10_000 });
+    assert.equal(await page.$$eval(".mistake-card button", (nodes) => nodes.some((node) => node.textContent.includes("Work through with tutor"))), false, "the bridge showed with AI features off");
+  } finally {
+    await bridgeScenario.context.close();
   }
 
   let modelOnline = false;
@@ -1518,7 +3088,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, Work-through-with-tutor bridges from the mistake notebook and readiness checks, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

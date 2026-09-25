@@ -2,9 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 import { exportReviewCards } from "../lib/cardInterchange.js";
 import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound } from "../lib/interview.js";
-import { ROUND_TYPES, buildTrackRound, normalizeTrackBank } from "../lib/interviewTracks.js";
 import { checkLabAnswer, labMistakeDraft, normalizeLabBank } from "../lib/labs.js";
 import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
+import { mistakeTutorRequest } from "../lib/tutorBridge.js";
 import { UndoStrip, withUndoSlot } from "./UndoStrip.jsx";
 import { useCommitOnHide } from "../hooks/useCommitOnHide.js";
 import {
@@ -24,6 +24,7 @@ import {
   Flame,
   Gauge,
   History,
+  MessageCircleQuestion,
   Pause,
   Play,
   RotateCcw,
@@ -473,6 +474,7 @@ export default function ReviewCenter({
   onLogMistake,
   onImportCards,
   onModalChange,
+  onAskTutor,
 }) {
   const [session, setSession] = useState(false);
   const [mistakeFilter, setMistakeFilter] = useState("all");
@@ -574,22 +576,27 @@ export default function ReviewCenter({
   const aiClippingIdSet = useMemo(() => aiClippingIds(profile.clippings), [profile.clippings]);
   const isAiCard = useCallback((item) => isAiAuthoredReviewItem(item, aiClippingIdSet), [aiClippingIdSet]);
   // The authored banks are sizeable JSON: load them lazily so they never
-  // weigh on the startup bundle (the app audit gates entry size).
+  // weigh on the startup bundle (the app audit gates entry size). The track
+  // helpers load with their bank; the AI tutor loads them the same way, so
+  // they stay out of the offline shell.
   const [trackBankRaw, setTrackBankRaw] = useState(null);
+  const [trackLib, setTrackLib] = useState(null);
   const [labBankRaw, setLabBankRaw] = useState(null);
   useEffect(() => {
     let active = true;
     Promise.all([
       import("../data/interviewTracks.v1.json"),
+      import("../lib/interviewTracks.js"),
       import("../data/labs.v1.json"),
-    ]).then(([tracks, labs]) => {
+    ]).then(([tracks, lib, labs]) => {
       if (!active) return;
       setTrackBankRaw(tracks.default);
+      setTrackLib(lib);
       setLabBankRaw(labs.default);
     }).catch(() => { /* strips simply stay hidden if the banks fail to load */ });
     return () => { active = false; };
   }, []);
-  const trackBank = useMemo(() => normalizeTrackBank(trackBankRaw), [trackBankRaw]);
+  const trackBank = useMemo(() => (trackLib ? trackLib.normalizeTrackBank(trackBankRaw) : { tracks: [], questions: [] }), [trackBankRaw, trackLib]);
   const labBank = useMemo(() => normalizeLabBank(labBankRaw), [labBankRaw]);
   const queue = session && crunch ? baseQueue.filter((item) => !sessionSeen.includes(item.id)) : baseQueue;
   const queueSignature = queue.map((item) => `${String(item.id).length}:${item.id}`).join("");
@@ -869,12 +876,12 @@ export default function ReviewCenter({
       {trackBank.tracks.length > 0 && <section className="interview-track-strip" aria-label="Structured interview practice">
         <div><strong>Interview tracks</strong><span>Authored role tracks with rubrics; misses feed the mistake notebook.</span></div>
         <label>Track<select value={trackChoice} onChange={(event) => setTrackChoice(event.target.value)} aria-label="Interview track">{trackBank.tracks.map((track) => <option value={track.id} key={track.id} disabled={!track.seeded}>{track.label}{track.seeded ? "" : " (coming soon)"}</option>)}</select></label>
-        <label>Round<select value={roundTypeChoice} onChange={(event) => setRoundTypeChoice(event.target.value)} aria-label="Interview round type"><option value="">Mixed</option>{ROUND_TYPES.map((round) => <option value={round.id} key={round.id}>{round.label}</option>)}</select></label>
+        <label>Round<select value={roundTypeChoice} onChange={(event) => setRoundTypeChoice(event.target.value)} aria-label="Interview round type"><option value="">Mixed</option>{trackLib.ROUND_TYPES.map((round) => <option value={round.id} key={round.id}>{round.label}</option>)}</select></label>
         <button className="button secondary" onClick={() => {
-          const round = buildTrackRound(trackBankRaw, { trackId: trackChoice, roundType: roundTypeChoice }, mistakes);
+          const round = trackLib.buildTrackRound(trackBankRaw, { trackId: trackChoice, roundType: roundTypeChoice }, mistakes);
           if (!round.ok) return;
           setInterviewCards(round.cards);
-        }} disabled={!buildTrackRound(trackBankRaw, { trackId: trackChoice, roundType: roundTypeChoice }, mistakes).ok} type="button"><Clock3 size={16} /> Start track round</button>
+        }} disabled={!trackLib.buildTrackRound(trackBankRaw, { trackId: trackChoice, roundType: roundTypeChoice }, mistakes).ok} type="button"><Clock3 size={16} /> Start track round</button>
       </section>}
 
       {labBank.labs.length > 0 && <section className="lab-strip" aria-label="Worksheet labs">
@@ -920,6 +927,8 @@ export default function ReviewCenter({
                 <div className="mistake-actions">
                   {doc && <button className="text-button" onClick={() => onOpenSource(doc.id)} type="button">{doc.title}</button>}
                   <span>
+                    {/* Only with AI features on: the tutor gets the mistake as a question to review and send. */}
+                    {onAskTutor && <button className="button ghost mistake-tutor" onClick={() => onAskTutor(mistakeTutorRequest(mistake))} type="button"><MessageCircleQuestion size={15} /> Work through with tutor</button>}
                     <button className="button ghost" onClick={() => onScheduleCorrective?.(mistake)} type="button">Schedule corrective review</button>
                     <button className="button ghost" onClick={() => onEditMistake?.(mistake.id, { correctedAt: mistake.correctedAt ? "" : new Date().toISOString() })} type="button">{mistake.correctedAt ? "Reopen" : "Mark corrected"}</button>
                     <button className="icon-button small danger" onClick={() => removeMistake(mistake)} aria-label="Delete this mistake entry" title="Delete" type="button"><Trash2 size={15} /></button>

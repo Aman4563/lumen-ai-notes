@@ -314,6 +314,7 @@ function ShortcutsDialog({ open, onClose }) {
     { title: "Review session", entries: [["Space", "Reveal the answer"], ["1 – 4", "Grade Again / Hard / Good / Easy"], ["B", "Bury the card until tomorrow"], ["⌘/Ctrl + Z", "Undo the last grade"]] },
     { title: "Whiteboard", entries: [["Arrow keys", "Nudge the selected object (Shift: larger steps)"], ["Delete", "Delete the selected object"], ["⌘/Ctrl + Z", "Undo (Shift: redo)"], ["Esc", "Deselect / cancel text entry"]] },
     { title: "Reader & dialogs", entries: [["Esc", "Close menus, popovers, and dialogs"], ["Tab / Shift + Tab", "Cycle a dialog's controls (focus is trapped)"]] },
+    { title: "AI tutor", entries: [["Enter", "Send your question (with a mouse or trackpad)"], ["Shift + Enter", "Start a new line"], ["⌘/Ctrl + Enter", "Send, also in Code review"], ["Esc", "Stop the answer being written"], ["↑", "Bring back your last question into an empty box"]] },
     { title: "Anywhere", entries: [["⌘/Ctrl + K", "Search the library"], ["?", "Open this shortcut sheet"]] },
   ];
   return <div className="modal-layer"><button className="modal-scrim" onClick={onClose} aria-label="Close keyboard shortcuts" type="button" /><section ref={dialogRef} className="create-note-dialog shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title"><div className="dialog-icon"><Keyboard size={22} /></div><span className="eyebrow">Work faster</span><h2 id="shortcuts-title">Keyboard shortcuts</h2>{groups.map((group) => <div className="shortcut-group" key={group.title}><h3>{group.title}</h3><dl>{group.entries.map(([keys, action]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{action}</dd></div>)}</dl></div>)}<div className="modal-actions"><button className="button primary" onClick={onClose} type="button">Done</button></div></section></div>;
@@ -1978,6 +1979,19 @@ export default function App() {
       }];
     });
   }, [allDocumentMap, builtInSources, currentDocument.id, profile.customDocuments, profile.edits, profile.recent]);
+  // What the tutor's suggested starts are built from (TFEAT-04): brief
+  // documents plus existing study records, read only while on #/ai.
+  const aiStudyContext = useMemo(() => {
+    if (view !== "ai") return null;
+    const brief = (doc) => doc ? { id: doc.id, title: doc.title, isIndex: doc.isIndex === true, partNumber: doc.partNumber, source: doc.source, archived: doc.archived === true } : null;
+    return {
+      recent: brief(allDocumentMap.get(profile.recent[0])),
+      last: brief(allDocumentMap.get(profile.lastDocumentId)),
+      next: brief(resumeTarget({ profile, documents: allDocuments })?.document),
+      mistakes: profile.mistakes || [],
+      reviewItems: profile.reviewItems,
+    };
+  }, [allDocumentMap, allDocuments, profile, view]);
   // "Choose sources" lists the whole library; a lecture's text loads only when
   // the learner ticks it, through the same cache the Reader uses.
   const aiSourceCatalog = useMemo(() => allDocuments.map((document) => ({
@@ -2673,6 +2687,38 @@ export default function App() {
     return { added: created.length, skipped };
   }, [allDocumentMap, notify]);
 
+  // Tutor quiz and interview-practice misses (TFEAT-01/06) go to the
+  // mistake notebook as ordinary records. What is new or merged is decided
+  // from the committed profile before one atomic update. Drafts are recorded
+  // a millisecond apart, last first, so the first (a confident miss) is
+  // newest and stays first in the notebook after profile merges order
+  // records by time.
+  const saveTutorMistakes = useCallback(async (drafts = []) => {
+    const prepared = (Array.isArray(drafts) ? drafts : []).map((draft) => ({
+      prompt: draft?.prompt,
+      expected: draft?.expected,
+      response: draft?.response,
+      category: draft?.category || "misconception",
+      reviewItemId: draft?.reviewItemId || "",
+      documentId: (Array.isArray(draft?.documentIds) ? draft.documentIds : []).find((id) => allDocumentMap.has(id)) || "",
+      tags: draft?.tags,
+    })).filter((draft) => typeof draft.prompt === "string" && draft.prompt.trim()).reverse();
+    if (!prepared.length) throw new Error("There were no misses to save");
+    const start = Date.now();
+    const at = (index) => new Date(start + index);
+    let preview = profileRef.current.mistakes || [];
+    let added = 0;
+    let merged = 0;
+    prepared.forEach((draft, index) => {
+      const result = recordMistake(preview, draft, at(index));
+      preview = result.mistakes;
+      if (result.merged) merged += 1;
+      else if (result.mistake) added += 1;
+    });
+    setProfile((current) => ({ ...current, mistakes: prepared.reduce((mistakes, draft, index) => recordMistake(mistakes, draft, at(index)).mistakes, current.mistakes || []) }));
+    return { added, merged };
+  }, [allDocumentMap]);
+
   const saveAiAnswerNote = useCallback((payload = {}) => {
     const text = String(payload.content || "").trim();
     if (!text) {
@@ -2765,9 +2811,17 @@ export default function App() {
     if (!excerpt) return;
     // The tutor consumes the insert once (onInsertConsumed) and names the
     // lecture it came from; the composer itself announces the insertion.
-    setAiInsert({ text: excerpt, title: currentDocument.title, nonce: Date.now() });
+    setAiInsert({ kind: "selection", text: excerpt, title: currentDocument.title, nonce: Date.now() });
     changeView("ai");
   }, [changeView, currentDocument.title]);
+  // Other screens open the tutor with a prepared question (TFEAT-07). It is
+  // applied once like an excerpt and never sent: the learner reviews it.
+  const openTutorWith = useCallback(({ modeId, prompt, origin, label, documentId, retrievalQuery } = {}) => {
+    const text = String(prompt || "").trim().slice(0, 5_700);
+    if (!text) return;
+    setAiInsert({ kind: "prompt", prompt: text, modeId: String(modeId || "explain"), origin: String(origin || ""), label: String(label || ""), documentId: String(documentId || ""), retrievalQuery: String(retrievalQuery || ""), nonce: Date.now() });
+    changeView("ai");
+  }, [changeView]);
   const consumeAiInsert = useCallback((nonce) => {
     setAiInsert((current) => current?.nonce === nonce ? null : current);
   }, []);
@@ -3377,8 +3431,8 @@ export default function App() {
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onRestoreClipping={restoreClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
-            : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onInsertConsumed={consumeAiInsert} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onRestoreMistake={restoreMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} onModalChange={trackComponentModal} /></Suspense>}
+            : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} studyContext={aiStudyContext} speech={speech} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveMistakes={saveTutorMistakes} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onInsertConsumed={consumeAiInsert} onNotify={notify} /></Suspense></div>)}
+          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onRestoreMistake={restoreMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} onModalChange={trackComponentModal} onAskTutor={aiFeaturesEnabled ? openTutorWith : undefined} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
           </ErrorBoundary>
         </main>
@@ -3395,7 +3449,7 @@ export default function App() {
       <ManageDocumentDialog doc={manageDocument} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <EncryptedImportDialog pending={encryptedImport} onSubmit={unlockEncryptedImport} onCancel={() => setEncryptedImport(null)} />
-      {assessmentDraft && <Suspense fallback={null}><AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} /></Suspense>}
+      {assessmentDraft && <Suspense fallback={null}><AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} onAskTutor={aiFeaturesEnabled ? (request) => { setAssessmentDraft(null); openTutorWith(request); } : undefined} /></Suspense>}
       {reviewDraft && <Suspense fallback={null}><ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} /></Suspense>}
       {updateRegistration && <div className="update-banner" role="status" inert={appModalOpen} aria-hidden={hiddenBehindModal}><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={dismissToast} />
