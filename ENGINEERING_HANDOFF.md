@@ -839,11 +839,29 @@ under the ink, so the eraser's `destination-out` affects ink only.
 
 ### 10.1 Service-worker strategy
 
-`public/service-worker.js` receives a build identifier through its registration URL and
-uses a distinct `lumen-ai-notes-v<build>` shell cache per release. Install caches the shell
-and the exact entry JS/CSS discovered from built HTML; missing entry assets fail install so
-the previous working worker remains. Activation deletes only old Lumen shell caches and
-never WebLLM caches.
+`public/service-worker.js` receives a build identifier through its registration URL and uses
+a distinct `lumen-ai-notes-v<build>` shell cache per release. Install caches the shell, the
+exact entry JS/CSS discovered from built HTML, and the route screens listed in the build's
+`offline-routes.json` (emitted by a plugin in `vite.config.js`: Reader and its lazy TeX
+renderer `markdownMath.js`, Whiteboard, AI studio, both tutors, the review center with its
+card editor, the readiness check, Storage health, and Device evidence with their static
+imports and CSS). That adds 30 files and 773,930 bytes to the 714 KB entry. The Node server
+sends them uncompressed; a gzip host would send about 223 KB. KaTeX's JavaScript (259 KB) is
+included because the tutor imports it directly and the reader's TeX renderer shares it. The
+review center and readiness check joined the list when the startup-bundle split made them
+lazy, so the install set shrank slightly rather than grew: the entry script plus route files
+is about 1.49 MB instead of 1.60 MB. Lectures, search data, Mermaid, fonts, the FSRS
+optimizer, and the WebLLM runtime stay on demand. Median install time, measured before that
+split, rose from 253 to 738 ms at 50 Mbps/10 ms (home Wi-Fi) and from 957 to 4,776 ms at 1.6
+Mbps/150 ms; registration waits for the load event, so first paint is unchanged. Install
+validates the list's build and entry against the worker and HTML, fetches every route file
+before writing, and fails on any missing file or HTML answer, so the previous working worker
+remains; a failed install deletes only its own unused cache. A worker registered without a
+build query (a legacy registration or the Vite dev server) cannot match a list and installs
+entry-only. Activation deletes only old Lumen shell caches and never WebLLM caches. The
+fetch handler neither answers nor caches `offline-routes.json`, so each cache keeps the list
+its install wrote. Optional-cache cleanup keeps every file named by the current build's list
+and by each cache's installed list.
 
 `/api/*` is never service-worker cached. Navigations are network-first with cached shell
 fallback. Same-origin static assets are cached on use. External image caching is bounded.
@@ -856,12 +874,32 @@ not the whiteboard/AI feature logic itself.
 
 `chunkRecovery.js` recognizes browser/Vite lazy JS and extracted-CSS failures. While online,
 it attempts at most one reload per tab/cooldown and requires a durable session marker to
-avoid loops. Repeated failure reaches an actionable boundary. Manual repair first proves a
-fresh HTML shell is reachable with a no-store probe, then removes only Lumen shell caches,
-updates the worker, and reloads. IndexedDB, localStorage, and WebLLM caches survive.
+avoid loops. Before reloading it probes `/api/health` (never service-worker cached); an
+unreachable server gets no reload, because a reload would only boot the same cached shell.
+Repeated failure reaches an in-shell boundary around the view container: the top bar and
+navigation stay usable, navigation clears it, and it distinguishes offline, unreachable, and
+incomplete-build cases. A failed dynamic import stays failed for that document, so its
+actions reload or go Home rather than retry in place. The boundary sits inside
+`<main id="main-content">`, so the landmark, skip link, App-level `inert`, and route heading
+focus are unchanged. Returning to a screen that already failed in this document shows the
+panel at once, so route focus lands on its `h1`; a first failure renders after focus has
+moved to the main landmark, and the panel's `role="alert"` announces it. The lazy review
+card editor and readiness check render outside the view container, so a chunk that still
+fails there reaches the app-level boundary; both are in the route list. Storage health has
+its own boundary so Settings and backup export survive. Manual repair first proves a fresh
+HTML shell is reachable with a no-store probe, then removes only Lumen shell caches,
+unregisters the worker, and reloads. `update()` would not reinstall an unchanged worker URL,
+so the route screens would stay uncached; the reload registers the build afresh and install
+refills the cache. IndexedDB, localStorage, and WebLLM caches survive.
 
 `audit:chunks` deliberately reproduces both reported asset classes and verifies recovery
-plus localStorage preservation.
+plus localStorage preservation. With the service worker bypassed, it also covers the
+in-shell offline, missing-file, and Storage-health cases, and asserts that the offline panel
+stays inside the single `#main-content` landmark and takes route focus when the learner
+returns to the failed screen. `audit:visual` covers the cached
+path: it stops its own servers after a Home-only visit and opens every primary screen. It
+clears Chrome's HTTP cache after each stop, because the immutable assets would otherwise be
+answered from it and hide a worker that never serves its own cache.
 
 ### 10.3 Deployment invariants
 
@@ -870,7 +908,8 @@ Deploy a release atomically:
 1. run the full build from the immutable reviewed source;
 2. upload all new fingerprinted assets first;
 3. verify referenced asset existence;
-4. publish matching `index.html` and service worker last;
+4. publish matching `index.html`, `offline-routes.json`, and service worker last (install
+   rejects a route list from another build and keeps the previous worker);
 5. do not rebuild a `dist/` directory that is actively being served;
 6. do not deploy only HTML or only assets;
 7. preserve the same-origin `/api` route for integrated AI/search deployments;
@@ -1529,7 +1568,7 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - Sanitize Markdown/KaTeX output and Mermaid SVG.
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
-- Worker activation only after matching shell assets exist.
+- Worker activation only after matching shell assets exist (entry and route screens from the same build).
 - Repair deletes only Lumen app caches, not study data or model caches.
 
 ### Privacy/security

@@ -528,3 +528,104 @@ confirmed against the preceding build:
   `audit:ai-ui` mocks that response and expects the failed-fallback badge.
 - The Depth select and the source filter were 42px tall on phones.
   `audit:ai-ui` now checks every Mac tutor control on a 393px phone.
+
+## Offline route screens reproduced on 2026-09-24
+
+- With the app server stopped, a fresh install that had opened only Home
+  replaced the whole app with "Lumen needs fresh app files" on Read, AI Tutor,
+  and Settings. Reload showed the same screen. The service worker cached only
+  the entry files, so the route chunks were missing until opened online, and
+  every update discarded them again. The build now emits
+  `offline-routes.json` listing the route screens with their static imports and
+  CSS, and install precaches it. That is 19 files and 688,530 bytes beyond the
+  908 KB entry. The Node server sends them uncompressed; a gzip host would send
+  about 196 KB. KaTeX's JavaScript accounts for 259 KB because the tutor imports
+  it directly. Lectures, search data, Mermaid, fonts, and the WebLLM runtime stay
+  on demand.
+- Install time, from registration to installed, is the median of five fresh
+  profiles on a loaded Mac, behind a proxy that shares one link. It went from
+  143 to 612 ms on localhost and from 253 to 738 ms at 50 Mbps and 10 ms (home
+  Wi-Fi to the Mac). At 10 Mbps and 60 ms it went from 366 to 1,509 ms, and at
+  1.6 Mbps and 150 ms from 957 to 4,776 ms. A first visit now transfers
+  1,670,479 bytes instead of 973,677. The worker registers after the page's
+  load event, so first paint does not change.
+- Install now fails, and the working worker stays, when the list comes from
+  another build, the HTML boots a different entry, or a file is missing or
+  answered with HTML. A failed install deletes only its own unused cache. Two
+  partial releases were served over a working one: one missing the Reader chunk,
+  one with the previous build's list. Both left the previous release active and
+  cached. A complete release installed and waited. The first full browser run
+  of this change failed `audit:phone-ai-ui`: its dev-server worker has no build
+  query or route list and turned redundant. An unversioned worker now installs
+  entry-only.
+- "Remove optional offline files" deleted the route chunks too. It now keeps
+  every file named by the current build's list and by each cache's installed
+  list. A second defect showed up while an update was waiting. The active
+  worker answered the list from its cache and then refreshed that copy with the
+  new build's list. The second cleanup then removed the active release's route
+  screens and its entry script. The worker now neither answers nor caches the
+  list at runtime. Two cleanups over a waiting update left the active cache
+  complete.
+- A screen whose chunk still fails now stays inside the shell. The top bar and
+  navigation remain, navigating clears the error, and the message says whether
+  the device is offline, the server is unreachable, or the build is incomplete.
+  Only the incomplete-build case offers Repair app files. On Wi-Fi with the
+  server asleep, chunk recovery reloaded into the same cached failure. It now
+  probes `/api/health` first. Storage health has its own boundary, so Settings
+  keeps backup export. A lecture that cannot be downloaded now gets a
+  plain-language message instead of the dynamic-import error.
+- The offline check used `setOfflineMode`, which does not block
+  service-worker fetches, and it opened the lecture online first.
+  `audit:visual` now starts its own servers and stops them. After a Home-only
+  visit, Read, AI Tutor (both engines), Whiteboard, Review, Device evidence, and
+  Settings must open. Read mounts the Reader there only because Home loaded
+  the first lecture into memory, so the audit also evaluates every route
+  screen's module from the cache. A visited lecture must reload. Against the
+  foundation build the check reports the fatal screen on Read, AI Tutor, and
+  Settings. The main visual pass runs the optional cleanup and asserts that
+  the visited lecture is gone and every route file remains. `audit:chunks`
+  bypasses the service worker and adds an offline screen, a missing file after
+  its one bounded reload, and Settings without Storage health.
+- Review found that the server-stopped checks still passed with a worker that
+  never answered from Cache Storage. Assets are served `immutable`, and the
+  worker's install fetches had filled Chrome's HTTP cache, which answered them
+  after the server stopped. The visited-lecture step also navigated to the URL
+  it was already on, a same-document fragment change that never reloaded. The
+  audit now clears the HTTP cache after each stop, proves the server no longer
+  answers, and reloads the lecture. With the same mutated worker it now fails
+  on every screen and on the lecture reload.
+- Repair app files deleted the caches and then called `update()`, which does
+  not reinstall an unchanged worker URL. The route screens stayed uncached
+  until the next release: after Repair, AI Tutor with the server stopped showed
+  "Lumen's server cannot be reached". Repair could also promote a waiting
+  worker whose cache it had just deleted. Repair now unregisters the worker,
+  and the reload installs the build again with all 22 listed files; AI Tutor
+  then opens offline. `audit:visual` runs the sequence and waits for every
+  route file.
+- When Home itself failed, the in-shell panel's primary Go to Home did
+  nothing because the view did not change. Reload is the primary action there
+  now.
+- On 2026-09-25, rebased onto the startup-bundle split (#66), `audit:visual`
+  failed: after a Home-only visit with the server stopped, Review did not
+  render (`Failed to fetch dynamically imported module: …/ReviewCenter-….js`),
+  and the module check found the review center, its card editor, the readiness
+  check, and the reader's TeX renderer (`markdownMath.js`, now loaded on first
+  math) missing from the route list. They are app code, so the list names them
+  now: 34 files, 30 of them (773,930 bytes) beyond the 714 KB entry, about
+  223 KB gzipped. The split moved code out of the entry into route files, so
+  the entry plus route files fell from about 1.60 MB to 1.49 MB. The card
+  editor and readiness check render outside the view container; a chunk that
+  still fails there reaches the app-level boundary. `audit:app` and
+  `audit:visual` now name all four.
+- The same rebase kept the in-shell boundary inside the accessibility
+  foundation's `<main id="main-content">`. With the network off and both the
+  service worker and the HTTP cache bypassed, an ad-hoc check at 393 and
+  1280 px found one main landmark with the skip link targeting it, `main`
+  inert and `aria-hidden` while Settings was open and restored after it
+  closed, Home's heading focused after Go to Home, no console errors, and no
+  axe violations on the panel in Paper, Night, or Contrast. A first failure
+  renders after route focus has moved to the main landmark, and the panel's
+  alert announces it. Returning to the failed screen shows the panel at once,
+  and focus lands on its `h1`. `audit:chunks` now asserts the single landmark
+  and the return-visit focus; it fails when route focus is mutated to skip the
+  panel's heading.

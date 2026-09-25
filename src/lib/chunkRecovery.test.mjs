@@ -4,6 +4,9 @@ import {
   CHUNK_RECOVERY_STORAGE_KEY,
   createChunkRecovery,
   isStaleChunkError,
+  lectureLoadMessage,
+  probeAppServer,
+  recentServerProbe,
   repairApplicationFiles,
 } from "./chunkRecovery.js";
 
@@ -105,11 +108,10 @@ test("a repeated stale failure rejects to the error boundary instead of reloadin
   assert.equal(reloads, 0);
 });
 
-test("manual repair verifies the server, removes only Lumen app caches, updates the worker, and reloads", async () => {
+test("manual repair verifies the server, removes only Lumen app caches, unregisters the worker, and reloads", async () => {
   const storage = makeStorage();
   const deleted = [];
-  const messages = [];
-  let updated = 0;
+  const workerCalls = [];
   let reloads = 0;
   let probe;
   await repairApplicationFiles({
@@ -125,9 +127,12 @@ test("manual repair verifies the server, removes only Lumen app caches, updates 
     navigatorObject: {
       onLine: true,
       serviceWorker: {
+        // update() would not reinstall the same worker URL, and SKIP_WAITING
+        // would promote a waiting worker whose cache was just deleted.
         getRegistration: async () => ({
-          update: async () => { updated += 1; },
-          waiting: { postMessage: (message) => messages.push(message) },
+          unregister: async () => { workerCalls.push("unregister"); return true; },
+          update: async () => { workerCalls.push("update"); },
+          waiting: { postMessage: (message) => workerCalls.push(message.type) },
         }),
       },
     },
@@ -138,8 +143,7 @@ test("manual repair verifies the server, removes only Lumen app caches, updates 
   assert.deepEqual(deleted, ["lumen-ai-notes-vlegacy-10", "lumen-ai-notes-vrelease-2"]);
   assert.match(probe.url, /^https:\/\/lumen\.test\/app\/\?lumen-repair=44$/);
   assert.deepEqual(probe.options, { cache: "no-store", credentials: "same-origin" });
-  assert.equal(updated, 1);
-  assert.deepEqual(messages, [{ type: "SKIP_WAITING" }]);
+  assert.deepEqual(workerCalls, ["unregister"]);
   assert.equal(reloads, 1);
   assert.deepEqual(JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY)), { attemptedAt: 44, asset: "manual-repair" });
 });
@@ -165,4 +169,77 @@ test("manual repair refuses to remove offline files while the browser is offline
     navigatorObject: { onLine: false },
   }), /Connect to the Lumen server/);
   assert.equal(fetched, 0);
+});
+
+test("does not spend the reload or cooldown while the app server is unreachable", async () => {
+  const storage = makeStorage();
+  let reloads = 0;
+  let probes = 0;
+  let reachable = false;
+  let currentTime = 1_000;
+  const recovery = createChunkRecovery({
+    storage,
+    now: () => currentTime,
+    isOnline: () => true,
+    reload: () => { reloads += 1; },
+    probe: async () => { probes += 1; return reachable; },
+  });
+  const error = new TypeError("Failed to fetch dynamically imported module: http://lumen.test/assets/Reader-new.js");
+
+  // Vite's preload listener and the lazy import both report one failure; they share one probe.
+  const [fromListener, fromImport] = await Promise.all([recovery.recover(error), recovery.recover(error)]);
+  assert.deepEqual([fromListener, fromImport], [false, false]);
+  assert.equal(probes, 1);
+  assert.equal(reloads, 0);
+  assert.equal(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY), null, "an unreachable probe must not start the reload cooldown");
+  assert.equal(recentServerProbe(error, { now: () => currentTime }), false);
+  assert.equal(recentServerProbe(error, { now: () => currentTime + 5_001 }), undefined, "an old probe result must not describe a later failure");
+
+  await assert.rejects(() => recovery.load(async () => { throw error; }), error);
+  assert.equal(reloads, 0, "the failure reaches the in-shell boundary instead of reloading the cached shell");
+
+  reachable = true;
+  currentTime += 10;
+  assert.equal(await recovery.recover(error), true);
+  assert.equal(reloads, 1);
+  assert.equal(recentServerProbe(error, { now: () => currentTime }), true);
+  assert.equal(JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY)).attemptedAt, currentTime);
+});
+
+test("recovery skips the probe offline, during the cooldown, and for ordinary errors", async () => {
+  let probes = 0;
+  const storage = makeStorage();
+  storage.setItem(CHUNK_RECOVERY_STORAGE_KEY, JSON.stringify({ attemptedAt: 900, asset: "old" }));
+  const probe = async () => { probes += 1; return true; };
+  const stale = new Error("Unable to preload CSS for /assets/AiTutor-new.css");
+  const coolingDown = createChunkRecovery({ storage, now: () => 1_000, isOnline: () => true, reload: () => assert.fail("must not reload"), probe });
+  assert.equal(await coolingDown.recover(stale), false);
+  const offline = createChunkRecovery({ storage: makeStorage(), isOnline: () => false, reload: () => assert.fail("must not reload"), probe });
+  assert.equal(await offline.recover(stale), false);
+  const online = createChunkRecovery({ storage: makeStorage(), isOnline: () => true, reload: () => assert.fail("must not reload"), probe });
+  assert.equal(await online.recover(new Error("Whiteboard record is malformed")), false);
+  assert.equal(probes, 0);
+});
+
+test("the server probe bypasses caches and treats any HTTP answer as reachable", async () => {
+  let request;
+  assert.equal(await probeAppServer({
+    fetchImpl: async (url, options) => { request = { url, options }; return { ok: false, status: 404 }; },
+    now: () => 7,
+  }), true);
+  assert.equal(request.url, "/api/health?lumen-probe=7");
+  assert.equal(request.options.cache, "no-store");
+  assert.equal(await probeAppServer({ fetchImpl: async () => { throw new TypeError("Failed to fetch"); } }), false);
+  assert.equal(await probeAppServer({
+    fetchImpl: () => new Promise(() => {}),
+    timeoutMs: 20,
+  }), false, "a hung request (a sleeping server on the same Wi-Fi) must count as unreachable");
+  assert.equal(await probeAppServer({ fetchImpl: undefined }), false);
+});
+
+test("a lecture that cannot be downloaded is explained in plain language", () => {
+  const message = lectureLoadMessage("Failed to fetch dynamically imported module: http://127.0.0.1:4173/assets/03-cnns-DFp9kDII.js");
+  assert.doesNotMatch(message, /dynamically imported|assets\//);
+  assert.match(message, /not saved on this device yet/);
+  assert.equal(lectureLoadMessage("The lecture source could not be loaded."), "The lecture source could not be loaded.");
 });
