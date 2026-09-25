@@ -47,17 +47,22 @@ const TASK_INSTRUCTIONS = Object.freeze({
 // on session starts, called a hint request "your hint", and corrected a
 // bridged mistake before asking anything. The learner's latest message is
 //   diagnose: a mistake brought from the notebook ("Work through this
-//             mistake…"), worked through from a diagnostic question;
+//             mistake…", or its "Question:" and "Expected answer:" lines
+//             when the learner wrote something above them), worked through
+//             from a diagnostic question;
 //   hint:     a hint request for the tutor's last question (the Hint action's
-//             "hint for your last question");
+//             "hint for your last question", or a short typed request such
+//             as "Give me a hint." after a question of the tutor's);
 //   open:     a turn that says it is not an answer ("I have not answered", as
 //             in a session start, Check my understanding and Next question,
-//             or "Ask me the next question"), or any turn that does not
-//             follow a question of the tutor's;
+//             or the opening words of those prompts in their older wording;
+//             a short typed "Next question" or "Skip this one"), or any turn
+//             that does not follow a question of the tutor's;
 //   answer:   a reply to the tutor's question: the tutor's last turn ends by
 //             asking one (an offer such as "Want to see an example?" or a
-//             "Does that make sense?" does not count), or it was a hint and
-//             the learner tries again; or
+//             "Does that make sense?" does not count) or by setting a task
+//             ("Consider how…"), or it was a hint and the learner tries
+//             again; or
 //             the learner answers a question quoted in the message itself
 //             ("My answer: …", as an answer check's prefilled question).
 // The markers are the visible wording of the tutor's own action prompts
@@ -68,51 +73,89 @@ const TASK_INSTRUCTIONS = Object.freeze({
 // collapsed to single spaces, long turns clipped, and citation labels kept
 // on ordinary sends.
 const MISTAKE_WALKTHROUGH_MARKER = /^\s*Work through this mistake\b/i;
+// The bridge's own fields: a learner who writes above the prepared question
+// (the tutor places it in the question box to review) keeps them, and its
+// "My answer:" line must not make it an answer to assess.
+const MISTAKE_FIELDS_MARKER = /(?:^|\n)\s*Question:[^\n]*\n\s*Expected answer:/i;
 const HINT_MARKER = /\bhint for your (?:last|previous) question\b/i;
-const NOT_ANSWERING_MARKER = /\bI have not answered\b|^\s*Ask me the next question\b/i;
+// A short typed request, "Give me a hint." or "Can I get another hint?";
+// live, "Give me a hint." after a question was assessed as a partly correct
+// answer. A longer message that mentions a hint is an answer.
+const TYPED_HINT_MARKER = /^(?:(?:ok(?:ay)?|hmm+|um+|so|please|pls|sorry)[\s,.!]+)*(?:(?:can|could|may) (?:i|you)(?: please)? (?:get|have|give me)|(?:please )?give me|i(?:'d| would)? (?:like|need|want)|i could use|need)?\s*(?:(?:a|an|another|one|one more|some|more|any)\s+)?(?:(?:small|little|quick|tiny|further|bigger|second)\s+)?hints?\b[^.?!\n]{0,40}[\s.?!]*$/i;
+// What the learner typed: the client appends its fixed grounding sentence to
+// every question as a paragraph of its own.
+const typedOpening = (text) => String(text || "").split(/\n\s*\n/, 1)[0].trim();
+const isHintRequest = (text) => {
+  const typed = typedOpening(text);
+  return HINT_MARKER.test(text) || (typed.length <= 120 && TYPED_HINT_MARKER.test(typed));
+};
+// "I have not answered" is in every current action prompt; the opening words
+// cover the Socratic start, lesson starter and Check my understanding in
+// their earlier wording (a stale app shell, a restored draft), which said
+// nothing about an answer.
+const NOT_ANSWERING_MARKER = /\bI have not answered\b|^\s*Ask me the next question\b|^\s*Ask me one question that checks whether I understood\b|^\s*Teach (?:me|the selected material)\b[^\n]*\bone focused (?:Socratic )?question at a time\b/i;
+// A typed "Next question, please." or "Skip this one" asks to move on.
+const TYPED_SKIP_MARKER = /^(?:(?:ok(?:ay)?|please|pls|sorry)[\s,.!]+)*(?:(?:can|could) (?:i|you)(?: please)? (?:have|get|ask me) |(?:please )?(?:ask me|give me|go to|move on to) )?(?:(?:the|a)\s+)?(?:next(?: one| question)?|(?:new|different|another) (?:question|one)|skip(?: (?:this|it|that)(?: one)?)?|move on)(?:[\s,]+(?:please|pls))?[\s.?!]*$/i;
 const OWN_ANSWER_MARKER = /(?:^|\n)\s*My answer:\s*\S/i;
 // An offer or a comprehension check opens its closing sentence; the same
 // words later in a sentence ("which quantity do you want to minimize?") are
 // part of a real question.
 const OFFER_MARKER = /^(?:would you like|do you want|want (?:me )?to|shall I|should I|would it help|does (?:that|this) make sense)\b/i;
 
-/** The question a tutor turn ends by asking, or "" when it ends otherwise. */
-const closingQuestion = (content) => {
+// A closing sentence that sets the learner a task instead of a question.
+// Live, 3 of 20 assessed Socratic turns ended "To deepen your intuition…,
+// consider how the geometry changes when we add the w² term…" with no
+// question mark.
+const PROMPTING_CLOSE = /^(?:[^,]{1,160},\s+)?(?:consider|think about|try (?:to|answering|explaining)|explain (?:why|how|what)|predict)\b/i;
+
+/**
+ * Whether a tutor turn ends by asking the learner something: a closing
+ * question that is not an offer, or a closing "Consider how…" task.
+ */
+const endsByAsking = (content) => {
   const text = withoutMarkdownCode(content)
     .replace(/\[[SW][1-9]\d*\]/g, " ")
+    // Full-width marks end a CJK question or sentence.
+    .replace(/？/g, "?").replace(/[。！]/g, ".")
     .replace(/\s+/g, " ")
     .trim()
-    // Emphasis, quotes and brackets may close a question: "**Why?**".
-    .replace(/[\s*_~"'”’)\]]+$/u, "");
-  if (!text.endsWith("?")) return "";
+    // Emphasis, quotes and brackets may close a question ("**Why?**"), and a
+    // period may follow its label ("…zero? [S1].").
+    .replace(/[\s*_~"'”’)\].]+$/u, "");
   // The closing sentence, without the list, heading or emphasis marks it opens with.
-  return (text.match(/[^.!?]*\?+$/u)?.[0] || "").replace(/^[^\p{L}\p{N}]+/u, "");
+  const closing = (text.match(text.endsWith("?") ? /[^.!?]*\?+$/u : /[^.!?]*$/u)?.[0] || "").replace(/^[^\p{L}\p{N}]+/u, "");
+  if (!closing) return false;
+  return text.endsWith("?") ? !OFFER_MARKER.test(closing) : PROMPTING_CLOSE.test(closing);
 };
 
 const SOCRATIC_TURN_INSTRUCTIONS = Object.freeze({
   answer: "The learner has just answered your previous question: first assess that answer in one or two sentences, saying whether it is correct, partly correct, or a misconception, and why. Then ask exactly one new focused question.",
   hint: "The learner has not answered your previous question yet and asks for a hint, so there is no learner answer to assess, praise, or correct. Give one hint that does not reveal the answer, then ask them to try that same question again; do not ask a new question.",
   diagnose: "The learner brings back a question they got wrong earlier. Its expected answer and their earlier answer are reference for you, not a reply to assess. Do not explain the idea, state or hint at the expected answer or any fact from the sources, or say whether their earlier answer was right yet: first ask one diagnostic question about what they think went wrong, and explain only after they reply.",
-  open: "The learner has not answered a question of yours in this line of questioning, so there is no learner answer to assess, praise, or correct, and your own earlier turns are not their answers. Open directly with one focused question.",
+  // Mid-session (Next question after a reveal) the learner has answered
+  // earlier questions, so this says only that the latest message is not an
+  // answer. Live, either wording still drew "You correctly identified…" in
+  // about 1 of 4 such runs.
+  open: "The learner's latest message is not an answer to a question of yours, so there is nothing in it to assess, praise, or correct. Do not comment on their earlier answers or on what they got right, and do not treat your own earlier turns as their answers. Open directly with one focused question.",
 });
 
 export const socraticTurnFraming = (request) => {
   const prompt = String(request?.prompt || "");
-  if (MISTAKE_WALKTHROUGH_MARKER.test(prompt)) return "diagnose";
+  if (MISTAKE_WALKTHROUGH_MARKER.test(prompt) || MISTAKE_FIELDS_MARKER.test(prompt)) return "diagnose";
   if (HINT_MARKER.test(prompt)) return "hint";
-  if (NOT_ANSWERING_MARKER.test(prompt)) return "open";
+  if (NOT_ANSWERING_MARKER.test(prompt) || TYPED_SKIP_MARKER.test(typedOpening(prompt))) return "open";
   if (OWN_ANSWER_MARKER.test(prompt)) return "answer";
   const history = Array.isArray(request?.history) ? request.history : [];
   const previous = history.at(-1);
   if (previous?.role !== "assistant") return "open";
+  if (isHintRequest(prompt)) return "hint";
   // After a hint the learner tries the hinted question again.
   const asked = history.at(-2);
-  if (asked?.role === "user" && HINT_MARKER.test(String(asked.content || ""))) return "answer";
-  // Only a question the tutor's turn ends with (outside code) counts: an
+  if (asked?.role === "user" && isHintRequest(String(asked.content || ""))) return "answer";
+  // Only what the tutor's turn ends with (outside code) counts: an
   // explanation with a question as a heading, or a rhetorical question
   // mid-answer, did not ask the learner anything.
-  const question = closingQuestion(previous.content);
-  return question && !OFFER_MARKER.test(question) ? "answer" : "open";
+  return endsByAsking(previous.content) ? "answer" : "open";
 };
 
 const socraticQuestionFormat = (framing, sourceLabels) => {
@@ -120,6 +163,9 @@ const socraticQuestionFormat = (framing, sourceLabels) => {
     ? ` grounded in the context above, and end ${what} with the exact label of the supplied source that motivates it (one of ${sourceLabels.join(", ")})`
     : "");
   const noHeading = "do not put a heading or a label word in front of it";
+  // The learner's next message is framed as an answer only when this turn
+  // ends by asking (see socraticTurnFraming).
+  const lastSentence = `Make that question${sourceLabels.length ? " and its label" : ""} the end of your reply, with nothing after it.`;
   if (framing === "hint") {
     return `\nRequired response format: this is a hint request, not an answer. Do not praise, assess, or correct anything. Give exactly one short hint${cite("the hint")}. Then ask the learner to try your previous question again. Do not reveal the answer, do not ask a new question, and ${noHeading}.`;
   }
@@ -130,9 +176,9 @@ const socraticQuestionFormat = (framing, sourceLabels) => {
     return `\nRequired response format: reply with exactly one short diagnostic question and nothing else, at most two sentences, asking what the learner was thinking when they gave their earlier answer or what they now think went wrong.${label} Do not explain the concept, do not state, paraphrase, or hint at the expected answer or any fact from the sources, and do not say whether their earlier answer was right or wrong until they reply. ${noHeading[0].toUpperCase()}${noHeading.slice(1)}.`;
   }
   if (framing === "answer") {
-    return `\nRequired response format: open with a one- or two-sentence assessment of the learner's answer to your previous question that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question${cite("it")}. Do not answer your new question, and ${noHeading}.`;
+    return `\nRequired response format: open with a one- or two-sentence assessment of the learner's answer to your previous question that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question${cite("it")}. ${lastSentence} Do not answer your new question, and ${noHeading}.`;
   }
-  return `\nRequired response format: the learner has not answered a question of yours yet, so do not praise, assess, or correct anything, and do not refer to a previous answer of theirs. Ask exactly one new focused question${cite("it")}. Do not answer your new question, and ${noHeading}.`;
+  return `\nRequired response format: the learner's latest message is not an answer, so do not praise, assess, or correct anything, and do not comment on their earlier answers or say what they got right. Ask exactly one new focused question${cite("it")}. ${lastSentence} Do not answer your new question, and ${noHeading}.`;
 };
 
 const FAST_PROFILE_INSTRUCTION = "Fast profile: keep the answer brief, about 150 words or fewer unless the learner explicitly asks for more detail or a specific length. Lead with the direct answer, prefer a short list to long paragraphs, include only the most important formula or example, and skip optional background.";

@@ -122,7 +122,7 @@ test("Socratic describes its format instead of a literal 'Your question?' templa
   assert.doesNotMatch(prompt, /assessment/, "a first Socratic turn has no learner answer to assess");
 
   const sourceFree = lastUserOf(buildOllamaRequest({ ...baseRequest, task: "socratic", context: "", contextCitations: [] }, config));
-  assert.match(sourceFree, /ask exactly one new focused question\./i);
+  assert.match(sourceFree, /ask exactly one new focused question\. Make that question the end of your reply, with nothing after it\./i);
   assert.doesNotMatch(sourceFree, /\[S\d+\]/);
 });
 
@@ -187,6 +187,23 @@ const SOCRATIC_TURNS = [
   ["free text after a rhetorical question mid-answer", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: "Why does ridge help? Correlated features stop fighting over one weight. [S1]" }] }],
   ["free text after a question that is only a heading", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: "## Why does ridge shrink?\n\nThe penalty grows with the weights. [S1]" }] }],
   ["free text after a question inside code only", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Show code." }, { role: "assistant", content: "Use this:\n\n```python\nok = input('ready?')\n```" }] }],
+  // Review follow-up: the learner's own edits and typed requests.
+  ["a mistake from the notebook with the learner's words above it", "diagnose", { prompt: `Can you help me with this one?\n\n${bridged.prompt}` }],
+  ["a mistake from the notebook with its first line rewritten", "diagnose", { prompt: bridged.prompt.replace(/^[^\n]*/, "Help me see where I went wrong.") }],
+  ["a typed hint request after the tutor's question", "hint", { prompt: "Give me a hint.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["a typed hint request before the tutor has asked anything", "open", { prompt: "Give me a hint." }],
+  ["a typed request for another hint", "hint", { prompt: "Can I get another hint, please?", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }, { role: "user", content: HINT_PROMPT }, { role: "assistant", content: HINT_TURN }] }],
+  ["an answer after a typed hint", "answer", { prompt: "The pull weakens near zero, so they never reach it.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }, { role: "user", content: "Give me a hint." }, { role: "assistant", content: HINT_TURN }] }],
+  ["an answer that mentions the hint", "answer", { prompt: "The hint about the gradient helped: they shrink toward zero but never reach it.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["a typed request to move on", "open", { prompt: "Next question, please.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["an answer that opens with \"Next\"", "answer", { prompt: "Next, they shrink toward zero.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["an older client's Socratic start after a question", "open", { prompt: "Teach the selected material using one focused Socratic question at a time. Start by checking my current understanding.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: `${EXPLANATION}\n\nWhich penalty would you pick for correlated features?` }] }],
+  ["an older client's lesson starter after a question", "open", { prompt: "Teach me “Ridge regression” from the lesson “Linear Regression and Regularization” step by step, one focused question at a time. Start by checking what I already understand.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["an older client's Check my understanding after an answer that ends asking something", "open", { prompt: "Ask me one question that checks whether I understood your previous answer. Wait for my reply before explaining.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: `${EXPLANATION}\n\nWhich penalty would you pick for correlated features?` }] }],
+  ["an answer to a question whose label is followed by a period", "answer", { prompt: "They shrink toward zero.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: "Ridge adds a penalty on the weights. As λ grows, what happens to the coefficients? [S1]." }] }],
+  ["an answer to a closing \"Consider how…\" task", "answer", { prompt: "The w² term's gradient vanishes at zero, so the minimum rarely sits on an axis.", history: [{ role: "user", content: "They shrink but never reach zero." }, { role: "assistant", content: "Your answer is correct: the L2 pull weakens near zero. [S1] To deepen this, consider how the geometry changes when we add the $w^2$ term compared to the $|w|$ term. [S1]" }] }],
+  ["free text after an explanation that ends with a suggestion", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: `${EXPLANATION}\n\nNext, review how lasso differs.` }] }],
+  ["an answer to a question with a full-width question mark", "answer", { prompt: "係数はゼロに近づきますが、ゼロにはなりません。", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: "λ が大きくなると、係数はどうなりますか？ [S1]" }] }],
 ];
 
 test("the framing reads history as the client's window sends it", () => {
@@ -220,7 +237,7 @@ test("only an answer to the tutor's question is assessed; other turns are told t
     const format = prompt.slice(prompt.lastIndexOf("Required response format:"));
     if (framing === "answer") {
       assert.match(system, /The learner has just answered your previous question: first assess that answer in one or two sentences/, name);
-      assert.match(format, /^Required response format: open with a one- or two-sentence assessment of the learner's answer to your previous question that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question grounded in the context above, and end it with the exact label of the supplied source that motivates it \(one of \[S1\]\)/, name);
+      assert.match(format, /^Required response format: open with a one- or two-sentence assessment of the learner's answer to your previous question that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question grounded in the context above, and end it with the exact label of the supplied source that motivates it \(one of \[S1\]\)\. Make that question and its label the end of your reply, with nothing after it\./, name);
       continue;
     }
     assert.doesNotMatch(`${system}\n${format}`, /assessment|first assess|has just answered/, `${name}: an assessment instruction reached a turn with no answer`);
@@ -234,8 +251,10 @@ test("only an answer to the tutor's question is assessed; other turns are told t
       assert.match(format, /End it with the exact label of the supplied source that covers the original question \(one of \[S1\]\), without saying what that source states/, name);
       assert.match(format, /do not state, paraphrase, or hint at the expected answer or any fact from the sources/, name);
     } else {
-      assert.match(system, /has not answered a question of yours in this line of questioning, so there is no learner answer to assess, praise, or correct, and your own earlier turns are not their answers/, name);
-      assert.match(format, /the learner has not answered a question of yours yet, so do not praise, assess, or correct anything, and do not refer to a previous answer of theirs\. Ask exactly one new focused question grounded in the context above/, name);
+      assert.match(system, /The learner's latest message is not an answer to a question of yours, so there is nothing in it to assess, praise, or correct\. Do not comment on their earlier answers or on what they got right, and do not treat your own earlier turns as their answers/, name);
+      assert.match(format, /the learner's latest message is not an answer, so do not praise, assess, or correct anything, and do not comment on their earlier answers or say what they got right\. Ask exactly one new focused question grounded in the context above/, name);
+      // The next reply is recognized as an answer only after a closing question.
+      assert.match(format, /Make that question and its label the end of your reply, with nothing after it\./, name);
     }
   }
 });
