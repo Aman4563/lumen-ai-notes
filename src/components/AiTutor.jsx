@@ -40,6 +40,7 @@ import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
 import { progressAnnouncement, tutorProgressSteps } from "../lib/tutorProgress.js";
+import { isPageReadBack } from "../lib/scrollIntent.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import TutorSheet from "./TutorSheet.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
@@ -1445,9 +1446,7 @@ export default function AiTutor({
     const onPageScroll = () => {
       const y = window.scrollY;
       const height = document.documentElement.scrollHeight;
-      // Rubber-banding past the top, or content above shrinking, is not the
-      // learner moving up.
-      if (y >= 0 && y < pageY - 2 && height >= pageHeight - 2) readBack();
+      if (isPageReadBack({ y, previousY: pageY, height, previousHeight: pageHeight, viewportHeight: window.innerHeight })) readBack();
       pageY = y;
       pageHeight = height;
     };
