@@ -692,3 +692,15 @@ and 2.86:1 in Paper), a low-contrast Show answer hint (2.12:1 in Night), and
 practice views with no level-one heading. All three are fixed. The
 `<form role="dialog">` markup (`aria-allowed-role`) is shared with the App's
 dialogs and remains open.
+
+The first browser gate on the rebased branch failed twice. At 360px with
+200% text, the session header's Undo button extended to 397px. The branch
+keeps the header buttons on one line, and the count between them had shrunk
+only because `overflow-wrap: anywhere` split "remaining" mid-word; the
+foundation removed that. The count now fills the space between the buttons
+and wraps between words. The header wraps to two rows only at large text and
+stays on one line from 320px at normal size. The review audit also pressed
+Enter on Import one frame before a card deletion moved focus to the next row,
+so Enter opened the card editor instead of the file picker. The audit now
+waits for that focus move. The crunch-practice notice now uses the
+`--ai-warn` text token; its hard-coded amber measured 3.9–4.3:1.
