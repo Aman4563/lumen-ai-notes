@@ -2470,3 +2470,45 @@
   .ai-tutor__connection--ready { align-items: center; flex-wrap: nowrap; }
   .ai-tutor__connection--ready > svg { margin-top: 0; }
 }
+
+/* The observed end of the conversation (TFEAT-08). */
+.ai-tutor__conversation-end {
+  height: 1px;
+}
+
+/* "Jump to latest" / "Answer ready" floats just above the docked composer. */
+.ai-tutor__jump {
+  position: absolute;
+  z-index: 1;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  gap: 6px;
+  padding: 8px 16px;
+  color: #fff;
+  white-space: nowrap;
+  background: var(--ai-accent-strong);
+  border: 1px solid color-mix(in srgb, var(--ai-accent-strong) 70%, #000);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--ink, #172035) 24%, transparent);
+  font-size: 0.82rem;
+  font-weight: 780;
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.ai-tutor__jump:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--ai-accent-ink));
+  outline-offset: 3px;
+}
+
+.ai-tutor__message--streaming:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--ai-accent-ink));
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .ai-tutor__jump { border: 2px solid ButtonText; }
+}

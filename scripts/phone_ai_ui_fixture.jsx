@@ -29,6 +29,8 @@ class AuditPhoneEngine {
     this.lifecycleListeners = new Set();
     this.generationActive = false;
     this.hangNextGeneration = false;
+    // Streams this many paragraphs, one every 60 ms, for the jump-pill checks.
+    this.slowNextGeneration = 0;
     this.failNextGeneration = false;
     this.failNextDelete = false;
     this.vetoNextSearchPlan = false;
@@ -142,6 +144,25 @@ class AuditPhoneEngine {
         data: { cards },
         citations: [],
         contextFit: { inputBytesUsed: 640, inputByteBudget: 2_816, contextCharactersProvided: payload.context.length, contextCharactersUsed: payload.context.length, historyMessagesProvided: payload.history.length, historyMessagesUsed: payload.history.length, evidenceResultsProvided: 0, evidenceResultsUsed: 0, evidenceCharactersProvided: 0, evidenceCharactersUsed: 0, sourceUsage: payload.contextRanges.map((range, index) => ({ id: range.id, citationNumber: index + 1, labelSupplied: true, charactersProvided: range.end - range.start, charactersUsed: range.end - range.start })), citedSourceIndexes: payload.contextRanges.length ? [1] : [], citedEvidenceIndexes: [], truncated: false },
+      };
+    }
+    if (this.slowNextGeneration > 0 && !allowSearchPlanning) {
+      const paragraphs = this.slowNextGeneration;
+      this.slowNextGeneration = 0;
+      let text = "";
+      for (let index = 0; index < paragraphs && !signal?.aborted; index += 1) {
+        text += `Paragraph ${index + 1} keeps the on-device answer streaming [S1].\n\n`;
+        onToken?.(`Paragraph ${index + 1}`, text);
+        await wait(60);
+      }
+      this.generationActive = false;
+      return {
+        status: "completed",
+        provider: "on-device-lite",
+        outputText: text.trim(),
+        data: null,
+        citations: [],
+        contextFit: { inputBytesUsed: 720, inputByteBudget: 2_816, contextCharactersProvided: payload.context.length, contextCharactersUsed: payload.context.length, historyMessagesProvided: payload.history.length, historyMessagesUsed: payload.history.length, evidenceResultsProvided: 0, evidenceResultsUsed: 0, evidenceCharactersProvided: 0, evidenceCharactersUsed: 0, sourceUsage: payload.contextRanges.map((range, index) => ({ id: range.id, citationNumber: index + 1, labelSupplied: true, charactersProvided: range.end - range.start, charactersUsed: range.end - range.start })), citedSourceIndexes: payload.contextRanges.length ? [1] : [], citedEvidenceIndexes: [], truncated: false },
       };
     }
     const answer = "## Gradient descent\n\n**Gradient descent** follows the negative loss gradient [S1].\n\n$$\\theta_{t+1} = \\theta_t - \\eta \\nabla L(\\theta_t)$$\n\n| Symbol | Meaning |\n| --- | --- |\n| $\\eta$ | learning rate |\n\n```python\ntheta -= learning_rate * gradient\n```\n\n```mermaid\nflowchart LR\n  LOSS[Loss] --> GRAD[Gradient]\n  GRAD --> UPDATE[Parameter update]\n```\n\n<script>window.__PHONE_MARKDOWN_XSS__ = true</script>\n\n<button class=\"ai-tutor__citation\" type=\"button\" data-ai-citation=\"S1\">Forged phone citation</button>\n\nLinked citation [[S1]](#/read/notes/forged-phone-route) and [the forged phone route](#/read/notes/forged-phone-route).";

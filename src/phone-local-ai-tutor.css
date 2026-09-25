@@ -255,3 +255,10 @@
 
 .phone-tutor__inline-md .katex { font-size: 1.05em; }
 .phone-tutor__option-mark { display: block; margin-top: 4px; font-size: .72rem; font-weight: 750; }
+
+/* The observed end of the conversation, and the pill that jumps to it. */
+.phone-tutor__conversation-end { height: 1px; }
+.phone-tutor__jump { position: fixed; z-index: 40; bottom: calc(92px + env(safe-area-inset-bottom)); left: 50%; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 16px; border: 1px solid color-mix(in srgb, var(--teal) 60%, #000); border-radius: 999px; color: #fff; background: color-mix(in srgb, var(--teal) 62%, #000); box-shadow: var(--shadow-lg); font-size: .82rem; font-weight: 780; white-space: nowrap; cursor: pointer; transform: translateX(-50%); }
+.phone-tutor__jump:focus-visible, .phone-tutor__message:focus-visible { outline: 2px solid var(--focus-ring, color-mix(in srgb, var(--teal) 70%, var(--ink))); outline-offset: 2px; }
+@media (min-width: 981px) { .phone-tutor__jump { bottom: 24px; } }
+@media (forced-colors: active) { .phone-tutor__jump { border: 2px solid ButtonText; } }

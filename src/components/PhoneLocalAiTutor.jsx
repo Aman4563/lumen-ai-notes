@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import "katex/dist/katex.min.css";
 import {
   AlertTriangle,
+  ArrowDown,
   BookOpen,
   Check,
   ChevronDown,
@@ -24,6 +25,7 @@ import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { revealFocusedField } from "../lib/revealField.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
+import { scrollBehavior } from "../lib/motion.js";
 import {
   getPhoneLocalAiEngine,
   inspectPhoneLocalAiRequestFit,
@@ -505,6 +507,15 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   const [savedNoteMessageIds, setSavedNoteMessageIds] = useState(() => new Set());
   const [streamingSources, setStreamingSources] = useState([]);
   const historyRef = useRef(history);
+  // The end of the conversation, observed so a learner reading elsewhere
+  // can jump to a streaming answer or one that just landed (TFEAT-08).
+  const conversationEndRef = useRef(null);
+  const streamingArticleRef = useRef(null);
+  const endInViewRef = useRef(true);
+  const [endInView, setEndInView] = useState(true);
+  const [readyMessageId, setReadyMessageId] = useState("");
+  // Below 981px the fixed bottom navigation covers the bottom of the page.
+  const bottomNavLayout = useMediaQuery("(max-width: 980px)");
   const streamBufferRef = useRef("");
   const streamFrameRef = useRef(0);
   historyRef.current = history;
@@ -610,6 +621,24 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     onInteractionChange?.(false);
   }, [engine, onInteractionChange]);
 
+  useEffect(() => {
+    const target = conversationEndRef.current;
+    if (!target || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver(([entry]) => {
+      endInViewRef.current = entry.isIntersecting;
+      setEndInView(entry.isIntersecting);
+      if (entry.isIntersecting) setReadyMessageId("");
+    }, { rootMargin: `0px 0px -${bottomNavLayout ? 80 : 0}px 0px` });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [bottomNavLayout]);
+
+  useEffect(() => {
+    if (!readyMessageId) return undefined;
+    const timer = setTimeout(() => setReadyMessageId(""), 8_000);
+    return () => clearTimeout(timer);
+  }, [readyMessageId]);
+
   // Returning within the release grace period keeps the loaded model.
   useEffect(() => { cancelModelRelease(engine); }, [engine]);
 
@@ -669,6 +698,8 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
       requestUserMessageId: spec.userMessageId,
     };
     activeUserMessageIdRef.current = null;
+    // Offered by the "Answer ready" pill when it lands out of view.
+    if (!endInViewRef.current) setReadyMessageId(message.id);
     setHistory((current) => [...current.filter((item) => item.id !== spec.replaceAssistantId), message].slice(-MAX_SESSION_MESSAGES));
     clearStreaming();
     pendingSearchRef.current = null;
@@ -864,6 +895,25 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     engine.cancel?.();
   };
 
+  const jumpLabel = busy && streamingText && !endInView
+    ? "Jump to latest"
+    : readyMessageId && !endInView && history.some((message) => message.id === readyMessageId) ? "Answer ready" : "";
+  const jumpToLatest = () => {
+    const topbar = Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0);
+    if (busy && streamingArticleRef.current) {
+      const limit = window.innerHeight - (bottomNavLayout ? 92 : 16);
+      const bottom = conversationEndRef.current?.getBoundingClientRect().bottom ?? limit;
+      window.scrollBy({ top: bottom - limit, behavior: scrollBehavior() });
+      streamingArticleRef.current.focus({ preventScroll: true });
+      return;
+    }
+    const article = [...document.querySelectorAll(".phone-tutor__message[data-message-id]")].find((node) => node.dataset.messageId === readyMessageId);
+    setReadyMessageId("");
+    if (!article) return;
+    window.scrollBy({ top: article.getBoundingClientRect().top - topbar - 12, behavior: scrollBehavior() });
+    article.focus({ preventScroll: true });
+  };
+
   const retry = () => {
     if (!lastRequestRef.current || controllerRef.current || !engineStatus.loaded) return;
     const rebuilt = createSpec(lastRequestRef.current.userMessageId);
@@ -977,7 +1027,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
           {history.length === 0 && !streamingText ? <div className="phone-tutor__welcome"><Cpu size={27} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a short question or choose a study mode.</p></div> : (
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
               {history.map((message) => (
-                <article className={`phone-tutor__message is-${message.role}`} key={message.id}>
+                <article className={`phone-tutor__message is-${message.role}`} key={message.id} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined}>
                   <h3 className="visually-hidden">{message.role === "assistant" ? "On-device answer" : "Your question"}, {PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</h3>
                   <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{typeof onSaveAnswerNote === "function" && <button type="button" aria-label={savedNoteMessageIds.has(message.id) ? "Saved to notes" : "Save to notes: this answer becomes a labeled AI note in your notebook"} disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Regenerate</button>}</div>}</div>
                   {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
@@ -987,7 +1037,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
             </div>
           )}
 
-          {streamingText && <article className="phone-tutor__message is-assistant is-streaming" aria-label="Streaming on-device answer"><div className="phone-tutor__message-meta"><span><strong>On-device Lite</strong><small>Generating token by token…</small></span></div><SafeResponse text={streamingText} sources={streamingSources} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} streaming /></article>}
+          {streamingText && <article className="phone-tutor__message is-assistant is-streaming" aria-label="Streaming on-device answer" tabIndex={-1} ref={streamingArticleRef}><div className="phone-tutor__message-meta"><span><strong>On-device Lite</strong><small>Generating token by token…</small></span></div><SafeResponse text={streamingText} sources={streamingSources} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} streaming /></article>}
           {busy && <div className="phone-tutor__working" role="status"><span><LoaderCircle className="spin" size={18} aria-hidden="true" />{requestState.message}</span><button type="button" onClick={cancel}><CircleStop size={16} aria-hidden="true" /> Cancel</button></div>}
 
           {pendingSearch && <section className="phone-tutor__search-consent" aria-labelledby="phone-search-title">
@@ -998,6 +1048,8 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
           </section>}
 
           {["error", "cancelled", "declined", "success"].includes(requestState.status) && requestState.message && <div className={`phone-tutor__request-state is-${requestState.status}`} role={requestState.status === "error" ? "alert" : "status"}>{requestState.status === "error" && <AlertTriangle size={18} aria-hidden="true" />}<span>{requestState.message}</span>{["error", "cancelled"].includes(requestState.status) && lastRequestRef.current && <button type="button" disabled={!engineStatus.loaded || !requestFit.fits} title={!engineStatus.loaded ? "Load the on-device model again before retrying" : !requestFit.fits ? requestFit.message : undefined} onClick={retry}><RefreshCw size={15} aria-hidden="true" /> Retry</button>}</div>}
+          <div className="phone-tutor__conversation-end" ref={conversationEndRef} aria-hidden="true" />
+          {jumpLabel && <button className="phone-tutor__jump" type="button" onClick={jumpToLatest}><ArrowDown size={16} aria-hidden="true" /> {jumpLabel}</button>}
         </section>
       </div>
 

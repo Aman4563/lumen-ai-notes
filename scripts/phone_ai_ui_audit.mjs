@@ -457,6 +457,37 @@ try {
   const controls = await touchSize(page, ".phone-tutor button, .phone-tutor select, .phone-tutor textarea, .phone-tutor input");
   const undersizedButtons = controls.filter((control) => ["button", "select", "textarea"].includes(control.tag) && control.height < 44);
   assert.deepEqual(undersizedButtons, [], `undersized phone AI controls: ${JSON.stringify(undersizedButtons)}`);
+
+  // A long answer streams while the learner reads elsewhere (TFEAT-08):
+  // "Jump to latest" brings its newest text into view at once under reduced
+  // motion, and an answer that lands out of view is offered as "Answer
+  // ready", which moves focus to it. Web fallback is off for these turns.
+  await page.click(".phone-tutor__search-toggle input");
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 60; });
+  await page.click(sendButtonSelector);
+  await page.waitForFunction(() => document.querySelector(".phone-tutor__message.is-streaming")?.getBoundingClientRect().height > 700, { timeout: 8_000 });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.waitForFunction(() => document.querySelector(".phone-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 3_000 }).catch(() => assert.fail("On-device Lite offered no Jump to latest while the learner read elsewhere"));
+  assert.deepEqual(await page.$eval(".phone-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the On-device jump pill was a live region or too small to tap");
+  await page.click(".phone-tutor__jump");
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => {
+    const end = document.querySelector(".phone-tutor__conversation-end").getBoundingClientRect();
+    return end.bottom > 0 && end.bottom <= innerHeight && document.activeElement?.classList.contains("is-streaming");
+  }), true, "Jump to latest did not bring the streaming answer's end into view and focus it");
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming"), { timeout: 10_000 });
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 30; });
+  await page.click(sendButtonSelector);
+  await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming") && document.querySelector(".phone-tutor__jump")?.textContent.includes("Answer ready"), { timeout: 10_000 }).catch(() => assert.fail("an On-device answer that landed out of view was not offered"));
+  await page.click(".phone-tutor__jump");
+  await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("Answer ready did not move focus to the new On-device answer"));
+  assert.equal(await page.$(".phone-tutor__jump"), null, "the On-device pill stayed after it was used");
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+  await page.click(".phone-tutor__search-toggle input");
+
   await page.click(sendButtonSelector);
   await page.waitForSelector(".phone-tutor__search-consent");
   // Leaving releases the model after a short grace period, so a quick return

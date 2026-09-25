@@ -195,6 +195,21 @@ const activeMode = (page) => page.evaluate(() => {
   return (select ? select.selectedOptions[0]?.textContent : document.querySelector(".ai-tutor__mode-tabs button[aria-pressed='true']")?.textContent)?.trim() || "";
 });
 
+// A finished answer is brought into view with a smooth page scroll on
+// phones (issue #57); pointer clicks wait until the page has settled.
+const settleScroll = (page) => page.evaluate(() => new Promise((resolve) => {
+  let last = -1;
+  let stable = 0;
+  const started = performance.now();
+  const check = () => {
+    stable = Math.abs(scrollY - last) < 0.5 ? stable + 1 : 0;
+    last = scrollY;
+    if (stable >= 3 || performance.now() - started > 2_000) resolve();
+    else requestAnimationFrame(check);
+  };
+  requestAnimationFrame(check);
+}));
+
 const readProfile = (page) => page.evaluate(() => new Promise((resolve, reject) => {
   const request = indexedDB.open("lumen-ai-notes", 1);
   request.onerror = () => reject(request.error);
@@ -595,6 +610,7 @@ try {
   assert.ok(quizRequest.body.history.length >= 2 && quizRequest.body.history.length <= 12, "bounded conversation history was not sent to the follow-up quiz");
   assert.equal((await page.$$(".ai-tutor__quiz-question")).length, 1, "validated quiz did not render exactly one question");
   assert.equal((await page.$$(".ai-tutor__quiz-options label")).length, 3, "quiz options did not match the validated structure");
+  await settleScroll(page);
   await page.click(".ai-tutor__quiz-options label:nth-child(2) input");
   await clickByText(page, ".ai-tutor__quiz-question button", "Check answer");
   await page.waitForSelector(".ai-tutor__quiz-feedback.is-correct");
@@ -1491,8 +1507,9 @@ try {
     await page.keyboard.press("Home");
     assert.equal(await page.$eval(".ai-tutor__source-modes [aria-checked='true'] strong", (node) => node.textContent), "Library first", "Home did not select the first grounding scope");
 
-    // Following a streaming answer scrolls only the conversation: a learner
-    // who scrolls the page away is not pulled back, during or after it.
+    // A learner who scrolls the page away while an answer streams is not
+    // pulled back, during or after it (TFEAT-08). "Jump to latest" is offered
+    // meanwhile, and "Answer ready" once it lands out of view.
     await setPrompt("Keyboard check: stream this answer slowly.");
     await page.evaluate(() => { window.__lumenAuditSlowStream = true; });
     await page.$eval(sendSelector, (button) => button.click());
@@ -1507,9 +1524,60 @@ try {
     const scrolledTo = await page.evaluate(() => scrollY);
     await new Promise((resolve) => setTimeout(resolve, 800));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "streaming pulled the page back after the learner scrolled away");
+    const pillText = () => page.$eval(".ai-tutor__jump", (node) => node.textContent.trim()).catch(() => "");
+    assert.equal(await pillText(), "Jump to latest", "no Jump to latest was offered while the learner read elsewhere");
+    assert.deepEqual(await page.$eval(".ai-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the jump pill was a live region or too small to tap");
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
+    assert.equal(await pillText(), "Answer ready", "a finished answer out of view was not offered");
+    // From the keyboard, the pill takes focus to the new answer.
+    await page.$eval(".ai-tutor__jump", (button) => button.focus());
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.activeElement?.matches?.(".ai-tutor__message--assistant[data-message-id]") && document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant[data-message-id]")].at(-1), { timeout: 3_000 }).catch(async () => assert.fail(`Answer ready did not focus the new answer: ${JSON.stringify(await activeElement())}`));
+    assert.equal(await page.$(".ai-tutor__jump"), null, "the pill stayed after it was used");
+    await settleScroll(page);
+    const answerTop = await page.evaluate(() => document.activeElement.getBoundingClientRect().top);
+    assert.ok(answerTop >= 0 && answerTop < 852 * 0.66, `Answer ready did not bring the answer's start into view: ${answerTop}`);
+
+    // Phones scroll the page (issue #57): while an answer streams its end
+    // stays just above the docked composer. A learner who scrolls up stays
+    // there; "Jump to latest" brings the end back, at once under reduced
+    // motion, and following resumes.
+    const endGap = () => page.evaluate(() => Math.round(document.querySelector(".ai-tutor__composer").getBoundingClientRect().top - document.querySelector(".ai-tutor__conversation-end").getBoundingClientRect().bottom));
+    // Following trails each new delta by one frame, so "kept in view" means
+    // the end returns just above the composer, not that every sample is.
+    const waitForEndAboveComposer = (message) => page.waitForFunction(() => {
+      const gap = document.querySelector(".ai-tutor__composer").getBoundingClientRect().top - document.querySelector(".ai-tutor__conversation-end").getBoundingClientRect().bottom;
+      return gap >= -2 && gap <= 60;
+    }, { timeout: 2_000, polling: "raf" }).catch(async () => assert.fail(`${message}: ${await endGap()}`));
+    await setPrompt("Keyboard check: stream a long answer on a phone.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && document.querySelector(".ai-tutor__message--streaming").getBoundingClientRect().height > 900, { timeout: 8_000 });
+    await waitForEndAboveComposer("the streaming answer's end was not kept just above the composer");
+    await page.evaluate(() => {
+      window.dispatchEvent(new WheelEvent("wheel", { deltaY: -500 }));
+      window.scrollBy({ top: -500, behavior: "instant" });
+    });
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 3_000 }).catch(() => assert.fail("no Jump to latest after scrolling up mid-stream"));
+    const readingAt = await page.evaluate(() => scrollY);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(await page.evaluate(() => scrollY) <= readingAt + 2, "new text pulled the page back down after the learner scrolled up");
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+    await page.click(".ai-tutor__jump");
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // Under reduced motion the jump is instant: two frames later the end is
+    // at most one new delta below the composer, not a smooth scroll away.
+    const jumpedGap = await endGap();
+    assert.ok(jumpedGap >= -200 && jumpedGap <= 60, `Jump to latest did not bring the end above the composer at once: ${jumpedGap}`);
+    assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("ai-tutor__message--streaming")), true, "Jump to latest left focus behind");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(await page.$(".ai-tutor__message--streaming"), "the long stream finished before following could be checked");
+    await waitForEndAboveComposer("following did not resume after Jump to latest");
+    assert.equal(await page.$(".ai-tutor__jump"), null, "Jump to latest came back while following");
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
 
     // Wider screens keep the conversation's own scroller (phones scroll the
     // page). Inside it, a learner who scrolls back up while text streams
@@ -1525,9 +1593,10 @@ try {
     }, { timeout: 8_000 });
     await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = 0; });
     await new Promise((resolve) => setTimeout(resolve, 700));
-    const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
+    const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")), pill: document.querySelector(".ai-tutor__jump")?.textContent.trim() || "" }));
     assert.equal(readBack.streaming, true, "the long stream finished before the scroll-back check could run");
     assert.ok(readBack.top < 60, `streaming pulled the conversation back down after the learner scrolled up: ${JSON.stringify(readBack)}`);
+    assert.equal(readBack.pill, "Jump to latest", "the conversation scroller offered no Jump to latest");
     await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = surface.scrollHeight; });
     await new Promise((resolve) => setTimeout(resolve, 500));
     const resumed = await page.$eval(".ai-tutor__conversation", (surface) => ({ gap: surface.scrollHeight - surface.scrollTop - surface.clientHeight, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));

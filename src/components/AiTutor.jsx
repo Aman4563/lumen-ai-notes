@@ -3,6 +3,7 @@ import { scrollBehavior } from "../lib/motion.js";
 import "katex/dist/katex.min.css";
 import {
   AlertTriangle,
+  ArrowDown,
   BookOpen,
   BrainCircuit,
   Check,
@@ -1006,6 +1007,9 @@ export default function AiTutor({
   const requestControllerRef = useRef(null);
   const lastRequestRef = useRef(null);
   const conversationRef = useRef(null);
+  // The end of the conversation, observed to know whether the newest text
+  // is on screen (TFEAT-08).
+  const conversationEndRef = useRef(null);
   const followStreamRef = useRef(true);
   const promptRef = useRef(null);
   const activeResponseRef = useRef(null);
@@ -1028,10 +1032,27 @@ export default function AiTutor({
   const userScrolledRef = useRef(false);
   const [announcement, setAnnouncement] = useState({ text: "", id: 0 });
   const announce = useCallback((text) => setAnnouncement((current) => ({ text, id: current.id + 1 })), []);
+  // Following an answer keeps its newest text in view, just above the
+  // docked composer. Wide screens scroll the conversation's own scroller to
+  // its end; the page itself only ever moves down, and only as far as that
+  // end (or, on phones, the end of the conversation) needs.
+  const composerSpaceRef = useRef(0);
+  const [following, setFollowingState] = useState(true);
+  const setFollowing = useCallback((value) => {
+    followStreamRef.current = value;
+    setFollowingState(value);
+  }, []);
   const scrollConversationToEnd = useCallback(() => {
     const surface = conversationRef.current;
+    const end = conversationEndRef.current;
     if (!surface) return;
-    surface.scrollTop = surface.scrollHeight;
+    const ownScroller = getComputedStyle(surface).overflowY !== "visible" && surface.scrollHeight > surface.clientHeight + 1;
+    if (ownScroller) surface.scrollTop = surface.scrollHeight;
+    const edge = ownScroller ? surface : end;
+    if (!edge) return;
+    const visibleBottom = window.innerHeight - composerSpaceRef.current - 12;
+    const overshoot = edge.getBoundingClientRect().bottom - visibleBottom;
+    if (overshoot > 1) window.scrollBy({ top: overshoot, behavior: "instant" });
   }, []);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -1338,6 +1359,7 @@ export default function AiTutor({
       const space = style.position === "sticky" ? Math.ceil(composer.offsetHeight + offset) : 0;
       root.style.setProperty("--ai-composer-space", `${space}px`);
       root.style.scrollPaddingBottom = space ? `${space + 12}px` : "";
+      composerSpaceRef.current = space;
       setComposerSpace((current) => Math.abs(current - space) > 2 ? space : current);
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
@@ -1369,23 +1391,82 @@ export default function AiTutor({
     return () => window.removeEventListener("resize", fit);
   }, [prompt]);
 
-  // Any scroll gesture while an answer is generating means the learner is
-  // reading something else; completion then does not move the page.
+  // While an answer is generating, any scroll gesture means the learner is
+  // reading something else, so completion does not move the page; a gesture
+  // upwards (wheel, a finger dragging down, PageUp/ArrowUp/Home, or the page
+  // itself moving up) stops following. The tutor's own scrolls only go down,
+  // so they never stop it.
   useEffect(() => {
     if (requestState.status !== "loading") return undefined;
-    const markScrolled = () => { userScrolledRef.current = true; };
+    let touchY = null;
+    let pageY = window.scrollY;
+    let pageHeight = document.documentElement.scrollHeight;
+    const readingElsewhere = () => { userScrolledRef.current = true; };
+    const readBack = () => {
+      userScrolledRef.current = true;
+      setFollowing(false);
+    };
+    const onWheel = (event) => { if (event.deltaY < 0) readBack(); else readingElsewhere(); };
+    const onTouchStart = (event) => { touchY = event.touches?.[0]?.clientY ?? null; };
+    const onTouchMove = (event) => {
+      const y = event.touches?.[0]?.clientY;
+      if (Number.isFinite(y) && touchY !== null && y - touchY > 8) readBack();
+      else readingElsewhere();
+      if (Number.isFinite(y)) touchY = y;
+    };
     const onKeyDown = (event) => {
-      if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key) && !event.target?.closest?.("textarea, input, select, [contenteditable='true']")) markScrolled();
+      if (event.target?.closest?.("textarea, input, select, [contenteditable='true']")) return;
+      if (["PageUp", "ArrowUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) readBack();
+      else if (["PageDown", "End", "ArrowDown", " "].includes(event.key)) readingElsewhere();
     };
-    window.addEventListener("wheel", markScrolled, { passive: true });
-    window.addEventListener("touchmove", markScrolled, { passive: true });
+    const onPageScroll = () => {
+      const y = window.scrollY;
+      const height = document.documentElement.scrollHeight;
+      // Rubber-banding past the top, or content above shrinking, is not the
+      // learner moving up.
+      if (y >= 0 && y < pageY - 2 && height >= pageHeight - 2) readBack();
+      pageY = y;
+      pageHeight = height;
+    };
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onPageScroll, { passive: true });
     return () => {
-      window.removeEventListener("wheel", markScrolled);
-      window.removeEventListener("touchmove", markScrolled);
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onPageScroll);
     };
-  }, [requestState.status]);
+  }, [requestState.status, setFollowing]);
+
+  // Whether the end of the conversation is on screen, above the docked
+  // composer. Returning there while an answer streams resumes following.
+  const [atLatest, setAtLatest] = useState(true);
+  useEffect(() => {
+    const target = conversationEndRef.current;
+    if (!target || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver(([entry]) => {
+      setAtLatest(entry.isIntersecting);
+      if (entry.isIntersecting && inFlightRef.current) setFollowing(true);
+    }, { rootMargin: `0px 0px -${Math.max(0, composerSpace)}px 0px` });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [composerSpace, setFollowing]);
+
+  // After an answer lands while the learner is reading elsewhere, the pill
+  // offers it for eight seconds.
+  const [readyAnswerId, setReadyAnswerId] = useState("");
+  useEffect(() => {
+    if (!readyAnswerId) return undefined;
+    const timer = window.setTimeout(() => setReadyAnswerId(""), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [readyAnswerId]);
+  useEffect(() => {
+    if (atLatest) setReadyAnswerId("");
+  }, [atLatest]);
 
   const historyRef = useRef(history);
   historyRef.current = history;
@@ -1446,8 +1527,11 @@ export default function AiTutor({
     if (surface?.contains(target)) surface.scrollTop = Math.max(0, target.offsetTop - 8);
     const topbar = document.querySelector(".app-topbar")?.getBoundingClientRect();
     const visibleTop = Math.max(0, topbar?.bottom ?? 0) + 12;
+    // The start belongs near the top of the band above the docked composer,
+    // so most of the answer shows.
+    const visibleBottom = window.innerHeight - composerSpaceRef.current;
     const top = target.getBoundingClientRect().top;
-    if (top < visibleTop || top > window.innerHeight * 0.66) window.scrollBy({ top: top - visibleTop, behavior: scrollBehavior() });
+    if (top < visibleTop || top > visibleTop + (visibleBottom - visibleTop) * 0.35) window.scrollBy({ top: top - visibleTop, behavior: scrollBehavior() });
   }, []);
 
   // Applies focus/scroll requested by the last state change once the target
@@ -1643,7 +1727,8 @@ export default function AiTutor({
     };
     setRequestState({ status: "loading", error: null });
     requestStartedAtRef.current = globalThis.performance?.now?.() ?? Date.now();
-    followStreamRef.current = true;
+    setFollowing(true);
+    setReadyAnswerId("");
     userScrolledRef.current = false;
     pendingFocusRef.current = null;
     setComposerNotice("");
@@ -1889,7 +1974,9 @@ export default function AiTutor({
       // Show the new answer from its start (not its end) unless the learner
       // scrolled away meanwhile, and move focus there if it was on Generate,
       // Stop or nowhere.
-      pendingFocusRef.current = { kind: "message", id: responseId, focus: restoreFocus, scroll: followStreamRef.current && !userScrolledRef.current };
+      const revealAnswer = followStreamRef.current && !userScrolledRef.current;
+      pendingFocusRef.current = { kind: "message", id: responseId, focus: restoreFocus, scroll: revealAnswer };
+      if (!revealAnswer) setReadyAnswerId(responseId);
       const seconds = Math.round(assistantMessage.durationMs / 1_000);
       announce(`${requestSpec.mode.label} ${requestSpec.mode.structured ? "result" : "answer"} ready${seconds > 0 ? ` after ${seconds} second${seconds === 1 ? "" : "s"}` : ""}.`);
     } catch (error) {
@@ -1973,7 +2060,7 @@ export default function AiTutor({
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
       if (inFlightRef.current?.responseId === responseId) inFlightRef.current = null;
     }
-  }, [announce, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd]);
+  }, [announce, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd, setFollowing]);
 
   /**
    * The one way a request is prepared, for Send and for tutor actions
@@ -2304,6 +2391,24 @@ export default function AiTutor({
                       ? "Review and acknowledge the local-model disclosure once on this browser to enable generation."
                       : "";
 
+  // "Jump to latest" while an answer streams out of view after the learner
+  // scrolled away; "Answer ready" for a while after it lands out of view.
+  const jumpLabel = requestState.status === "loading" && activeResponse && !atLatest && !following
+    ? "Jump to latest"
+    : readyAnswerId && !atLatest && history.some((message) => message.id === readyAnswerId) ? "Answer ready" : "";
+  const jumpToLatest = () => {
+    if (requestState.status === "loading") {
+      setFollowing(true);
+      conversationEndRef.current?.scrollIntoView({ block: "end", behavior: scrollBehavior() });
+      // The pill disappears; focus goes to the answer it jumped to.
+      streamingArticleRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const id = readyAnswerId;
+    setReadyAnswerId("");
+    pendingFocusRef.current = { kind: "message", id, focus: true, scroll: true };
+  };
+
   // Non-default request options, shown on the Options button.
   const optionsSummary = [
     difficulty !== "intermediate" ? DIFFICULTIES.find((item) => item.id === difficulty)?.label : "",
@@ -2463,10 +2568,10 @@ export default function AiTutor({
           // settling back from past the end is not a move up.
           if (top < -1 || top > end + 1) return;
           if (top < Math.min(previous.top, end) - 1 && surface.scrollHeight >= previous.height) {
-            followStreamRef.current = false;
+            if (followStreamRef.current) setFollowing(false);
             return;
           }
-          if (end - top < 140) followStreamRef.current = true;
+          if (end - top < 140 && !followStreamRef.current) setFollowing(true);
         }}>
           {setupRequired && <div className="ai-tutor__setup-card">
               {configState.status === "pairing" ? <LockKeyhole size={26} aria-hidden="true" /> : <ServerOff size={26} aria-hidden="true" />}
@@ -2495,7 +2600,7 @@ export default function AiTutor({
                 );
               })}
               {activeResponse && (
-                <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true" ref={streamingArticleRef}>
+                <article className="ai-tutor__message ai-tutor__message--assistant ai-tutor__message--streaming" aria-busy="true" tabIndex={-1} aria-label="Tutor answer, in progress" ref={streamingArticleRef}>
                   <div className="ai-tutor__message-meta"><strong>Lumen Tutor</strong><span>{modeById(activeResponse.mode).label}</span><span>{RESPONSE_PROFILES.find((item) => item.id === activeResponse.responseProfile)?.label || "Balanced"}</span><span className="ai-tutor__live-badge"><i aria-hidden="true" /> Live</span><WebFallbackBadge status={activeResponse.webFallbackStatus} /></div>
                   <div className="ai-tutor__stream-status"><span>{activeResponse.stage || "Generating response…"}</span><small aria-hidden="true">{requestElapsed}s</small></div>
                   {activeResponse.content
@@ -2511,12 +2616,14 @@ export default function AiTutor({
             </div>
           )}
           {requestNotice}
+          <div className="ai-tutor__conversation-end" ref={conversationEndRef} aria-hidden="true" />
         </section>
       </div>
 
       <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement.text}{announcement.id % 2 ? " " : ""}</p>
 
       <form className={`ai-tutor__composer${setupRequired ? " is-collapsed" : ""}`} onSubmit={submit} ref={composerRef} aria-label="Ask the tutor">
+        {jumpLabel && <button className="ai-tutor__jump" type="button" onClick={jumpToLatest}><ArrowDown size={16} aria-hidden="true" /> {jumpLabel}</button>}
         {composerNotice && <p className="ai-tutor__composer-notice" role="status">{composerNotice}</p>}
         {/* The one-time local-model disclosure stays in the composer, never
             only in the options sheet, until it is acknowledged. */}
@@ -2529,7 +2636,7 @@ export default function AiTutor({
             excerpt is kept for when the tutor becomes available. */}
         <label className="ai-tutor__prompt-label" htmlFor={promptId}>Your question</label>
         <div className="ai-tutor__submit-row">
-          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} maxLength={promptLimit} rows={1} placeholder="Ask about AI/ML or your lessons…" />
+          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} maxLength={promptLimit} rows={1} placeholder="Ask a question…" />
           {requestState.status === "loading" ? (
             <button
               className="ai-tutor__button ai-tutor__button--secondary ai-tutor__send is-stop"
