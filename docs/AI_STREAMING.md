@@ -142,7 +142,19 @@ link) streams normally; a bare JSON array that streamed live still fails with
 `AI_CONTRACT_ERROR` and is not kept. Prose backed by library or web
 evidence remains buffered until
 terminal completion and citation validation, while phase/heartbeat events keep
-the request observable and cancellable. Buffered text is normally released in
+the request observable and cancellable. Both transports report `validating`
+before each terminal draft is checked, so for evidence-backed prose it precedes
+every released delta. A draft that fails its check goes back to `generating`
+for its one bounded regeneration and is reported again. Source-free prose
+streams live, so its `validating` follows the text. The JSON endpoint runs the
+same phases internally but has no event channel; its response shape is
+unchanged. The check takes milliseconds, so `validating`, the released deltas
+and `complete` usually arrive in one read. The tutor therefore waits 300 ms on
+a `validating` event while its step list is visible (not on a hidden page;
+Stop ends the wait) so "Checking citations" is actually drawn, and
+`requestAiStream` ends with `AI_CANCELLED` or `AI_CLIENT_TIMEOUT` if the
+request was stopped or timed out during a callback's wait, instead of applying
+the buffered answer. Buffered text is normally released in
 the provider's original chunks. When the server changes the validated text (the
 empty-web notice, a normalized citation label, or a removed template prefix), it
 releases the final text instead, in chunks of at most 16,384 characters, so the
