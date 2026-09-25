@@ -172,13 +172,13 @@ try {
   await page.waitForSelector(".review-card-dialog");
   assert.ok((await page.$$eval(".review-card-dialog textarea", (nodes) => nodes[1]?.value || "")).includes(quote.trim().slice(0, 30)));
   await clickByText(page, ".review-card-dialog button", "Add to review");
-  await new Promise((resolve) => setTimeout(resolve, 700));
 
-  const persisted = await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("lumen-ai-notes", 1);
-    request.onsuccess = () => { const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile"); get.onsuccess = () => resolve(get.result); get.onerror = () => reject(get.error); };
-    request.onerror = () => reject(request.error);
-  }));
+  const persisted = await waitForStored(
+    page,
+    "profile",
+    (profile) => profile.annotations?.length === 1 && profile.annotations[0].color === "teal" && profile.reviewItems?.length > 0,
+    "the edited highlight and its review card were not saved",
+  );
   assert.equal(persisted.annotations.length, 1);
   assert.equal(persisted.annotations[0].color, "teal");
   assert.equal(persisted.annotations[0].purpose, "interview");
@@ -367,7 +367,8 @@ try {
   assert.ok((await page.$eval(".notebook-annotation-card blockquote", (node) => node.textContent)).includes(relinkTarget), "the notebook card does not show the restored quote");
   await page.$eval('.notebook-annotation-card button[aria-label="Copy highlight"]', (button) => button.click());
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Highlight copied"));
-  assert.equal(await page.$eval(".toast", (node) => node.getAttribute("role")), "status", "the copy toast is not a status live region");
+  // Toasts announce through the shell's persistent status region, not the visual toast.
+  assert.ok((await page.$eval(".toast-live[role=status]", (node) => node.textContent)).includes("Highlight copied"), "the copy toast was not announced through the persistent status region");
   assert.ok((await page.evaluate(() => window.__lumenCopiedText || "")).includes(relinkTarget), "the copied highlight text did not reach the clipboard");
   await page.$eval('button[aria-label="Export the listed highlights as Markdown"]', (button) => button.click());
   const exportPath = await waitForDownload((name) => name.startsWith("lumen-highlights-") && name.endsWith(".md"), "the highlights Markdown export was not downloaded");

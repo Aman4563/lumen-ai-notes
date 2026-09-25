@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleUserRound,
+  CircleX,
   Clock3,
   Contrast,
   Keyboard,
@@ -36,6 +37,7 @@ import {
   RefreshCw,
   RotateCcw,
   History,
+  Info,
   Search,
   Star,
   Settings,
@@ -168,15 +170,75 @@ const recoveryRevisionSignature = (records) => JSON.stringify(Object.entries(rec
 
 const documentProgress = (profile, id) => profile.progress[id] || 0;
 
+const TOAST_ICONS = { success: CheckCircle2, warning: AlertTriangle, error: CircleX, info: Info };
+const TOAST_PREFIXES = { warning: "Warning: ", error: "Error: " };
+// Errors and warnings stay long enough to be found and read; callers may ask
+// for longer, never shorter.
+const toastDuration = (toast) => Math.max(toast.duration || 0, toast.kind === "error" ? 10_000 : toast.kind === "warning" ? 6_000 : 3_200);
+
+/**
+ * Visual toast. Announcements go through the shell's persistent live regions
+ * (ToastAnnouncer), so this element is not a live region itself. The timer is
+ * keyed to the toast id: unrelated app renders must not restart it. Hovering
+ * or focusing the dismiss button pauses it; the rest of the toast lets taps
+ * through to the controls underneath.
+ */
 function Toast({ toast, onClose }) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const remainingRef = useRef(0);
+  const [paused, setPaused] = useState(false);
+  const toastId = toast?.id;
   useEffect(() => {
-    if (!toast) return undefined;
-    const timer = setTimeout(onClose, toast.duration || 3200);
-    return () => clearTimeout(timer);
-  }, [onClose, toast]);
+    remainingRef.current = toast ? toastDuration(toast) : 0;
+    setPaused(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toastId]);
+  useEffect(() => {
+    if (!toastId || paused) return undefined;
+    const startedAt = Date.now();
+    const timer = setTimeout(() => closeRef.current(), remainingRef.current);
+    return () => {
+      clearTimeout(timer);
+      remainingRef.current = Math.max(1_500, remainingRef.current - (Date.now() - startedAt));
+    };
+  }, [paused, toastId]);
   if (!toast) return null;
-  return <div className={`toast ${toast.kind || "success"}`} role="status" aria-live="polite"><CheckCircle2 size={17} /><span>{toast.message}</span><button onClick={onClose} aria-label="Dismiss notification" type="button"><X size={15} /></button></div>;
+  const kind = TOAST_ICONS[toast.kind] ? toast.kind : "success";
+  const Icon = TOAST_ICONS[kind];
+  return <div className={`toast ${kind}`} onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(false); }}><Icon size={17} aria-hidden="true" /><span>{TOAST_PREFIXES[kind] && <span className="visually-hidden">{TOAST_PREFIXES[kind]}</span>}{toast.message}</span><button onClick={() => closeRef.current()} aria-label="Dismiss notification" type="button"><X size={15} /></button></div>;
 }
+
+/**
+ * Persistent, initially empty live regions: messages are inserted into regions
+ * that already exist, which screen readers announce reliably. Errors use the
+ * assertive alert region; everything else is polite.
+ */
+function ToastAnnouncer({ toast }) {
+  const kind = TOAST_ICONS[toast?.kind] ? toast.kind : "success";
+  const text = toast ? `${TOAST_PREFIXES[kind] || ""}${toast.message}` : "";
+  return <>
+    <div className="visually-hidden toast-live toast-live--polite" role="status" aria-live="polite" aria-atomic="true">{toast && kind !== "error" && <span key={toast.id}>{text}</span>}</div>
+    <div className="visually-hidden toast-live toast-live--assertive" role="alert" aria-live="assertive" aria-atomic="true">{toast && kind === "error" && <span key={toast.id}>{text}</span>}</div>
+  </>;
+}
+
+/**
+ * Focuses the main landmark for the skip link and the lazy-route fallback.
+ * It is focusable only while it holds that focus (main drops the tabindex on
+ * blur or pointerdown): a permanent tabindex would park focus on <main> after
+ * any click on page text, which stops keyboard scrolling in nested scrollers
+ * such as the reader and breaks body-targeted shortcuts like teaching Space.
+ */
+const focusMainContent = (options) => {
+  const main = document.getElementById("main-content");
+  if (!main) return;
+  main.setAttribute("tabindex", "-1");
+  main.focus(options);
+};
+const releaseMainContent = (event) => {
+  if (event.type === "pointerdown" || event.target === event.currentTarget) event.currentTarget.removeAttribute("tabindex");
+};
 
 function useModalKeyboard(active, dialogRef, onClose) {
   const closeRef = useRef(onClose);
@@ -241,7 +303,7 @@ function EncryptedImportDialog({ pending, onSubmit, onCancel }) {
   return <div className="modal-layer"><button className="modal-scrim" onClick={onCancel} aria-label="Cancel encrypted import" type="button" /><form ref={dialogRef} className="create-note-dialog encrypted-import-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="encrypted-import-title"><div className="dialog-icon"><ShieldCheck size={22} /></div><span className="eyebrow">Encrypted backup</span><h2 id="encrypted-import-title">Enter the backup password</h2><p>“{pending.fileName}” is protected with AES-256-GCM. Decryption happens entirely on this device.</p><label><span>Password</span><input className="text-input" type="password" value={password} maxLength={128} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>{pending.error && <p className="inline-warning">{pending.error}</p>}<div className="modal-actions"><button className="button ghost" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!password || busy} type="submit">{busy ? "Decrypting…" : "Unlock and preflight"}</button></div></form></div>;
 }
 
-/** Keyboard shortcuts sheet, opened with "?" anywhere or from Settings. */
+/** Keyboard shortcuts sheet, opened with "?" anywhere, the desktop top bar, or Settings. */
 function ShortcutsDialog({ open, onClose }) {
   const dialogRef = useRef(null);
   useModalKeyboard(open, dialogRef, onClose);
@@ -250,7 +312,7 @@ function ShortcutsDialog({ open, onClose }) {
     { title: "Review session", entries: [["Space", "Reveal the answer"], ["1 – 4", "Grade Again / Hard / Good / Easy"], ["B", "Bury the card until tomorrow"], ["⌘/Ctrl + Z", "Undo the last grade"]] },
     { title: "Whiteboard", entries: [["Arrow keys", "Nudge the selected object (Shift: larger steps)"], ["Delete", "Delete the selected object"], ["⌘/Ctrl + Z", "Undo (Shift: redo)"], ["Esc", "Deselect / cancel text entry"]] },
     { title: "Reader & dialogs", entries: [["Esc", "Close menus, popovers, and dialogs"], ["Tab / Shift + Tab", "Cycle a dialog's controls (focus is trapped)"]] },
-    { title: "Anywhere", entries: [["?", "Open this shortcut sheet"]] },
+    { title: "Anywhere", entries: [["⌘/Ctrl + K", "Search the library"], ["?", "Open this shortcut sheet"]] },
   ];
   return <div className="modal-layer"><button className="modal-scrim" onClick={onClose} aria-label="Close keyboard shortcuts" type="button" /><section ref={dialogRef} className="create-note-dialog shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title"><div className="dialog-icon"><Keyboard size={22} /></div><span className="eyebrow">Work faster</span><h2 id="shortcuts-title">Keyboard shortcuts</h2>{groups.map((group) => <div className="shortcut-group" key={group.title}><h3>{group.title}</h3><dl>{group.entries.map(([keys, action]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{action}</dd></div>)}</dl></div>)}<div className="modal-actions"><button className="button primary" onClick={onClose} type="button">Done</button></div></section></div>;
 }
@@ -932,29 +994,44 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
   );
 }
 
-function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage, syncVault, syncDeviceId, onCreateSyncVault, onLeaveSyncVault, onSyncExport, onSyncImport }) {
+const THEME_CHOICES = [{ id: "system", label: "System", icon: CircleUserRound }, { id: "paper", label: "Paper", icon: Sun }, { id: "dark", label: "Night", icon: Moon }, { id: "contrast", label: "Contrast", icon: Contrast }];
+const THEME_KEY_STEPS = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+
+function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onShowShortcuts, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage, syncVault, syncDeviceId, onCreateSyncVault, onLeaveSyncVault, onSyncExport, onSyncImport }) {
   const importRef = useRef(null);
   const syncImportRef = useRef(null);
+  const themeButtonsRef = useRef([]);
   const [backupPassword, setBackupPassword] = useState("");
   const [syncPassphrase, setSyncPassphrase] = useState("");
   const cryptoAvailable = secureContext && Boolean(globalThis.crypto?.subtle);
+  const checkedTheme = Math.max(0, THEME_CHOICES.findIndex(({ id }) => id === settings.theme));
+  // Radio-group keyboard contract: arrows move and select, Home/End jump.
+  const handleThemeKey = (event, index) => {
+    const target = event.key in THEME_KEY_STEPS ? (index + THEME_KEY_STEPS[event.key] + THEME_CHOICES.length) % THEME_CHOICES.length : event.key === "Home" ? 0 : event.key === "End" ? THEME_CHOICES.length - 1 : -1;
+    if (target < 0) return;
+    event.preventDefault();
+    onSettingsChange({ theme: THEME_CHOICES[target].id });
+    themeButtonsRef.current[target]?.focus();
+  };
+  const fontScaleLabel = `${Math.round(settings.fontScale * 100)}%`;
+  const lineHeightLabel = String(settings.lineHeight);
   return (
     <div className="page settings-page">
-      <header className="page-title"><div><span className="eyebrow">Make it yours</span><h1>Settings</h1><p>Appearance, reading comfort, backups, and iPhone installation.</p></div></header>
-      <section className="settings-card">
-        <div className="settings-card-heading"><Palette size={21} /><div><strong>Appearance</strong><span>Choose a reading atmosphere.</span></div></div>
-        <div className="theme-choices">
-          {[{ id: "system", label: "System", icon: CircleUserRound }, { id: "paper", label: "Paper", icon: Sun }, { id: "dark", label: "Night", icon: Moon }, { id: "contrast", label: "Contrast", icon: Contrast }].map(({ id, label, icon: Icon }) => <button className={settings.theme === id ? "active" : ""} onClick={() => onSettingsChange({ theme: id })} key={id} type="button"><Icon size={21} /><span>{label}</span>{settings.theme === id && <Check size={16} />}</button>)}
+      <p className="settings-intro">Appearance, reading comfort, narration, AI, backups, storage, and iPhone installation.</p>
+      <section className="settings-card" aria-labelledby="settings-appearance-title">
+        <div className="settings-card-heading"><Palette size={21} aria-hidden="true" /><div><h2 id="settings-appearance-title">Appearance and reading</h2><span>Choose a reading atmosphere and comfortable text.</span></div></div>
+        <div className="theme-choices" role="radiogroup" aria-label="Theme">
+          {THEME_CHOICES.map(({ id, label, icon: Icon }, index) => <button ref={(node) => { themeButtonsRef.current[index] = node; }} className={settings.theme === id ? "active" : ""} role="radio" aria-checked={settings.theme === id} tabIndex={index === checkedTheme ? 0 : -1} onClick={() => onSettingsChange({ theme: id })} onKeyDown={(event) => handleThemeKey(event, index)} key={id} type="button"><Icon size={21} aria-hidden="true" /><span>{label}</span>{settings.theme === id && <Check size={16} aria-hidden="true" />}</button>)}
         </div>
-        <label className="setting-range"><span><strong>Default text size</strong><small>{Math.round(settings.fontScale * 100)}%</small></span><input type="range" min="0.85" max="1.35" step="0.05" value={settings.fontScale} onChange={(event) => onSettingsChange({ fontScale: Number(event.target.value) })} aria-label="Default reading text size" /></label>
-        <label className="setting-range"><span><strong>Default line spacing</strong><small>{settings.lineHeight}</small></span><input type="range" min="1.45" max="2" step="0.05" value={settings.lineHeight} onChange={(event) => onSettingsChange({ lineHeight: Number(event.target.value) })} aria-label="Default reading line spacing" /></label>
+        <label className="setting-range"><span><strong>Default text size</strong><small>{fontScaleLabel}</small></span><input type="range" min="0.85" max="1.35" step="0.05" value={settings.fontScale} onChange={(event) => onSettingsChange({ fontScale: Number(event.target.value) })} aria-label="Default reading text size" aria-valuetext={fontScaleLabel} /></label>
+        <label className="setting-range"><span><strong>Default line spacing</strong><small>{lineHeightLabel}</small></span><input type="range" min="1.45" max="2" step="0.05" value={settings.lineHeight} onChange={(event) => onSettingsChange({ lineHeight: Number(event.target.value) })} aria-label="Default reading line spacing" aria-valuetext={lineHeightLabel} /></label>
         <label className="setting-toggle"><span><strong>Keep screen awake while studying</strong><small>{wakeLock.supported ? (wakeLock.active ? "Active now" : "Activates in reader and whiteboard") : "Not supported by this browser"}</small></span><input type="checkbox" role="switch" checked={settings.keepScreenAwake} disabled={!wakeLock.supported} onChange={(event) => onSettingsChange({ keepScreenAwake: event.target.checked })} aria-label="Keep screen awake while studying" /></label>
         {wakeLock.error && <p className="inline-warning">{wakeLock.error}</p>}
         <button className="button ghost settings-reset-button" onClick={onResetSettings} type="button"><RotateCcw size={16} /> Restore reading defaults</button>
       </section>
 
-      <section className="settings-card">
-        <div className="settings-card-heading"><Volume2 size={21} /><div><strong>Narration pronunciation</strong><span>Teach the voice how to say project-specific terms.</span></div></div>
+      <section className="settings-card" aria-labelledby="settings-narration-title">
+        <div className="settings-card-heading"><Volume2 size={21} aria-hidden="true" /><div><h2 id="settings-narration-title">Narration pronunciation</h2><span>Teach the voice how to say project-specific terms.</span></div></div>
         <label className="pronunciation-editor"><span>One override per line, as <code>term = spoken form</code></span>
           <textarea
             defaultValue={(settings.pronunciations || []).map((entry) => `${entry.term} = ${entry.spoken}`).join("\n")}
@@ -974,20 +1051,29 @@ function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, 
         </label>
         <p className="microcopy">Overrides apply to narration only, match whole words case-insensitively, and are limited to 50 terms. They sync with your profile.</p>
       </section>
-      <section className="settings-card">
-        <div className="settings-card-heading"><Share size={21} /><div><strong>Backup and transfer</strong><span>Move your private study data between devices.</span></div></div>
-        <input ref={importRef} type="file" accept="application/json,.json,.lumenc" hidden onChange={onImport} />
-        <label className="backup-password-field"><span>Backup password <small>optional — encrypts the export with AES-256-GCM</small></span><input className="text-input" type="password" value={backupPassword} minLength={8} maxLength={128} onChange={(event) => setBackupPassword(event.target.value)} placeholder={cryptoAvailable ? "Leave empty for a plain backup" : "Needs a secure (HTTPS) context"} disabled={!cryptoAvailable} autoComplete="new-password" aria-label="Optional backup encryption password" /></label>
-        {backupPassword && <p className="inline-warning">A forgotten password means permanent loss of this file — there is no recovery or escrow. The pre-restore recovery download stays unencrypted so a restore can always be undone.</p>}
-        <div className="settings-action-row"><button className="button secondary" onClick={() => onExport(backupPassword.trim() || undefined)} disabled={Boolean(backupPassword.trim()) && backupPassword.trim().length < 8} type="button"><Download size={17} /> Export {backupPassword.trim() ? "encrypted " : ""}backup</button><button className="button secondary" onClick={() => importRef.current?.click()} type="button"><Import size={17} /> Import backup</button>{!storagePersisted && <button className="button ghost" onClick={onRequestStorage} type="button">Protect local storage</button>}<button className="button ghost" onClick={() => { window.location.hash = "#/device-evidence"; }} title="Guided physical-device evidence capture for the release tracker" type="button"><Smartphone size={16} /> Device evidence</button></div>
-        <p className="microcopy">Backups include progress, positions, bookmarks, highlights, clippings, review history, locally saved AI conversations, personal notes, edited copies, uploads, preferences, and whiteboards. Every new backup is checksummed and every restore is preflighted. Storage: {storagePersisted ? "persistent" : "best effort"} · Save status: {saveStatus} · Last export: {backupMeta?.lastExportAt ? new Date(backupMeta.lastExportAt).toLocaleString() : "never"}.</p>
-        <div className="settings-local-data"><div><strong>App badge for due reviews</strong><span>{typeof navigator !== "undefined" && "setAppBadge" in navigator ? "Shows today’s due-card count on the app icon. Opt-in, silent, no notifications; it clears the moment the queue drains." : "This browser does not support app badges; nothing will be shown either way."}</span></div><label className="setting-toggle settings-badge-toggle"><span className="visually-hidden">App badge for due reviews</span><input type="checkbox" role="switch" checked={Boolean(settings.dueBadgeEnabled)} onChange={(event) => onSettingsChange({ dueBadgeEnabled: event.target.checked })} aria-label="Show due-review count on the app icon" /></label></div>
+
+      <section className="settings-card" aria-labelledby="settings-ai-title">
+        <div className="settings-card-heading"><BrainCircuit size={21} aria-hidden="true" /><div><h2 id="settings-ai-title">AI tutor</h2><span>Decide whether AI is available and what conversation history stays on this device.</span></div></div>
         <div className="settings-local-data"><div><strong>AI features</strong><span>{settings.aiFeaturesEnabled !== false ? "The AI learning studio is available. Turning it off hides AI surfaces without touching your notes or reviews." : "The AI learning studio is hidden. Reading, notes, reviews, narration, and whiteboards are unaffected."}</span></div><button className="button ghost" onClick={() => { const next = settings.aiFeaturesEnabled === false; onSettingsChange({ aiFeaturesEnabled: next }); onNotify(next ? "AI features are enabled again." : "AI features are now off. You can re-enable them here at any time."); }} type="button"><BrainCircuit size={16} /> {settings.aiFeaturesEnabled !== false ? "Turn AI off" : "Turn AI on"}</button></div>
         <div className="settings-local-data"><div><strong>Mac tutor history retention</strong><span>Choose how many tutor messages stay saved in this browser and in backups. “Session only” stops saving and removes the stored conversation.</span></div><label className="settings-retention"><span className="visually-hidden">Mac tutor history retention</span><select value={[0, 10, 25, 50].includes(settings.aiHistoryRetention) ? settings.aiHistoryRetention : 50} onChange={(event) => { const retention = Number(event.target.value); onSettingsChange({ aiHistoryRetention: retention }); onNotify(retention === 0 ? "Tutor history is now session-only; the saved conversation was removed." : `Up to ${retention} tutor messages will be kept locally.`); }}><option value={50}>Up to 50 messages</option><option value={25}>Up to 25 messages</option><option value={10}>Up to 10 messages</option><option value={0}>Session only (do not save)</option></select></label></div>
         <div className="settings-local-data"><div><strong>AI tutor history</strong><span>{aiHistoryCount ? `${aiHistoryCount} locally saved message${aiHistoryCount === 1 ? "" : "s"}; included in backups.` : "No locally saved AI conversation messages."}</span></div><button className="button ghost" onClick={onClearAiHistory} disabled={!aiHistoryCount} type="button"><Trash2 size={16} /> Clear AI history</button></div>
       </section>
-      <section className="settings-card sync-card">
-        <div className="settings-card-heading"><RefreshCw size={21} /><div><strong>Cross-device sync</strong><span>Encrypted, account-free vault sync through files you control.</span></div></div>
+
+      <section className="settings-card" aria-labelledby="settings-reminders-title">
+        <div className="settings-card-heading"><Brain size={21} aria-hidden="true" /><div><h2 id="settings-reminders-title">Study reminders</h2><span>Quiet, opt-in signals. Lumen never sends notifications.</span></div></div>
+        <div className="settings-local-data"><div><strong>App badge for due reviews</strong><span>{typeof navigator !== "undefined" && "setAppBadge" in navigator ? "Shows today’s due-card count on the app icon. Opt-in, silent, no notifications; it clears the moment the queue drains." : "This browser does not support app badges; nothing will be shown either way."}</span></div><label className="setting-toggle settings-badge-toggle"><span className="visually-hidden">App badge for due reviews</span><input type="checkbox" role="switch" checked={Boolean(settings.dueBadgeEnabled)} onChange={(event) => onSettingsChange({ dueBadgeEnabled: event.target.checked })} aria-label="Show due-review count on the app icon" /></label></div>
+      </section>
+
+      <section className="settings-card" aria-labelledby="settings-backup-title">
+        <div className="settings-card-heading"><Share size={21} aria-hidden="true" /><div><h2 id="settings-backup-title">Backup and transfer</h2><span>Move your private study data between devices.</span></div></div>
+        <input ref={importRef} type="file" accept="application/json,.json,.lumenc" hidden onChange={onImport} />
+        <label className="backup-password-field"><span>Backup password <small>optional — encrypts the export with AES-256-GCM</small></span><input className="text-input" type="password" value={backupPassword} minLength={8} maxLength={128} onChange={(event) => setBackupPassword(event.target.value)} placeholder={cryptoAvailable ? "Leave empty for a plain backup" : "Needs a secure (HTTPS) context"} disabled={!cryptoAvailable} autoComplete="new-password" aria-label="Optional backup encryption password" /></label>
+        {backupPassword && <p className="inline-warning">A forgotten password means permanent loss of this file — there is no recovery or escrow. The pre-restore recovery download stays unencrypted so a restore can always be undone.</p>}
+        <div className="settings-action-row"><button className="button secondary" onClick={() => onExport(backupPassword.trim() || undefined)} disabled={Boolean(backupPassword.trim()) && backupPassword.trim().length < 8} type="button"><Download size={17} /> Export {backupPassword.trim() ? "encrypted " : ""}backup</button><button className="button secondary" onClick={() => importRef.current?.click()} type="button"><Import size={17} /> Import backup</button>{!storagePersisted && <button className="button ghost" onClick={onRequestStorage} type="button">Protect local storage</button>}</div>
+        <p className="microcopy">Backups include progress, positions, bookmarks, highlights, clippings, review history, locally saved AI conversations, personal notes, edited copies, uploads, preferences, and whiteboards. Every new backup is checksummed and every restore is preflighted. Storage: {storagePersisted ? "persistent" : "best effort"} · Save status: {saveStatus} · Last export: {backupMeta?.lastExportAt ? new Date(backupMeta.lastExportAt).toLocaleString() : "never"}.</p>
+      </section>
+      <section className="settings-card sync-card" aria-labelledby="settings-sync-title">
+        <div className="settings-card-heading"><RefreshCw size={21} aria-hidden="true" /><div><h2 id="settings-sync-title">Cross-device sync</h2><span>Encrypted, account-free vault sync through files you control.</span></div></div>
         <input ref={syncImportRef} type="file" accept=".lumenc" multiple hidden onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; if (files.length) onSyncImport(files, syncPassphrase); }} />
         {!cryptoAvailable && <p className="inline-warning">Sync needs WebCrypto in a secure (HTTPS) context. There is no weak-crypto fallback.</p>}
         {!syncVault && <p className="microcopy">Each device in a vault writes one encrypted file into a folder you share however you like — iCloud Drive, Syncthing, a USB stick. One passphrase per vault, entered on each device and never stored. Create a vault here, or pick a peer's <code>.lumenc</code> sync file to join theirs.</p>}
@@ -1005,14 +1091,18 @@ function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, 
         <p className="microcopy">Import folds every selected peer file through the same conflict-safe merge that already reconciles your tabs, then asks you to re-export so peers see the result. Deletions travel as tombstones, concurrent edits become recovered copies, and a reset/restore on one device propagates instead of resurrecting. A forgotten passphrase cannot be recovered.</p>
       </section>
       <Suspense fallback={<div className="settings-card"><p className="microcopy">Measuring storage health…</p></div>}><StorageHealth online={online} onNotify={onNotify} /></Suspense>
-      <section className="settings-card install-card">
-        <div className="settings-card-heading"><Sparkles size={21} /><div><strong>Install on iPhone</strong><span>Use Lumen like a native full-screen app.</span></div></div>
+      <section className="settings-card install-card" aria-labelledby="settings-install-title">
+        <div className="settings-card-heading"><Sparkles size={21} aria-hidden="true" /><div><h2 id="settings-install-title">Install on iPhone</h2><span>Use Lumen like a native full-screen app.</span></div></div>
         {!secureContext && <p className="inline-warning">This HTTP connection supports reading and local notes, but iPhone installation and offline caching require an HTTPS address.</p>}
         <button className="button primary" onClick={onInstall} type="button">{secureContext ? "Show installation steps" : "See HTTPS requirement"}</button>
-        <div className={online ? "connection-state online" : "connection-state offline"}>{online ? <Wifi size={16} /> : <WifiOff size={16} />}{online ? "Online · content updates available" : "Offline · cached content remains available"}</div>
+        <div className={online ? "connection-state online" : "connection-state offline"}>{online ? <Wifi size={16} aria-hidden="true" /> : <WifiOff size={16} aria-hidden="true" />}{online ? "Online · content updates available" : "Offline · cached content remains available"}</div>
       </section>
-      <section className="privacy-card"><div className="privacy-icon">L</div><div><strong>Local-first by design</strong><p>No account is required. Notes, whiteboards, and AI conversation history remain in this browser’s storage unless you export or clear them. AI sends only the prompt and sources you explicitly approve for that request.</p></div></section>
-      <section className="settings-card danger-zone"><div className="settings-card-heading"><AlertTriangle size={21} /><div><strong>Reset local app data</strong><span>Permanently removes progress, notes, uploads, clippings, edits, and every whiteboard from this browser.</span></div></div><p className="microcopy">Export a backup first if you may need this work again.</p><button className="button danger-button" onClick={onResetApp} type="button"><Trash2 size={17} /> Reset everything</button></section>
+      <section className="settings-card help-card" aria-labelledby="settings-help-title">
+        <div className="settings-card-heading"><Keyboard size={21} aria-hidden="true" /><div><h2 id="settings-help-title">Help and diagnostics</h2><span>Keyboard shortcuts and the guided release-evidence checks.</span></div></div>
+        <div className="settings-help-actions"><button className="button secondary" onClick={onShowShortcuts} type="button"><Keyboard size={16} /> Keyboard shortcuts</button><button className="button ghost" onClick={() => { window.location.hash = "#/device-evidence"; }} title="Guided physical-device evidence capture for the release tracker" type="button"><Smartphone size={16} /> Device evidence</button></div>
+      </section>
+      <section className="privacy-card"><div className="privacy-icon" aria-hidden="true">L</div><div><strong>Local-first by design</strong><p>No account is required. Notes, whiteboards, and AI conversation history remain in this browser’s storage unless you export or clear them. AI sends only the prompt and sources you explicitly approve for that request.</p></div></section>
+      <section className="settings-card danger-zone" aria-labelledby="settings-reset-title"><div className="settings-card-heading"><AlertTriangle size={21} aria-hidden="true" /><div><h2 id="settings-reset-title">Reset local app data</h2><span>Permanently removes progress, notes, uploads, clippings, edits, and every whiteboard from this browser.</span></div></div><p className="microcopy">Export a backup first if you may need this work again.</p><button className="button danger-button" onClick={onResetApp} type="button"><Trash2 size={17} /> Reset everything</button></section>
     </div>
   );
 }
@@ -1086,6 +1176,7 @@ export default function App() {
   const [sourceLoadError, setSourceLoadError] = useState("");
   const [phoneAiSessionHistory, setPhoneAiSessionHistory] = useState([]);
   const [readerNavigationTarget, setReaderNavigationTarget] = useState(null);
+  const [routeFocusRequest, setRouteFocusRequest] = useState(null);
   const saveTimer = useRef(null);
   const saveQueue = useRef(Promise.resolve());
   const saveSequence = useRef(0);
@@ -1100,26 +1191,55 @@ export default function App() {
   const settingsDialogRef = useRef(null);
   const sidebarRef = useRef(null);
   const menuButtonRef = useRef(null);
+  const sidebarPartsRef = useRef(null);
+  const sidebarHiddenRef = useRef(false);
+  const [sidebarPartsOverflow, setSidebarPartsOverflow] = useState(false);
 
   if (!profileWriterIdRef.current) profileWriterIdRef.current = createId();
 
-  useModalKeyboard(settingsOpen && !installOpen, settingsDialogRef, () => setSettingsOpen(false));
+  useModalKeyboard(settingsOpen && !installOpen && !shortcutsOpen, settingsDialogRef, () => setSettingsOpen(false));
 
   profileRef.current = profile;
 
+  // Every App-level modal hides the shell behind it. inert/aria-hidden are
+  // rendered as props from this one flag, so closing any dialog restores each
+  // region to its own state (the closed mobile drawer stays inert).
+  const manageDocument = manageDocumentId ? profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null : null;
+  const appModalOpen = settingsOpen || installOpen || createOpen || shortcutsOpen || Boolean(reviewDraft) || Boolean(backupCandidate) || Boolean(manageDocument) || Boolean(encryptedImport) || Boolean(assessmentDraft);
+  const sidebarHidden = appModalOpen || (compactNavigation && !sidebarOpen);
+  sidebarHiddenRef.current = sidebarHidden;
+
   useEffect(() => {
-    if (!settingsOpen && !installOpen && !createOpen && !reviewDraft && !backupCandidate) return undefined;
-    const regions = [...document.querySelectorAll(".app-sidebar, .app-topbar, .view-container, .bottom-nav, .update-banner")];
-    if (installOpen) regions.push(...document.querySelectorAll(".settings-overlay"));
-    regions.forEach((region) => {
-      region.inert = true;
-      region.setAttribute("aria-hidden", "true");
-    });
-    return () => regions.forEach((region) => {
-      region.inert = false;
-      region.removeAttribute("aria-hidden");
-    });
-  }, [backupCandidate, createOpen, installOpen, reviewDraft, settingsOpen]);
+    // Component dialogs (reader menus, teaching mode, board dialogs) inert the
+    // sidebar imperatively and clear it on close. Re-assert the hidden state
+    // whenever that happens while the drawer should stay closed.
+    const sidebar = sidebarRef.current;
+    if (!sidebar) return undefined;
+    const enforce = () => {
+      if (!sidebarHiddenRef.current) return;
+      if (!sidebar.inert) sidebar.inert = true;
+      if (sidebar.getAttribute("aria-hidden") !== "true") sidebar.setAttribute("aria-hidden", "true");
+    };
+    enforce();
+    const observer = new MutationObserver(enforce);
+    observer.observe(sidebar, { attributes: true, attributeFilter: ["inert", "aria-hidden"] });
+    return () => observer.disconnect();
+  }, [hydrated, sidebarHidden]);
+
+  useEffect(() => {
+    const parts = sidebarPartsRef.current;
+    if (!parts) return undefined;
+    // Fade the curriculum list's lower edge only while more Parts are below.
+    const update = () => setSidebarPartsOverflow(parts.scrollTop + parts.clientHeight < parts.scrollHeight - 4);
+    update();
+    parts.addEventListener("scroll", update, { passive: true });
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
+    observer?.observe(parts);
+    return () => {
+      parts.removeEventListener("scroll", update);
+      observer?.disconnect();
+    };
+  }, [hydrated]);
 
   useEffect(() => {
     const media = window.matchMedia?.("(max-width: 980px)");
@@ -1166,13 +1286,15 @@ export default function App() {
         main.inert = false;
         main.removeAttribute("aria-hidden");
       }
-      menuButtonRef.current?.focus?.();
+      // Navigating from the drawer already moved focus to the new page heading.
+      if (!document.activeElement || document.activeElement === document.body || sidebar?.contains(document.activeElement)) menuButtonRef.current?.focus?.();
     };
   }, [compactNavigation, sidebarOpen]);
 
   const notify = useCallback((message, kind = "success", duration) => {
     setToast({ id: createId(), message, kind, duration });
   }, []);
+  const dismissToast = useCallback(() => setToast(null), []);
 
   // One-time pairing-link redemption: scanning the QR from
   // scripts/pair_device.sh opens #/pair?ticket=… — redeem it for the 30-day
@@ -1529,7 +1651,7 @@ export default function App() {
       return;
     }
     setAutoNarrateDocId(next.id);
-    openDocument(next.id);
+    openDocument(next.id, { focus: false });
     notify(`Continuing narration: ${next.title}`, "success", 4000);
   };
   const currentOriginalSource = currentDocument.source === "custom" ? currentDocument.raw : (builtInSources[currentDocument.id] || "");
@@ -1593,18 +1715,20 @@ export default function App() {
     setCurrentDocumentId(id);
     setView("reader");
     setSidebarOpen(false);
+    if (target?.focus !== false) setRouteFocusRequest({ id: createId(), target: "h1" });
     const route = routeFor("reader", id);
     if (window.location.hash !== route) window.location.hash = route;
     setProfile((current) => ({ ...current, lastDocumentId: id, recent: [id, ...current.recent.filter((item) => item !== id)].slice(0, 20) }));
   }, [allDocumentMap, editorDirty, notify, speech.stop]);
 
-  const changeView = useCallback((next) => {
+  const changeView = useCallback((next, { focus = "h1" } = {}) => {
     if (editorDirty && next !== "reader" && !window.confirm("Discard the unsaved editor changes and leave the reader?")) return;
     navigationApprovedRef.current = editorDirty && next !== "reader";
     if (next !== "reader") setEditorDirty(false);
     speech.stop();
     setView(next);
     setSidebarOpen(false);
+    if (focus) setRouteFocusRequest({ id: createId(), target: focus });
     if (next === view) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
     const route = routeFor(next, currentDocumentId);
     if (window.location.hash !== route) window.location.hash = route;
@@ -1615,6 +1739,30 @@ export default function App() {
     // the reader keeps its saved position in its separate scroll container.
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   }, [view]);
+
+  useLayoutEffect(() => {
+    // After in-app navigation (never the initial load or a restored hash),
+    // move focus to the new page's heading so screen readers announce it.
+    // Lazy views without a heading yet fall back to the main landmark.
+    if (!routeFocusRequest) return;
+    const main = document.getElementById("main-content");
+    if (!main) return;
+    const heading = routeFocusRequest.target === "h1" ? main.querySelector("h1") : null;
+    const target = routeFocusRequest.target === "h1" ? heading : main.querySelector(routeFocusRequest.target);
+    if (heading && !heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+    const focusTarget = () => (target ? target.focus({ preventScroll: true }) : focusMainContent({ preventScroll: true }));
+    // Navigating from the mobile drawer: the page is still inert until the
+    // drawer's cleanup runs, and focus() inside an inert region is a no-op.
+    if (main.closest("[inert]")) requestAnimationFrame(focusTarget);
+    else focusTarget();
+  }, [routeFocusRequest]);
+
+  useEffect(() => {
+    const titles = { library: "Library", ai: "AI Tutor", review: "Review", notebook: "Notebook", "device-evidence": "Device evidence" };
+    if (view === "reader") document.title = `${currentDocument.title} · Lumen`;
+    else if (view === "board") document.title = `${currentDocument.title} · Whiteboard · Lumen`;
+    else document.title = titles[view] ? `${titles[view]} · Lumen` : "Lumen AI Notes";
+  }, [currentDocument.title, view]);
 
   useEffect(() => {
     const handleRoute = (event) => {
@@ -1658,8 +1806,9 @@ export default function App() {
       const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable;
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") {
         event.preventDefault();
-        changeView("library");
-        requestAnimationFrame(() => document.querySelector(".library-search input")?.focus());
+        // Never change the route underneath an open dialog.
+        if (document.querySelector('[aria-modal="true"]')) return;
+        changeView("library", { focus: ".library-search input" });
       } else if (!typing && event.key === "Escape") {
         setSidebarOpen(false);
       }
@@ -3045,36 +3194,45 @@ export default function App() {
 
   if (!hydrated) return <div className="app-loading"><div className="brand-mark">L</div><div className="loading-line"><span /></div><p>Preparing your learning studio…</p></div>;
 
+  const drawerDialog = compactNavigation && sidebarOpen;
+  const personalNoteCount = Object.values(profile.personalNotes || {}).filter((note) => note.trim()).length;
+  const hiddenBehindModal = appModalOpen ? "true" : undefined;
+
   return (
     <div className="app-shell">
-      <aside ref={sidebarRef} id="application-sidebar" className={sidebarOpen ? "app-sidebar open" : "app-sidebar"} aria-hidden={compactNavigation && !sidebarOpen ? "true" : undefined} inert={compactNavigation && !sidebarOpen}>
-        <div className="brand-lockup"><div className="brand-mark">L</div><div><strong>Lumen</strong><span>AI Notes</span></div><button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Close menu" type="button"><X size={19} /></button></div>
-        <nav className="sidebar-primary" aria-label="Main navigation">
-          {VIEW_ITEMS.filter(({ id }) => id !== "ai" || aiFeaturesEnabled).map(({ id, label, icon: Icon }) => <button className={view === id ? "active" : ""} onClick={() => changeView(id)} key={id} type="button"><Icon size={19} /><span>{label}</span>{id === "notebook" && profile.personalNotes && <small>{Object.values(profile.personalNotes).filter((note) => note.trim()).length}</small>}{id === "review" && reviewDueCount > 0 && <small>{Math.min(reviewDueCount, 999)}</small>}</button>)}
+      <a className="skip-link" href="#main-content" inert={appModalOpen} onClick={(event) => { event.preventDefault(); focusMainContent(); }}>Skip to content</a>
+      <div ref={sidebarRef} id="application-sidebar" className={sidebarOpen ? "app-sidebar open" : "app-sidebar"} role={drawerDialog ? "dialog" : undefined} aria-modal={drawerDialog ? "true" : undefined} aria-label={drawerDialog ? "Menu" : undefined} aria-hidden={sidebarHidden ? "true" : undefined} inert={sidebarHidden}>
+        <nav className="sidebar-nav" aria-label="Main navigation">
+          <div className="brand-lockup"><div className="brand-mark" aria-hidden="true">L</div><div><strong>Lumen</strong><span>AI Notes</span></div><button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Close menu" type="button"><X size={19} /></button></div>
+          <div className="sidebar-primary">
+            {VIEW_ITEMS.filter(({ id }) => id !== "ai" || aiFeaturesEnabled).map(({ id, label, icon: Icon }) => <button className={view === id ? "active" : ""} onClick={() => changeView(id)} aria-current={view === id ? "page" : undefined} key={id} type="button"><Icon size={19} aria-hidden="true" /><span>{label}</span>{id === "notebook" && personalNoteCount > 0 && <small>{personalNoteCount}<span className="visually-hidden"> personal notes</span></small>}{id === "review" && reviewDueCount > 0 && <small>{Math.min(reviewDueCount, 999)}<span className="visually-hidden"> due</span></small>}</button>)}
+          </div>
+          <div className="sidebar-divider" />
+          <div className="sidebar-section-title"><span id="sidebar-curriculum-title">Curriculum</span><button onClick={() => changeView("library")} aria-label="Open library" type="button"><MoreVertical size={16} /></button></div>
+          <div ref={sidebarPartsRef} className={sidebarPartsOverflow ? "sidebar-parts has-more" : "sidebar-parts"} role="group" aria-labelledby="sidebar-curriculum-title">
+            {parts.map((part) => <button onClick={() => { setSelectedPart(String(part.number)); changeView("library"); }} key={part.number} type="button"><span>{String(part.number).padStart(2, "0")}</span><strong>{part.title.replace(/^Part \d+\s+[—-]\s+/, "")}</strong></button>)}
+          </div>
+          <button className="sidebar-settings" onClick={() => { setSidebarOpen(false); setSettingsOpen(true); }} type="button"><Settings size={19} aria-hidden="true" /><span>Settings</span>{!online && <WifiOff className="connection-icon" size={15} aria-hidden="true" />}<span className={online ? "online-dot" : "offline-dot"} aria-hidden="true" /><span className="visually-hidden">{online ? " (online)" : " (offline)"}</span></button>
         </nav>
-        <div className="sidebar-divider" />
-        <div className="sidebar-section-title"><span>Curriculum</span><button onClick={() => changeView("library")} aria-label="Open library" type="button"><MoreVertical size={16} /></button></div>
-        <nav className="sidebar-parts" aria-label="Curriculum parts">
-          {parts.map((part) => <button onClick={() => { setSelectedPart(String(part.number)); changeView("library"); }} key={part.number} type="button"><span>{String(part.number).padStart(2, "0")}</span><strong>{part.title.replace(/^Part \d+\s+[—-]\s+/, "")}</strong></button>)}
-        </nav>
-        <button className="sidebar-settings" onClick={() => { setSidebarOpen(false); setSettingsOpen(true); }} type="button"><Settings size={19} /><span>Settings</span><div className={online ? "online-dot" : "offline-dot"} /></button>
-      </aside>
+      </div>
       {sidebarOpen && <button className="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-label="Close menu" type="button" />}
 
       <div className="app-main">
-        <header className="app-topbar">
+        <header className="app-topbar" inert={appModalOpen} aria-hidden={hiddenBehindModal}>
           <button ref={menuButtonRef} className="icon-button menu-button" onClick={() => setSidebarOpen((open) => !open)} aria-label={sidebarOpen ? "Close menu" : "Open menu"} aria-controls="application-sidebar" aria-expanded={sidebarOpen} type="button"><Menu size={21} /></button>
-          <button className="mobile-brand" onClick={() => changeView("home")} type="button"><span>L</span><strong>Lumen</strong></button>
-          <button className="top-search" onClick={() => { changeView("library"); requestAnimationFrame(() => document.querySelector(".library-search input")?.focus()); }} type="button"><Search size={18} /><span>Search lectures, formulas, tools…</span><kbd>⌘ K</kbd></button>
+          <button className="mobile-brand" onClick={() => changeView("home")} aria-label="Lumen home" type="button"><span aria-hidden="true">L</span><strong>Lumen</strong></button>
+          <button className="top-search" onClick={() => changeView("library", { focus: ".library-search input" })} type="button"><Search size={18} /><span>Search lectures, formulas, tools…</span><kbd>⌘ K</kbd></button>
           <div className="topbar-actions">
+            <button className="icon-button topbar-shortcuts" onClick={() => setShortcutsOpen(true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" type="button"><Keyboard size={20} /></button>
             <button className="icon-button" onClick={() => changeView("notebook")} aria-label="Open notebook" type="button"><BookMarked size={20} /></button>
             <button className="profile-button" onClick={() => setSettingsOpen(true)} aria-label="Open settings" type="button"><CircleUserRound size={22} /></button>
           </div>
+          <div className="offline-status" role="status">{!online && <><WifiOff size={15} aria-hidden="true" />Offline — reading and notes work; AI and web search are unavailable</>}</div>
         </header>
 
         {(!window.isSecureContext || pwaIssue) && <div className="secure-context-banner" role="status"><AlertTriangle size={17} /><div><strong>{window.isSecureContext ? "Offline mode needs attention" : "Limited LAN mode"}</strong><span>{pwaIssue || "Reading, editing, reviews, and local notes work here. Use an HTTPS address for iPhone installation, offline caching, secure clipboard, wake lock, persistent storage, and AI."}</span></div><button className="text-button" onClick={() => setSettingsOpen(true)} type="button">Details</button>{pwaIssue && window.isSecureContext && <button className="icon-button small" onClick={() => setPwaIssue("")} aria-label="Dismiss offline-mode notice" type="button"><X size={15} /></button>}</div>}
 
-        <div className="view-container">
+        <main id="main-content" className="view-container" inert={appModalOpen} aria-hidden={hiddenBehindModal} onBlur={releaseMainContent} onPointerDownCapture={releaseMainContent}>
           {view === "home" && <Dashboard profile={profile} allDocuments={allDocuments} onOpen={openDocument} onLibrary={() => changeView("library")} onNotebook={() => changeView("notebook")} onReview={() => changeView("review")} onStartAssessment={startAssessment} onGoalsChange={(goals) => setProfile((current) => ({ ...current, goals: { ...current.goals, ...goals } }))} />}
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
           {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} autoNarrate={autoNarrateDocId === currentDocument.id} onAutoNarrateHandled={() => setAutoNarrateDocId("")} onOpenBoard={() => changeView("board")} onAskAi={profile.settings.aiFeaturesEnabled !== false ? askAiAboutSelection : undefined} onNotify={notify} /></Suspense>)}
@@ -3085,24 +3243,25 @@ export default function App() {
             : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onNotify={notify} /></Suspense></div>)}
           {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
-        </div>
+        </main>
 
-        <nav className="bottom-nav" aria-label="Mobile navigation">
-          {BOTTOM_VIEW_ITEMS.filter(({ id }) => id !== "ai" || aiFeaturesEnabled).map(({ id, label, icon: Icon }) => <button className={view === id ? "active" : ""} onClick={() => changeView(id)} key={id} type="button"><Icon size={20} /><span>{label}</span></button>)}
+        <nav className="bottom-nav" aria-label="Mobile navigation" inert={appModalOpen} aria-hidden={hiddenBehindModal}>
+          {BOTTOM_VIEW_ITEMS.filter(({ id }) => id !== "ai" || aiFeaturesEnabled).map(({ id, label, icon: Icon }) => <button className={view === id ? "active" : ""} onClick={() => changeView(id)} aria-current={view === id ? "page" : undefined} key={id} type="button"><Icon size={20} aria-hidden="true" /><span>{label}</span></button>)}
         </nav>
       </div>
 
-      {settingsOpen && <div className="settings-overlay"><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-label="Application settings"><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} syncVault={syncVaultConfig} syncDeviceId={syncDeviceIdRef.current} onCreateSyncVault={createSyncVaultAction} onLeaveSyncVault={leaveSyncVaultAction} onSyncExport={exportSyncFile} onSyncImport={importSyncFiles} /></div></div>}
+      {settingsOpen && <div className="settings-overlay" inert={installOpen || shortcutsOpen} aria-hidden={installOpen || shortcutsOpen ? "true" : undefined}><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="settings-drawer-header"><h1 id="settings-title">Settings</h1><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button></div><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} syncVault={syncVaultConfig} syncDeviceId={syncDeviceIdRef.current} onCreateSyncVault={createSyncVaultAction} onLeaveSyncVault={leaveSyncVaultAction} onSyncExport={exportSyncFile} onSyncImport={importSyncFiles} /></div></div>}
       {installOpen && <InstallSheet secureContext={window.isSecureContext} onClose={() => setInstallOpen(false)} />}
       <BackupImportDialog candidate={backupCandidate} busy={backupBusy} onClose={() => { if (!backupBusy) setBackupCandidate(null); }} onConfirm={confirmBackupImport} />
       <CreateNoteDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createNote} />
-      <ManageDocumentDialog doc={profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
+      <ManageDocumentDialog doc={manageDocument} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <EncryptedImportDialog pending={encryptedImport} onSubmit={unlockEncryptedImport} onCancel={() => setEncryptedImport(null)} />
       {assessmentDraft && <Suspense fallback={null}><AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} /></Suspense>}
       {reviewDraft && <Suspense fallback={null}><ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} /></Suspense>}
-      {updateRegistration && <div className="update-banner" role="status"><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
-      <Toast toast={toast} onClose={() => setToast(null)} />
+      {updateRegistration && <div className="update-banner" role="status" inert={appModalOpen} aria-hidden={hiddenBehindModal}><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
+      <Toast toast={toast} onClose={dismissToast} />
+      <ToastAnnouncer toast={toast} />
     </div>
   );
 }

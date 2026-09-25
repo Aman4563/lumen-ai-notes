@@ -130,7 +130,16 @@ try {
               ? [{ tag: node.tagName, className: node.getAttribute("class"), text: (node.textContent || "").slice(0, 55), left: Math.round(box.left), right: Math.round(box.right) }] : [];
           }).slice(0, 8);
         const problems = [];
-        if (document.documentElement.scrollWidth > innerWidth + 2) problems.push(`Page width ${document.documentElement.scrollWidth} exceeds ${innerWidth}`);
+        if (document.documentElement.scrollWidth > innerWidth + 2) {
+          problems.push(`Page width ${document.documentElement.scrollWidth} exceeds ${innerWidth}`);
+          // Name the culprit even when it sits behind a modal (inert or hidden
+          // regions are skipped by the visible-overflow scan above).
+          if (!overflow.length) overflow.push(...[...document.body.querySelectorAll("*")].flatMap((node) => {
+            const box = node.getBoundingClientRect();
+            return box.width > 0 && box.right > innerWidth + 2 && !hasScrollOwner(node)
+              ? [{ tag: node.tagName, className: node.getAttribute("class"), text: (node.textContent || "").slice(0, 55), left: Math.round(box.left), right: Math.round(box.right), hidden: !visible(node) }] : [];
+          }).slice(-8));
+        }
         if (overflow.length) problems.push("Content extends beyond the viewport");
         if (dialog && (rect.top < -2 || rect.bottom > innerHeight + 2 || rect.left < -2 || rect.right > innerWidth + 2)) problems.push("Dialog extends beyond the viewport");
         if (canvas) {
@@ -208,7 +217,20 @@ try {
     await inspect("navigation", ".app-sidebar", { dialog: true });
     await reach(".sidebar-parts button:last-child");
     await reach(".sidebar-settings");
-    if (width <= 980) await reach(".sidebar-close", true);
+    if (width <= 980) {
+      // Hit testing skips the inert background, so lift it for one probe to
+      // prove the drawer paints above the bottom navigation (SHELL-1).
+      const aboveNavigation = await page.evaluate(() => {
+        const main = document.querySelector(".app-main");
+        const box = document.querySelector(".sidebar-settings").getBoundingClientRect();
+        main.inert = false;
+        const onTop = Boolean(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest(".sidebar-settings"));
+        main.inert = true;
+        return onTop;
+      });
+      controls.push({ device, selector: ".sidebar-settings above .bottom-nav", reachable: aboveNavigation });
+      await reach(".sidebar-close", true);
+    }
     await click(page, ".mastery-check");
     await inspect("assessment", ".assessment-dialog", { dialog: true });
     await reach(".assessment-dialog .button.primary");
@@ -347,6 +369,14 @@ try {
     await inspect("ai-phone", ".phone-tutor");
     await click(page, '[aria-label="Open settings"]');
     await inspect("settings", ".settings-drawer", { dialog: true });
+    // The close control stays reachable after scrolling the long drawer (SHELL-3).
+    await page.$eval(".settings-drawer", (drawer) => { drawer.scrollTop = drawer.scrollHeight; });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    controls.push({ device, selector: ".settings-close after scrolling", reachable: await page.$eval(".settings-close", (node) => {
+      const box = node.getBoundingClientRect();
+      return box.top >= 0 && box.bottom <= innerHeight && node.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+    }) });
+    await page.$eval(".settings-drawer", (drawer) => { drawer.scrollTop = 0; });
     await click(page, ".install-card button");
     await inspect("install", ".install-sheet", { dialog: true });
     await page.keyboard.press("Escape");

@@ -1,6 +1,15 @@
-/* Let content wrap inside the available space, including beside the sidebar. */
+/* Let content wrap inside the available space, including beside the sidebar.
+   break-word only breaks a token that would overflow; unlike anywhere it keeps
+   each word's min-content width, so flex and grid labels never collapse into
+   one letter per line. */
 @media screen {
-  .page { overflow-wrap: anywhere; }
+  .page { overflow-wrap: break-word; }
+  /* Learner-authored text (notes, titles, highlights, clippings) can hold
+     unbroken tokens of any length, so only these surfaces break anywhere. */
+  .note-card, .clipping-card, .notebook-annotation-card, .notebook-document-row, .notebook-mistake-row, .trash-row { overflow-wrap: anywhere; }
+  /* Rows of short controls wrap under their heading instead of squeezing. */
+  .section-heading, .notebook-heading-actions, .review-settings-strip label, .review-mistakes .mistake-controls label { flex-wrap: wrap; }
+  .review-settings-strip select, .review-mistakes .mistake-controls select { min-width: 0; max-width: 100%; }
   .page > *, .note-card, .continue-card > *, .board-header > div { min-width: 0; }
   .reader-view, .board-view, .teach-mode { grid-template-columns: minmax(0, 1fr); }
   .reader-view > *, .board-view > *, .teach-mode > * { min-width: 0; }
@@ -44,12 +53,20 @@
   .toast > span { overflow-wrap: anywhere; }
   .toast > button { pointer-events: auto; }
   .app-shell:has(.audio-bar) > .toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
+  .app-shell:has(> .update-banner) > .toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
 }
 
 @media screen and (max-width: 980px) {
   .board-view.advanced-board { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   .bottom-nav { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
   .app-shell:has(.audio-bar) > .toast { bottom: calc(165px + env(safe-area-inset-bottom)); }
+  .app-shell:has(> .update-banner) > .toast { bottom: calc(160px + env(safe-area-inset-bottom)); }
+}
+
+/* A toast raised while a bottom sheet is open moves to the top edge so it
+   never covers the sheet's controls. */
+@media screen {
+  .app-shell:has(.modal-layer) > .toast { top: calc(12px + env(safe-area-inset-top)); bottom: auto; }
 }
 
 @media screen and (min-width: 981px) {
@@ -59,6 +76,9 @@
 }
 
 @media screen and (max-width: 740px) {
+  .study-method-card > .dashboard-method-actions { grid-column: 1 / -1; }
+  .review-analytics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .review-analytics > .review-forecast { grid-column: 1 / -1; }
   .reader-toolbar { gap: 6px; }
   .reader-crumb { gap: 5px; }
   .reader-crumb > span { min-width: 0; }

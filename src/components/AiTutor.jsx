@@ -1929,7 +1929,7 @@ export default function AiTutor({
           </div>
         </aside>
 
-        <main className="ai-tutor__conversation" ref={conversationRef} onScroll={(event) => {
+        <section className="ai-tutor__conversation" aria-label="Conversation" ref={conversationRef} onScroll={(event) => {
           const surface = event.currentTarget;
           followStreamRef.current = surface.scrollHeight - surface.scrollTop - surface.clientHeight < 140;
         }}>
@@ -1964,7 +1964,7 @@ export default function AiTutor({
           )}
           {(requestState.status === "error" || requestState.status === "cancelled") && <div className="ai-tutor__request-error" role="alert"><AlertTriangle size={20} aria-hidden="true" /><div><strong>{requestErrorTitle(requestState.status, requestState.error?.code)}</strong><p>{requestState.error?.message}</p><WebFallbackBadge status={requestState.error?.webFallbackStatus} />{requestState.error?.retryAfter && <small>Server retry guidance: wait {requestState.error.retryAfter} seconds.</small>}{requestState.error?.requestId && <small>Request ID: {requestState.error.requestId}</small>}{requestState.error?.canRetry && lastRequestRef.current?.webSearch === true && !effectiveWebSearch && <small>Re-enable “Allow current-web fallback” below to authorize one retry. The retry may generate and send a new search query.</small>}</div>{requestState.error?.canRetry && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={retry} disabled={!localDisclosureAcknowledged || (lastRequestRef.current?.webSearch === true && !effectiveWebSearch)}><RefreshCw size={15} aria-hidden="true" /> Retry</button>}</div>}
           <div ref={responseEndRef} />
-        </main>
+        </section>
       </div>
 
       <form className="ai-tutor__composer" onSubmit={submit}>

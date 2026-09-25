@@ -899,7 +899,7 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
           </details>
         </aside>
 
-        <main className="phone-tutor__conversation">
+        <section className="phone-tutor__conversation" aria-label="Conversation">
           {history.length === 0 && !streamingText ? <div className="phone-tutor__welcome"><Cpu size={27} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a short question or choose a study mode.</p></div> : (
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
               {history.map((message) => (
@@ -923,7 +923,7 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
           </section>}
 
           {["error", "cancelled", "declined", "success"].includes(requestState.status) && requestState.message && <div className={`phone-tutor__request-state is-${requestState.status}`} role={requestState.status === "error" ? "alert" : "status"}>{requestState.status === "error" && <AlertTriangle size={18} aria-hidden="true" />}<span>{requestState.message}</span>{["error", "cancelled"].includes(requestState.status) && lastRequestRef.current && <button type="button" disabled={!engineStatus.loaded || !requestFit.fits} title={!engineStatus.loaded ? "Load the on-device model again before retrying" : !requestFit.fits ? requestFit.message : undefined} onClick={retry}><RefreshCw size={15} aria-hidden="true" /> Retry</button>}</div>}
-        </main>
+        </section>
       </div>
 
       <form className="phone-tutor__composer" onSubmit={submit}>

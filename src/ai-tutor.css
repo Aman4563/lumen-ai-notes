@@ -2,7 +2,6 @@
   --ai-accent: var(--violet, #7467a8);
   --ai-accent-soft: var(--violet-soft, #f0edfb);
   --ai-good: var(--teal, #2f8e86);
-  --ai-warn: #9c6323;
   width: 100%;
   color: var(--ink, #172035);
   background: var(--paper, #fffdf8);
@@ -1590,8 +1589,9 @@
 .ai-tutor__source-modes button:focus-visible,
 .ai-tutor__message-actions button:focus-visible,
 .ai-tutor__source-tools input:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--ai-accent) 26%, transparent);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
 }
 
 .ai-tutor__message-actions button > span {
@@ -1963,8 +1963,9 @@
 }
 
 .ai-tutor__response-profiles input:focus-visible + span {
-  outline: 3px solid color-mix(in srgb, var(--ai-accent) 28%, transparent);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
 }
 
 .ai-tutor__composer-notice {

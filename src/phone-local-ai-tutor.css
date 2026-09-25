@@ -137,6 +137,7 @@
 .phone-tutor__search-consent button { min-height: 44px; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper); cursor: pointer; }
 
 .phone-tutor__composer { display: grid; gap: 12px; padding: 15px; }
+.phone-tutor > *, .phone-tutor__composer > *, .phone-tutor__composer textarea, .phone-tutor__composer select { min-width: 0; max-width: 100%; }
 .phone-tutor__composer-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .phone-tutor__composer-head > div { display: flex; flex-wrap: wrap; gap: 9px; }
 .phone-tutor__composer-head label { display: grid; gap: 5px; color: var(--ink-soft); font-size: .74rem; font-weight: 700; }
@@ -189,7 +190,9 @@
 .phone-tutor__cautions ul { margin-bottom: 0; padding-left: 20px; }
 
 @media (max-width: 860px) {
-  .phone-tutor__layout { grid-template-columns: 1fr; }
+  /* minmax(0, …): a plain 1fr track grows to its widest word, which overflows
+     360px phones at 200% text with wider fallback fonts. */
+  .phone-tutor__layout { grid-template-columns: minmax(0, 1fr); }
   .phone-tutor__sources { position: static; }
   .phone-tutor__source-list { max-height: 310px; }
 }

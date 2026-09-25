@@ -289,7 +289,7 @@ function LabBench({ lab, onClose, onLogMistake, onOpenSource }) {
         <div><strong>{Math.min(taskIndex + 1, lab.tasks.length)}/{lab.tasks.length}</strong><span>task</span></div>
         <span className="lab-minutes"><Clock3 size={15} /> ~{lab.estimatedMinutes} min</span>
       </header>
-      <main className="review-stage lab-stage">
+      <div className="review-stage lab-stage">
         {!finished && (
           <article className="review-flashcard revealed lab-card">
             <span className="eyebrow">{lab.kind} lab · work in your own editor, check here</span>
@@ -314,7 +314,7 @@ function LabBench({ lab, onClose, onLogMistake, onOpenSource }) {
             </div>
           </article>
         )}
-      </main>
+      </div>
     </div>
   );
 }
@@ -378,14 +378,14 @@ function InterviewRound({ cards, onClose, onLogMistake, onImportCards }) {
     return (
       <div className="page review-session-page interview-round" aria-label="Interview round summary">
         <header className="review-session-header"><button className="button ghost" onClick={onClose} type="button"><ArrowLeft size={17} /> Done</button><div><strong>{hits}/{results.length}</strong><span>answered well</span></div><span /></header>
-        <main className="review-stage">
+        <div className="review-stage">
           <article className="review-flashcard revealed interview-summary">
             <span className="eyebrow">Round complete</span>
             <h3>{misses === 0 ? "Clean round — raise the difficulty next time." : `${misses} miss${misses === 1 ? "" : "es"} logged to your mistake notebook.`}</h3>
             <p className="microcopy">Interview rounds are timed practice and never change your review schedule; corrective work lives in the mistake notebook.</p>
             <button className="button primary" onClick={onClose} type="button">Back to review center</button>
           </article>
-        </main>
+        </div>
       </div>
     );
   }
@@ -397,7 +397,7 @@ function InterviewRound({ cards, onClose, onLogMistake, onImportCards }) {
         <div><strong>{index + 1}/{cards.length}</strong><span>question</span></div>
         <div className={`interview-timer${phase === "answer" && secondsLeft <= 15 ? " is-low" : ""}`} role="timer" aria-label={`${phase === "prep" ? "Preparation" : "Answer"} time remaining`}><Clock3 size={16} /> {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}</div>
       </header>
-      <main className="review-stage" aria-live="polite">
+      <div className="review-stage" aria-live="polite">
         <article className={phase === "revealed" ? "review-flashcard revealed" : "review-flashcard"}>
           <span className="eyebrow">{phase === "prep" ? "Structure your answer out loud" : phase === "answer" ? "Answer as if the interviewer is listening" : "Compare against the expected answer"}</span>
           <div className="review-markdown review-question" dangerouslySetInnerHTML={{ __html: renderMarkdown(card.front) }} />
@@ -408,7 +408,7 @@ function InterviewRound({ cards, onClose, onLogMistake, onImportCards }) {
           {phase === "answer" && <button className="button primary large" onClick={() => setPhase("revealed")} type="button"><Eye size={18} /> Show expected answer</button>}
           {phase === "revealed" && <div className="interview-grades"><button className="button secondary" onClick={() => grade(false)} type="button"><Flame size={16} /> Missed it — log the mistake</button><button className="button primary" onClick={() => grade(true)} type="button"><CheckCircle2 size={16} /> Answered well</button></div>}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
@@ -647,7 +647,7 @@ export default function ReviewCenter({
           <div><strong>{queue.length}</strong><span>{crunch ? "practice cards left" : "remaining today"}</span></div>
           <button className="button ghost" onClick={undo} disabled={!lastAttempt} title={!lastAttempt ? "Grade a card before using undo" : "Undo the most recent grade"} type="button"><Undo2 size={16} /> Undo</button>
         </header>
-        <main className="review-stage" aria-live="polite">
+        <div className="review-stage" aria-live="polite">
           <div className="review-progress" aria-label={`${queue.length} cards remaining`}><span style={{ width: `${Math.max(8, 100 / Math.max(queue.length, 1))}%` }} /></div>
           {crunch && <p className="review-crunch-notice"><Flame size={15} /> Extra practice mode prioritizes weak cards and records attempts separately from daily limits.</p>}
           <article className={revealed ? "review-flashcard revealed" : "review-flashcard"}>
@@ -673,7 +673,7 @@ export default function ReviewCenter({
               <div className="review-ratings">{REVIEW_RATINGS.map((rating) => <button className={`review-rating ${rating.id}`} onClick={() => grade(rating.id)} aria-label={`Rate ${rating.label}`} key={rating.id} type="button"><strong>{rating.label}</strong><span>{formatInterval(intervals[rating.id])} · {rating.key}</span></button>)}</div>
             </div>
           )}
-        </main>
+        </div>
       </div>
     );
   }

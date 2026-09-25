@@ -381,3 +381,77 @@ A review pass on the fix branch reproduced three more bugs before merge:
   recorded.
 - Uploaded notes lost match snippets for accent-folded terms (`naive` in a
   note that says "naïve"). The unit audit covers this case.
+
+## Accessibility checks
+
+`npm run check:browser -- a11y` runs axe-core 4.13 (WCAG 2.2 A/AA plus best
+practice) on every route, Settings, and the open mobile drawer in Paper, Night,
+and Contrast at 393px and 1280px. axe is a pinned dev dependency, evaluated
+through CDP because the app CSP blocks injected scripts. Any violation fails
+the gate except a short, commented allowlist in `scripts/a11y_audit.mjs`. Each
+entry is one rule inside one component container and names the wave that owns
+it; delete the entry when that component is fixed. The audit also asserts one
+`main` landmark, a working skip link, a unique title per route, `aria-current`
+on the active navigation item, and heading focus after navigation. It also
+checks that the closed drawer stays inert after Settings and a reader dialog
+close, that toasts reach persistent live regions and dismiss while the app
+re-renders, the offline status, the Ctrl+K dialog guard, and forced colors.
+
+`src/lib/themeContrast.test.mjs` runs in `npm run check`. It parses the theme
+token blocks in `src/styles.css`. It requires 4.5:1 for every text token on
+every paper surface and 3:1 for the focus ring in Paper, Night, System-dark,
+and Contrast. It also fails on any `var(--token)` that no stylesheet defines.
+
+## Accessibility foundation reproduced on 2026-09-24
+
+- Muted text, small coral text, and white-on-coral primary buttons were
+  2.4–3.3:1 in Paper and Night. The theme tokens now pass 4.5:1: separate
+  `--coral-text`/`--teal-text` tokens for small text and `--primary-bg`/
+  `--on-primary` for buttons. `--blue-soft`, `--danger`, `--accent`, and
+  `--ai-warn` were undefined or fixed to light-theme values; each theme now
+  defines them.
+- The 65%-alpha coral focus ring measured 1.4–2.1:1 in Paper and on the
+  Contrast sidebar. The tutor's rings used 26% alpha, and the library search
+  suppressed its ring. Focus now uses an opaque ring between two halo bands,
+  with a gold ring on navy surfaces. The library search pill shows the ring.
+- The UA ButtonFace grey showed through buttons in dark themes. Buttons now
+  reset to a transparent background.
+- In Contrast, the hero and review hero showed dark red or #222 text on navy,
+  and the sidebar ignored the theme. These surfaces are now flat black with
+  white text, and the sidebar colors come from tokens.
+- `overflow-wrap: anywhere` on every page reduced flex labels to one letter per
+  line. Pages now use `break-word`. Only learner-authored cards break anywhere,
+  and control rows wrap under their headings. The responsive suite confirms that
+  no page overflow returned.
+- Most routes had no `main` landmark, component `main` elements were nested,
+  page headers became extra banners, and there was no skip link. The route view
+  is now the single `#main-content` landmark, with a skip link that does not
+  change the hash.
+- The document title never changed, the navigation had no `aria-current`, and
+  navigation was silent. Titles now follow the route, and in-app navigation
+  focuses the new page heading.
+- Toast live regions mounted already filled, errors used the success icon, and
+  a new `onClose` on every render restarted the dismiss timer (HL-22). Messages
+  now go to persistent polite/assertive regions. Icons follow the toast kind.
+  Timers are keyed to the toast and pause while its dismiss button is hovered
+  or focused. Errors stay 10 seconds. Toasts move above open sheets and the
+  update banner.
+- Closing any App dialog removed `inert` from the closed mobile drawer. So did
+  a component dialog such as reader actions. Background inertness is now
+  rendered from one modal flag, and the shell restores the drawer's hidden
+  state whenever a component dialog clears it.
+- The bottom navigation painted over the open drawer and took its taps. The
+  Settings close button scrolled away on phones. The drawer now layers above the
+  navigation as a modal dialog, and Settings has a sticky header with section
+  headings, a theme radio group, and meter semantics. The responsive suite
+  checks the drawer's paint order with background hit testing enabled and the
+  close button after scrolling.
+- Review of the foundation branch found two regressions it had introduced. A
+  permanent `tabindex="-1"` on `<main>` meant any click on lecture text parked
+  focus there. PageDown and the arrow keys then stopped scrolling the reader,
+  and teaching mode's Space shortcut stopped working. The landmark is now
+  focusable only while the skip link or a lazy route holds focus there. The
+  curriculum list's new bottom fade also dimmed the keyboard-focused Part; the
+  fade now lifts while a Part has keyboard focus. `audit:a11y` clicks lecture
+  text and asserts that focus stays on the body and PageDown scrolls. It also
+  tabs through the Parts and asserts that no focused row sits under the fade.
