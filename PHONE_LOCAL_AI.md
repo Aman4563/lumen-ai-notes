@@ -244,7 +244,9 @@ control, loads no Markdown image (a remote image becomes a link), and keeps link
 app's own host as text. Compatible fenced Mermaid blocks remain readable source while tokens are
 arriving and render only after the response completes. The shared renderer lazy-loads
 Mermaid, sanitizes returned SVG, preserves the original definition for theme changes,
-and exposes source/copy/retry diagnostics for load, size, or syntax failures.
+and exposes source/copy/retry diagnostics for load, size, or syntax failures. A model's
+diagram ignores its config directives and is shown as code when its source names a web
+address, so drawing it loads nothing.
 Structured quizzes/cards/plans remain buffered until the complete object validates.
 This improves time to visible text; it does not establish lower total generation
 time on a physical iPhone.

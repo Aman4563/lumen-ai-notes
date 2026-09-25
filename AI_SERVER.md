@@ -360,7 +360,9 @@ validated text-delta events plus a matching terminal envelope.
   flashcards keep the same rules in the Notebook and Review. The result is then
   sanitized with DOMPurify. Mermaid
   definitions render under strict settings and the returned SVG is sanitized
-  again, with diagram links removed.
+  again, with diagram links removed. A model's diagram ignores `%%{init}%%` and
+  frontmatter config, and one whose source names a web address is shown as
+  code, because Mermaid would fetch it while drawing.
 - An optional conversation summary is bounded to 3,000 characters, produced by
   deterministic local extraction rather than another model call, displayed to
   the learner, and treated as untrusted continuity material by the model prompt.

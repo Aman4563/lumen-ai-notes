@@ -563,12 +563,23 @@ uppercase `[W1]`, `[W2]`, … labels. Current guards:
   opens it in a new tab, and any other image shows its alt text. An `<img>` fetched its
   URL on render (`img-src https:`), which could carry prompt or source details to any
   host (issue #81);
+- a model's Mermaid diagram loads nothing either. Mermaid fetches some resources while it
+  draws, before the SVG filter runs: a `fontFamily` or `themeCSS` directive or frontmatter
+  `config:` (CSS `url()` in the diagram's `<style>`), an `htmlLabels` directive (an
+  `<img>` label), a flowchart node's `@{ img: … }`, a sequence actor's `properties` icon
+  and a `classDef … url()`. The untrusted profile marks model diagrams
+  (`data-diagram-author="model"`), and Mermaid renders them with every config key in
+  `secure`, so no directive applies; a model diagram whose source names a web scheme,
+  `//` or a backslash (after decoding numeric entities) is shown as code. Learner
+  diagrams keep their directives (issue #81);
 - saved AI output keeps these rules. An answer saved to notes is an `ai-tutor` clipping
   (shown as plain text in the Notebook), and AI flashcards and cards made from an AI
   clipping carry the `ai-draft` tag; Review renders those cards with the untrusted
   profile (`untrustedMarkdown.js`) in the deck, sessions, interview rounds and the card
   dialog preview. Saved text has no evidence, so its `[S#]`/`[W#]` markers stay plain
-  text. An edit keeps `ai-draft`. No path opens saved AI text in the Reader (issue #81).
+  text. An edit keeps `ai-draft`, and the profile normalizer adds it to a card made from
+  an AI clipping before the tag existed, so the tag outlives the clipping and travels
+  through card exports and mistakes. No path opens saved AI text in the Reader (issue #81).
 
 These are syntax/provenance integrity checks, not claim-level entailment. One valid citation
 can still be attached to a weakly supported or partially unsupported claim. The main release
@@ -1595,7 +1606,9 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - Tutor renderers show model-authored HTML as text; only the renderer creates citation
   controls, never inside a model link, and model links never target an in-app route or
   the app's own host.
-- Model Markdown never loads an image; a remote image is a link the learner opens.
+- Model Markdown never loads an image; a remote image is a link the learner opens. A
+  model Mermaid diagram ignores config directives and is shown as code when its source
+  could name a web address.
 - Saved AI output (`ai-tutor` clippings, `ai-draft` cards) renders with the untrusted
   profile wherever it appears; provenance survives edits. Only learner content uses the
   Reader renderer.
