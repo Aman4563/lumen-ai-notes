@@ -158,12 +158,14 @@ const auditDialog = async (page, label, {
   }
   if (!wrapped && !escaped && focusableCount) findings.push(`${label}: Tab never wrapped back inside the dialog after ${focusableCount + 3} presses`);
 
-  const focusedFirst = await page.evaluate((selector, focusableSelector) => {
+  // A sheet may still be finishing its open transition (visibility, inert),
+  // during which focus() is a silent no-op; retry briefly before judging.
+  const focusedFirst = await page.waitForFunction((selector, focusableSelector) => {
     const container = document.querySelector(selector);
     const first = container ? [...container.querySelectorAll(focusableSelector)].filter((node) => !node.hidden && node.getClientRects().length > 0)[0] : null;
     first?.focus();
     return Boolean(first && document.activeElement === first);
-  }, containerSelector, FOCUSABLE_SELECTOR);
+  }, { timeout: 2_000, polling: 100 }, containerSelector, FOCUSABLE_SELECTOR).then(() => true, () => false);
   if (focusedFirst) {
     await page.keyboard.down("Shift");
     await page.keyboard.press("Tab");
