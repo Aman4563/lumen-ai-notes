@@ -1,4 +1,10 @@
-import { renderTutorInlineMarkdown, renderTutorMarkdown, tutorMarkdownPlainText } from "./tutorMarkdown.js";
+import {
+  renderTutorInlineMarkdown,
+  renderTutorInlineMarkdownUnsanitized,
+  renderTutorMarkdown,
+  renderTutorMarkdownUnsanitized,
+  tutorMarkdownPlainText,
+} from "./tutorMarkdown.js";
 
 /**
  * Phone and Mac tutors share explicit `[W#]` web references. Bare numeric
@@ -17,14 +23,32 @@ export const preparePhoneLibraryCitationSources = (librarySources = []) => (
   }))
 );
 
-export const renderPhoneTutorMarkdown = (markdown, librarySources = [], citations = []) => {
-  const sources = preparePhoneLibraryCitationSources(librarySources);
-  return renderTutorMarkdown(adaptPhoneWebCitations(markdown, citations), sources, citations);
-};
+const phoneRenderArguments = (markdown, librarySources, citations) => [
+  adaptPhoneWebCitations(markdown),
+  preparePhoneLibraryCitationSources(librarySources),
+  citations,
+];
+
+/**
+ * The shared tutor renderer: model-authored HTML shows as text and citation
+ * controls come only from validated [S#]/[W#] markers.
+ */
+export const renderPhoneTutorMarkdown = (markdown, librarySources = [], citations = []) => (
+  renderTutorMarkdown(...phoneRenderArguments(markdown, librarySources, citations))
+);
 
 /** One structured-result field, with the same citation numbering as prose. */
 export const renderPhoneTutorInlineMarkdown = (text, librarySources = [], citations = []) => (
-  renderTutorInlineMarkdown(adaptPhoneWebCitations(text), preparePhoneLibraryCitationSources(librarySources), citations)
+  renderTutorInlineMarkdown(...phoneRenderArguments(text, librarySources, citations))
+);
+
+// The same renders before DOMPurify, for unit tests (DOMPurify needs a DOM).
+export const renderPhoneTutorMarkdownUnsanitized = (markdown, librarySources = [], citations = []) => (
+  renderTutorMarkdownUnsanitized(...phoneRenderArguments(markdown, librarySources, citations))
+);
+
+export const renderPhoneTutorInlineMarkdownUnsanitized = (text, librarySources = [], citations = []) => (
+  renderTutorInlineMarkdownUnsanitized(...phoneRenderArguments(text, librarySources, citations))
 );
 
 export const phoneTutorMarkdownPlainText = tutorMarkdownPlainText;

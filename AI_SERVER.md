@@ -353,8 +353,12 @@ validated text-delta events plus a matching terminal envelope.
   are validated and bounded. Lumen does not follow search-result links.
 - Local model responses and tool output remain untrusted and are validated
   before structured data reaches the UI. Markdown prose is parsed as GFM and
-  KaTeX with trusted features disabled, then sanitized with DOMPurify. Mermaid
-  definitions render under strict settings and the returned SVG is sanitized again.
+  KaTeX with trusted features disabled; raw HTML in it is shown as text, and
+  citation controls come only from `[S#]`/`[W#]` markers. Model links keep only
+  `http(s)`/`mailto` targets and never wrap a citation. The result is then
+  sanitized with DOMPurify. Mermaid
+  definitions render under strict settings and the returned SVG is sanitized
+  again, with diagram links removed.
 - An optional conversation summary is bounded to 3,000 characters, produced by
   deterministic local extraction rather than another model call, displayed to
   the learner, and treated as untrusted continuity material by the model prompt.

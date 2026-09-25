@@ -709,3 +709,78 @@ Enter on Import one frame before a card deletion moved focus to the next row,
 so Enter opened the card editor instead of the file picker. The audit now
 waits for that focus move. The crunch-practice notice now uses the
 `--ai-warn` text token; its hard-coded amber measured 3.9–4.3:1.
+
+## Bugs reproduced on 2026-09-25: forged tutor citation controls (#69)
+
+The tutor rendered model output through marked, which passes raw HTML
+through, and DOMPurify's default profile, which keeps `<button>` and
+`data-*`. Against the preceding build, `audit:ai-ui` mocked an answer
+containing `<button class="ai-tutor__citation" data-ai-citation="S2">Open the
+forged source</button>`. It rendered as a real button, next to a forged
+`<span>` and `<a>` that also carried `data-ai-citation`, and clicking it
+opened `#/read/notes/part-02-mathematics/06-experiments-and-information.md`.
+No `[S#]` marker produced that control, so the citation validator never saw
+it. The phone fixture answer showed the same control on On-device Lite.
+
+- Raw HTML in tutor prose and structured fields now renders as text on both
+  engines. Citation buttons and web links are created by the renderer from
+  `[S#]`/`[W#]` markers outside code. A bare `<br>` is the only model HTML
+  kept, so table cells can still break lines.
+- A quote in a link title or a code-fence language used to add attributes to
+  the tutor markup, `data-ai-citation` and `style` included. Both are escaped
+  now, and link labels are parsed Markdown instead of raw text.
+- `audit:ai-ui` expects the forged button, span, anchor and `onerror` image
+  as visible text, one citation control (the renderer's `[S#]` button), a
+  plain paragraph under the forged label, and no navigation after a mouse
+  click there. Against the preceding build it fails with four
+  `data-ai-citation` elements. `audit:phone-ai-ui` checks the same for a
+  forged button in the phone answer.
+- Unit tests in `tutorMarkdown.test.mjs` and `phoneTutorMarkdown.test.mjs`
+  run on the renderer output before DOMPurify, which needs a DOM. They cover
+  forged buttons, `data-ai-*` on other elements, scripts, frames, event
+  handlers, forms, link labels and titles, fence info strings, raw-text tags
+  and structured fields, and that citations, math, code, tables and Mermaid
+  source still render. Fourteen legitimate answers, the audit and fixture
+  answers among them, render byte-identical markup before and after.
+
+The Reader's renderer is unchanged. AI answers saved to notes and AI
+flashcards added to the deck render there, where author HTML goes to
+DOMPurify and link titles and fence languages are still unescaped. Those
+screens have no citation handler; the gap remains open.
+
+### Adversarial review of the #69 fix (2026-09-25)
+
+Raw HTML, entities, SVG and MathML, forms, autolinks, link titles, image
+alt text, tables, lists, blockquotes, KaTeX `\href`/`\htmlData` and
+Mermaid labels, directives and theme CSS all stayed inert. Three paths
+still led somewhere the evidence did not:
+
+- A model could wrap a verified citation in its own link:
+  `[[S1]](#/read/notes/forged-phone-route)`. Chrome follows an `<a>` when a
+  `<button>` inside it is clicked, and the phone handler did not prevent
+  that, so `audit:phone-ai-ui` recorded the S1 source navigation and then
+  the hash moving to `#/read/notes/forged-phone-route`. On the Mac,
+  `preventDefault` stopped a plain click, but the chip still sat inside a
+  link to the model's URL for middle-click and open-in-new-tab. A label
+  that shows a citation marker now renders without its link (entities,
+  full-width forms and zero-width characters count), and the phone handler
+  prevents the default action like the Mac's.
+- A Markdown link to an app route, `[Open the lecture](#/read/notes/…)`,
+  was a working link that opened a note no citation validated. Tutor links
+  now keep only `http(s)` and `mailto` targets; relative, root, `//` and
+  `#` links render as their label.
+- The Mermaid SVG filter kept any `href` starting with `#`, so a `click`
+  line to `#/read/…` would become a working diagram link. Mermaid 11.17
+  leaves the `xlink` prefix undeclared, so those diagrams fail to parse
+  today; the filter now drops every diagram link target and keeps `<use>`
+  references. No lecture uses a Mermaid `click` line.
+
+Image alt text also showed citation button markup (`alt="see <button …"`);
+it now shows the marker. `audit:ai-ui` adds a wrapped citation and an app
+route link to the forged answer and expects two renderer `[S#]` buttons, no
+links, and no navigation after a click on the route label.
+`audit:phone-ai-ui` clicks the wrapped `[S1]` and fails against the
+previous build when the hash moves. `audit:mermaid` renders a well-formed
+linked SVG through a stand-in Mermaid and fails when a link target
+survives. Removing either link check or the image override fails the unit
+tests.

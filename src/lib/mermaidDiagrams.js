@@ -286,10 +286,15 @@ const safeSvgElement = (svgText) => {
   if (parsed.querySelector("parsererror") || parsed.documentElement.localName !== "svg") return null;
   parsed.querySelectorAll("script, foreignObject, iframe, object, embed, link, meta, audio, video, canvas").forEach((element) => element.remove());
   parsed.querySelectorAll("*").forEach((element) => {
+    // A diagram link is never kept, even to "#…": a Mermaid `click` line
+    // could otherwise open an in-app route (#/read/…) from author or model
+    // text. Mermaid 11.17 leaves xlink undeclared, so such diagrams fail to
+    // parse today. Fragment references on other elements (<use>) stay.
+    const link = element.localName === "a";
     [...element.attributes].forEach((attribute) => {
       const name = attribute.name.toLocaleLowerCase();
       if (name.startsWith("on")) element.removeAttribute(attribute.name);
-      if ((name === "href" || name === "xlink:href") && !attribute.value.trim().startsWith("#")) {
+      if ((name === "href" || name === "xlink:href") && (link || !attribute.value.trim().startsWith("#"))) {
         element.removeAttribute(attribute.name);
       }
     });

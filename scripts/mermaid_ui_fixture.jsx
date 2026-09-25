@@ -1,8 +1,9 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "katex/dist/katex.min.css";
 import { renderMarkdown } from "../src/lib/markdown.js";
 import { renderTutorMarkdown } from "../src/lib/tutorMarkdown.js";
+import { renderMermaidDiagrams } from "../src/lib/mermaidDiagrams.js";
 import { useMermaidDiagrams } from "../src/lib/useMermaidDiagrams.js";
 import "../src/styles.css";
 
@@ -84,6 +85,33 @@ const CompleteFixture = () => (
   </main>
 );
 
+// Mermaid 11.17 leaves the xlink prefix undeclared, so a diagram with a
+// `click` link fails to parse and never reaches the page. This stand-in
+// renderer returns the well-formed version, to check that the SVG filter
+// drops link targets (including in-app #/ routes) but keeps <use> refs.
+const linkedSvg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 240 40"><defs><path id="dot" d="M0 0h4v4H0z"/></defs><a xlink:href="#/read/notes/part-02-mathematics/06-experiments-and-information.md"><text x="4" y="24" font-size="16">Open lecture</text></a><a href="#/read/notes/other"><text x="130" y="24" font-size="16">Other</text></a><use href="#dot" x="230" y="30"/></svg>';
+const linkedDiagram = "```mermaid\nflowchart LR\n  A[Open lecture] --> B[Other]\n  click A \"#/read/notes/part-02-mathematics/06-experiments-and-information.md\"\n```";
+
+const LinkFixture = () => {
+  const rootRef = useRef(null);
+  const html = useMemo(() => renderTutorMarkdown(linkedDiagram), []);
+  useEffect(() => {
+    void renderMermaidDiagrams(rootRef.current, {
+      importer: async () => ({ initialize() {}, render: async () => ({ svg: linkedSvg }) }),
+    });
+  }, []);
+  return (
+    <main>
+      <h1>Linked diagram</h1>
+      <section aria-label="Linked diagram" className="markdown-body mermaid-audit-surface">
+        <div ref={rootRef} dangerouslySetInnerHTML={{ __html: html }} />
+      </section>
+    </main>
+  );
+};
+
 window.__MERMAID_XSS__ = false;
-const deferred = new URLSearchParams(window.location.search).get("mode") === "deferred";
-createRoot(document.getElementById("root")).render(deferred ? <DeferredFixture /> : <CompleteFixture />);
+const mode = new URLSearchParams(window.location.search).get("mode");
+const fixtures = { deferred: DeferredFixture, links: LinkFixture };
+const Fixture = fixtures[mode] || CompleteFixture;
+createRoot(document.getElementById("root")).render(<Fixture />);

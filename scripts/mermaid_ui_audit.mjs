@@ -75,6 +75,27 @@ try {
   assert.ok(mermaidRuntimeRequests(deferredRequests).length > 0, "the Mermaid runtime was not loaded after response completion");
   await deferred.close();
 
+  // Diagram links are dropped, so a `click` line cannot open an in-app route.
+  const linked = await browser.newPage();
+  attachDiagnostics(linked, "links");
+  await linked.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  await linked.goto(`${baseUrl}/__mermaid-audit?mode=links#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await linked.waitForSelector('.diagram-shell[data-diagram-status="rendered"] svg', { timeout: 15_000 });
+  const linkedDiagram = await linked.evaluate(() => ({
+    anchors: document.querySelectorAll(".mermaid svg a").length,
+    linkAttributes: [...document.querySelectorAll(".mermaid svg a")].flatMap((node) => [...node.attributes].map((attribute) => attribute.name)).filter((name) => /href$/iu.test(name)),
+    useReference: document.querySelector(".mermaid svg use")?.getAttribute("href") || "",
+  }));
+  assert.deepEqual(linkedDiagram, { anchors: 2, linkAttributes: [], useReference: "#dot" }, "a Mermaid diagram link kept its target");
+  const labelBox = await linked.$eval(".mermaid svg a text", (node) => {
+    const box = node.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+  await linked.mouse.click(labelBox.x, labelBox.y);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await linked.evaluate(() => window.location.hash), "#/ai", "clicking a Mermaid diagram link navigated");
+  await linked.close();
+
   const page = await browser.newPage();
   attachDiagnostics(page, "complete");
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });

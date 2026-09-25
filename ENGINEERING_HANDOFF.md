@@ -546,7 +546,16 @@ uppercase `[W1]`, `[W2]`, … labels. Current guards:
 - grouped or spaced labels the model wrote (`[S1, S2]`, `[S 1]`) are normalized to `[S1] [S2]`
   outside code; no label is ever added to uncited text and lowercase labels still fail;
 - a Markdown answer that is a bare JSON object gets one format-recovery turn, then fails;
-- code like `x[1]` is not reinterpreted as a web citation.
+- code like `x[1]` is not reinterpreted as a web citation;
+- model-authored HTML in tutor prose and structured fields (Mac and phone) renders as text,
+  so an answer cannot forge a citation control or a `data-ai-*` attribute. The tutor
+  renderer creates `[S#]` buttons and `[W#]` links itself from markers outside code; the
+  only model HTML it keeps is a bare `<br>` (issue #69);
+- a model Markdown link stays a link only to an absolute `http(s)`/`mailto` address, and a
+  link whose label shows a citation marker (`[[S1]](url)`, or `&#91;S1&#93;`) renders
+  without its link. A citation button inside a model's `<a>` followed the model's URL on
+  click (on the phone, an in-app `#/read/…` route), and an in-app link would open a library
+  note that no citation validated. Mermaid diagram links are dropped for the same reason.
 
 These are syntax/provenance integrity checks, not claim-level entailment. One valid citation
 can still be attached to a weakly supported or partially unsupported claim. The main release
@@ -742,7 +751,10 @@ retry; retry does not silently use stale hidden settings.
 
 Prose/Markdown surfaces use Marked + KaTeX + DOMPurify. Supported presentation includes
 GFM headings, emphasis, lists, blockquotes, tables, links, code, code-copy controls, inline
-`$...$`, display `$$...$$`, and compatible fenced Mermaid. Model HTML is never trusted.
+`$...$`, display `$$...$$`, and compatible fenced Mermaid. Model HTML is never trusted:
+the tutor renderer shows it as text before DOMPurify runs, because DOMPurify's default
+profile keeps `<button>` and `data-*`. The Reader's renderer still passes author HTML to
+DOMPurify.
 
 Structured Quiz/Flashcard/Study-plan results use dedicated validated React components.
 Each string field renders through a sanitized inline variant of the tutor renderer: KaTeX
@@ -1566,6 +1578,9 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 ### Rendering/PWA
 
 - Sanitize Markdown/KaTeX output and Mermaid SVG.
+- Tutor renderers show model-authored HTML as text; only the renderer creates citation
+  controls, never inside a model link, and model links never target an in-app route.
+- Rendered Mermaid SVG keeps no link targets.
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).
@@ -1616,7 +1631,7 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - [src/lib/conversationMemory.js](./src/lib/conversationMemory.js) — complete-pair memory.
 - [src/lib/tutorGrounding.js](./src/lib/tutorGrounding.js) — safe S-labelled context blocks.
 - [src/lib/aiProvenance.js](./src/lib/aiProvenance.js) — durable AI draft/source materialization.
-- [src/lib/tutorMarkdown.js](./src/lib/tutorMarkdown.js) — sanitized prose/citations.
+- [src/lib/tutorMarkdown.js](./src/lib/tutorMarkdown.js) — sanitized prose/citations; model HTML as text.
 - [src/lib/markdown.js](./src/lib/markdown.js) — shared Markdown extension points.
 - [src/lib/mermaidDiagrams.js](./src/lib/mermaidDiagrams.js) and
   [src/lib/useMermaidDiagrams.js](./src/lib/useMermaidDiagrams.js) — diagram lifecycle.

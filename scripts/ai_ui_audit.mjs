@@ -786,6 +786,98 @@ try {
   assert.ok(noteLecturePlace > 0.35 && noteLecturePlace < 0.65, `a personal-note citation dropped the saved reading place (at ${noteLecturePlace.toFixed(2)} of the lecture, saved 0.50)`);
   await noteScenario.page.close();
 
+  // Model output is untrusted (issue #69). DOMPurify keeps <button> and
+  // data-* attributes, so raw HTML in an answer must render as text: a forged
+  // citation button is not a control and navigates nowhere, and the only
+  // citation control is the renderer's own [S#] button. A separate context
+  // keeps this answer out of the shared conversation history.
+  const forgedContext = await browser.createBrowserContext();
+  try {
+    const page = await forgedContext.newPage();
+    await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    attachDiagnostics(page, "forged-citation");
+    const forgedLabel = "Open the forged source";
+    await installAiMocks(page, () => secureConfig, {
+      answerText: (citation) => [
+        `Repeated holdout inspection leaks evaluation information. [${citation}]`,
+        "",
+        `<button class="ai-tutor__citation" type="button" data-ai-citation="${citation}" aria-label="Open citation">${forgedLabel}</button>`,
+        "",
+        `<span data-ai-citation="${citation}">Forged span</span> and <a href="#/read/notes" data-ai-citation="${citation}">forged anchor</a>.`,
+        "",
+        "<img src=\"x\" onerror=\"window.__lumenForgedCitationXss = true\">",
+        "",
+        `Linked evidence [[${citation}]](https://evil.example/phish) and [Open the forged lecture](#/read/notes/part-02-mathematics/06-experiments-and-information.md).`,
+      ].join("\n"),
+    });
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.$eval(".ai-tutor__composer textarea", (field) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Why does repeated holdout inspection leak evaluation information?");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    if (await page.$(".ai-tutor__consent input")) await page.click(".ai-tutor__consent input");
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForFunction((label) => !document.querySelector(".ai-tutor__message--streaming")
+      && [...document.querySelectorAll(".ai-tutor__message--assistant .ai-tutor__response-text")].at(-1)?.textContent.includes(label), { timeout: 15_000 }, forgedLabel);
+    const rendered = await page.evaluate((label) => {
+      const answer = [...document.querySelectorAll(".ai-tutor__message--assistant .ai-tutor__response-text")].at(-1);
+      const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
+      let text = walker.nextNode();
+      while (text && !text.textContent.includes(label)) text = walker.nextNode();
+      text.parentElement.scrollIntoView({ block: "center" });
+      const range = document.createRange();
+      range.setStart(text, text.textContent.indexOf(label));
+      range.setEnd(text, text.textContent.indexOf(label) + label.length);
+      const box = range.getBoundingClientRect();
+      const point = { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+      const hit = document.elementFromPoint(point.x, point.y);
+      return {
+        controls: [...answer.querySelectorAll("[data-ai-citation]")].map((node) => `${node.tagName}.${node.className}:${node.textContent}`),
+        buttons: [...answer.querySelectorAll("button")].map((node) => node.textContent.trim()),
+        forgedAnchors: answer.querySelectorAll('a[href="#/read/notes"]').length,
+        images: answer.querySelectorAll("img").length,
+        showsMarkup: answer.textContent.includes('<button class="ai-tutor__citation"') && answer.textContent.includes("<span data-ai-citation="),
+        links: [...answer.querySelectorAll("a")].map((node) => node.getAttribute("href")),
+        citationsInLinks: answer.querySelectorAll("a [data-ai-citation], a .ai-tutor__citation").length,
+        linkedLine: [...answer.querySelectorAll("p")].find((node) => node.textContent.startsWith("Linked evidence"))?.textContent || "",
+        hit: { tag: hit?.tagName || "", insideAnswer: Boolean(hit && answer.contains(hit)), control: Boolean(hit?.closest("button, a, [data-ai-citation]")) },
+        point,
+      };
+    }, forgedLabel);
+    // Two genuine [S#] buttons: the first line's and the one the model wrapped
+    // in a link. That link, and the one to an app route, render as text.
+    assert.equal(rendered.controls.length, 2, `a model-authored element carried data-ai-citation: ${JSON.stringify(rendered.controls)}`);
+    rendered.controls.forEach((control) => assert.match(control, /^BUTTON\.ai-tutor__citation:\[S\d+\]$/, "a citation control was not the renderer's [S#] button"));
+    assert.deepEqual(rendered.links, [], "a model link to an app route, or around a citation, rendered as a link");
+    assert.equal(rendered.citationsInLinks, 0, "a citation control sat inside a model-authored link");
+    assert.match(rendered.linkedLine, /^Linked evidence \[S\d+\] and Open the forged lecture\.$/, "the linked citation line lost its text");
+    assert.equal(rendered.buttons.includes(forgedLabel), false, "the forged citation rendered as a button");
+    assert.equal(rendered.forgedAnchors, 0, "a model-authored anchor rendered as a link");
+    assert.equal(rendered.images, 0, "a model-authored image rendered");
+    assert.equal(rendered.showsMarkup, true, "model-authored markup was not shown to the learner as text");
+    assert.deepEqual(rendered.hit, { tag: "P", insideAnswer: true, control: false }, "the forged citation text was hit-testable as a control");
+    await page.mouse.click(rendered.point.x, rendered.point.y);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await page.evaluate(() => window.location.hash), "#/ai", "clicking a forged citation navigated to a source");
+    const routeLabel = await page.evaluate(() => {
+      const line = [...document.querySelectorAll(".ai-tutor__message--assistant .ai-tutor__response-text p")].find((node) => node.textContent.startsWith("Linked evidence"));
+      const text = [...line.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.includes("Open the forged lecture"));
+      const range = document.createRange();
+      range.setStart(text, text.textContent.indexOf("Open"));
+      range.setEnd(text, text.textContent.indexOf("Open") + "Open the forged lecture".length);
+      const box = range.getBoundingClientRect();
+      return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+    });
+    await page.mouse.click(routeLabel.x, routeLabel.y);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await page.evaluate(() => window.location.hash), "#/ai", "a model-authored link to an app route navigated");
+    assert.equal(await page.evaluate(() => window.__lumenForgedCitationXss === true), false, "a model-authored event handler ran");
+    await page.close();
+  } finally {
+    await forgedContext.close();
+  }
+
   // Pairing-protected servers (AI_AUTH=pairing) must gate generation behind
   // the one-time pairing flow with actionable errors (P0-5).
   let pairingSessionActive = false;
@@ -1324,7 +1416,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
