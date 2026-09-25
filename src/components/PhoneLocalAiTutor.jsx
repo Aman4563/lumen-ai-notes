@@ -290,7 +290,10 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
       return;
     }
     const citationButton = event.target.closest?.("[data-ai-citation]");
-    const match = citationButton?.dataset?.aiCitation?.match(/^S(\d+)$/);
+    if (!citationButton) return;
+    // As on the Mac: a citation opens its own source and nothing else.
+    event.preventDefault();
+    const match = citationButton.dataset?.aiCitation?.match(/^S(\d+)$/);
     const requestedCitation = match ? Number(match[1]) : null;
     const source = Number.isSafeInteger(requestedCitation)
       ? sources.find((candidate, index) => (

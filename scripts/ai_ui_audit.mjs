@@ -806,6 +806,8 @@ try {
         `<span data-ai-citation="${citation}">Forged span</span> and <a href="#/read/notes" data-ai-citation="${citation}">forged anchor</a>.`,
         "",
         "<img src=\"x\" onerror=\"window.__lumenForgedCitationXss = true\">",
+        "",
+        `Linked evidence [[${citation}]](https://evil.example/phish) and [Open the forged lecture](#/read/notes/part-02-mathematics/06-experiments-and-information.md).`,
       ].join("\n"),
     });
     await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
@@ -836,12 +838,20 @@ try {
         forgedAnchors: answer.querySelectorAll('a[href="#/read/notes"]').length,
         images: answer.querySelectorAll("img").length,
         showsMarkup: answer.textContent.includes('<button class="ai-tutor__citation"') && answer.textContent.includes("<span data-ai-citation="),
+        links: [...answer.querySelectorAll("a")].map((node) => node.getAttribute("href")),
+        citationsInLinks: answer.querySelectorAll("a [data-ai-citation], a .ai-tutor__citation").length,
+        linkedLine: [...answer.querySelectorAll("p")].find((node) => node.textContent.startsWith("Linked evidence"))?.textContent || "",
         hit: { tag: hit?.tagName || "", insideAnswer: Boolean(hit && answer.contains(hit)), control: Boolean(hit?.closest("button, a, [data-ai-citation]")) },
         point,
       };
     }, forgedLabel);
-    assert.equal(rendered.controls.length, 1, `a model-authored element carried data-ai-citation: ${JSON.stringify(rendered.controls)}`);
-    assert.match(rendered.controls[0], /^BUTTON\.ai-tutor__citation:\[S\d+\]$/, "the only citation control was not the renderer's [S#] button");
+    // Two genuine [S#] buttons: the first line's and the one the model wrapped
+    // in a link. That link, and the one to an app route, render as text.
+    assert.equal(rendered.controls.length, 2, `a model-authored element carried data-ai-citation: ${JSON.stringify(rendered.controls)}`);
+    rendered.controls.forEach((control) => assert.match(control, /^BUTTON\.ai-tutor__citation:\[S\d+\]$/, "a citation control was not the renderer's [S#] button"));
+    assert.deepEqual(rendered.links, [], "a model link to an app route, or around a citation, rendered as a link");
+    assert.equal(rendered.citationsInLinks, 0, "a citation control sat inside a model-authored link");
+    assert.match(rendered.linkedLine, /^Linked evidence \[S\d+\] and Open the forged lecture\.$/, "the linked citation line lost its text");
     assert.equal(rendered.buttons.includes(forgedLabel), false, "the forged citation rendered as a button");
     assert.equal(rendered.forgedAnchors, 0, "a model-authored anchor rendered as a link");
     assert.equal(rendered.images, 0, "a model-authored image rendered");
@@ -850,6 +860,18 @@ try {
     await page.mouse.click(rendered.point.x, rendered.point.y);
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(await page.evaluate(() => window.location.hash), "#/ai", "clicking a forged citation navigated to a source");
+    const routeLabel = await page.evaluate(() => {
+      const line = [...document.querySelectorAll(".ai-tutor__message--assistant .ai-tutor__response-text p")].find((node) => node.textContent.startsWith("Linked evidence"));
+      const text = [...line.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.includes("Open the forged lecture"));
+      const range = document.createRange();
+      range.setStart(text, text.textContent.indexOf("Open"));
+      range.setEnd(text, text.textContent.indexOf("Open") + "Open the forged lecture".length);
+      const box = range.getBoundingClientRect();
+      return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+    });
+    await page.mouse.click(routeLabel.x, routeLabel.y);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await page.evaluate(() => window.location.hash), "#/ai", "a model-authored link to an app route navigated");
     assert.equal(await page.evaluate(() => window.__lumenForgedCitationXss === true), false, "a model-authored event handler ran");
     await page.close();
   } finally {

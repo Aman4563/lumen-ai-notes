@@ -233,10 +233,32 @@ try {
       insideControl: Boolean(paragraph?.closest("button, a, [data-ai-citation]") || paragraph?.querySelector("button, a, [data-ai-citation]")),
     };
   });
-  assert.deepEqual(forgedPhone, { controls: ["BUTTON.ai-tutor__citation:[S1]"], shownAsText: true, insideControl: false }, "a model-authored citation button became a phone citation control");
+  // The [[S1]](#/…) line adds a second genuine [S1] button. Its link is
+  // dropped, so no citation sits inside a model-chosen link.
+  assert.deepEqual(forgedPhone, { controls: ["BUTTON.ai-tutor__citation:[S1]", "BUTTON.ai-tutor__citation:[S1]"], shownAsText: true, insideControl: false }, "a model-authored citation button became a phone citation control");
   const navigationsBeforeForged = await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length);
   await page.evaluate(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant .phone-tutor__safe-response p")].find((node) => node.textContent.includes("Forged phone citation"))?.click());
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length), navigationsBeforeForged, "clicking a forged phone citation navigated");
+  // A model link to an in-app route is text, and a citation it wrapped opens
+  // only its own source.
+  const hashBeforeLinked = await page.evaluate(() => window.location.hash);
+  const linkedPhone = await page.evaluate(() => {
+    const answer = document.querySelector(".phone-tutor__message.is-assistant .phone-tutor__safe-response");
+    const paragraph = [...answer.querySelectorAll("p")].find((node) => node.textContent.includes("Linked citation"));
+    return {
+      text: paragraph?.textContent || "",
+      routeLinks: answer.querySelectorAll('a[href^="#"], a[href^="/"], a[href^="."]').length,
+      citationsInLinks: answer.querySelectorAll("a [data-ai-citation], a .ai-tutor__citation").length,
+      citation: paragraph?.querySelector("button.ai-tutor__citation")?.textContent || "",
+    };
+  });
+  assert.deepEqual(linkedPhone, { text: "Linked citation [S1] and the forged phone route.", routeLinks: 0, citationsInLinks: 0, citation: "[S1]" }, "a model link to an app route, or around a citation, survived on the phone");
+  const navigationsBeforeLinked = await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length);
+  await page.evaluate(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant .phone-tutor__safe-response p")].find((node) => node.textContent.includes("Linked citation"))?.querySelector("button.ai-tutor__citation")?.click());
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length), navigationsBeforeLinked + 1, "the linked [S1] citation did not open its source");
+  assert.deepEqual(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.at(-1)), { documentId: "notes/audit-gradient-descent.md", anchor: "optimization" }, "the linked [S1] citation opened the wrong source");
+  assert.equal(await page.evaluate(() => window.location.hash), hashBeforeLinked, "a citation click followed a model-chosen link");
   const fitCopy = await page.$eval(".phone-tutor__context-fit", (node) => node.textContent);
   assert.match(fitCopy, /720 of 2,816 safe input bytes/);
   assert.match(fitCopy, /Gradient descent:/);

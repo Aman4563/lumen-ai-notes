@@ -73,3 +73,15 @@ test("phone structured fields keep model HTML as text and render real citations"
   assert.doesNotMatch(result, /<img|<button data-ai/);
   assert.match(result, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
 });
+
+test("phone citations never sit inside a model link, and app routes stay text", () => {
+  const result = renderPhoneTutorMarkdownUnsanitized(
+    "Linked [[S1]](#/read/notes/forged) and [[W2]](https://evil.example), then [the lecture](#/read/notes/forged).",
+    librarySources,
+    citations,
+  );
+  assert.equal(liveCitationAttributes(result), 1);
+  assert.doesNotMatch(result, /#\/read|evil\.example/);
+  assert.deepEqual(liveTags(result).map((tag) => tag.split(" ")[0]), ["<p>", "<button", "<a"]);
+  assert.match(result, /\[W2\]<\/a>, then the lecture\.<\/p>/);
+});

@@ -160,6 +160,50 @@ test("raw HTML cannot re-enter through links, titles, fence info strings or raw-
   assert.deepEqual(liveTags(rawText), ["<p>"]);
 });
 
+test("never puts a citation, or a label that reads as one, inside a model link", () => {
+  // Chrome follows an <a> when a <button> inside it is clicked, so a verified
+  // [S1] wrapped in a model link would also open the model's URL.
+  const wrapped = render("See [[S1]](https://evil.example/a) and [[W1]](https://evil.example/b).");
+  assert.equal(liveCitationAttributes(wrapped), 1);
+  assert.match(wrapped, /<a class="ai-tutor__citation" href="https:\/\/example\.com\/docs"/);
+  assert.doesNotMatch(wrapped, /evil\.example/);
+
+  const missing = render("[see *[S9]*](https://evil.example)");
+  assert.match(missing, /<em><span class="ai-tutor__citation ai-tutor__citation--missing"/);
+  assert.doesNotMatch(missing, /<a /);
+
+  for (const label of ["&#91;S1&#93;", "&lsqb;W1&rsqb;", "［Ｓ１］", "[S​1]"]) {
+    assert.doesNotMatch(render(`[${label}](https://evil.example)`), /<a /, `${label} kept its link`);
+  }
+  assert.match(render("[Section 3 [of 5]](https://example.com)"), /<a href="https:\/\/example\.com"/);
+
+  const figure = render("![Holdout curve [S1]](https://example.com/curve.png)");
+  assert.match(figure, /<img src="https:\/\/example\.com\/curve\.png" alt="Holdout curve \[S1\]">/);
+});
+
+test("keeps model links only to absolute web and mail addresses", () => {
+  // An app route would open a library note that no citation validated.
+  for (const markdown of [
+    "[Open the lecture](#/read/notes/part-02-mathematics/06-experiments-and-information.md)",
+    "[relative](./02-probability.md)",
+    "[root](/api/ai/config)",
+    "[protocol-relative](//evil.example/x)",
+    "[script](javascript:alert(1))",
+    "[reference][r]\n\n[r]: #/read/notes/x",
+  ]) {
+    const result = render(markdown);
+    assert.doesNotMatch(result, /<a /, markdown);
+    assert.match(result, /<p>[^<]+<\/p>/, markdown);
+  }
+  assert.match(render("[docs](https://example.com/a?b=1&c=2)"), /<a href="https:\/\/example\.com\/a\?b=1&amp;c=2" target="_blank" rel="noopener noreferrer">docs<\/a>/);
+  assert.match(render("[mail](mailto:tutor@example.com)"), /<a href="mailto:tutor@example\.com">mail<\/a>/);
+  assert.match(render("See https://example.com/plain."), /<a href="https:\/\/example\.com\/plain" target="_blank"/);
+  assert.equal(
+    renderTutorInlineMarkdownUnsanitized("[[S1]](https://evil.example) or [route](#/read/x)", sources, web),
+    '<button class="ai-tutor__citation" type="button" data-ai-citation="S1" aria-label="Open citation [S1]: Library &quot;source&quot;">[S1]</button> or route',
+  );
+});
+
 test("keeps a [S#]: line visible instead of treating it as a link definition", () => {
   // A one-word or URL remainder would otherwise make a valid definition.
   const result = render("Sources:\n\n[S1]: Evaluation\n\n[W1]: https://example.com/docs");

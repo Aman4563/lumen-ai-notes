@@ -9,6 +9,10 @@ const CITATION_START = /\[[SW]\d/;
 // `[S1]: …` is a citation followed by text, not a link reference definition
 // that would hide the line.
 const CITATION_DEFINITION = /^ {0,3}\[[SW]\d+\]:/;
+// A citation marker anywhere in a link's label, as a control or as text.
+const CITATION_TEXT = /\[[SW]\d+\]/;
+// Model links stay links only to absolute web and mail addresses.
+const LINK_HREF = /^(?:https?:|mailto:)/i;
 const LINE_BREAK_TAG = /^<br\s*\/?>/i;
 const LINE_BREAK_START = /<br\s*\/?>/i;
 const FENCE_PATTERN = /^\s{0,3}(`{3,}|~{3,})/;
@@ -63,6 +67,30 @@ const EMPTY_CITATIONS = Object.freeze(citationContext());
 // must not reach the code block's class and aria-label attributes.
 const fenceLanguage = (lang) => String(lang || "").trim().split(/\s/u, 1)[0].replace(/["'`]/gu, "");
 
+/** A label's text with citations as their markers, for link and alt checks. */
+const plainLabel = (tokens = []) => tokens.map((token) => {
+  if (token.type === "tutorCitation") return `[${token.kind}${token.number}]`;
+  if (Array.isArray(token.tokens)) return plainLabel(token.tokens);
+  return String(token.text ?? "");
+}).join("");
+
+const BRACKET_ENTITIES = { lsqb: "[", lbrack: "[", rsqb: "]", rbrack: "]" };
+const LABEL_ENTITY = /&(?:#(\d{1,7})|#x([\da-f]{1,6})|(lsqb|lbrack|rsqb|rbrack));/giu;
+
+/**
+ * True when a label reads as a citation marker once entities, full-width
+ * forms and invisible or space characters are resolved, so `&#91;S1&#93;`
+ * cannot pass for one either.
+ */
+const showsCitationMarker = (text) => CITATION_TEXT.test(text
+  .replace(LABEL_ENTITY, (entity, decimal, hex, name) => {
+    if (name) return BRACKET_ENTITIES[name.toLowerCase()];
+    const codePoint = Number.parseInt(decimal ?? hex, decimal ? 10 : 16);
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
+  })
+  .normalize("NFKC")
+  .replace(/[\p{Cf}\s]/gu, ""));
+
 const tutorMarked = new Marked();
 tutorMarked.use({
   gfm: true,
@@ -102,10 +130,24 @@ tutorMarked.use({
     // The shared renderer writes a link's raw label and leaves quotes in its
     // title unescaped. Here the label is parsed Markdown and every attribute
     // value is escaped.
+    //
+    // A label that shows a citation marker renders without its link: a
+    // verified [S#] button inside a model's <a> would follow the model's URL
+    // on click, and an encoded &#91;S1&#93; label would pass for one. An
+    // in-app route (#/read/…) or relative path would open a library note that
+    // no citation validated, so those labels render as text too.
     link(token) {
+      const label = this.parser.parseInline(token.tokens);
+      const href = String(token.href || "").trim();
+      if (!LINK_HREF.test(href) || showsCitationMarker(plainLabel(token.tokens))) return label;
       const title = token.title ? ` title="${escapeAttribute(token.title)}"` : "";
-      const external = /^https?:/i.test(token.href || "") ? ' target="_blank" rel="noopener noreferrer"' : "";
-      return `<a href="${escapeAttribute(token.href)}"${title}${external}>${this.parser.parseInline(token.tokens)}</a>`;
+      const external = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : "";
+      return `<a href="${escapeAttribute(href)}"${title}${external}>${label}</a>`;
+    },
+    // marked builds alt text with each token's renderer, so a citation in
+    // the alt would become button markup there. Use its marker instead.
+    image(token) {
+      return Renderer.prototype.image.call(this, { ...token, tokens: undefined, text: plainLabel(token.tokens) || token.text });
     },
     // Unreachable while the html tokenizers are off. Kept so that an html
     // token from a future extension is still shown as text.
