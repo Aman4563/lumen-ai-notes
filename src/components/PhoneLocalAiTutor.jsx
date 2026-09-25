@@ -38,6 +38,7 @@ import {
 import { renderPhoneTutorInlineMarkdown, renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
 import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
+import { ANSWER_FOLLOW_UPS, withoutCitationLabels } from "../lib/tutorFollowUps.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../phone-local-ai-tutor.css";
 
@@ -76,6 +77,8 @@ const MAX_CONTEXT_CHARS = 4_800;
 const MAX_PROMPT_CHARS = 1_800;
 const MAX_SESSION_MESSAGES = 30;
 const MAX_HISTORY_MESSAGES = 2;
+// The small model gets three of the Mac tutor's follow-ups (TFEAT-02).
+const PHONE_FOLLOW_UPS = ANSWER_FOLLOW_UPS.filter((item) => ["simpler", "quiz", "flashcards"].includes(item.id));
 
 const cleanText = (value, maximum = 20_000) => String(value ?? "")
   .replace(/\r\n?/g, "\n")
@@ -643,6 +646,21 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     return () => clearTimeout(timer);
   }, [readyMessageId]);
 
+  // Focus for a follow-up: Cancel while it runs, then the answer.
+  useEffect(() => {
+    if (!busy || !focusCancelRef.current) return;
+    focusCancelRef.current = false;
+    cancelButtonRef.current?.focus({ preventScroll: true });
+  }, [busy]);
+  useEffect(() => {
+    const id = answerFocusIdRef.current;
+    if (!id) return;
+    const article = [...document.querySelectorAll(".phone-tutor__message[data-message-id]")].find((node) => node.dataset.messageId === id);
+    if (!article) return;
+    answerFocusIdRef.current = "";
+    article.focus({ preventScroll: true });
+  }, [history]);
+
   // Returning within the release grace period keeps the loaded model.
   useEffect(() => { cancelModelRelease(engine); }, [engine]);
 
@@ -665,6 +683,8 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     globalThis.setTimeout?.(() => revealFocusedField(promptFieldRef.current), 0);
   }, [insertPrompt]);
 
+  const answerFocusIdRef = useRef("");
+  const focusAnswerRef = useRef(false);
   const finalize = useCallback((result, spec) => {
     const citations = sanitizePhoneCitations(result.citations);
     const content = cleanText(result.outputText, 40_000) || (result.data ? JSON.stringify(result.data, null, 2) : "The on-device model returned no readable content.");
@@ -702,6 +722,11 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
       requestUserMessageId: spec.userMessageId,
     };
     activeUserMessageIdRef.current = null;
+    // A follow-up's button is gone; its answer takes focus when it lands.
+    if (focusAnswerRef.current) {
+      focusAnswerRef.current = false;
+      answerFocusIdRef.current = message.id;
+    }
     // Offered by the "Answer ready" pill when it lands out of view.
     if (!endInViewRef.current) setReadyMessageId(message.id);
     setHistory((current) => [...current.filter((item) => item.id !== spec.replaceAssistantId), message].slice(-MAX_SESSION_MESSAGES));
@@ -732,7 +757,8 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     try {
       if (spec.sourceMode === "library-first" && typeof retrieveLibrary === "function") {
         try {
-          const retrieval = await retrieveLibrary(spec.displayPrompt, {
+          // A follow-up names no topic; it searches with the question it follows.
+          const retrieval = await retrieveLibrary(spec.retrievalQuery || spec.displayPrompt, {
             signal: controller.signal,
             maxCandidateDocuments: 8,
             maxDocuments: MAX_SOURCES,
@@ -814,33 +840,40 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     } catch (error) {
       const cancelled = controller.signal.aborted || error?.code === "LOCAL_AI_CANCELLED";
       clearStreaming();
+      focusAnswerRef.current = false;
       setRequestState({ status: cancelled ? "cancelled" : "error", message: cancelled ? "Generation was cancelled. No partial answer was saved." : cleanText(error?.message, 500) || "The on-device request failed." });
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
     }
   }, [clearStreaming, engine, finalize, normalizedSources, queueStreamingText, retrieveLibrary]);
 
-  const createSpec = (userMessageId = createId()) => {
+  // A follow-up overrides the prompt, mode and retrieval words; it never
+  // arms the web.
+  const createSpec = (userMessageId = createId(), overrides = {}) => {
     const sourceSnapshot = selectedSources.map(({ id, documentId, title, section, anchor, original }) => ({ id, documentId, title, section, anchor, original }));
-    const trimmedPrompt = prompt.trim();
+    const trimmedPrompt = String(overrides.prompt ?? prompt).trim();
+    const mode = overrides.mode || currentMode;
     return {
       userMessageId,
       displayPrompt: trimmedPrompt,
-      mode: currentMode,
+      mode,
       sources: sourceSnapshot,
       sourceMode,
       retrievalTrace: null,
-      allowSearch,
+      retrievalQuery: cleanText(overrides.retrievalQuery, 300),
+      allowSearch: overrides.allowSearch ?? allowSearch,
+      // Retry sends a follow-up again, not whatever the box holds by then.
+      overrides: overrides.prompt === undefined ? null : overrides,
       payload: {
-        task: currentMode.task,
+        task: mode.task,
         prompt: trimmedPrompt,
         context: preparedContext.text,
         contextRanges: preparedContext.ranges,
         documentTitle: phoneDocumentTitle(selectedSources),
         difficulty: depth,
-        responseFormat: currentMode.structured ? "structured" : "markdown",
+        responseFormat: mode.structured ? "structured" : "markdown",
         history: outboundHistory(history),
-        maxOutputTokens: currentMode.structured ? 768 : selectedLength.tokens,
+        maxOutputTokens: mode.structured ? 768 : selectedLength.tokens,
       },
     };
   };
@@ -850,6 +883,33 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     if (!ready) return;
     const spec = createSpec();
     lastRequestRef.current = spec;
+    run(spec);
+  };
+
+  // A follow-up runs at once when the model is loaded and it fits;
+  // otherwise its question is put in the box, where the reason shows.
+  const focusCancelRef = useRef(false);
+  const cancelButtonRef = useRef(null);
+  const runFollowUp = (message, item) => {
+    if (interactionLocked) return;
+    const mode = PHONE_TUTOR_MODES.find((candidate) => candidate.id === item.modeId) || PHONE_TUTOR_MODES[0];
+    const index = history.findIndex((candidate) => candidate.id === message.id);
+    const question = [...history.slice(0, Math.max(0, index))].reverse().find((candidate) => candidate.role === "user");
+    const spec = createSpec(createId(), { prompt: item.prompt, mode, retrievalQuery: withoutCitationLabels(question?.content), allowSearch: false });
+    const fits = inspectPhoneLocalAiRequestFit(spec.payload, {
+      allowSearchPlanning: false,
+      reserveLibraryEvidence: sourceMode === "library-first" && typeof retrieveLibrary === "function",
+    }).fits;
+    if (!engineStatus.loaded || requestState.status === "awaiting-search" || !fits) {
+      setModeId(mode.id);
+      setPrompt(cleanText(item.prompt, MAX_PROMPT_CHARS));
+      setRequestState({ status: "idle", message: "" });
+      globalThis.setTimeout?.(() => revealFocusedField(promptFieldRef.current), 0);
+      return;
+    }
+    lastRequestRef.current = spec;
+    focusCancelRef.current = true;
+    focusAnswerRef.current = true;
     run(spec);
   };
 
@@ -945,7 +1005,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
 
   const retry = () => {
     if (!lastRequestRef.current || controllerRef.current || !engineStatus.loaded) return;
-    const rebuilt = createSpec(lastRequestRef.current.userMessageId);
+    const rebuilt = createSpec(lastRequestRef.current.userMessageId, lastRequestRef.current.overrides || {});
     lastRequestRef.current = rebuilt;
     run(rebuilt);
   };
@@ -1055,19 +1115,24 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
         <section className="phone-tutor__conversation" aria-label="Conversation">
           {history.length === 0 && !streamingText ? <div className="phone-tutor__welcome"><Cpu size={27} aria-hidden="true" /><h3>What would you like to learn?</h3><p>Ask a short question or choose a study mode.</p></div> : (
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
-              {history.map((message) => (
+              {history.map((message, index) => (
                 <article className={`phone-tutor__message is-${message.role}`} key={message.id} data-message-id={message.id} tabIndex={message.role === "assistant" ? -1 : undefined}>
                   <h3 className="visually-hidden">{message.role === "assistant" ? "On-device answer" : "Your question"}, {PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</h3>
                   <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{typeof onSaveAnswerNote === "function" && <button type="button" aria-label={savedNoteMessageIds.has(message.id) ? "Saved to notes" : "Save to notes: this answer becomes a labeled AI note in your notebook"} disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Regenerate</button>}</div>}</div>
                   {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
                   {message.role === "assistant" && <EvidenceDetails message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onNavigateSource={onNavigateSource} />}
+                  {message.role === "assistant" && index === history.length - 1 && !message.data && !busy && !streamingText && (
+                    <div className="phone-tutor__follow-ups" role="group" aria-label="Follow up on this answer">
+                      {PHONE_FOLLOW_UPS.map((item) => <button type="button" disabled={interactionLocked} onClick={() => runFollowUp(message, item)} key={item.id}>{item.label}</button>)}
+                    </div>
+                  )}
                 </article>
               ))}
             </div>
           )}
 
           {streamingText && <article className="phone-tutor__message is-assistant is-streaming" aria-label="Streaming on-device answer" tabIndex={-1} ref={streamingArticleRef}><div className="phone-tutor__message-meta"><span><strong>On-device Lite</strong><small>Generating token by token…</small></span></div><SafeResponse text={streamingText} sources={streamingSources} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} streaming /></article>}
-          {busy && <div className="phone-tutor__working" role="status"><span><LoaderCircle className="spin" size={18} aria-hidden="true" />{requestState.message}</span><button type="button" onClick={cancel}><CircleStop size={16} aria-hidden="true" /> Cancel</button></div>}
+          {busy && <div className="phone-tutor__working" role="status"><span><LoaderCircle className="spin" size={18} aria-hidden="true" />{requestState.message}</span><button type="button" ref={cancelButtonRef} onClick={cancel}><CircleStop size={16} aria-hidden="true" /> Cancel</button></div>}
 
           {pendingSearch && <section className="phone-tutor__search-consent" aria-labelledby="phone-search-title">
             <div><Search size={20} aria-hidden="true" /><div><h3 id="phone-search-title">Approve this exact web search?</h3><p>{pendingSearch.reason}</p></div></div>

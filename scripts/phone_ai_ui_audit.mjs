@@ -458,6 +458,28 @@ try {
   const undersizedButtons = controls.filter((control) => ["button", "select", "textarea"].includes(control.tag) && control.height < 44);
   assert.deepEqual(undersizedButtons, [], `undersized phone AI controls: ${JSON.stringify(undersizedButtons)}`);
 
+  // One-tap follow-ups (TFEAT-02): On-device Lite offers three under its
+  // newest prose answer. A tap sends a visible question with that answer as
+  // memory, searches with the question it follows, never plans a web
+  // search, and moves focus to Cancel and then to the new answer.
+  assert.equal(await page.$$eval(".phone-tutor__follow-ups", (nodes) => nodes.length), 1, "On-device follow-ups were not shown once");
+  assert.equal(await page.$eval(".phone-tutor__follow-ups", (node) => node.closest(".phone-tutor__message") === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1)), true, "On-device follow-ups were not under the newest answer");
+  assert.deepEqual(await page.$$eval(".phone-tutor__follow-ups button", (nodes) => nodes.map((node) => [node.textContent, node.getBoundingClientRect().height >= 44])), [["Simpler", true], ["Quiz me on this", true], ["Make flashcards", true]]);
+  const followedQuestion = await page.$$eval(".phone-tutor__message.is-user .phone-tutor__user-text", (nodes) => nodes.at(-1).textContent);
+  const callsBeforeFollowUp = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length);
+  const answersBeforeFollowUp = await page.$$eval(".phone-tutor__message.is-assistant", (nodes) => nodes.length);
+  await clickByText(page, ".phone-tutor__follow-ups button", "Simpler");
+  await page.waitForFunction((count) => document.querySelectorAll(".phone-tutor__message.is-assistant:not(.is-streaming)").length > count && !document.querySelector(".phone-tutor__working"), { timeout: 10_000 }, answersBeforeFollowUp);
+  const followUpCall = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.at(-1));
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length), callsBeforeFollowUp + 1, "an On-device follow-up was not sent exactly once");
+  assert.equal(followUpCall.payload.task, "explain");
+  assert.match(followUpCall.payload.prompt, /^Explain your previous answer more simply/);
+  assert.equal(followUpCall.allowSearchPlanning, false, "an On-device follow-up planned a web search");
+  assert.equal(followUpCall.payload.history.length, 2, "an On-device follow-up did not remember the answer it follows");
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.retrievalCalls.at(-1).query), followedQuestion, "an On-device follow-up searched with its topic-less wording");
+  assert.match(await page.$$eval(".phone-tutor__message.is-user .phone-tutor__user-text", (nodes) => nodes.at(-1).textContent), /^Explain your previous answer more simply/, "the On-device follow-up was not a visible question");
+  await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("focus did not move to the On-device follow-up's answer"));
+
   // A long answer streams while the learner reads elsewhere (TFEAT-08):
   // "Jump to latest" brings its newest text into view at once under reduced
   // motion, and an answer that lands out of view is offered as "Answer

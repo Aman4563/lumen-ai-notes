@@ -70,6 +70,11 @@
 .phone-tutor__message-meta small { color: inherit; opacity: .68; font-size: .68rem; }
 .phone-tutor__message-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .phone-tutor__message-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 44px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); background: var(--paper); font-size: .67rem; cursor: pointer; }
+/* One-tap follow-ups under the newest answer (TFEAT-02). */
+.phone-tutor__follow-ups { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.phone-tutor__follow-ups button { min-height: 44px; padding: 8px 14px; border: 1px solid color-mix(in srgb, var(--teal) 40%, transparent); border-radius: 999px; color: var(--teal-text); background: var(--teal-soft); font: inherit; font-size: .8rem; font-weight: 720; cursor: pointer; }
+.phone-tutor__follow-ups button:disabled { opacity: .55; cursor: not-allowed; }
+.phone-tutor__follow-ups button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 7px var(--focus-halo); }
 .phone-tutor__context-fit { margin: 10px 0 0; padding: 9px 10px; border-radius: 9px; background: var(--paper-3); color: var(--ink-soft); font-size: .69rem; line-height: 1.45; }
 .phone-tutor__context-fit p { margin: 0; }
 .phone-tutor__context-fit ul { margin: 7px 0 0; padding-left: 18px; }

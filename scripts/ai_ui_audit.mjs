@@ -245,7 +245,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, flashcards = flashcardData } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -300,12 +300,27 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
           webSearch: { requested: false, used: false, rounds: 0 },
           sources: [],
         }));
+      } else if (body.task === "answer_feedback") {
+        // An answer check: a function of the request, so a scenario can
+        // return a valid result or one that breaks the schema.
+        const data = typeof feedback === "function" ? feedback(body) : feedback;
+        reply(jsonResponse({
+          ok: true,
+          requestId: "audit-feedback-request",
+          outputText: JSON.stringify(data),
+          data,
+          status: "completed",
+          model: "audit-local-model",
+          usage: { inputTokens: 300, outputTokens: 160, totalTokens: 460 },
+          webSearch: { requested: false, used: false, rounds: 0 },
+          sources: [],
+        }));
       } else if (body.task === "quiz") {
         reply(jsonResponse({
           ok: true,
           requestId: "audit-quiz-request",
-          outputText: JSON.stringify(quizData),
-          data: quizData,
+          outputText: JSON.stringify(quiz),
+          data: quiz,
           status: "completed",
           model: "audit-local-model",
           usage: { inputTokens: 320, outputTokens: 180, totalTokens: 500 },
@@ -318,7 +333,7 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         // kept no usable web evidence, so the answer is library-only and
         // opens with the server-written notice (docs/AI_STREAMING.md).
         const webDegraded = webSearchUnavailable && body.webSearch === true;
-        const outputText = webDegraded ? `> **Current-web evidence unavailable.** The approved web search returned no usable public results, so this answer uses only your library sources and may not reflect the latest information.\n\nRepeated test inspection causes evaluation leakage. [${localCitation}]` : answerText ? answerText(localCitation) : `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
+        const outputText = webDegraded ? `> **Current-web evidence unavailable.** The approved web search returned no usable public results, so this answer uses only your library sources and may not reflect the latest information.\n\nRepeated test inspection causes evaluation leakage. [${localCitation}]` : answerText ? answerText(localCitation, body) : `## Holdout evaluation\n\nA **final holdout** remains useful only when development decisions cannot adapt to it. Repeated test inspection causes evaluation leakage. [${localCitation}]\n\n| Signal | Risk |\n| --- | --- |\n| Repeated inspection | Optimistic estimate |\n\nThe mean loss is $L = \\frac{1}{n}\\sum_i \\ell_i$.\n\n\`\`\`python\nscore = evaluate(frozen_model, holdout)\n\`\`\`\n\n\`\`\`mermaid\nflowchart LR\n  TRAIN[Development decisions] --> HOLDOUT[Final holdout]\n  HOLDOUT --> ESTIMATE[Unbiased estimate]\n\`\`\`\n\nCurrent release evidence is separately cited as [W1].`;
         const sources = body.webSearch && !webDegraded ? [{ title: "PyTorch release notes", url: "https://pytorch.org/blog/releases/#stable", snippet: "Current release evidence." }] : [];
         const approach = { summary: "Ground in the local library, then use approved current evidence where needed.", steps: ["Locate relevant library evidence.", "Attach the approved web result.", "Present a concise answer with citations."] };
         const response = {
@@ -391,6 +406,31 @@ const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
     return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" } });
   };
 });
+
+// A page in its own browser context: no conversation, consent, quiz state
+// or profile data left by the scenarios before it.
+const phoneViewport = { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true };
+const newIsolatedPage = async (label, { viewport = phoneViewport, acknowledged = true, configFactory = () => secureConfig, mocks = {} } = {}) => {
+  const context = await browser.createBrowserContext();
+  const page = await context.newPage();
+  await page.setViewport(viewport);
+  attachDiagnostics(page, label);
+  if (acknowledged) {
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+    });
+  }
+  const calls = await installAiMocks(page, configFactory, mocks);
+  return { context, page, calls };
+};
+
+const setComposerPrompt = (page, value) => page.$eval(".ai-tutor__composer textarea", (field, text) => {
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}, value);
+
+const waitForAnswers = (page, count) => page.waitForFunction((expected) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= expected
+  && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 }, count);
 
 const newAuditPage = async (label, configFactory, options) => {
   const page = await browser.newPage();
@@ -1899,6 +1939,84 @@ try {
     assert.ok(progressAnnouncements.length <= 5, `progress was announced too often: ${JSON.stringify(progressAnnouncements)}`);
   } finally {
     await desktopKeysContext.close();
+  }
+
+  // One-tap follow-ups (TFEAT-02): one group, under the newest complete
+  // answer only. A chip sends a visible question in a listed mode with only
+  // the answer it follows as memory (up to 3,000 characters of it, not the
+  // composer's quarter of the budget), retrieves with that answer's topic,
+  // never uses the web, and moves focus to the new answer. When it cannot
+  // start, its question lands in the box with the reason; nothing is sent.
+  const longAnswer = `## Ridge regression\n\n${"Ridge adds an L2 penalty that shrinks every weight toward zero and trades a little bias for lower variance. ".repeat(43)}`.slice(0, 4_600);
+  const followUpsScenario = await newIsolatedPage("follow-ups", {
+    mocks: { answerText: (citation, body) => (body.prompt.startsWith("Why does ridge") ? `${longAnswer} [${citation}]` : `## Simpler\n\nRidge keeps weights small. [${citation}]`) },
+  });
+  try {
+    const { page, calls } = followUpsScenario;
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    assert.equal(await page.$(".ai-tutor__follow-ups"), null, "follow-ups appeared before any answer");
+    await setComposerPrompt(page, "Why does ridge regression shrink the weights?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const firstRequest = calls.respond.at(-1).body;
+    const contextTitles = (body) => String(body.context).split("\n").filter((line) => /^\[S\d+\] /.test(line)).map((line) => line.replace(/^\[S\d+\] /, "").split(" — ")[0]);
+    assert.ok(contextTitles(firstRequest).length > 0, "the first answer attached no library passage");
+    assert.deepEqual(await page.$$eval(".ai-tutor__message", (nodes) => nodes.map((node) => Boolean(node.querySelector(".ai-tutor__follow-ups")))), [false, true], "follow-ups were not on the newest answer alone");
+    assert.deepEqual(await page.$$eval(".ai-tutor__follow-ups button", (nodes) => nodes.map((node) => node.textContent)), ["Simpler", "Give an example", "Go deeper", "Quiz me on this", "Make flashcards", "Check my understanding"]);
+    assert.equal(await page.$eval(".ai-tutor__follow-ups", (node) => node.getAttribute("role") === "group" && node.getAttribute("aria-label")), "Follow up on this answer");
+    const chipLayout = await page.evaluate(() => ({
+      heights: [...document.querySelectorAll(".ai-tutor__follow-ups button, .ai-tutor__message-actions button")].map((node) => Math.round(node.getBoundingClientRect().height)),
+      rows: new Set([...document.querySelectorAll(".ai-tutor__follow-ups button")].map((node) => Math.round(node.getBoundingClientRect().top))).size,
+      inActions: Boolean(document.querySelector(".ai-tutor__message-actions .ai-tutor__follow-ups")),
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth,
+    }));
+    assert.equal(chipLayout.heights.every((height) => height >= 44), true, `follow-up or action targets under 44px on a phone: ${chipLayout.heights}`);
+    assert.ok(chipLayout.rows <= 3, `six follow-ups took ${chipLayout.rows} rows on a 393px phone`);
+    assert.equal(chipLayout.inActions, false, "follow-ups joined the message actions row");
+    assert.equal(chipLayout.scrollWidth, chipLayout.innerWidth, "follow-ups made the phone page scroll sideways");
+
+    await clickByText(page, ".ai-tutor__follow-ups button", "Simpler");
+    await waitForAnswers(page, 2);
+    const simpler = calls.respond.at(-1).body;
+    assert.equal(simpler.task, "explain", "Simpler did not use the Explain mode");
+    assert.equal(simpler.webSearch, false, "a follow-up used the web");
+    assert.match(simpler.prompt, /^Explain your previous answer more simply/);
+    assert.deepEqual(simpler.history.map((message) => message.role), ["user", "assistant"], "a follow-up did not remember exactly the answer it follows");
+    assert.equal(simpler.history[0].content, "Why does ridge regression shrink the weights?");
+    assert.ok(simpler.history[1].content.length > 1_093 && simpler.history[1].content.length <= 3_000, `the followed answer was cut to ${simpler.history[1].content.length} characters`);
+    assert.equal(/\[S\d+\]/.test(simpler.history[1].content), false, "the remembered answer kept another request's citation labels");
+    assert.equal(simpler.conversationSummary, "", "a follow-up sent older conversation memory");
+    assert.ok(contextTitles(simpler).includes(contextTitles(firstRequest)[0]), `the follow-up did not retrieve the answer's lesson: ${JSON.stringify(contextTitles(simpler))}`);
+    assert.match(await page.$$eval(".ai-tutor__message--user .ai-tutor__user-prompt", (nodes) => nodes.at(-1).textContent), /^Explain your previous answer more simply/, "the follow-up was not shown as a visible question");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset?.messageId === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)?.dataset.messageId), true, "focus did not move to the follow-up's answer");
+    assert.deepEqual(await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.map((node) => Boolean(node.querySelector(".ai-tutor__follow-ups")))), [false, true], "follow-ups stayed on an older answer");
+
+    await clickByText(page, ".ai-tutor__follow-ups button", "Quiz me on this");
+    await page.waitForSelector(".ai-tutor__message--assistant:last-of-type .ai-tutor__quiz", { timeout: 10_000 });
+    await waitForAnswers(page, 3);
+    const quizFollowUp = calls.respond.at(-1).body;
+    assert.equal(quizFollowUp.task, "quiz");
+    assert.equal(quizFollowUp.responseFormat, "structured");
+    assert.equal(quizFollowUp.webSearch, false);
+    assert.equal(quizFollowUp.history.length, 2, "Quiz me on this did not remember only the answer it follows");
+    assert.deepEqual(await page.$$eval(".ai-tutor__follow-ups button", (nodes) => nodes.map((node) => node.textContent)), ["Harder quiz", "Explain the answers"], "a quiz did not offer its own follow-ups");
+
+    // Without the local-model permission the chip's question waits in the
+    // box, in its mode, with the reason; nothing is sent.
+    await openOptions(page);
+    await clickByText(page, ".tutor-sheet button", "Review again");
+    await closeOptions(page);
+    const sentBefore = calls.respond.length;
+    await clickByText(page, ".ai-tutor__follow-ups button", "Harder quiz");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(calls.respond.length, sentBefore, "a follow-up was sent without the local-model permission");
+    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /^Create 2 harder multiple-choice questions/);
+    assert.equal(await activeMode(page), "Quiz", "the waiting follow-up lost its mode");
+    assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /in the question box\. Tick the local-model permission/);
+  } finally {
+    await followUpsScenario.context.close();
   }
 
   let modelOnline = false;

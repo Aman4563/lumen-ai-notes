@@ -52,9 +52,18 @@ import {
   fitTutorRequest,
   tutorActionIssueReason,
   tutorConversationWindow,
+  tutorFollowUpWindow,
   tutorRequestIssue,
   tutorRequestLimits,
 } from "../lib/tutorRequest";
+import {
+  citedDocumentId,
+  followUpPair,
+  followUpRetrievalQuery,
+  followUpScope,
+  followUpsForMessage,
+  questionForAnswer,
+} from "../lib/tutorFollowUps.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -982,6 +991,20 @@ const MessageActions = ({ message, onNavigateSource, onPrepareRegenerate, onReus
     </>
   );
 };
+
+/**
+ * One-tap next steps under the newest answer (TFEAT-02): a wrapping group of
+ * native buttons, separate from the message actions, each a visible question
+ * the learner can read in the conversation once it is sent.
+ */
+const FollowUps = ({ items, disabled = false, onChoose }) => (
+  <div className="ai-tutor__follow-ups" role="group" aria-label="Follow up on this answer">
+    <p className="ai-tutor__follow-ups-label" aria-hidden="true">Follow up</p>
+    <div className="ai-tutor__follow-ups-list">
+      {items.map((item) => <button type="button" disabled={disabled} onClick={() => onChoose(item)} key={item.id}>{item.label}</button>)}
+    </div>
+  </div>
+);
 
 /**
  * Secure learner-facing AI workspace.
@@ -2255,6 +2278,31 @@ export default function AiTutor({
     return false;
   };
 
+  /**
+   * A follow-up about one answer: that question and answer are its only
+   * memory, it keeps the answer's grounding, retrieves with the answer's
+   * topic and favours the lesson it cited. It never uses the web.
+   */
+  const runFollowUp = (message, item) => {
+    if (requestState.status === "loading") return;
+    const mode = modeById(item.modeId);
+    const question = questionForAnswer(history, message.id);
+    // Quiz and card results are remembered as the learner read them.
+    const answerText = message.data ? tutorMessageMarkdown(message, { includeSources: false }) : message.content;
+    const scope = followUpScope(message, normalizedSources);
+    const { inputLimit: followUpInputLimit } = tutorRequestLimits(configState.config, responseProfile);
+    startTutorAction({
+      mode,
+      prompt: item.prompt,
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      historyWindow: tutorFollowUpWindow(followUpPair(question, answerText), { inputLimit: followUpInputLimit }),
+      retrievalQuery: followUpRetrievalQuery(question, message),
+      selectedDocumentId: citedDocumentId(message),
+      webSearch: false,
+    });
+  };
+
   const submit = (event) => {
     event?.preventDefault?.();
     if (!requestReady) return;
@@ -2740,6 +2788,10 @@ export default function AiTutor({
                       ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
                       : <p className="ai-tutor__user-prompt">{message.content}</p>}
                     <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, reuseNotice)} onSaveAnswerNote={onSaveAnswerNote} />
+                    {(() => {
+                      const followUps = followUpsForMessage(message, { isLast: index === history.length - 1 });
+                      return followUps.length > 0 && <FollowUps items={followUps} disabled={requestState.status === "loading"} onChoose={(item) => runFollowUp(message, item)} />;
+                    })()}
                   </article>
                 );
               })}

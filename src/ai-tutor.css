@@ -1793,6 +1793,59 @@
   place-items: center;
 }
 
+/* One-tap follow-ups (TFEAT-02): their own wrapping group under the
+   newest answer, never part of the message actions row. */
+.ai-tutor__follow-ups {
+  margin-top: 12px;
+}
+
+.ai-tutor__follow-ups-label {
+  margin: 0 0 7px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.72rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+}
+
+.ai-tutor__follow-ups-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-tutor__follow-ups-list button {
+  min-height: 40px;
+  padding: 7px 12px;
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 30%, transparent);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 720;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-tutor__follow-ups-list button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ai-accent) 60%, transparent);
+}
+
+.ai-tutor__follow-ups-list button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-tutor__follow-ups-list button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--focus-halo);
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__follow-ups-list button { min-height: 44px; }
+}
+
 .ai-tutor__copy-status {
   position: absolute;
   width: 1px;
