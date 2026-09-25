@@ -254,7 +254,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData, streamFrom = null } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -287,6 +287,10 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
       calls.respond.push({ method: request.method(), url: request.url(), headers: request.headers(), body });
       if (abortFirstResponse && calls.respond.length === 1) {
         void request.abort("connectionfailed");
+        return;
+      }
+      if (streamFrom && url.pathname.endsWith("/stream")) {
+        streamFrom(body).then(reply, () => { request.abort("failed").catch(() => {}); });
         return;
       }
       if (failFirstResponse && calls.respond.length === 1) {
@@ -375,6 +379,57 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
     void request.continue();
   });
   return calls;
+};
+
+// The integrated server's own stream for a browser request (issue #82): the
+// real request validation, prompt framing, grounding check and phase events,
+// in front of a scripted Ollama that answers with the request's first
+// supplied [S#] label. The whole NDJSON body reaches the page in one piece,
+// as a buffered grounded answer does live: validating, every delta and the
+// completion in the same read.
+const startScriptedServer = async () => {
+  const { server } = createApplicationServer({
+    // The page fits its request to the mocked config's profile limits, so
+    // the server allows at least as much.
+    env: {
+      HOST: "127.0.0.1",
+      PORT: "0",
+      AI_ENABLED: "true",
+      OLLAMA_MODEL: "audit-local-model",
+      AI_STREAM_HEARTBEAT_MS: "30000",
+      AI_MAX_OUTPUT_TOKENS: String(secureConfig.limits.maxOutputTokens),
+      AI_FAST_OUTPUT_TOKENS: String(secureConfig.responseProfiles.outputTokens.fast),
+      AI_BALANCED_OUTPUT_TOKENS: String(secureConfig.responseProfiles.outputTokens.balanced),
+      AI_DEEP_OUTPUT_TOKENS: String(secureConfig.responseProfiles.outputTokens.deep),
+      OLLAMA_CONTEXT_WINDOW_TOKENS: "32768",
+    },
+    logger: silentLogger,
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const label = body.messages.at(-1).content.match(/exact labels: (\[S\d+\])/)?.[1] || "";
+      const parts = ["## Holdout evaluation\n\n", "A final holdout stays untouched until the last estimate, ", `so repeated inspection cannot leak into model choices. ${label}`];
+      const lines = [
+        ...parts.map((content) => ({ model: "audit-local-model", done: false, message: { role: "assistant", content } })),
+        { model: "audit-local-model", done: true, done_reason: "stop", message: { role: "assistant", content: "" }, prompt_eval_count: 400, eval_count: 40 },
+      ];
+      return new Response(`${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, { headers: { "Content-Type": "application/x-ndjson" } });
+    },
+  });
+  server.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  return {
+    stream: async (body) => {
+      const response = await fetch(`${origin}/api/ai/respond/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      return {
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        headers: Object.fromEntries(["x-request-id", "x-lumen-stream-protocol", "cache-control"].flatMap((name) => (response.headers.get(name) ? [[name, response.headers.get(name)]] : []))),
+        body: await response.text(),
+      };
+    },
+    close: () => new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); }),
+  };
 };
 
 // An in-page stream that delivers deltas over time, armed per request with
@@ -2066,6 +2121,56 @@ try {
     assert.ok(progressAnnouncements.length <= 5, `progress was announced too often: ${JSON.stringify(progressAnnouncements)}`);
   } finally {
     await desktopKeysContext.close();
+  }
+
+  // Checking citations (issue #82). Live, the server reported validating in
+  // the same read as the held answer and its completion, and the step never
+  // drew. Here the integrated server's own stream arrives in one piece; the
+  // step must be on screen, announced once, from that validating event.
+  const scriptedServer = await startScriptedServer();
+  const checkingScenario = await newIsolatedPage("checking-step", { mocks: { streamFrom: scriptedServer.stream } });
+  try {
+    const { page, calls } = checkingScenario;
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.evaluate(() => {
+      // One sample per drawn frame: what the step list showed, and the stage
+      // line under it (the server's own phase message).
+      window.__lumenAuditFrames = [];
+      window.__lumenAuditAnnouncements = [];
+      const region = document.querySelector(".ai-tutor > p.visually-hidden[role='status']");
+      new MutationObserver(() => window.__lumenAuditAnnouncements.push(region.textContent.trim())).observe(region, { childList: true, characterData: true, subtree: true });
+      const sample = () => {
+        const streaming = document.querySelector(".ai-tutor__message--streaming");
+        window.__lumenAuditFrames.push(streaming ? {
+          active: streaming.querySelector(".ai-tutor__progress li.is-active")?.textContent.replace(/, in progress$/, "") || "",
+          stage: streaming.querySelector(".ai-tutor__stream-status span")?.textContent || "",
+        } : { done: document.querySelectorAll(".ai-tutor__message--assistant").length > 0 });
+        if (window.__lumenAuditFrames.length < 4_000) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await setComposerPrompt(page, "Why must a final holdout stay untouched until the end?");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const sent = calls.respond.at(-1).body;
+    assert.ok(sent.contextCitations.length > 0, "the checking scenario attached no library passage");
+    const replayed = await scriptedServer.stream(sent);
+    const phases = replayed.body.trim().split("\n").map((line) => JSON.parse(line)).filter((event) => event.type === "phase");
+    const validating = phases.find((event) => event.phase === "validating");
+    assert.ok(validating, `the server's stream had no validating phase: ${JSON.stringify(phases)}`);
+    const frames = await page.evaluate(() => window.__lumenAuditFrames);
+    const checking = frames.findIndex((frame) => frame.active === "Checking citations");
+    assert.ok(checking >= 0, `Checking citations was never on screen: ${JSON.stringify([...new Set(frames.map((frame) => frame.active ?? "done"))])}`);
+    assert.equal(frames[checking].stage, validating.message, "the Checking step did not come from the server's validating event");
+    assert.ok(frames.slice(checking).filter((frame) => frame.active === "Checking citations").length >= 2, "Checking citations was drawn for a single frame only");
+    assert.equal(frames.slice(0, checking).some((frame) => frame.done), false, "the answer finished before Checking citations was shown");
+    const announced = (await page.evaluate(() => window.__lumenAuditAnnouncements)).filter(Boolean);
+    assert.equal(announced.filter((text) => text === "Checking citations…").length, 1, `Checking citations was not announced exactly once: ${JSON.stringify(announced)}`);
+    assert.match(await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.at(-1).textContent), /A final holdout stays untouched/, "the server's answer did not render");
+  } finally {
+    await checkingScenario.context.close();
+    await scriptedServer.close();
   }
 
   // One-tap follow-ups (TFEAT-02): one group, under the newest complete

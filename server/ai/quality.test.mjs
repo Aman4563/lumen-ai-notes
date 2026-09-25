@@ -67,6 +67,8 @@ const run = async ({ stream, request, replies, searchResults = [], runConfig = c
   const bodies = [];
   const deltas = [];
   const phases = [];
+  // Phases and deltas in the order they were reported.
+  const timeline = [];
   let searches = 0;
   const fetchImpl = async (url, init) => {
     if (new URL(url).pathname === "/search") {
@@ -89,13 +91,19 @@ const run = async ({ stream, request, replies, searchResults = [], runConfig = c
   try {
     result = await call({
       request, config: runConfig, fetchImpl, requestId: "quality-test",
-      onDelta: (text) => deltas.push(text),
-      onPhase: ({ message }) => phases.push(message),
+      onDelta: (text) => {
+        deltas.push(text);
+        if (timeline.at(-1) !== "delta") timeline.push("delta");
+      },
+      onPhase: ({ phase, message }) => {
+        phases.push(message);
+        timeline.push(phase);
+      },
     });
   } catch (caught) {
     error = caught;
   }
-  return { result, error, bodies, deltas, phases, searches };
+  return { result, error, bodies, deltas, phases, timeline, searches };
 };
 
 const TRANSPORTS = [false, true];
@@ -677,4 +685,75 @@ test("the real browser client validates a library-only answer after an empty web
   }
   assert.equal(streamed, streamedResponse.outputText);
   assert.equal(chatCalls, 4);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #82: validating is reported before a draft is checked, once per
+// draft, on both transports. Live, it came after the check had passed, in the
+// same millisecond as the answer and its completion.
+
+const CITATIONS_CHECK = "Checking the answer's citations against the supplied sources.";
+
+for (const stream of TRANSPORTS) {
+  test(`${label(stream)}: grounded prose reports validating before it is checked and released`, async () => {
+    const { result, error, timeline, phases } = await run({ stream, request: baseRequest, replies: [["Least squares minimizes ", "squared residuals. [S1]"]] });
+    assert.equal(error, null, error?.message);
+    assert.deepEqual(timeline, stream ? ["generating", "validating", "delta"] : ["generating", "validating"]);
+    assert.equal(phases[1], CITATIONS_CHECK);
+    assert.equal(result.outputText, "Least squares minimizes squared residuals. [S1]");
+  });
+
+  test(`${label(stream)}: a draft that fails its citation check is validated again after one regeneration`, async () => {
+    const { result, error, timeline, phases } = await run({ stream, request: baseRequest, replies: ["Least squares minimizes squared residuals.", "Least squares minimizes squared residuals. [S1]"] });
+    assert.equal(error, null, error?.message);
+    assert.deepEqual(timeline, [...["generating", "validating", "generating", "validating"], ...(stream ? ["delta"] : [])]);
+    assert.match(phases[2], /failed its citation check/);
+    assert.equal(result.outputText, "Least squares minimizes squared residuals. [S1]");
+  });
+
+  test(`${label(stream)}: a draft that fails its check twice is never released, and validating stays bounded`, async () => {
+    const { error, timeline, deltas } = await run({ stream, request: baseRequest, replies: ["Uncited.", "Still uncited."] });
+    assert.equal(error?.code, "AI_CURRICULUM_UNGROUNDED");
+    assert.deepEqual(timeline, ["generating", "validating", "generating", "validating"]);
+    assert.deepEqual(deltas, []);
+  });
+
+  test(`${label(stream)}: structured and source-free drafts get their own validating message`, async () => {
+    const cards = { cards: [{ front: "What does OLS minimize?", back: "The sum of squared residuals. [S1]", hint: "", tags: ["ols"] }] };
+    const structured = await run({ stream, request: { ...baseRequest, task: "flashcards", responseFormat: "structured" }, replies: [JSON.stringify(cards)] });
+    assert.equal(structured.error, null, structured.error?.message);
+    assert.deepEqual(structured.timeline, ["generating", "validating"]);
+    assert.equal(structured.phases[1], "Checking the structured result against its schema and citations.");
+
+    const sourceFree = await run({ stream, request: { ...baseRequest, context: "", contextCitations: [] }, replies: [["Least squares ", "minimizes squared residuals."]] });
+    assert.equal(sourceFree.error, null, sourceFree.error?.message);
+    // Source-free prose streams live, so its check follows the text.
+    assert.deepEqual(sourceFree.timeline, stream ? ["generating", "delta", "validating"] : ["generating", "validating"]);
+    assert.equal(sourceFree.phases.at(-1), "Checking that the answer is complete before finalizing it.");
+  });
+}
+
+test("the stream endpoint sends validating before the grounded answer and its completion; JSON keeps its shape", async () => {
+  const { server } = createApplicationServer({
+    env: { HOST: "127.0.0.1", PORT: "0", AI_ENABLED: "true", OLLAMA_MODEL: "test-model", AI_MAX_OUTPUT_TOKENS: "4096", AI_STREAM_HEARTBEAT_MS: "30000" },
+    logger: silentLogger,
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      return body.stream ? streamReply(["Least squares minimizes ", "squared residuals. [S1]"]) : jsonReply("Least squares minimizes squared residuals. [S1]");
+    },
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  runningServers.add(server);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  const response = await fetch(`${baseUrl}/api/ai/respond/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(baseRequest) });
+  const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+  const order = events.map((event) => (event.type === "phase" ? event.phase : event.type)).filter((type, index, all) => type !== "delta" || all[index - 1] !== "delta");
+  assert.deepEqual(order, ["start", "approach", "preparing", "generating", "validating", "delta", "complete"]);
+  assert.equal(events.find((event) => event.phase === "validating").message, CITATIONS_CHECK);
+
+  const json = await requestAi({ ...baseRequest }, { baseUrl });
+  assert.equal(json.outputText, "Least squares minimizes squared residuals. [S1]");
+  assert.deepEqual(Object.keys(json).sort(), ["approach", "data", "model", "ok", "outputText", "requestId", "sources", "status", "usage", "webSearch"]);
 });

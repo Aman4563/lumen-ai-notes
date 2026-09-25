@@ -1017,6 +1017,21 @@ const assertContextBudget = (initialBody, request, config) => {
 };
 
 /**
+ * The `validating` phase message for one terminal draft. Both transports
+ * report it before `prepareFinalAnswer` runs, once per draft, so a grounded
+ * answer's "Checking citations" step starts when checking starts, not after
+ * it has already passed (issue #82). Drafts are bounded by the one-shot
+ * recoveries, so the phase is too.
+ */
+const validatingPhaseMessage = ({ request, evidenceSources, webEvidenceUnavailable }) => {
+  if (webEvidenceUnavailable) return "No usable current-web evidence was found. Checking a library-only answer instead.";
+  if (request.responseFormat === "structured") return "Checking the structured result against its schema and citations.";
+  return evidenceSources.length + suppliedCurriculumCitations(request).size > 0
+    ? "Checking the answer's citations against the supplied sources."
+    : "Checking that the answer is complete before finalizing it.";
+};
+
+/**
  * Validates one terminal draft for both transports. Returns `{ outputText }`
  * when it may be released, or `{ retry }` (a phase message) after scheduling
  * one bounded recovery turn. `mayRewrite` is false once any text of this turn
@@ -1056,7 +1071,16 @@ const prepareFinalAnswer = ({ draft, request, messages, evidenceSources, require
   return { outputText: webEvidenceUnavailable ? `${WEB_EVIDENCE_UNAVAILABLE_NOTICE}${outputText.trimStart()}` : outputText };
 };
 
-export const createOllamaResponse = async ({ request, config, fetchImpl = fetch, requestId, signal }) => {
+/**
+ * The buffered JSON transport. It runs the same phases as the stream
+ * (`generating`, `searching`, one `validating` per terminal draft) through the
+ * optional `onPhase`; the JSON endpoint has no event channel, so its response
+ * shape is unchanged.
+ */
+export const createOllamaResponse = async ({ request, config, fetchImpl = fetch, requestId, signal, onPhase }) => {
+  const emitPhase = async (phase, message) => {
+    if (typeof onPhase === "function") await onPhase({ phase, message });
+  };
   const overallController = new AbortController();
   let overallTimedOut = false;
   const abortFromCaller = () => overallController.abort(signal?.reason || new Error("Caller aborted the AI request"));
@@ -1082,6 +1106,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
   const recovery = { format: false, grounding: false };
 
   try {
+    await emitPhase("generating", "Generating the answer with the local model.");
     while (true) {
       // Once the configured search budget is consumed, remove the tool from
       // the next model turn. This gives the model one final evidence-grounded
@@ -1113,6 +1138,9 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         if (payload.done === true && (payload.done_reason === "length" || thinkingOnly) && !completionRecoveryUsed
           && addCompletionRecoveryInstruction(messages, request)) {
           completionRecoveryUsed = true;
+          await emitPhase("generating", body.think
+            ? "Writing the detailed answer…"
+            : "The first draft reached its limit. Regenerating a shorter complete answer locally.");
           continue;
         }
         throw new OllamaProxyError(
@@ -1125,6 +1153,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
       const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
       if (!toolCalls.length) {
         if (request.webSearch && searchRounds === 0) {
+          await emitPhase("searching", "The local model skipped its required tool call; searching the authorized learner question instead.");
           const searchResult = await runApprovedSearch({
             query: fallbackWebSearchQuery(request),
             config,
@@ -1143,10 +1172,12 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         // generation from the accumulated evidence.
         if (request.webSearch && request.responseFormat === "structured" && !applyStructuredFormat) {
           forceStructuredFinal = true;
+          await emitPhase("generating", "Creating the validated structured result from the gathered evidence.");
           continue;
         }
         const draft = typeof message.content === "string" ? message.content.trim() : "";
         if (!draft) throw new OllamaProxyError("AI_EMPTY_RESPONSE", "The local model returned no usable learning content.", 502);
+        await emitPhase("validating", validatingPhaseMessage({ request, evidenceSources: fittedEvidence.sources, webEvidenceUnavailable }));
         const prepared = prepareFinalAnswer({
           draft,
           request,
@@ -1157,7 +1188,10 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
           recovery,
           mayRewrite: true,
         });
-        if (prepared.retry) continue;
+        if (prepared.retry) {
+          await emitPhase("generating", prepared.retry);
+          continue;
+        }
         const { outputText } = prepared;
 
         let data = null;
@@ -1185,6 +1219,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
       if (!allowSearchTool || !request.webSearch) {
         if (!toolRecoveryUsed && addToolRecoveryInstruction(messages)) {
           toolRecoveryUsed = true;
+          await emitPhase("generating", "The model tried to call a tool it does not have. Regenerating a direct answer.");
           continue;
         }
         if (!allowSearchTool) {
@@ -1204,6 +1239,7 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         throw new OllamaProxyError("AI_TOOL_ARGUMENT_ERROR", "The local model produced invalid web-search arguments.", 502);
       }
 
+      await emitPhase("searching", "Searching approved public sources for current evidence.");
       const searched = await runApprovedSearchWithQuestionFallback({
         query: args.query,
         request,
@@ -1211,10 +1247,12 @@ export const createOllamaResponse = async ({ request, config, fetchImpl = fetch,
         config,
         fetchImpl,
         signal: overallController.signal,
+        onFallback: () => emitPhase("searching", "The first public query returned no usable evidence; retrying the authorized learner question."),
       });
       const { searchResult } = searched;
       searchRounds += searched.roundsUsed;
       appendSearchTurn({ messages, sources, searchResult, request, modelContent: message.content });
+      await emitPhase("generating", "Synthesizing the answer from the gathered evidence.");
     }
   } catch (error) {
     if (overallTimedOut) {
@@ -1381,9 +1419,9 @@ export const createOllamaStreamingResponse = async ({
         }
         const draft = typeof message.content === "string" ? message.content : "";
         if (!draft.trim()) throw new OllamaProxyError("AI_EMPTY_RESPONSE", "The local model returned no usable learning content.", 502);
-        if (webEvidenceUnavailable) {
-          await emitPhase("validating", "No usable current-web evidence was found. Checking a library-only answer instead.");
-        }
+        // Checking is announced before it runs; grounded prose is still held
+        // until it passes, then released below.
+        await emitPhase("validating", validatingPhaseMessage({ request, evidenceSources: fittedEvidence.sources, webEvidenceUnavailable }));
         const prepared = prepareFinalAnswer({
           draft,
           request,
@@ -1412,7 +1450,6 @@ export const createOllamaStreamingResponse = async ({
           }
         }
 
-        await emitPhase("validating", "Checking completion and grounding before finalizing the answer.");
         if (request.webSearch && typeof onSource === "function") {
           for (let index = 0; index < fittedEvidence.sources.length; index += 1) {
             await onSource({ index: index + 1, source: fittedEvidence.sources[index] });
