@@ -85,3 +85,27 @@ test("phone citations never sit inside a model link, and app routes stay text", 
   assert.deepEqual(liveTags(result).map((tag) => tag.split(" ")[0]), ["<p>", "<button", "<a"]);
   assert.match(result, /\[W2\]<\/a>, then the lecture\.<\/p>/);
 });
+
+test("phone answers load no image and keep links to the app's own host as text", () => {
+  // The phone tutor renders through the shared tutor renderer, which reads
+  // the page origin; the stub stands in for the served app.
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", { value: { origin: "https://mac.local:4193" }, configurable: true });
+  try {
+    const result = renderPhoneTutorMarkdownUnsanitized(
+      "![pixel](https://tracker.example/p.png?q=prompt) [the app](https://mac.local:4193/#/read/notes/forged) https://mac.local/#/review [docs](https://example.com/docs)",
+      librarySources,
+      citations,
+    );
+    assert.doesNotMatch(result, /<img|href="https:\/\/mac\.local/);
+    assert.deepEqual(liveTags(result).map((tag) => tag.match(/href="([^"]+)"/)?.[1] || tag), [
+      "<p>",
+      "https://tracker.example/p.png?q=prompt",
+      "https://example.com/docs",
+    ]);
+    assert.match(result, /Image: pixel \(tracker\.example\)<\/a> the app https:\/\/mac\.local\/#\/review <a/);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "location", previous);
+    else delete globalThis.location;
+  }
+});

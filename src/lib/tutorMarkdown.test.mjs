@@ -175,10 +175,12 @@ test("never puts a citation, or a label that reads as one, inside a model link",
   for (const label of ["&#91;S1&#93;", "&lsqb;W1&rsqb;", "［Ｓ１］", "[S​1]"]) {
     assert.doesNotMatch(render(`[${label}](https://evil.example)`), /<a /, `${label} kept its link`);
   }
-  assert.match(render("[Section 3 [of 5]](https://example.com)"), /<a href="https:\/\/example\.com"/);
+  assert.match(render("[Section 3 [of 5]](https://example.com)"), /<a href="https:\/\/example\.com\/"/);
 
+  // An image's alt text shows a citation as its marker, never as a control,
+  // and an image labelled with a marker gets no link.
   const figure = render("![Holdout curve [S1]](https://example.com/curve.png)");
-  assert.match(figure, /<img src="https:\/\/example\.com\/curve\.png" alt="Holdout curve \[S1\]">/);
+  assert.equal(figure, "<p>Image: Holdout curve [S1]</p>\n");
 });
 
 test("keeps model links only to absolute web and mail addresses", () => {
@@ -202,6 +204,48 @@ test("keeps model links only to absolute web and mail addresses", () => {
     renderTutorInlineMarkdownUnsanitized("[[S1]](https://evil.example) or [route](#/read/x)", sources, web),
     '<button class="ai-tutor__citation" type="button" data-ai-citation="S1" aria-label="Open citation [S1]: Library &quot;source&quot;">[S1]</button> or route',
   );
+});
+
+test("tutor answers never load an image: a remote image becomes a link", () => {
+  // An <img> fetches its source on render, which would send whatever the
+  // model encoded in the URL to that host (issue #81).
+  const remote = render('![Holdout curve](https://tracker.example/p.png?q=secret "t")');
+  assert.equal(remote, '<p><a href="https://tracker.example/p.png?q=secret" target="_blank" rel="noopener noreferrer">Image: Holdout curve (tracker.example)</a></p>\n');
+  for (const markdown of [
+    "![reference][img]\n\n[img]: https://tracker.example/ref.png",
+    "[![badge](https://tracker.example/badge.svg)](https://example.com/ci)",
+    "![local](./figure.png)",
+    "![inline](data:image/png;base64,iVBORw0KGgo=)",
+    "$\\includegraphics[height=1em]{https://tracker.example/k.png}$",
+    "| Plot |\n| --- |\n| ![cell](https://tracker.example/cell.png) |",
+  ]) {
+    assert.doesNotMatch(render(markdown), /<img/u, markdown);
+  }
+  assert.doesNotMatch(renderTutorInlineMarkdownUnsanitized("Option ![x](https://tracker.example/q.png)", sources, web), /<img/u);
+  // A linked image is one link whose text is the image, never nested links.
+  assert.equal((render("[![badge](https://tracker.example/badge.svg)](https://example.com/ci)").match(/<a /gu) || []).length, 1);
+});
+
+test("links to the app's own host render as text, like in-app routes", () => {
+  const APP = { appOrigin: "http://127.0.0.1:4173" };
+  for (const markdown of [
+    "[Open](http://127.0.0.1:4173/#/read/notes/part-02-mathematics/06-experiments-and-information.md)",
+    "See http://127.0.0.1:4173/#/read/notes/x now.",
+    "[other port](https://127.0.0.1:8787/api/ai/config)",
+    "[numeric host](http://2130706433:4173/#/read/x)",
+    // A browser resolves these against the page, so they were app routes
+    // that passed the http(s) check.
+    "[relative](http:#/read/notes/x)",
+    "[relative](https:#/read/notes/x)",
+  ]) {
+    const result = renderTutorMarkdownUnsanitized(markdown, sources, web, APP);
+    assert.doesNotMatch(result, /<a /u, markdown);
+  }
+  assert.doesNotMatch(renderTutorInlineMarkdownUnsanitized("[app](http://127.0.0.1:4173/#/review)", sources, web, APP), /<a /u);
+  // Other hosts keep working links, written as the normalized address.
+  assert.match(renderTutorMarkdownUnsanitized("[docs](https:example.com/a)", sources, web, APP), /<a href="https:\/\/example\.com\/a" target="_blank"/u);
+  // Without an app origin (no page), only the host check is skipped.
+  assert.match(render("[Open](http://127.0.0.1:4173/#/read/x)"), /<a href="http:\/\/127\.0\.0\.1:4173\/#\/read\/x"/u);
 });
 
 test("keeps a [S#]: line visible instead of treating it as a link definition", () => {
@@ -248,7 +292,7 @@ test("still renders headings, math, tables, code, diagrams and links", () => {
   assert.match(result, /<button class="code-copy" type="button" aria-label="Copy python code">Copy<\/button>/);
   assert.match(result, /score = evaluate\(model, holdout\)  # \[S1\]<\/code>/);
   assert.match(result, /<div class="mermaid" data-diagram-status="pending"[^>]*>flowchart LR\n {2}A\[Train\] --&gt; B\[Holdout\]<\/div>/);
-  assert.match(result, /<a href="https:\/\/pytorch\.org" title="Release notes" target="_blank" rel="noopener noreferrer">PyTorch<\/a>/);
+  assert.match(result, /<a href="https:\/\/pytorch\.org\/" title="Release notes" target="_blank" rel="noopener noreferrer">PyTorch<\/a>/);
   assert.equal(liveCitationAttributes(result), 2, "the heading and table citations render; the code comment does not");
 });
 
