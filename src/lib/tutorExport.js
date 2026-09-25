@@ -69,6 +69,18 @@ const answerFeedbackMarkdown = (data, level) => {
   return lines.join("\n");
 };
 
+// Interview practice feedback (TFEAT-06): no score, and the reminder that the
+// authored rubric, not the model, decides.
+const interviewFeedbackMarkdown = (data, level) => {
+  const lines = [heading(level, "Interview practice feedback"), "", "*AI feedback can be generous; trust the rubric.*"];
+  const covered = data.strengths.map(text).filter(Boolean);
+  if (covered.length) lines.push("", "**What you covered:**", "", ...covered.map((item) => `- ${item}`));
+  const gaps = data.gaps.map(text).filter(Boolean);
+  if (gaps.length) lines.push("", "**You may have missed:**", "", ...gaps.map((gap) => `- ${gap}`));
+  lines.push("", `**Feedback:** ${text(data.feedback)}`, "", `**A stronger answer:** ${text(data.improvedAnswer)}`);
+  return lines.join("\n");
+};
+
 /** Markdown for a validated structured result, or "" when `data` is not one. */
 export const structuredResultMarkdown = (data, { headingLevel = 3 } = {}) => {
   if (!data || typeof data !== "object") return "";
@@ -103,7 +115,10 @@ export const tutorSourceList = ({ citationSources = [], webSources = [] } = {}) 
 /** The body of one tutor message as readable Markdown, without a heading. */
 export const tutorMessageMarkdown = (message, { headingLevel = 3, includeSources = true } = {}) => {
   if (!message || typeof message !== "object") return "";
-  const body = (message.role === "assistant" ? structuredResultMarkdown(message.data, { headingLevel }) : "") || text(message.content);
+  const practice = message.role === "assistant" && message.mode === "interview-practice" && isAnswerFeedback(message.data);
+  const body = (practice
+    ? interviewFeedbackMarkdown(message.data, headingLevel)
+    : message.role === "assistant" ? structuredResultMarkdown(message.data, { headingLevel }) : "") || text(message.content);
   const parts = [];
   if (message.incomplete === true) parts.push("> **Incomplete answer:** generation stopped before it finished.");
   if (message.truncated === true) parts.push("> **Display capped:** the answer was shortened to the tutor's display limit.");

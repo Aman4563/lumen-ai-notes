@@ -1135,19 +1135,22 @@
 }
 
 /* An answer check: the quiz key stays above it in the conversation. */
-.ai-tutor__feedback {
+.ai-tutor__feedback,
+.ai-tutor__rubric-result {
   display: grid;
   gap: 10px;
 }
 
-.ai-tutor__feedback section {
+.ai-tutor__feedback section,
+.ai-tutor__rubric-result section {
   padding: 11px 13px;
   background: var(--paper-2, #f9f7f1);
   border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
   border-radius: 12px;
 }
 
-.ai-tutor__feedback h5 {
+.ai-tutor__feedback h5,
+.ai-tutor__rubric-result h5 {
   margin: 0 0 4px;
   color: var(--ink-soft, #566078);
   font-size: 0.74rem;
@@ -1156,12 +1159,15 @@
 }
 
 .ai-tutor__feedback section p,
-.ai-tutor__feedback section ul {
+.ai-tutor__feedback section ul,
+.ai-tutor__rubric-result section p,
+.ai-tutor__rubric-result section ul {
   margin: 0;
   line-height: 1.55;
 }
 
-.ai-tutor__feedback section ul {
+.ai-tutor__feedback section ul,
+.ai-tutor__rubric-result section > ul {
   padding-left: 20px;
 }
 
@@ -2285,6 +2291,217 @@
 @media (max-width: 719px) {
   .ai-tutor__session { margin-bottom: 6px; }
   .ai-tutor__session-actions button { min-height: 44px; padding-inline: 11px; }
+}
+
+/* Interview practice (TFEAT-06): an authored question answered in its own
+   card, then graded against its rubric in the conversation. */
+.ai-tutor__practice {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--paper-2, #f7f2e8);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 16px;
+  scroll-margin-bottom: calc(var(--ai-composer-space, 0px) + 12px);
+}
+
+.ai-tutor__practice-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.ai-tutor__practice-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  scroll-margin-top: 88px;
+}
+
+.ai-tutor__practice-track {
+  display: grid;
+  gap: 3px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.74rem;
+  font-weight: 720;
+}
+
+.ai-tutor__practice-track select {
+  min-height: 42px;
+  max-width: 100%;
+  padding: 7px 31px 7px 10px;
+  color: var(--ink, #172035);
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 10px;
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.ai-tutor__practice-intro,
+.ai-tutor__practice-reason {
+  margin: 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.ai-tutor__practice-reason {
+  color: var(--ai-tutor-warn);
+  font-weight: 680;
+}
+
+.ai-tutor__practice-meta {
+  margin: 0;
+  color: var(--ai-accent-ink);
+  font-size: 0.74rem;
+  font-weight: 760;
+}
+
+.ai-tutor__practice-prompt {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.ai-tutor__practice-label {
+  font-size: 0.78rem;
+  font-weight: 740;
+}
+
+.ai-tutor__practice textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 120px;
+  padding: 10px 12px;
+  color: var(--ink, #172035);
+  resize: vertical;
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 12px;
+  outline: none;
+  line-height: 1.5;
+}
+
+.ai-tutor__practice textarea:focus {
+  border-color: var(--ai-accent-ink);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ai-accent) 16%, transparent);
+}
+
+.ai-tutor__practice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-tutor__practice-actions .ai-tutor__character-count {
+  margin-left: auto;
+}
+
+/* The learner's own turn above carries the whole question. */
+.ai-tutor__rubric-result .ai-tutor__result-title p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.ai-tutor__rubric-caption {
+  margin: 0;
+  padding: 8px 11px;
+  color: var(--ink, #172035);
+  background: var(--gold-soft, #fff6df);
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.ai-tutor__rubric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 11px 13px;
+  background: var(--paper-2, #f9f7f1);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 12px;
+}
+
+.ai-tutor__rubric legend {
+  padding: 0 4px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.74rem;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+}
+
+.ai-tutor__rubric p {
+  margin: 0 0 4px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.8rem;
+}
+
+.ai-tutor__rubric label {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 0;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.ai-tutor__rubric input {
+  width: 20px;
+  height: 20px;
+  margin: 1px 0 0;
+  accent-color: var(--ai-accent-strong);
+}
+
+.ai-tutor__rubric-toggle {
+  justify-self: start;
+}
+
+.ai-tutor__rubric-reference {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-tutor__rubric-reference[hidden] {
+  display: none;
+}
+
+.ai-tutor__rubric-result .ai-tutor__rubric-next ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-tutor__rubric-next li p {
+  margin: 0 0 6px;
+}
+
+.ai-tutor__rubric-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__practice { padding: 12px; }
+  .ai-tutor__practice-head { align-items: stretch; flex-direction: column; }
+  .ai-tutor__practice-track select { min-height: 44px; width: 100%; }
+  .ai-tutor__practice textarea { font-size: 16px; }
+  .ai-tutor__practice-actions .ai-tutor__button,
+  .ai-tutor__rubric-outcome .ai-tutor__button { flex: 1 1 auto; min-height: 44px; }
 }
 
 .ai-tutor__copy-status {

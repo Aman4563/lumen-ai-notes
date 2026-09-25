@@ -63,6 +63,11 @@ export const normalizeTrackBank = (bank) => {
 
 export const answerSecondsFor = (question) => Math.max(60, Math.min(300, (question.expectedMinutes || 3) * 60));
 
+/** The mistake-notebook category a missed question of this round type files under. */
+export const mistakeCategoryForRoundType = (roundType) => (roundType === "system-design" || roundType === "production-incident"
+  ? "system-design"
+  : roundType === "coding" || roundType === "debugging" ? "code" : "interview");
+
 /**
  * Builds a deterministic track round in the InterviewRound card shape.
  * Questions the learner has missed before (open mistakes fingerprinting the
@@ -94,7 +99,7 @@ export const buildTrackRound = (bank, { trackId, roundType = "", limit = 6 } = {
       back: `${question.modelAnswer}\n\n**Rubric**\n${question.rubric.map((bullet) => `- ${bullet}`).join("\n")}${question.followUps.length ? `\n\n**Follow-ups**\n${question.followUps.map((entry) => `- ${entry}`).join("\n")}` : ""}`,
       tags: ["interview-track", trackId, question.roundType],
       answerSeconds: answerSecondsFor(question),
-      mistakeCategory: question.roundType === "system-design" || question.roundType === "production-incident" ? "system-design" : question.roundType === "coding" || question.roundType === "debugging" ? "code" : "interview",
+      mistakeCategory: mistakeCategoryForRoundType(question.roundType),
       documentId: question.documentId,
     })),
   };

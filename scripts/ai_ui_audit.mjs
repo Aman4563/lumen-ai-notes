@@ -5,9 +5,11 @@ import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
+import { buildTrackRound, normalizeTrackBank } from "../src/lib/interviewTracks.js";
 import { createMistake } from "../src/lib/mistakes.js";
 import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
+import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -2644,6 +2646,144 @@ try {
     await sessionScenario.context.close();
   }
 
+  // Interview practice from the authored bank (TFEAT-06). Questions missed
+  // before come first; only the question is on the page until grading; the
+  // model answer and rubric travel as one supplied reference, never the
+  // library or the web, and never clipped; the result shows the authored
+  // rubric as a checklist, no score, and the reference answer only on
+  // request; the learner's verdict files the miss like a timed round's.
+  const practiceRound = buildTrackRound(interviewBank, { trackId: "mle", limit: 12 }).cards.map((card) => card.id);
+  const bankQuestions = new Map(normalizeTrackBank(interviewBank).questions.map((question) => [question.id, question]));
+  const weakQuestion = bankQuestions.get(practiceRound.at(-1));
+  const practiceScenario = await newIsolatedPage("interview-practice", {
+    mocks: {
+      feedback: (body) => {
+        const citation = String(body.context).match(/^\[(S\d+)\]/)?.[1] || "S1";
+        return { score: 92, correct: true, feedback: `You named the main risk and one mitigation. [${citation}]`, strengths: ["Named the main failure mode"], gaps: ["Rank the risks by severity", "Say how you would verify the fix"], improvedAnswer: `Start from the worst risk, then verify the fix with a held-out check. [${citation}]`, nextQuestion: "MODEL-NEXT-QUESTION" };
+      },
+    },
+  });
+  try {
+    const { page, calls } = practiceScenario;
+    const practiceCard = () => page.evaluate(() => {
+      const card = document.querySelector(".ai-tutor__practice");
+      return card ? {
+        heading: card.querySelector("h3").textContent,
+        prompt: card.querySelector(".ai-tutor__practice-prompt")?.textContent || "",
+        buttons: [...card.querySelectorAll("button")].map((button) => [button.textContent.trim(), button.disabled]),
+        reason: card.querySelector(".ai-tutor__practice-reason")?.textContent || "",
+      } : null;
+    });
+    const setPracticeAnswer = (value) => page.$eval(".ai-tutor__practice textarea", (field, text) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    // A timed track round's miss of the question, as InterviewRound logs it.
+    await patchStoredProfile(page, { mistakes: [createMistake({ prompt: weakQuestion.prompt, expected: weakQuestion.modelAnswer, reviewItemId: weakQuestion.id, documentId: weakQuestion.documentId, category: "interview", tags: ["interview-track", "mle", weakQuestion.roundType, "interview"] })] });
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    assert.equal(await page.$(".ai-tutor__practice"), null, "practice appeared outside Interview mode");
+    await chooseMode(page, "Interview");
+    await page.waitForSelector(".ai-tutor__practice button", { timeout: 10_000 });
+    assert.deepEqual(await practiceCard(), { heading: "Practice an authored question", prompt: "", buttons: [["Next question", false]], reason: "" });
+    assert.ok(await page.$$eval(".ai-tutor__practice-track option", (options) => options.length) >= 8, "the track picker did not list the authored tracks");
+    await clickByText(page, ".ai-tutor__practice button", "Next question");
+    await page.waitForSelector(".ai-tutor__practice textarea", { timeout: 5_000 });
+    const asked = await practiceCard();
+    assert.equal(asked.heading, "Practice question");
+    assert.equal(asked.prompt, weakQuestion.prompt, "the question missed before did not come first");
+    assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".ai-tutor__practice h3")), true, "the new question did not take focus");
+    assert.equal(await page.evaluate((text) => document.body.innerHTML.includes(text), weakQuestion.modelAnswer.slice(0, 60)), false, "the model answer was in the page before grading");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "", "the Interview default stayed in the docked box while practising");
+    assert.equal(calls.respond.length, 0, "choosing a practice question sent a request");
+    const practiceTargets = await page.$$eval(".ai-tutor__practice button, .ai-tutor__practice select", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)));
+    assert.ok(practiceTargets.every((height) => height >= 44), `practice controls under 44px on a phone: ${practiceTargets}`);
+
+    // An answer that would crowd out the rubric is blocked, with the reason.
+    await setPracticeAnswer("✓".repeat(2_400));
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__practice-reason")?.textContent, { timeout: 5_000 });
+    const crowded = await practiceCard();
+    assert.equal(crowded.reason, "Shorten your answer so the rubric can be included.");
+    assert.deepEqual(crowded.buttons.find(([label]) => label === "Grade against rubric"), ["Grade against rubric", true], "an answer that clips the rubric could be graded");
+    const answer = "I would name the main failure mode first and add a check before rollout.";
+    await setPracticeAnswer(answer);
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__practice-reason"), { timeout: 5_000 });
+    await clickByText(page, ".ai-tutor__practice button", "Grade against rubric");
+    await waitForAnswers(page, 1);
+    assert.equal(calls.respond.length, 1, "the blocked answer was sent");
+    const graded = calls.respond[0].body;
+    assert.equal(graded.task, "answer_feedback");
+    assert.equal(graded.responseFormat, "structured");
+    assert.equal(graded.webSearch, false, "grading used the web");
+    assert.deepEqual(graded.history, [], "grading sent conversation history");
+    assert.equal(graded.contextCitations.length, 1, "grading sent more than its reference");
+    assert.match(graded.context, new RegExp(`^\\[S${graded.contextCitations[0]}\\] Interview reference: ${weakQuestion.id} — `), "the reference was not the one supplied source");
+    assert.ok(graded.context.includes(weakQuestion.rubric.at(-1)) && graded.context.includes(weakQuestion.modelAnswer.slice(-60)), "the reference was not sent whole");
+    assert.equal(graded.documentTitle, `Interview reference: ${weakQuestion.id}`);
+    assert.ok(graded.prompt.includes(`Interview question: ${weakQuestion.prompt}\n\nMy answer: ${answer}`), "the grading question did not carry the question and answer");
+    assert.equal(await page.evaluate(() => document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)), true, "focus did not move to the feedback");
+    const result = await page.$eval(".ai-tutor__rubric-result", (node) => ({
+      legend: node.querySelector(".ai-tutor__rubric legend")?.textContent,
+      points: [...node.querySelectorAll(".ai-tutor__rubric label")].map((label) => [label.textContent, label.querySelector("input").type, Math.round(label.getBoundingClientRect().height) >= 44]),
+      headings: [...node.querySelectorAll("h5")].map((heading) => heading.textContent),
+      caption: node.querySelector(".ai-tutor__rubric-caption")?.textContent,
+      text: node.textContent,
+      citations: node.querySelectorAll("button.ai-tutor__citation").length,
+    }));
+    assert.equal(result.legend, "Rubric");
+    assert.deepEqual(result.points, weakQuestion.rubric.map((bullet) => [bullet, "checkbox", true]), "the authored rubric was not a checklist of 44px points");
+    assert.deepEqual(result.headings, ["You may have missed", "What you covered", "Feedback", "Next question"]);
+    assert.equal(result.caption, "AI feedback can be generous; trust the rubric.");
+    assert.equal(/\b92\b|score|MODEL-NEXT-QUESTION/i.test(result.text), false, "the result showed the model's score or its own next question");
+    assert.equal(result.text.includes(weakQuestion.modelAnswer.slice(0, 60)), false, "the reference answer was shown before it was asked for");
+    assert.ok(result.citations >= 1, "the reference citation did not render as a control");
+    await page.$eval(".ai-tutor__rubric-toggle", (button) => button.click());
+    assert.equal(await page.$eval(".ai-tutor__rubric-reference", (node) => node.textContent.includes("Reference answer") && node.textContent.includes("A stronger version of your answer")), true, "Show reference answer did not reveal both answers");
+    assert.equal(await page.evaluate((text) => document.querySelector(".ai-tutor__rubric-reference").textContent.includes(text), weakQuestion.modelAnswer.slice(0, 60)), true);
+    assert.equal((await practiceCard()).heading, "Practice an authored question", "the graded question stayed in the card");
+
+    // The ticks and the rubric view survive a reload.
+    await page.$$eval(".ai-tutor__rubric input", (inputs) => inputs[0].click());
+    await waitForStoredHistory(page, 2);
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__rubric input", { timeout: 10_000 });
+    assert.deepEqual(await page.$$eval(".ai-tutor__rubric input", (inputs) => inputs.map((input) => input.checked)), weakQuestion.rubric.map((_, index) => index === 0), "a reload lost the rubric view or its ticks");
+
+    // Missed points: merged with the timed round's miss of the question.
+    await clickByText(page, ".ai-tutor__rubric-outcome button", "Missed points, log to mistake notebook");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__rubric-result [role='status']")?.textContent.includes("mistake notebook"), { timeout: 5_000 });
+    await page.waitForFunction(() => new Promise((resolve) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onsuccess = () => {
+        const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile");
+        get.onsuccess = () => resolve(get.result?.mistakes?.[0]?.occurrences === 2);
+        get.onerror = () => resolve(false);
+      };
+      request.onerror = () => resolve(false);
+    }), { timeout: 8_000 });
+    const logged = (await readProfile(page)).mistakes;
+    assert.equal(logged.length, 1, "a practice miss did not merge with the question's earlier miss");
+    assert.deepEqual([logged[0].reviewItemId, logged[0].response, logged[0].documentId], [weakQuestion.id, answer, weakQuestion.documentId]);
+    assert.ok(["interview-track", "mle", weakQuestion.roundType, "interview"].every((tag) => logged[0].tags.includes(tag)), `the miss lost its track tags: ${logged[0].tags}`);
+    assert.equal(await page.$$eval(".ai-tutor__rubric-outcome button", (buttons) => buttons.every((button) => button.getAttribute("aria-disabled") === "true")), true, "the verdict could be given twice");
+
+    // An authored follow-up is answered to the interviewer; the next bank
+    // question skips the one just practised.
+    await clickByText(page, ".ai-tutor__rubric-next button", "Answer this");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(await activeMode(page), "Interview");
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), `Interview follow-up: ${weakQuestion.followUps[0]}\n\nMy answer: `);
+    await setComposerPrompt(page, "");
+    await clickByText(page, ".ai-tutor__practice button", "Next question");
+    await page.waitForSelector(".ai-tutor__practice textarea", { timeout: 5_000 });
+    assert.notEqual((await practiceCard()).prompt, weakQuestion.prompt, "the practised question came straight back");
+    assert.equal(calls.respond.length, 1);
+  } finally {
+    await practiceScenario.context.close();
+  }
+
   let modelOnline = false;
   const recovery = await newAuditPage("service-recovers", () => modelOnline ? secureConfig : {
     ...secureConfig, service: { ...secureConfig.service, reachable: false },
@@ -2670,7 +2810,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

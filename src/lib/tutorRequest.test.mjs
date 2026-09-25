@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AI_REQUEST_CONTRACT_ID } from "./aiContract.js";
+import { SOURCE_CLIP_MARKER } from "./tutorGrounding.js";
 import {
   fitTutorRequest,
   minimumContextBudget,
@@ -205,4 +206,17 @@ test("the topic cue names the first attached source, never a bare count", () => 
   // Dropped sources are not counted; the fitted body carries the same title.
   const fitted = fitTutorRequest({ mode: explain, prompt: "Explain.", sources, responseProfile: "deep", config });
   assert.equal(fitted.payload.documentTitle, tutorDocumentTitle(sources, fitted.includedCitationNumbers));
+});
+
+test("an answer key must fit whole or the request is blocked", () => {
+  const reference = { citationNumber: 9, title: "Interview reference: mle-01", text: `Rubric: ${"a precise point ".repeat(40)}` };
+  const limits = tutorRequestLimits(config, "balanced");
+  const roomy = fitTutorRequest({ mode: explain, prompt: "Grade my answer.", sources: [reference], config });
+  assert.equal(tutorRequestIssue({ prompt: "Grade my answer.", promptLimit: limits.promptLimit, fitted: roomy, sources: [reference], requireWholeSources: true }), "");
+  const clipped = { ...roomy, context: `${roomy.context.slice(0, 80)}${SOURCE_CLIP_MARKER}end` };
+  assert.equal(tutorRequestIssue({ prompt: "Grade my answer.", promptLimit: limits.promptLimit, fitted: clipped, sources: [reference], requireWholeSources: true }), "source-clipped", "a clipped rubric was accepted");
+  const dropped = { ...roomy, context: "", includedCitationNumbers: [] };
+  assert.equal(tutorRequestIssue({ prompt: "Grade my answer.", promptLimit: limits.promptLimit, fitted: dropped, sources: [reference], requireWholeSources: true }), "source-clipped", "a dropped rubric was accepted");
+  assert.equal(tutorRequestIssue({ prompt: "Grade my answer.", promptLimit: limits.promptLimit, fitted: dropped, sources: [reference] }), "", "ordinary requests do not require whole sources");
+  assert.match(tutorActionIssueReason("source-clipped"), /Shorten it/);
 });

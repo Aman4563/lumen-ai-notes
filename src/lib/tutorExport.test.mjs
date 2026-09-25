@@ -68,6 +68,13 @@ test("conversation export names mode, profile and state in each heading", () => 
   assert.match(markdown, /## Lumen Tutor · Explain · Fast · stopped early\n\n> \*\*Incomplete answer:\*\*/);
 });
 
+test("interview practice feedback reads without its score, rubric first", () => {
+  const data = { score: 92, correct: true, feedback: "Solid on variance.", strengths: ["Named overfitting"], gaps: ["Rank the leakage severity"], improvedAnswer: "Say which leak is worst first.", nextQuestion: null };
+  const markdown = tutorMessageMarkdown({ role: "assistant", mode: "interview-practice", content: "{}", data, citationSources: [], webSources: [] }, { includeSources: false });
+  assert.equal(markdown, "### Interview practice feedback\n\n*AI feedback can be generous; trust the rubric.*\n\n**What you covered:**\n\n- Named overfitting\n\n**You may have missed:**\n\n- Rank the leakage severity\n\n**Feedback:** Solid on variance.\n\n**A stronger answer:** Say which leak is worst first.");
+  assert.equal(/92|score|quiz key/i.test(markdown), false);
+});
+
 test("an answer check reads without its score or strengths", () => {
   const markdown = structuredResultMarkdown({ score: 20, correct: false, feedback: "It is set before training.", strengths: ["Named the update"], gaps: ["Parameters are learned"], improvedAnswer: "A hyperparameter.", nextQuestion: "Is batch size learned?" });
   assert.equal(markdown, "### Answer check\n\n**Why:** It is set before training.\n\n**What was missing:**\n\n- Parameters are learned\n\n**Correct reasoning:** A hyperparameter.\n\n**Check yourself:** Is batch size learned?");

@@ -1,7 +1,7 @@
 import { AI_REQUEST_CONTRACT_ID } from "./aiContract.js";
 import { fitAiRequestContext } from "./aiRequestBudget.js";
 import { buildConversationWindow } from "./conversationMemory.js";
-import { buildTutorContext, outputTokensForProfile } from "./tutorGrounding.js";
+import { SOURCE_CLIP_MARKER, buildTutorContext, outputTokensForProfile } from "./tutorGrounding.js";
 
 /**
  * The Mac tutor's one request path. A learner's Send and every programmatic
@@ -120,6 +120,7 @@ export const tutorActionIssueReason = (issue, { configMessage = "" } = {}) => ({
   "prompt-too-long": "It is longer than this server accepts. Shorten it, then send it.",
   "context-too-small": "Its sources do not all fit. Choose fewer sources, then send it.",
   "request-too-large": "It does not fit the local model's request limit. Shorten it, then send it.",
+  "source-clipped": "Its reference does not fit whole. Shorten it, then send it.",
 }[issue] || "");
 
 /**
@@ -205,13 +206,19 @@ export const fitTutorRequest = ({
 /**
  * Why a fitted request must not be sent, or "" when it can be. Sources that
  * the learner attached by hand must all fit (`requireAllSources`); retrieved
- * Library-first passages are refitted at send time instead.
+ * Library-first passages are refitted at send time instead. A request whose
+ * source is its answer key (an interview rubric) must carry every source
+ * whole, never dropped or clipped (`requireWholeSources`).
  */
-export const tutorRequestIssue = ({ prompt, promptLimit, fitted, sources = [], requireAllSources = false }) => {
+export const tutorRequestIssue = ({ prompt, promptLimit, fitted, sources = [], requireAllSources = false, requireWholeSources = false }) => {
   const text = String(prompt || "").trim();
   if (!text) return "empty-prompt";
   if (text.length > promptLimit) return "prompt-too-long";
   if (requireAllSources && sources.length > 0 && fitted.contextBudget < minimumContextBudget(sources)) return "context-too-small";
+  if (requireWholeSources && sources.length > 0) {
+    const included = new Set(fitted.includedCitationNumbers);
+    if (!sources.every((source) => included.has(source.citationNumber)) || String(fitted.context || "").includes(SOURCE_CLIP_MARKER.trim())) return "source-clipped";
+  }
   if (Number.isSafeInteger(fitted.maximumBytes) && fitted.bytes > fitted.maximumBytes) return "request-too-large";
   return "";
 };
