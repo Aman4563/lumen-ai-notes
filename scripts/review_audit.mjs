@@ -453,13 +453,24 @@ try {
     { type: "basic", front: "Imported: what does dropout do during training?", back: "It randomly zeroes activations so units cannot co-adapt.", tags: ["imported"] },
     { type: "cloze", front: "Imported: early stopping halts training when {{validation loss}} stops improving.", back: "validation loss", tags: ["imported"] },
   ] }));
-  const importFocused = await page.evaluate(() => {
+  // Focus Import only once earlier focus moves (the delete's row handoff, an
+  // Undo strip taking focus) have settled, and confirm it is still there a
+  // few frames later; otherwise Enter can land on another control.
+  const importFocused = await page.waitForFunction(async () => {
     const button = [...document.querySelectorAll(".review-deck-tools button")].find((node) => node.textContent.trim() === "Import");
-    button?.focus();
-    return Boolean(button) && document.activeElement === button;
-  });
-  assert.ok(importFocused, "the deck Import control must be a focusable button");
-  const [chooser] = await Promise.all([page.waitForFileChooser({ timeout: 5_000 }), page.keyboard.press("Enter")]);
+    if (!button) return false;
+    button.focus();
+    for (let frame = 0; frame < 3; frame += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+    return document.activeElement === button;
+  }, { timeout: 5_000, polling: 200 }).then(() => true, () => false);
+  assert.ok(importFocused, "the deck Import control must be a focusable button that keeps focus");
+  const [chooser] = await Promise.all([
+    page.waitForFileChooser({ timeout: 5_000 }).catch(async (error) => {
+      const active = await page.evaluate(() => `${document.activeElement?.tagName}.${document.activeElement?.className} "${(document.activeElement?.textContent || "").trim().slice(0, 30)}"`);
+      throw new Error(`Enter on the deck Import button opened no file chooser (focus: ${active}): ${error.message}`);
+    }),
+    page.keyboard.press("Enter"),
+  ]);
   await chooser.accept([deckFile]);
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("2 cards imported"), { timeout: 5_000 })
     .catch(() => assert.fail("importing a card deck did not confirm the imported count"));
