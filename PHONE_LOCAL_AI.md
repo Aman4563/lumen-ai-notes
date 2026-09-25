@@ -237,13 +237,16 @@ Declining calls the same method once with `consent: false`, consumes the one-use
 On-device conversation history is intentionally session-only and is visually separated from the durable Mac-local conversation. It is held in App memory, so switching engines or navigating away and back preserves completed turns while active or aborted turns are removed; the model's GPU memory is still released on unmount. It is not written to IndexedDB or exported in a backup. Reloading the page clears it. Generated flashcards can still be explicitly added to the normal review deck through the existing callback.
 
 Plain answers stream into a live mobile response card at animation-frame cadence.
-They use the same DOMPurify-sanitized GFM + KaTeX renderer as the Mac tutor, which shows
-model-authored HTML as text so an answer cannot forge a citation control, including
+They use the same DOMPurify-sanitized GFM + KaTeX renderer as the Mac tutor, including
 tables, lists, links, fenced-code copy controls, `$...$` inline math, and `$$...$$`
-display math. Compatible fenced Mermaid blocks remain readable source while tokens are
+display math. It shows model-authored HTML as text so an answer cannot forge a citation
+control, loads no Markdown image (a remote image becomes a link), and keeps links to the
+app's own host as text. Compatible fenced Mermaid blocks remain readable source while tokens are
 arriving and render only after the response completes. The shared renderer lazy-loads
 Mermaid, sanitizes returned SVG, preserves the original definition for theme changes,
-and exposes source/copy/retry diagnostics for load, size, or syntax failures.
+and exposes source/copy/retry diagnostics for load, size, or syntax failures. A model's
+diagram ignores its config directives and is shown as code when its source names a web
+address, so drawing it loads nothing.
 Structured quizzes/cards/plans remain buffered until the complete object validates.
 This improves time to visible text; it does not establish lower total generation
 time on a physical iPhone.

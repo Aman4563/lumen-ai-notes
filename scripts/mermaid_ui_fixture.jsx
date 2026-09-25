@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "katex/dist/katex.min.css";
 import { renderMarkdown } from "../src/lib/markdown.js";
 import { renderTutorMarkdown } from "../src/lib/tutorMarkdown.js";
+import { renderUntrustedMarkdown } from "../src/lib/untrustedMarkdown.js";
 import { renderMermaidDiagrams } from "../src/lib/mermaidDiagrams.js";
 import { useMermaidDiagrams } from "../src/lib/useMermaidDiagrams.js";
 import "../src/styles.css";
@@ -110,8 +111,43 @@ const LinkFixture = () => {
   );
 };
 
+// Issue #81: Mermaid fetches some resources while it draws, before the SVG
+// filter runs. Each of these fetched https://tracker.example from a tutor
+// answer before the fix. A model diagram that names an address shows as code.
+const TRACKER = "https://tracker.example";
+const fence = (body) => `\`\`\`mermaid\n${body}\n\`\`\`\n\n`;
+const resourceDiagrams = [
+  `%%{init: {"fontFamily": "x;background-image:url(${TRACKER}/font-family)"}}%%\nflowchart LR\n  A[a] --> B[b]`,
+  `%%{init: {"themeCSS": "rect{background-image:url(${TRACKER}/theme-css)}"}}%%\nflowchart LR\n  A[a] --> B[b]`,
+  `---\nconfig:\n  fontFamily: "x;background-image:url(${TRACKER}/frontmatter)"\n---\nflowchart LR\n  A[a] --> B[b]`,
+  `%%{init: {"htmlLabels": true}}%%\nflowchart LR\n  A["<img src='${TRACKER}/html-label'>"] --> B[b]`,
+  `flowchart LR\n  A@{ img: "${TRACKER}/shape-image", label: "x" } --> B[b]`,
+  `sequenceDiagram\n  participant A\n  properties A: {"icon": "${TRACKER}/actor-icon"}\n  A->>B: hi`,
+  `stateDiagram-v2\n  [*] --> S\n  classDef c mask-image:url(${TRACKER}/class-def)\n  class S c`,
+  'flowchart LR\n  A@{ "i\\x6dg": "\\x68ttps\\x3a\\x2f\\x2ftracker.example/yaml-escape" } --> B[b]',
+  'stateDiagram-v2\n  [*] --> S\n  classDef c mask-image:u\\72l(\\68ttps\\3a\\2f\\2ftracker.example/css-escape)\n  class S c',
+].map(fence).join("");
+// No address, so these draw; a model's directives must not apply to them.
+const modelDirectives = [
+  '%%{init: {"fontFamily": "x;position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483647"}}%%\nflowchart LR\n  A[Overlay] --> B[Directive]',
+  '%%{init: {"htmlLabels": true}}%%\nflowchart LR\n  A["<img src=\'mermaid-audit-label.png\'>"] --> B[Label]',
+  '---\nconfig:\n  themeCSS: "rect{fill:rgb(255,0,0) !important}"\n---\nflowchart LR\n  A[Red] --> B[Fill]',
+].map(fence).join("");
+const learnerDirective = fence('---\nconfig:\n  themeCSS: "rect{fill:rgb(255,0,0) !important}"\n---\nflowchart LR\n  A[Learner] --> B[Theme]');
+
+const ResourceFixture = () => (
+  <main>
+    <h1>Diagram resources</h1>
+    <Surface label="Tutor diagrams naming addresses" className="resource-surface" markdown={resourceDiagrams} renderer={renderTutorMarkdown} />
+    <Surface label="Saved AI diagram" className="saved-surface" markdown={fence(`flowchart LR\n  A@{ img: "${TRACKER}/saved-shape" } --> B[b]`)} renderer={renderUntrustedMarkdown} />
+    <Surface label="Tutor directives" className="directive-surface" markdown={modelDirectives} renderer={renderTutorMarkdown} />
+    <Surface label="Learner directive" className="learner-surface" markdown={learnerDirective} />
+    <Surface label="Marked model markup" className="marked-surface" markdown={`<div class="diagram-shell"><div class="mermaid" data-diagram-author="model">flowchart LR\n  A@{ img: "${TRACKER}/marked-markup" } --> B[b]</div></div>`} />
+  </main>
+);
+
 window.__MERMAID_XSS__ = false;
 const mode = new URLSearchParams(window.location.search).get("mode");
-const fixtures = { deferred: DeferredFixture, links: LinkFixture };
+const fixtures = { deferred: DeferredFixture, links: LinkFixture, resources: ResourceFixture };
 const Fixture = fixtures[mode] || CompleteFixture;
 createRoot(document.getElementById("root")).render(<Fixture />);

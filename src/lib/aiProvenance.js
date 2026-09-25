@@ -54,3 +54,31 @@ export const materializeAiFlashcard = (card, metadata = {}) => ({
   back: materializeAiCardProvenance(card?.back, metadata),
   hint: card?.hint == null ? card?.hint : materializeAiCardProvenance(card.hint, metadata),
 });
+
+/**
+ * Provenance of saved AI output (issue #81). An AI flashcard carries the
+ * `ai-draft` tag, and an answer saved to notes is a clipping with origin
+ * `ai-tutor`. Wherever that text renders later it goes through the untrusted
+ * Markdown profile (untrustedMarkdown.js), never the Reader's renderer, which
+ * keeps author HTML for learner notes.
+ */
+export const AI_DRAFT_TAG = "ai-draft";
+
+export const isAiAuthoredClipping = (clip) => clip?.origin === "ai-tutor";
+
+/** Ids of the clippings the tutor wrote, for isAiAuthoredReviewItem. */
+export const aiClippingIds = (clippings) => new Set((Array.isArray(clippings) ? clippings : [])
+  .filter(isAiAuthoredClipping)
+  .map((clip) => clip.id));
+
+/**
+ * True for a card the tutor wrote: an AI flashcard, or a card made from an AI
+ * clipping (cards made before #81 carry no tag, only the clipping id).
+ */
+export const isAiAuthoredReviewItem = (item, aiClippingIdSet = new Set()) => Boolean(item) && (
+  (Array.isArray(item.tags) && item.tags.includes(AI_DRAFT_TAG))
+  || (typeof item.sourceClippingId === "string" && item.sourceClippingId !== "" && aiClippingIdSet.has(item.sourceClippingId))
+);
+
+/** Tags with `ai-draft` first, so a tag limit can never drop the provenance. */
+export const withAiDraftTag = (tags) => [AI_DRAFT_TAG, ...(Array.isArray(tags) ? tags : []).filter((tag) => tag !== AI_DRAFT_TAG)];

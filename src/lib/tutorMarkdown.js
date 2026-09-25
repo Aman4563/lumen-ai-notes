@@ -2,26 +2,12 @@ import katex from "katex";
 import { Marked, Renderer } from "marked";
 import markedKatex from "marked-katex-extension";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
+import { escapeAttribute, lineBreakExtension, untrustedRenderer, untrustedTokenizer } from "./untrustedMarkdown.js";
 import { tutorPlainText } from "./tutorExport.js";
 
 const CITATION_PATTERN = /^\[([SW])(\d+)\]/;
 const CITATION_START = /\[[SW]\d/;
-// `[S1]: …` is a citation followed by text, not a link reference definition
-// that would hide the line.
-const CITATION_DEFINITION = /^ {0,3}\[[SW]\d+\]:/;
-// A citation marker anywhere in a link's label, as a control or as text.
-const CITATION_TEXT = /\[[SW]\d+\]/;
-// Model links stay links only to absolute web and mail addresses.
-const LINK_HREF = /^(?:https?:|mailto:)/i;
-const LINE_BREAK_TAG = /^<br\s*\/?>/i;
-const LINE_BREAK_START = /<br\s*\/?>/i;
 const FENCE_PATTERN = /^\s{0,3}(`{3,}|~{3,})/;
-
-const escapeAttribute = (value) => String(value ?? "")
-  .replaceAll("&", "&amp;")
-  .replaceAll('"', "&quot;")
-  .replaceAll("<", "&lt;")
-  .replaceAll(">", "&gt;");
 
 const safeWebUrl = (value) => {
   try {
@@ -63,34 +49,6 @@ const citationContext = (citationSources = [], webSources = []) => {
 
 const EMPTY_CITATIONS = Object.freeze(citationContext());
 
-// The first word of a fence's info string names its language. Quotes in it
-// must not reach the code block's class and aria-label attributes.
-const fenceLanguage = (lang) => String(lang || "").trim().split(/\s/u, 1)[0].replace(/["'`]/gu, "");
-
-/** A label's text with citations as their markers, for link and alt checks. */
-const plainLabel = (tokens = []) => tokens.map((token) => {
-  if (token.type === "tutorCitation") return `[${token.kind}${token.number}]`;
-  if (Array.isArray(token.tokens)) return plainLabel(token.tokens);
-  return String(token.text ?? "");
-}).join("");
-
-const BRACKET_ENTITIES = { lsqb: "[", lbrack: "[", rsqb: "]", rbrack: "]" };
-const LABEL_ENTITY = /&(?:#(\d{1,7})|#x([\da-f]{1,6})|(lsqb|lbrack|rsqb|rbrack));/giu;
-
-/**
- * True when a label reads as a citation marker once entities, full-width
- * forms and invisible or space characters are resolved, so `&#91;S1&#93;`
- * cannot pass for one either.
- */
-const showsCitationMarker = (text) => CITATION_TEXT.test(text
-  .replace(LABEL_ENTITY, (entity, decimal, hex, name) => {
-    if (name) return BRACKET_ENTITIES[name.toLowerCase()];
-    const codePoint = Number.parseInt(decimal ?? hex, decimal ? 10 : 16);
-    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
-  })
-  .normalize("NFKC")
-  .replace(/[\p{Cf}\s]/gu, ""));
-
 const tutorMarked = new Marked();
 tutorMarked.use({
   gfm: true,
@@ -99,10 +57,11 @@ tutorMarked.use({
 });
 
 // Model output is untrusted, and DOMPurify's default profile keeps <button>
-// and data-* attributes. So raw HTML in a tutor answer never becomes a token:
-// block and inline tags fall through to paragraph and text tokens, which
-// marked escapes, and the learner sees the markup as text. A model cannot
-// author a citation control, a data-ai-* attribute or a form. Citation
+// and data-* attributes. The shared untrusted rules (untrustedMarkdown.js)
+// show raw HTML as text, keep only a bare <br>, open links only to absolute
+// web and mail addresses off the app's own host, drop a link whose label shows
+// a citation marker, and turn images into links that load nothing. A model
+// cannot author a citation control, a data-ai-* attribute or a form. Citation
 // controls come only from the tutorCitation extension below, for [S#]/[W#]
 // markers outside code. The Reader's renderer (markdown.js) is unchanged.
 //
@@ -111,49 +70,15 @@ tutorMarked.use({
 // Wide tables get a wrapper that the tutor makes keyboard-scrollable when it
 // actually overflows. Only this tutor-only instance changes; lessons do not.
 tutorMarked.use({
-  tokenizer: {
-    html() { return undefined; },
-    tag() { return undefined; },
-    def(src) { return CITATION_DEFINITION.test(src) ? undefined : false; },
-  },
+  tokenizer: untrustedTokenizer,
   renderer: {
+    ...untrustedRenderer,
     heading(token) {
       const level = Math.min(6, Math.max(4, token.depth + 2));
       return `<h${level} class="ai-tutor__md-h${Math.min(token.depth, 4)}">${this.parser.parseInline(token.tokens)}</h${level}>\n`;
     },
     table(token) {
       return `<div class="ai-tutor__scroll" data-scroll-label="Table">${Renderer.prototype.table.call(this, token)}</div>\n`;
-    },
-    code(token) {
-      return markdownRenderer.code.call(this, { ...token, lang: fenceLanguage(token.lang) });
-    },
-    // The shared renderer writes a link's raw label and leaves quotes in its
-    // title unescaped. Here the label is parsed Markdown and every attribute
-    // value is escaped.
-    //
-    // A label that shows a citation marker renders without its link: a
-    // verified [S#] button inside a model's <a> would follow the model's URL
-    // on click, and an encoded &#91;S1&#93; label would pass for one. An
-    // in-app route (#/read/…) or relative path would open a library note that
-    // no citation validated, so those labels render as text too.
-    link(token) {
-      const label = this.parser.parseInline(token.tokens);
-      const href = String(token.href || "").trim();
-      if (!LINK_HREF.test(href) || showsCitationMarker(plainLabel(token.tokens))) return label;
-      const title = token.title ? ` title="${escapeAttribute(token.title)}"` : "";
-      const external = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : "";
-      return `<a href="${escapeAttribute(href)}"${title}${external}>${label}</a>`;
-    },
-    // marked builds alt text with each token's renderer, so a citation in
-    // the alt would become button markup there. Use its marker instead.
-    image(token) {
-      return Renderer.prototype.image.call(this, { ...token, tokens: undefined, text: plainLabel(token.tokens) || token.text });
-    },
-    // Unreachable while the html tokenizers are off. Kept so that an html
-    // token from a future extension is still shown as text.
-    html(token) {
-      const text = escapeAttribute(token.text);
-      return token.block ? `<p>${text}</p>\n` : text;
     },
   },
   extensions: [
@@ -177,24 +102,7 @@ tutorMarked.use({
         return citationMarkup(token.kind, token.number, token.kind === "S" ? library.get(number) : web.get(number));
       },
     },
-    {
-      // Models put <br> in table cells, which have no other line break. The
-      // bare tag is the only HTML kept: it renders as a fixed <br> and cannot
-      // carry attributes.
-      name: "tutorLineBreak",
-      level: "inline",
-      start(src) {
-        const index = src.search(LINE_BREAK_START);
-        return index < 0 ? undefined : index;
-      },
-      tokenizer(src) {
-        const match = LINE_BREAK_TAG.exec(src);
-        return match ? { type: "tutorLineBreak", raw: match[0] } : undefined;
-      },
-      renderer() {
-        return "<br>";
-      },
-    },
+    lineBreakExtension,
   ],
 });
 
@@ -254,11 +162,12 @@ export const normalizeTutorMathDelimiters = (markdown) => {
 /**
  * Tutor Markdown before DOMPurify: model-authored HTML is already text and
  * the only citation controls are the renderer's own. Exported for unit tests,
- * because DOMPurify needs a DOM; the UI uses renderTutorMarkdown.
+ * because DOMPurify needs a DOM; the UI uses renderTutorMarkdown. `appOrigin`
+ * (default: the page's origin) names the host whose links render as text.
  */
-export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], webSources = []) => tutorMarked.parse(
+export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], webSources = [], { appOrigin } = {}) => tutorMarked.parse(
   normalizeTutorMathDelimiters(markdown),
-  { tutorCitations: citationContext(citationSources, webSources) },
+  { tutorCitations: citationContext(citationSources, webSources), untrustedAppOrigin: appOrigin },
 );
 
 /**
@@ -270,9 +179,9 @@ export const renderTutorMarkdown = (markdown, citationSources = [], webSources =
 );
 
 /** One structured field before DOMPurify; see renderTutorMarkdownUnsanitized. */
-export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [], webSources = []) => tutorMarked.parseInline(
+export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [], webSources = [], { appOrigin } = {}) => tutorMarked.parseInline(
   String(text || "").replace(/\r\n?/g, "\n").replace(/\n+/g, " "),
-  { tutorCitations: citationContext(citationSources, webSources) },
+  { tutorCitations: citationContext(citationSources, webSources), untrustedAppOrigin: appOrigin },
 );
 
 /**

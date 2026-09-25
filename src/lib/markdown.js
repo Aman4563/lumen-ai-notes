@@ -6,11 +6,15 @@ const escapeHtml = (value) =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 export const markdownRenderer = {
+  // The untrusted profile (untrustedMarkdown.js) passes `diagram: false` to
+  // show a fence as code, and `diagramAuthor: "model"` to mark a diagram whose
+  // Mermaid configuration must be locked. Reader tokens carry neither.
   code(token) {
     const language = (token.lang || "").trim().toLowerCase();
-    const diagram = mermaidDefinitionForFence(language, token.text);
+    const diagram = token.diagram === false ? "" : mermaidDefinitionForFence(language, token.text);
     if (diagram) {
-      return `<div class="diagram-shell" data-diagram-status="pending" tabindex="0" role="group" aria-label="Diagram"><div class="mermaid" data-diagram-status="pending" role="img" aria-label="Mermaid diagram awaiting rendering">${escapeHtml(diagram)}</div></div>`;
+      const author = token.diagramAuthor === "model" ? ' data-diagram-author="model"' : "";
+      return `<div class="diagram-shell" data-diagram-status="pending" tabindex="0" role="group" aria-label="Diagram"><div class="mermaid" data-diagram-status="pending" role="img" aria-label="Mermaid diagram awaiting rendering"${author}>${escapeHtml(diagram)}</div></div>`;
     }
     const label = language || "text";
     // Wide code scrolls inside <pre>. Safari does not make scrollers

@@ -96,6 +96,63 @@ try {
   assert.equal(await linked.evaluate(() => window.location.hash), "#/ai", "clicking a Mermaid diagram link navigated");
   await linked.close();
 
+  // Issue #81: a model diagram must not fetch anything while Mermaid draws
+  // it, and a model's directives must not apply. A learner's still do.
+  const resources = await browser.newPage();
+  attachDiagnostics(resources, "resources");
+  await resources.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  const trackerRequests = [];
+  const labelRequests = [];
+  await resources.setRequestInterception(true);
+  resources.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.hostname === "tracker.example") {
+      trackerRequests.push(url.pathname);
+      void request.respond({ status: 204, body: "" });
+      return;
+    }
+    if (url.pathname.endsWith("/mermaid-audit-label.png")) labelRequests.push(url.pathname);
+    void request.continue();
+  });
+  await resources.goto(`${baseUrl}/__mermaid-audit?mode=resources`, { waitUntil: "networkidle2", timeout: 30_000 });
+  // Every diagram settles as drawn or failed; the checks below say which.
+  await resources.waitForFunction(() => {
+    const shells = [...document.querySelectorAll(".diagram-shell")];
+    return shells.length > 0 && shells.every((shell) => ["rendered", "error"].includes(shell.dataset.diagramStatus));
+  }, { timeout: 30_000 });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const resourceReport = await resources.evaluate(() => {
+    const red = (selector) => [...document.querySelectorAll(`${selector} svg rect`)].filter((rect) => getComputedStyle(rect).fill === "rgb(255, 0, 0)").length;
+    return {
+      addressDiagrams: document.querySelectorAll(".resource-surface .diagram-shell").length,
+      addressCode: document.querySelectorAll(".resource-surface .code-shell").length,
+      savedDiagrams: document.querySelectorAll(".saved-surface .diagram-shell").length,
+      savedCode: document.querySelectorAll(".saved-surface .code-shell").length,
+      directiveRed: red(".directive-surface"),
+      directiveFixed: [...document.querySelectorAll(".directive-surface svg")].filter((svg) => getComputedStyle(svg).position === "fixed").length,
+      directiveHtmlLabels: document.querySelectorAll(".directive-surface svg foreignObject, .directive-surface svg img").length,
+      directiveFonts: [...document.querySelectorAll(".directive-surface svg")].map((svg) => getComputedStyle(svg.querySelector("text") || svg).fontFamily.split(",")[0]),
+      learnerRed: red(".learner-surface"),
+      markedTitle: document.querySelector(".marked-surface .diagram-diagnostic strong")?.textContent || "",
+    };
+  });
+  assert.deepEqual(trackerRequests, [], "a model Mermaid diagram fetched a remote resource while it was drawn");
+  assert.deepEqual(labelRequests, [], "a model directive turned on HTML labels and loaded an <img>");
+  assert.deepEqual(
+    { addressDiagrams: resourceReport.addressDiagrams, addressCode: resourceReport.addressCode, savedDiagrams: resourceReport.savedDiagrams, savedCode: resourceReport.savedCode },
+    { addressDiagrams: 0, addressCode: 9, savedDiagrams: 0, savedCode: 1 },
+    "a model diagram that names an address was drawn instead of shown as code",
+  );
+  assert.deepEqual(
+    { red: resourceReport.directiveRed, fixed: resourceReport.directiveFixed, htmlLabels: resourceReport.directiveHtmlLabels },
+    { red: 0, fixed: 0, htmlLabels: 0 },
+    "a model's Mermaid directive or frontmatter config was applied",
+  );
+  assert.ok(resourceReport.directiveFonts.every((font) => font === "-apple-system"), `a model directive changed the diagram font: ${resourceReport.directiveFonts.join(" | ")}`);
+  assert.ok(resourceReport.learnerRed > 0, "a learner's Mermaid frontmatter config no longer applies in the Reader");
+  assert.equal(resourceReport.markedTitle, "Diagram not drawn", "a marked model diagram naming an address was drawn");
+  await resources.close();
+
   const page = await browser.newPage();
   attachDiagnostics(page, "complete");
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
@@ -152,7 +209,7 @@ try {
   assert.equal(await page.evaluate(() => window.__MERMAID_XSS__), false, "theme rerender executed author input");
 
   assert.deepEqual(runtimeErrors, [], `Mermaid browser errors: ${runtimeErrors.join(" | ")}`);
-  console.log(`Mermaid UI audit passed. Deferred load requests: ${mermaidRuntimeRequests(deferredRequests).length}; valid diagrams: ${initial.rendered}; safe diagnostics: ${initial.failures}; theme rerenders: ${initial.counts.length}.`);
+  console.log(`Mermaid UI audit passed. Deferred load requests: ${mermaidRuntimeRequests(deferredRequests).length}; valid diagrams: ${initial.rendered}; safe diagnostics: ${initial.failures}; theme rerenders: ${initial.counts.length}; model diagrams naming an address shown as code: ${resourceReport.addressCode + resourceReport.savedCode}, remote requests: ${trackerRequests.length}.`);
 } finally {
   await browser?.close();
   await vite?.close();
