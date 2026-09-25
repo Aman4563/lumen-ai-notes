@@ -2125,6 +2125,11 @@ try {
     assert.equal(quizFollowUp.responseFormat, "structured");
     assert.equal(quizFollowUp.webSearch, false);
     assert.equal(quizFollowUp.history.length, 2, "Quiz me on this did not remember only the answer it follows");
+    // A follow-up of a follow-up searches with the learner's question behind
+    // the chain (#57 review: live, "Check my understanding" after "Give an
+    // example" searched with the chip's wording and drifted to another chapter).
+    assert.equal(quizFollowUp.history[0].content, simpler.prompt.split("\n\n")[0], "a chained follow-up did not remember the chip question its answer replied to");
+    assert.deepEqual(contextTitles(quizFollowUp).slice(0, 3), contextTitles(simpler).slice(0, 3), `a chained follow-up searched a different topic: ${JSON.stringify(contextTitles(quizFollowUp))}`);
     assert.deepEqual(await page.$$eval(".ai-tutor__follow-ups button", (nodes) => nodes.map((node) => node.textContent)), ["Harder quiz", "Explain the answers"], "a quiz did not offer its own follow-ups");
 
     // Without the local-model permission the chip's question waits in the

@@ -12,6 +12,7 @@ import {
   followUpScope,
   followUpsForMessage,
   questionForAnswer,
+  topicQuestionFor,
   withoutCitationLabels,
 } from "./tutorFollowUps.js";
 
@@ -83,4 +84,26 @@ test("a follow-up keeps the grounding its answer had", () => {
   assert.deepEqual(followUpScope(attached, loaded), { sourceMode: "choose", sources: [loaded[1]] });
   // A lesson whose text is no longer loaded is searched for instead.
   assert.deepEqual(followUpScope(answer({ citationSources: [{ id: "notes/c.md" }] }), loaded), { sourceMode: "library-first" });
+});
+
+test("a follow-up of a follow-up searches with the learner's own question", () => {
+  const chip = (id) => ANSWER_FOLLOW_UPS.find((item) => item.id === id).prompt;
+  const history = [
+    { id: "u1", role: "user", mode: "explain", content: "How does ridge regression reduce overfitting?" },
+    { id: "a1", role: "assistant", mode: "explain", content: "## Ridge\n\nShrinks weights." },
+    { id: "u2", role: "user", mode: "explain", content: chip("example") },
+    { id: "a2", role: "assistant", mode: "explain", content: "## A worked example\n\nTwo features." },
+    { id: "u3", role: "user", mode: "socratic", content: chip("check") },
+    { id: "a3", role: "assistant", mode: "socratic", content: "What happens as λ grows?" },
+    { id: "u4", role: "user", mode: "hint", content: "Give me one hint for your last question without revealing the answer." },
+    { id: "a4", role: "assistant", mode: "hint", content: "Think about large weights." },
+  ];
+  assert.equal(topicQuestionFor(history, "a1").id, "u1");
+  assert.equal(topicQuestionFor(history, "a2").id, "u1", "a chained follow-up searched with the chip's wording");
+  assert.equal(topicQuestionFor(history, "a3").id, "u1");
+  assert.equal(topicQuestionFor(history, "a4").id, "u1", "a hint's answer searched with the hint's wording");
+  assert.equal(followUpRetrievalQuery(topicQuestionFor(history, "a2"), history[3]), "How does ridge regression reduce overfitting? — A worked example");
+  // A chip with nothing before it is still the best there is.
+  assert.equal(topicQuestionFor(history.slice(2), "a2").id, "u2");
+  assert.equal(topicQuestionFor(history, "u1"), null);
 });

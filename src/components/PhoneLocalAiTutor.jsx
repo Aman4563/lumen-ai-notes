@@ -43,7 +43,7 @@ import { renderPhoneTutorInlineMarkdown, renderPhoneTutorMarkdown } from "../lib
 import { tutorSpeechText } from "../lib/tutorMarkdown.js";
 import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
-import { ANSWER_FOLLOW_UPS, withoutCitationLabels } from "../lib/tutorFollowUps.js";
+import { ANSWER_FOLLOW_UPS, topicQuestionFor, withoutCitationLabels } from "../lib/tutorFollowUps.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../phone-local-ai-tutor.css";
 
@@ -926,8 +926,9 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   const runFollowUp = (message, item) => {
     if (interactionLocked) return;
     const mode = PHONE_TUTOR_MODES.find((candidate) => candidate.id === item.modeId) || PHONE_TUTOR_MODES[0];
-    const index = history.findIndex((candidate) => candidate.id === message.id);
-    const question = [...history.slice(0, Math.max(0, index))].reverse().find((candidate) => candidate.role === "user");
+    // Search with the learner's question behind any chain of follow-ups;
+    // a chip's own wording names no topic.
+    const question = topicQuestionFor(history, message.id);
     const spec = createSpec(createId(), { prompt: item.prompt, mode, retrievalQuery: withoutCitationLabels(question?.content), allowSearch: false });
     const fits = inspectPhoneLocalAiRequestFit(spec.payload, {
       allowSearchPlanning: false,

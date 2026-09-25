@@ -69,6 +69,34 @@ export const questionForAnswer = (history, answerId) => {
   return null;
 };
 
+// A chip's wording and a session hint or reveal name no topic.
+const CHIP_PROMPTS = new Set([...ANSWER_FOLLOW_UPS, ...QUIZ_FOLLOW_UPS, ...FLASHCARD_FOLLOW_UPS].map((item) => item.prompt));
+const TOPICLESS_MODES = new Set(["hint", "reveal"]);
+const topicless = (question) => CHIP_PROMPTS.has(clean(question?.content)) || TOPICLESS_MODES.has(question?.mode);
+
+/**
+ * The question that set an answer's topic, for library search words: the
+ * question it replied to or, when that was a one-tap follow-up or a session
+ * hint (fixed wording, no topic), the question behind the answer that one
+ * followed, and so on back. Following "Give an example" with "Check my
+ * understanding" searches for the learner's own question, not for "your
+ * previous answer". Null when the answer replied to nothing.
+ */
+export const topicQuestionFor = (history, answerId) => {
+  const list = Array.isArray(history) ? history : [];
+  let question = questionForAnswer(list, answerId);
+  const visited = new Set();
+  while (question && topicless(question) && !visited.has(question.id)) {
+    visited.add(question.id);
+    const index = list.findIndex((message) => message?.id === question.id);
+    const followed = index > 0 ? [...list.slice(0, index)].reverse().find((message) => message?.role === "assistant") : null;
+    const earlier = followed ? questionForAnswer(list, followed.id) : null;
+    if (!earlier) break;
+    question = earlier;
+  }
+  return question;
+};
+
 /**
  * The pair a follow-up remembers, without citation labels: those numbers
  * belong to the earlier request, and a follow-up is grounded in freshly

@@ -82,6 +82,7 @@ import {
   followUpScope,
   followUpsForMessage,
   questionForAnswer,
+  topicQuestionFor,
   withoutCitationLabels,
 } from "../lib/tutorFollowUps.js";
 import { buildStarterPrompts } from "../lib/tutorStarters.js";
@@ -2654,7 +2655,9 @@ export default function AiTutor({
       sourceMode: scope.sourceMode,
       sources: scope.sources,
       historyWindow: tutorFollowUpWindow(followUpPair(question, answerText), { inputLimit: followUpInputLimit }),
-      retrievalQuery: followUpRetrievalQuery(question, message),
+      // A chip's own wording names no topic, so a follow-up of a follow-up
+      // searches with the learner's question behind the chain.
+      retrievalQuery: followUpRetrievalQuery(topicQuestionFor(history, message.id), message),
       selectedDocumentId: citedDocumentId(message),
       webSearch: false,
     });

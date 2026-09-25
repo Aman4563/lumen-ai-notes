@@ -497,6 +497,9 @@ try {
   await clickByText(page, ".phone-tutor__follow-ups button", "Simpler");
   await page.waitForFunction((before) => window.__PHONE_SPEECH_LOG__.filter(([type]) => type === "cancel").length > before, { timeout: 5_000 }, cancelsBeforeNext).catch(() => assert.fail("a new On-device question did not stop the answer being read"));
   await page.waitForFunction(() => !document.querySelector(".phone-tutor__working"), { timeout: 10_000 });
+  // That second Simpler follows a follow-up: it still searches with the
+  // learner's own question, not the first chip's wording.
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.retrievalCalls.at(-1).query), followedQuestion, "a chained On-device follow-up searched with a chip's wording");
   assert.deepEqual(await phoneListen(), ["Listen to this answer"], "Listen did not reset after reading stopped");
   // A reading the speech engine stops by itself says why.
   await page.$$eval(".phone-tutor__message.is-assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".phone-tutor__message-actions button")].find((node) => node.textContent.startsWith("Listen")).click());
