@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Aman4563/lumen-ai-notes/security/advisories/new
+    about: Report vulnerabilities privately; do not open a public issue.
+  - name: App and iPhone installation guide
+    url: https://github.com/Aman4563/lumen-ai-notes/blob/main/APP_GUIDE.md
+    about: How to install and use Lumen AI Notes on a Mac and iPhone.

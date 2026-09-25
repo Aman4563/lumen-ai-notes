@@ -1,0 +1,74 @@
+name: Bug report
+description: Something in the app does not work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For a security vulnerability, do not use this form; see [SECURITY.md](https://github.com/Aman4563/lumen-ai-notes/blob/main/SECURITY.md).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Reader (lectures, narration, highlights, teaching mode)
+        - Library and search
+        - Home dashboard and study plan
+        - Review center, notebook and readiness checks
+        - Whiteboard
+        - AI tutor (Mac local)
+        - AI tutor (On-device Lite)
+        - Settings, backup and sync
+        - Offline use and installation
+        - Accessibility
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What went wrong, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Tap ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and browser
+      placeholder: e.g. iPhone 15, Safari 18, installed to Home Screen; or Mac, Chrome 140
+    validations:
+      required: true
+  - type: dropdown
+    id: theme
+    attributes:
+      label: Theme
+      options: [System, Paper, Night, Contrast, Not relevant]
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The release (for example v1.2.0) or the commit you built.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, console errors or logs
+      description: Remove any personal notes or pairing codes before pasting.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

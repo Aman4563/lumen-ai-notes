@@ -101,3 +101,21 @@ Each part is intentionally layered:
 The notes are a durable curriculum rather than a promise that reading alone is
 enough. Build the projects, derive important results, keep an error log, and
 practice explaining decisions under changing constraints.
+
+## Contributing
+
+Corrections to the notes and improvements to the app are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, the release gate, and the
+constraints every change must respect, and follow the
+[Code of Conduct](CODE_OF_CONDUCT.md). Report security vulnerabilities
+privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+- The application code is licensed under the [MIT License](LICENSE).
+- The curriculum notes in `notes/` are licensed under
+  [Creative Commons Attribution 4.0](LICENSE-NOTES.md): you may share and adapt
+  them with credit. Third-party images and quotations linked from the notes
+  keep their owners' licenses.
+- Third-party models and runtimes keep their own terms; see
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

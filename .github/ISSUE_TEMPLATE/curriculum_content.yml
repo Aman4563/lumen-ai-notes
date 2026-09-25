@@ -1,0 +1,35 @@
+name: Curriculum content
+description: Report an error or gap in the curriculum notes.
+labels: ["area:curriculum"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Chapter and section
+      placeholder: e.g. notes/part-05-supervised-learning/01-linear-regression.md, section 3
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of issue
+      options:
+        - Factual or mathematical error
+        - Unclear or misleading explanation
+        - Outdated information
+        - Missing topic or prerequisite
+        - Broken link, formula or diagram
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What is wrong and what it should say
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources
+      description: A textbook, paper or documentation link that supports the correction, if one applies.
