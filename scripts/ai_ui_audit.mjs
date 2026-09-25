@@ -1111,7 +1111,9 @@ try {
       const range = document.createRange();
       range.setStart(text, text.textContent.indexOf("Open"));
       range.setEnd(text, text.textContent.indexOf("Open") + "Open the forged lecture".length);
-      const box = range.getBoundingClientRect();
+      // The label can wrap on a phone; aim at its first line, not the middle
+      // of a box that spans the citation beside it.
+      const box = range.getClientRects()[0] || range.getBoundingClientRect();
       return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
     });
     await page.mouse.click(routeLabel.x, routeLabel.y);
