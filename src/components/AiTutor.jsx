@@ -2839,8 +2839,39 @@ export default function AiTutor({
     }
   };
 
+  // A graded practice answer is edited where it was written: in the practice
+  // card, under its question, in Interview mode. Its grading question names
+  // a reference that only the card supplies, so it never returns to the box.
+  const reopenPractice = (message) => {
+    const questionId = practiceQuestionIdFrom(message);
+    setModeId("interview");
+    lastRequestRef.current = null;
+    setRequestState({ status: "idle", error: null });
+    if (isDefaultPrompt(prompt.trim())) setPrompt("");
+    if (!questionId || (practiceKit && !practiceKit.questions.has(questionId))) {
+      setComposerNotice("That practice question is not in this version of Lumen’s interview bank. Pick a question in the practice card.");
+      window.setTimeout(focusComposer, 0);
+      return;
+    }
+    updatePractice((current) => ({ ...current, questionId, answer: practiceAnswerFrom(message.content), pendingId: "" }));
+    setComposerNotice("Your answer is back in the practice card. Edit it, then grade it again.");
+    window.setTimeout(() => {
+      const field = conversationRef.current?.querySelector(".ai-tutor__practice textarea");
+      if (!field) return focusComposer();
+      field.focus({ preventScroll: true });
+      field.scrollIntoView({ block: "nearest", behavior: "instant" });
+      return undefined;
+    }, 0);
+  };
+  const reopenPracticeRef = useRef(reopenPractice);
+  reopenPracticeRef.current = reopenPractice;
+
   const preparePrompt = useCallback((message, notice) => {
     if (!message || requestState.status === "loading") return;
+    if (message.mode === "interview-practice") {
+      reopenPracticeRef.current(message);
+      return;
+    }
     const nextMode = composerModeFor(message.mode);
     setModeId(nextMode.id);
     setPrompt(asTrimmedString(message.content, MAX_PROMPT_CHARS));

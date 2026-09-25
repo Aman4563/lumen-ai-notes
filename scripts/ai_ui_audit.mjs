@@ -2789,6 +2789,33 @@ try {
     await page.waitForSelector(".ai-tutor__practice textarea", { timeout: 5_000 });
     assert.notEqual((await practiceCard()).prompt, weakQuestion.prompt, "the practised question came straight back");
     assert.equal(calls.respond.length, 1);
+
+    // Edit & reuse, Edit & regenerate and Up-arrow bring a graded answer back
+    // to the practice card under its question, in Interview mode: its grading
+    // question names a reference only the card supplies, so it never lands in
+    // the question box (where it would be sent without that reference).
+    const reopened = async (label) => {
+      await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__practice textarea"), { timeout: 5_000 }).catch(() => assert.fail(`${label} did not focus the practice answer`));
+      assert.equal(await activeMode(page), "Interview", `${label} left Interview mode`);
+      assert.equal((await practiceCard()).prompt, weakQuestion.prompt, `${label} did not bring back the graded question`);
+      assert.equal(await page.$eval(".ai-tutor__practice textarea", (field) => field.value), answer, `${label} did not bring back the graded answer`);
+      assert.doesNotMatch(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /Grade my answer/, `${label} put the grading question in the question box`);
+      assert.match(await page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /back in the practice card/);
+    };
+    await chooseMode(page, "Explain");
+    await setComposerPrompt(page, "");
+    await clickByText(page, ".ai-tutor__message--user .ai-tutor__message-actions button", "Edit & reuse");
+    await reopened("Edit & reuse");
+    await setPracticeAnswer("");
+    await chooseMode(page, "Explain");
+    await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Edit & regenerate");
+    await reopened("Edit & regenerate");
+    await setPracticeAnswer("");
+    await setComposerPrompt(page, "");
+    await page.$eval(".ai-tutor__composer textarea", (field) => { field.focus(); field.setSelectionRange(0, 0); });
+    await page.keyboard.press("ArrowUp");
+    await reopened("Up arrow");
+    assert.equal(calls.respond.length, 1, "reopening a graded answer sent a request");
   } finally {
     await practiceScenario.context.close();
   }
