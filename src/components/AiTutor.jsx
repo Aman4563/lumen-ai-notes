@@ -33,16 +33,21 @@ import {
   aiRequestUtf8Bytes,
   aiClient,
 } from "../lib/aiClient";
-import { AI_REQUEST_CONTRACT_ID } from "../lib/aiContract";
-import { buildConversationWindow } from "../lib/conversationMemory";
-import { fitAiRequestContext } from "../lib/aiRequestBudget";
 import { renderTutorInlineMarkdown, renderTutorMarkdown } from "../lib/tutorMarkdown";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { revealFocusedField } from "../lib/revealField.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
 import { downloadBlob } from "../lib/download.js";
-import { buildTutorContext, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
+import { outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
+import {
+  TUTOR_MAX_PROMPT_CHARS as MAX_PROMPT_CHARS,
+  TUTOR_MAX_SERVER_HISTORY as MAX_SERVER_HISTORY,
+  fitTutorRequest,
+  tutorConversationWindow,
+  tutorRequestIssue,
+  tutorRequestLimits,
+} from "../lib/tutorRequest";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -136,9 +141,6 @@ const MAX_SELECTED_SOURCES = 8;
 const OPEN_LESSON_RESERVED_PASSAGES = 6;
 const MAX_WEB_SOURCES = 8;
 const MAX_VISIBLE_HISTORY = 50;
-const MAX_SERVER_HISTORY = 12;
-const MAX_HISTORY_MESSAGE_CHARS = 3_000;
-const MAX_PROMPT_CHARS = 5_700;
 const MAX_RESPONSE_CHARS = 160_000;
 const LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY = "lumen.ai.local-disclosure-ack.v1";
 const WEB_FALLBACK_STATES = new Set(["off", "armed", "not-needed", "searching", "used", "failed"]);
@@ -399,11 +401,6 @@ const boundResponseText = (value) => {
     truncated: true,
   };
 };
-
-const minimumContextBudget = (sources) => sources.reduce(
-  (total, source) => total + source.title.length + source.section.length + 24 + 180,
-  0,
-);
 
 const assertFittedAiRequest = (fitted, message = "The prepared request exceeds the local model request limit. Shorten the prompt or clear older conversation turns.") => {
   if (!fitted || typeof fitted !== "object" || !fitted.payload) {
@@ -1465,100 +1462,37 @@ export default function AiTutor({
     }).slice(0, MAX_SELECTED_SOURCES);
   }, [normalizedSources]);
 
-  const configuredInputLimit = configState.config?.limits?.maxInputChars;
-  const configuredRequestByteLimit = configState.config?.responseProfiles?.maxRequestUtf8Bytes?.[responseProfile]
-    ?? configState.config?.limits?.profileMaxRequestUtf8Bytes?.[responseProfile]
-    ?? configState.config?.limits?.maxRequestUtf8Bytes;
-  const inputLimit = Number.isSafeInteger(configuredInputLimit) && configuredInputLimit >= 2_000 && configuredInputLimit <= 100_000
-    ? Math.min(configuredInputLimit, configuredRequestByteLimit || configuredInputLimit)
-    : 16_000;
-  const promptLimit = Math.min(MAX_PROMPT_CHARS, Math.max(800, Math.floor(inputLimit * 0.48)));
-  const promptForSources = useCallback((promptText, sourceSnapshot) => {
-    const citationInstruction = sourceSnapshot.length
-      ? "Use the supplied [S#] labels to cite every source-grounded claim. Do not cite a label that was not supplied."
-      : "No relevant library evidence was supplied. Clearly label claims that rely on general knowledge or attached web evidence.";
-    return `${promptText.trim()}\n\n${citationInstruction}`;
-  }, []);
-  const outboundPrompt = promptForSources(prompt, selectedSources);
-  const reservedContext = selectedSources.length ? Math.min(4_000, Math.max(600, Math.floor(inputLimit * 0.35))) : 0;
-  const historyBudget = Math.max(0, Math.min(
-    Math.floor(inputLimit * 0.25),
-    inputLimit - outboundPrompt.length - reservedContext - 300,
-  ));
-  const conversationWindow = useMemo(() => buildConversationWindow(history, {
-    maxMessages: MAX_SERVER_HISTORY,
-    characterBudget: historyBudget,
-    maxMessageCharacters: MAX_HISTORY_MESSAGE_CHARS,
-    summaryBudget: Math.min(2_400, Math.max(800, Math.floor(inputLimit * 0.12))),
-  }), [history, historyBudget, inputLimit]);
+  const requestLimits = useMemo(() => tutorRequestLimits(configState.config, responseProfile), [configState.config, responseProfile]);
+  const { inputLimit, maximumBytes: configuredRequestByteLimit, promptLimit } = requestLimits;
+  const conversationWindow = useMemo(
+    () => tutorConversationWindow(history, { prompt, sources: selectedSources.length > 0, inputLimit }),
+    [history, inputLimit, prompt, selectedSources.length],
+  );
   const outboundHistory = conversationWindow.messages;
-  // Small local models become unreliable when an open-ended answer competes
-  // with a large source excerpt. Each mode may therefore publish a stricter
-  // working-set limit than the server's absolute safety ceiling. The default
-  // Explain path is intentionally proven against the shipped Qwen 4B model.
-  const buildContext = useCallback((sourceSnapshot, budget) => {
-    if (!sourceSnapshot.length) return "";
-    return buildTutorContext(sourceSnapshot, budget).context;
-  }, []);
-
   const selectedMaxOutputTokens = outputTokensForProfile({
     profile: responseProfile,
     responseProfiles: configState.config?.responseProfiles,
     maximum: configState.config?.limits?.maxOutputTokens,
     structured: currentMode.structured,
   });
-  const buildFittedRequest = useCallback((
-    sourceSnapshot,
-    displayPrompt = prompt.trim(),
-    historySnapshot = outboundHistory,
-    conversationSummarySnapshot = conversationWindow.conversationSummary,
-    webSearchSnapshot = effectiveWebSearch,
-  ) => {
-    const preparedPrompt = promptForSources(displayPrompt, sourceSnapshot);
-    const historyCharacters = historySnapshot.reduce((total, message) => total + message.content.length, 0);
-    const availableContextBudget = Math.max(0, Math.min(
-      currentMode.contextLimit || 16_000,
-      inputLimit - preparedPrompt.length - historyCharacters - conversationSummarySnapshot.length - 300,
-    ));
-    let fittedCitationNumbers = [];
-    const buildFittedContext = (budget) => {
-      const built = buildTutorContext(sourceSnapshot, budget);
-      fittedCitationNumbers = built.includedCitationNumbers;
-      return built.context;
-    };
-    const makePayload = (context) => ({
-      contract: AI_REQUEST_CONTRACT_ID,
-      task: currentMode.task,
-      prompt: preparedPrompt,
-      context,
-      contextCitations: [...fittedCitationNumbers],
-      documentTitle: sourceSnapshot.length === 1 ? sourceSnapshot[0].title : sourceSnapshot.length ? `${sourceSnapshot.length} selected Lumen sources` : "General AI/ML learning question",
-      difficulty,
-      responseProfile,
-      history: historySnapshot,
-      conversationSummary: conversationSummarySnapshot.slice(0, 3_000),
-      responseFormat: currentMode.structured ? "structured" : "markdown",
-      webSearch: webSearchSnapshot === true,
-      maxOutputTokens: selectedMaxOutputTokens,
-    });
-    const fitted = fitAiRequestContext({
-      maximumBytes: configuredRequestByteLimit,
-      maximumContextCharacters: availableContextBudget,
-      buildContext: buildFittedContext,
-      buildPayload: makePayload,
-    });
-    return {
-      ...fitted,
-      includedCitationNumbers: [...fittedCitationNumbers],
-    };
-  }, [buildContext, configuredRequestByteLimit, conversationWindow.conversationSummary, currentMode.contextLimit, currentMode.structured, currentMode.task, difficulty, effectiveWebSearch, inputLimit, outboundHistory, prompt, promptForSources, responseProfile, selectedMaxOutputTokens]);
   const requestPreviewSources = useMemo(
     () => sourceMode === "library-first" && typeof retrieveLibrary === "function" ? [] : selectedSources,
     [retrieveLibrary, selectedSources, sourceMode],
   );
-  const requestPreview = useMemo(() => buildFittedRequest(requestPreviewSources), [buildFittedRequest, requestPreviewSources]);
+  // The composer's own request, fitted exactly as Send will fit it: the byte
+  // count and the Send state below describe the body that would be sent.
+  const requestPreview = useMemo(() => fitTutorRequest({
+    mode: currentMode,
+    prompt: prompt.trim(),
+    sources: requestPreviewSources,
+    history: outboundHistory,
+    conversationSummary: conversationWindow.conversationSummary,
+    webSearch: effectiveWebSearch,
+    difficulty,
+    responseProfile,
+    config: configState.config,
+  }), [configState.config, conversationWindow.conversationSummary, currentMode, difficulty, effectiveWebSearch, outboundHistory, prompt, requestPreviewSources, responseProfile]);
   const contextPreview = requestPreview.context;
-  const requestPayloadPreview = requestPreview.payload;
   const requestPayloadBytes = requestPreview.bytes;
   const providerControlsUrl = useMemo(() => {
     try {
@@ -1568,9 +1502,10 @@ export default function AiTutor({
       return "";
     }
   }, [configState.config?.privacy?.providerDataControlsUrl]);
-  const promptTooLong = prompt.trim().length > promptLimit;
-  const contextTooSmall = sourceMode !== "library-first" && selectedSources.length > 0 && requestPreview.contextBudget < minimumContextBudget(selectedSources);
-  const requestTooLarge = Number.isSafeInteger(configuredRequestByteLimit) && requestPayloadBytes > configuredRequestByteLimit;
+  const composerIssue = tutorRequestIssue({ prompt, promptLimit, fitted: requestPreview, sources: selectedSources, requireAllSources: sourceMode !== "library-first" });
+  const promptTooLong = composerIssue === "prompt-too-long";
+  const contextTooSmall = composerIssue === "context-too-small";
+  const requestTooLarge = composerIssue === "request-too-large";
   const webSearchAvailable = configState.config?.webSearch?.macToolAvailable === true;
   // Deep sends `think: true` upstream, so it is offered only when the
   // installed model actually attests Ollama thinking support (AI-002).
@@ -1591,6 +1526,19 @@ export default function AiTutor({
     requestControllerRef.current = controller;
     let citationSources = requestSpec.sources;
     let payload = requestSpec.payload;
+    // Every re-fit uses the request's own mode, depth, profile and config
+    // snapshot, never whatever the composer shows by then.
+    const refit = (sourceSnapshot, webSearch) => fitTutorRequest({
+      mode: requestSpec.mode,
+      prompt: requestSpec.displayPrompt,
+      sources: sourceSnapshot,
+      history: requestSpec.conversationHistory,
+      conversationSummary: requestSpec.conversationMemory?.summary || "",
+      webSearch,
+      difficulty: requestSpec.difficulty,
+      responseProfile: requestSpec.responseProfile,
+      config: requestSpec.config,
+    });
     let retrievalTrace = null;
     let streamedText = "";
     let streamedWebSources = [];
@@ -1692,13 +1640,16 @@ export default function AiTutor({
         let result = null;
         let retrievalError = null;
         try {
-          result = await retrieveLibrary(requestSpec.displayPrompt, {
+          // An action may retrieve with its own query and favour the document
+          // it is about (a cited lesson, a mistake's source) over the one open.
+          const selectedDocumentId = requestSpec.selectedDocumentId || requestSpec.openLessonId;
+          result = await retrieveLibrary(requestSpec.retrievalQuery || requestSpec.displayPrompt, {
             signal: controller.signal,
             maxPassages: MAX_SELECTED_SOURCES,
             maxBytes: requestSpec.retrievalMaxBytes,
             currentSources: requestSpec.contextSources.map(({ id, title, section }) => ({ id, title, section })),
+            ...(selectedDocumentId ? { selectedDocumentId } : {}),
             ...(requestSpec.openLessonId ? {
-              selectedDocumentId: requestSpec.openLessonId,
               reservedDocumentId: requestSpec.openLessonId,
               reservedPassages: OPEN_LESSON_RESERVED_PASSAGES,
             } : {}),
@@ -1713,7 +1664,7 @@ export default function AiTutor({
           let useWebFallback = shouldUseWebFallback({ learnerAllowedWeb: requestSpec.webSearch, trace: result?.trace });
           let fitted;
           if (retrieved.length) {
-            fitted = buildFittedRequest(retrieved, requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", useWebFallback);
+            fitted = refit(retrieved, useWebFallback);
             let included = new Set(fitted.includedCitationNumbers);
             // A high-confidence retrieval result is not evidence if none of its
             // complete [S#] blocks fit the final wire request. Rebuild the
@@ -1721,13 +1672,13 @@ export default function AiTutor({
             // authorized it, treat this as a genuine web-fallback condition.
             if (!included.size) {
               useWebFallback = requestSpec.webSearch;
-              fitted = buildFittedRequest([], requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", useWebFallback);
+              fitted = refit([], useWebFallback);
               included = new Set();
             }
             citationSources = retrieved.filter((source) => included.has(source.citationNumber)).map(citationSnapshot);
           } else {
             citationSources = [];
-            fitted = buildFittedRequest([], requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", useWebFallback);
+            fitted = refit([], useWebFallback);
           }
           payload = assertFittedAiRequest(fitted, "The retrieved library context exceeds the local model request limit. Narrow the question or clear older conversation turns.");
           const fittedNothing = retrieved.length > 0 && citationSources.length === 0;
@@ -1758,10 +1709,10 @@ export default function AiTutor({
           // fallback recommendations. The learner's consumed one-request web
           // authorization remains the separate egress gate.
           const fallbackUsesWeb = requestSpec.webSearch;
-          let fallback = buildFittedRequest(requestSpec.contextSources, requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", fallbackUsesWeb);
+          let fallback = refit(requestSpec.contextSources, fallbackUsesWeb);
           let included = new Set(fallback.includedCitationNumbers);
           if (requestSpec.contextSources.length && !included.size) {
-            fallback = buildFittedRequest([], requestSpec.displayPrompt, requestSpec.conversationHistory, requestSpec.conversationMemory?.summary || "", fallbackUsesWeb);
+            fallback = refit([], fallbackUsesWeb);
             included = new Set();
           }
           citationSources = requestSpec.contextSources.filter((source) => included.has(source.citationNumber)).map(citationSnapshot);
@@ -1948,49 +1899,106 @@ export default function AiTutor({
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
       if (inFlightRef.current?.responseId === responseId) inFlightRef.current = null;
     }
-  }, [announce, buildFittedRequest, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd]);
+  }, [announce, focusIsOnRequestControls, normalizeRetrievedSources, normalizedSources.length, publishHistory, requestState.status, retrieveLibrary, scrollConversationToEnd]);
+
+  /**
+   * The one way a request is prepared, for Send and for tutor actions
+   * (follow-ups, hints, wrap-up, grading). Every field the learner has not
+   * overridden comes from the composer; the body is fitted with the shared
+   * builder and checked like a Send. Web fallback is never implied: an action
+   * searches only when it passes the learner's one-request permission.
+   *
+   * action: { mode, prompt, sourceMode, sources, history, webSearch,
+   *   responseProfile, difficulty, retrievalQuery, selectedDocumentId }
+   * Returns { spec } or { issue }.
+   */
+  const prepareTutorRequest = (action = {}) => {
+    const mode = action.mode || currentMode;
+    const displayPrompt = String(action.prompt ?? prompt).trim();
+    const requestSourceMode = SOURCE_MODES.some((item) => item.id === action.sourceMode) ? action.sourceMode : sourceMode;
+    const requestProfile = RESPONSE_PROFILES.some((item) => item.id === action.responseProfile) ? action.responseProfile : responseProfile;
+    const requestDifficulty = DIFFICULTIES.some((item) => item.id === action.difficulty) ? action.difficulty : difficulty;
+    const retrieves = requestSourceMode === "library-first" && typeof retrieveLibrary === "function";
+    const contextSources = (Array.isArray(action.sources)
+      ? action.sources
+      : requestSourceMode === "none" ? [] : requestSourceMode === "current" ? currentLessonSources : manuallySelectedSources
+    ).map((source) => ({ ...source }));
+    const requestWeb = retrieves && action.webSearch === true;
+    const config = configState.config;
+    if (configState.status !== "ready" || !config) return { issue: "not-ready" };
+    if (!localDisclosureAcknowledged) return { issue: "disclosure" };
+    if (requestState.status === "loading" || requestControllerRef.current) return { issue: "busy" };
+    if (requestWeb && config.webSearch?.macToolAvailable !== true) return { issue: "web-unavailable" };
+    const limits = tutorRequestLimits(config, requestProfile);
+    const memory = tutorConversationWindow(Array.isArray(action.history) ? action.history : history, {
+      prompt: displayPrompt,
+      sources: contextSources.length > 0,
+      inputLimit: limits.inputLimit,
+    });
+    const fitted = fitTutorRequest({
+      mode,
+      prompt: displayPrompt,
+      sources: retrieves ? [] : contextSources,
+      history: memory.messages,
+      conversationSummary: memory.conversationSummary,
+      webSearch: requestWeb,
+      difficulty: requestDifficulty,
+      responseProfile: requestProfile,
+      config,
+    });
+    const issue = tutorRequestIssue({ prompt: displayPrompt, promptLimit: limits.promptLimit, fitted, sources: contextSources, requireAllSources: !retrieves });
+    if (issue) return { issue };
+    const included = new Set(fitted.includedCitationNumbers);
+    // "Explain this lesson", an unedited mode default or an Ask AI excerpt
+    // is about the open lesson; generic wording alone never retrieves it.
+    const aboutOpenLesson = retrieves && openLesson
+      && (displayPrompt === mode.prompt || refersToOpenLesson(displayPrompt));
+    return {
+      spec: {
+        userMessageId: createId(),
+        createdAt: new Date().toISOString(),
+        displayPrompt,
+        mode,
+        difficulty: requestDifficulty,
+        sources: contextSources.filter((source) => included.has(source.citationNumber)).map(citationSnapshot),
+        contextSources,
+        openLessonId: aboutOpenLesson ? asTrimmedString(openLesson.original?.documentId || openLesson.id, 240) : "",
+        openLessonTitle: aboutOpenLesson ? openLesson.title : "",
+        retrievalQuery: asTrimmedString(action.retrievalQuery, MAX_PROMPT_CHARS),
+        selectedDocumentId: asTrimmedString(action.selectedDocumentId, 240),
+        sourceMode: requestSourceMode,
+        webSearch: requestWeb,
+        responseProfile: requestProfile,
+        retrievalMaxBytes: Math.max(512, fitted.contextBudget),
+        conversationHistory: memory.messages.map((message) => ({ ...message })),
+        conversationMemory: memory.compactedMessages ? {
+          compactedMessages: memory.compactedMessages,
+          summary: memory.conversationSummary,
+        } : null,
+        config,
+        // The exact UTF-8/JSON-fitted body; Library-first requests refit it
+        // with the retrieved passages through the same builder.
+        payload: { ...fitted.payload },
+      },
+    };
+  };
+
+  /** Prepares and starts one request; returns "" or the reason it cannot run. */
+  const runTutorAction = (action = {}) => {
+    const prepared = prepareTutorRequest(action);
+    if (!prepared.spec) return prepared.issue;
+    lastRequestRef.current = prepared.spec;
+    // The learner's web permission covers exactly one request.
+    if (prepared.spec.webSearch) setWebSearch(false);
+    runRequest(prepared.spec);
+    return "";
+  };
 
   const submit = (event) => {
     event?.preventDefault?.();
     if (!requestReady) return;
-    const sourceSnapshot = selectedSources.map((source) => ({ ...source }));
-    const included = new Set(requestPreview.includedCitationNumbers);
-    const citationSources = sourceSnapshot.filter((source) => included.has(source.citationNumber)).map(citationSnapshot);
-    const createdAt = new Date().toISOString();
-    const displayPrompt = prompt.trim();
-    // "Explain this lesson", an unedited mode default or an Ask AI excerpt
-    // is about the open lesson; generic wording alone never retrieves it.
-    const aboutOpenLesson = sourceMode === "library-first" && openLesson
-      && (displayPrompt === currentMode.prompt || refersToOpenLesson(displayPrompt));
-    const requestSpec = {
-      userMessageId: createId(),
-      createdAt,
-      displayPrompt,
-      mode: currentMode,
-      sources: citationSources,
-      contextSources: sourceSnapshot,
-      openLessonId: aboutOpenLesson ? asTrimmedString(openLesson.original?.documentId || openLesson.id, 240) : "",
-      openLessonTitle: aboutOpenLesson ? openLesson.title : "",
-      sourceMode,
-      webSearch: effectiveWebSearch,
-      responseProfile,
-      retrievalMaxBytes: Math.max(512, requestPreview.contextBudget),
-      conversationHistory: outboundHistory.map((message) => ({ ...message })),
-      conversationMemory: conversationWindow.compactedMessages ? {
-        compactedMessages: conversationWindow.compactedMessages,
-        summary: conversationWindow.conversationSummary,
-      } : null,
-      config: configState.config,
-      // requestPayloadPreview is the exact UTF-8/JSON-fitted payload that
-      // enabled the Send button. Rebuilding context here would reintroduce the
-      // unfitted character budget and can exceed the server byte limit for
-      // CJK, emoji, quotes, or backslash-heavy lesson text.
-      payload: { ...requestPayloadPreview },
-    };
-    lastRequestRef.current = requestSpec;
-    if (effectiveWebSearch) setWebSearch(false);
     focusStopOnMountRef.current = document.activeElement !== promptRef.current;
-    runRequest(requestSpec);
+    runTutorAction({ webSearch: effectiveWebSearch });
   };
 
   const retry = () => {
