@@ -2858,9 +2858,19 @@ try {
     await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
     assert.equal((await composerState()).value, request.prompt, "Replace draft did not apply the mistake");
     assert.equal(calls.respond.length, 0);
+    // Sent as placed, it retrieves with the mistake's own topic, not the
+    // instructions around it, and favours the mistake's lesson.
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    const workedThrough = calls.respond.at(-1).body;
+    assert.equal(workedThrough.task, "socratic");
+    assert.equal(workedThrough.prompt.startsWith(request.prompt), true);
+    assert.equal(workedThrough.webSearch, false);
+    assert.match(workedThrough.context, /Regularization|Regression/, `the mistake's topic was not retrieved: ${workedThrough.documentTitle}`);
     await setComposerPrompt(page, "");
 
     // A readiness check's misses open as one Explain question.
+    const sentBeforeCheck = calls.respond.length;
     await page.evaluate(() => new Promise((resolve, reject) => {
       const open = indexedDB.open("lumen-ai-notes", 1);
       open.onerror = () => reject(open.error);
@@ -2907,7 +2917,7 @@ try {
     assert.equal((misses.value.match(/^\d\. /gm) || []).length, 3, "the misses were not listed");
     assert.match(misses.value, /Expected: chain rule[\s\S]*I answered: wrong 0/);
     assert.equal(misses.value.includes("{{"), false, "a cloze answer leaked through its blank");
-    assert.equal(calls.respond.length, 0, "the readiness-check bridge sent a request");
+    assert.equal(calls.respond.length, sentBeforeCheck, "the readiness-check bridge sent a request");
 
     // AI features off: no bridge on the notebook or the check result.
     const stored = await readProfile(page);

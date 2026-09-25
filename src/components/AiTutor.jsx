@@ -1441,6 +1441,10 @@ export default function AiTutor({
   // The document a starter or a follow-up is about, used to favour it in
   // Library-first retrieval for the next question sent from the composer.
   const retrievalHintRef = useRef("");
+  // Library search words for a prepared question from another screen, used
+  // while the question is sent as it was placed: its instructions ("work
+  // through this mistake…") name no topic.
+  const retrievalQueryHintRef = useRef({ prompt: "", query: "" });
   const pendingFocusRef = useRef(null);
   // The conversation's last observed scroll position and height, to tell a
   // learner scrolling up from the tutor following new text downwards.
@@ -2972,7 +2976,12 @@ export default function AiTutor({
     if (!requestReady) return;
     focusStopOnMountRef.current = document.activeElement !== promptRef.current;
     const selectedDocumentId = retrievalHintRef.current;
-    if (!runTutorAction({ webSearch: effectiveWebSearch, selectedDocumentId })) retrievalHintRef.current = "";
+    const placed = retrievalQueryHintRef.current;
+    const retrievalQuery = placed.query && placed.prompt === prompt.trim() ? placed.query : "";
+    if (!runTutorAction({ webSearch: effectiveWebSearch, selectedDocumentId, retrievalQuery })) {
+      retrievalHintRef.current = "";
+      retrievalQueryHintRef.current = { prompt: "", query: "" };
+    }
   };
 
   const retry = () => {
@@ -3414,6 +3423,7 @@ export default function AiTutor({
     setPrompt(prefill.prompt);
     outboundChanged();
     retrievalHintRef.current = prefill.documentId;
+    retrievalQueryHintRef.current = { prompt: prefill.prompt, query: prefill.retrievalQuery };
     setComposerNotice(`${prefillOrigin(prefill)} Review the question, then send.`);
     window.setTimeout(focusComposer, 0);
   };
@@ -3431,6 +3441,7 @@ export default function AiTutor({
       origin: asTrimmedString(insertPrompt.origin, 60),
       label: asTrimmedString(insertPrompt.label, 100),
       documentId: asTrimmedString(insertPrompt.documentId, 240),
+      retrievalQuery: asTrimmedString(insertPrompt.retrievalQuery, 300),
     };
     if (!prefill.prompt) return;
     const draft = latestPromptRef.current.trim();

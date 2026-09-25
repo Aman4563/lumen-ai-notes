@@ -2816,10 +2816,10 @@ export default function App() {
   }, [changeView, currentDocument.title]);
   // Other screens open the tutor with a prepared question (TFEAT-07). It is
   // applied once like an excerpt and never sent: the learner reviews it.
-  const openTutorWith = useCallback(({ modeId, prompt, origin, label, documentId } = {}) => {
+  const openTutorWith = useCallback(({ modeId, prompt, origin, label, documentId, retrievalQuery } = {}) => {
     const text = String(prompt || "").trim().slice(0, 5_700);
     if (!text) return;
-    setAiInsert({ kind: "prompt", prompt: text, modeId: String(modeId || "explain"), origin: String(origin || ""), label: String(label || ""), documentId: String(documentId || ""), nonce: Date.now() });
+    setAiInsert({ kind: "prompt", prompt: text, modeId: String(modeId || "explain"), origin: String(origin || ""), label: String(label || ""), documentId: String(documentId || ""), retrievalQuery: String(retrievalQuery || ""), nonce: Date.now() });
     changeView("ai");
   }, [changeView]);
   const consumeAiInsert = useCallback((nonce) => {

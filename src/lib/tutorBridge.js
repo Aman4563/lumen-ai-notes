@@ -18,7 +18,9 @@ const withBlanks = (value) => String(value ?? "").replace(/\{\{[^{}]+\}\}/g, "__
 /**
  * A mistake-notebook entry, worked through Socratically: the question, the
  * expected answer and what the learner answered, each at most 600
- * characters. The mistake's lesson is the retrieval hint.
+ * characters. The mistake's lesson is the retrieval hint, and its question
+ * and expected answer are the library search words (the instructions name
+ * no topic).
  */
 export const mistakeTutorRequest = (mistake) => {
   const response = clip(mistake?.response, FIELD_CHARS);
@@ -35,13 +37,15 @@ export const mistakeTutorRequest = (mistake) => {
     origin: "mistake notebook",
     label: clip(withBlanks(mistake?.prompt), 80),
     documentId: String(mistake?.documentId || "").slice(0, 240),
+    retrievalQuery: clip(`${withBlanks(mistake?.prompt)} ${mistake?.expected ?? ""}`, 300),
   };
 };
 
 /**
  * The misses of a finished readiness check, explained: up to five, each
  * with its expected answer and the learner's own, clipped to fit. The first
- * missed question's lesson is the retrieval hint.
+ * missed question's lesson is the retrieval hint and the missed questions
+ * are the library search words.
  */
 export const assessmentMissesRequest = (drafts, { partTitle = "" } = {}) => {
   const misses = (Array.isArray(drafts) ? drafts : []).filter((draft) => clip(draft?.prompt, 10)).slice(0, 5);
@@ -57,5 +61,6 @@ export const assessmentMissesRequest = (drafts, { partTitle = "" } = {}) => {
     origin: "readiness check",
     label: part || "your misses",
     documentId: String(misses.find((draft) => draft.documentId)?.documentId || "").slice(0, 240),
+    retrievalQuery: clip(misses.map((draft) => withBlanks(draft.prompt)).join(" "), 300),
   };
 };
