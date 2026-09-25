@@ -675,3 +675,20 @@ and bottom navigation. Ending a crunch practice session left crunch mode on,
 so the hero counted the weak-card practice pool (5) instead of today's queue
 (2); crunch mode now ends with its session. The review audit covers both,
 plus archive focus handoff and Enter-to-submit in an all-cloze readiness check.
+
+After rebasing onto the accessibility foundation, the mistake dialog's own
+inert handling and the App's modal flag could undo each other. With the dialog
+open, `?` opened the shortcut sheet over it; closing the sheet removed `inert`
+from the top bar, `#main-content`, and the bottom navigation while the mistake
+dialog was still open. The dialog now joins the App modal flag, so the shell
+stays inert until every modal closes. The review audit opens and closes the
+shortcut sheet over the dialog and checks that the shell stays inert; that
+check fails against the previous mechanism. It also checks that closing the
+dialog returns focus to Log mistake.
+
+The gate's axe run sees only a fresh profile. An axe pass over populated
+review screens in all three themes found low-contrast mistake chips (4.23:1
+and 2.86:1 in Paper), a low-contrast Show answer hint (2.12:1 in Night), and
+practice views with no level-one heading. All three are fixed. The
+`<form role="dialog">` markup (`aria-allowed-role`) is shared with the App's
+dialogs and remains open.
