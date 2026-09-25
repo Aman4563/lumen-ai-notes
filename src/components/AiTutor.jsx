@@ -85,6 +85,7 @@ import {
   NEXT_QUESTION_PROMPT,
   REVEAL_PROMPT,
   SESSION_MODES,
+  SOCRATIC_START_PROMPT,
   sessionRetrievalQuery,
   sessionWrapUp,
   tutorSession,
@@ -113,7 +114,7 @@ const MODE_OPTIONS = Object.freeze([
     id: "socratic",
     label: "Socratic",
     task: "socratic",
-    prompt: "Teach the selected material using one focused Socratic question at a time. Start by checking my current understanding.",
+    prompt: SOCRATIC_START_PROMPT,
     description: "Learn through guided questions without receiving the solution too early.",
   },
   {

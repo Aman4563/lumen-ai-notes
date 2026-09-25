@@ -6,7 +6,12 @@ import { requestAi, requestAiStream } from "../../src/lib/aiClient.js";
 import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
 import { createApplicationServer, silentLogger } from "../server.mjs";
 import { readAiServerConfig } from "./config.mjs";
-import { buildOllamaRequest, createOllamaResponse, createOllamaStreamingResponse, WEB_EVIDENCE_UNAVAILABLE_NOTICE } from "./ollama.mjs";
+import { buildOllamaRequest, createOllamaResponse, createOllamaStreamingResponse, socraticTurnFraming, WEB_EVIDENCE_UNAVAILABLE_NOTICE } from "./ollama.mjs";
+import { mistakeTutorRequest } from "../../src/lib/tutorBridge.js";
+import { ANSWER_FOLLOW_UPS, withoutCitationLabels } from "../../src/lib/tutorFollowUps.js";
+import { fitTutorRequest, tutorConversationWindow } from "../../src/lib/tutorRequest.js";
+import { HINT_PROMPT, NEXT_QUESTION_PROMPT, REVEAL_PROMPT, SOCRATIC_START_PROMPT, sessionWrapUp } from "../../src/lib/tutorSession.js";
+import { buildStarterPrompts } from "../../src/lib/tutorStarters.js";
 
 // Answer-quality instructions and recovery paths for issue #58. Every model
 // reply here is scripted; live qwen3.5:4b evidence is recorded separately in
@@ -103,32 +108,149 @@ test("Socratic describes its format instead of a literal 'Your question?' templa
   const body = buildOllamaRequest({ ...baseRequest, task: "socratic" }, config);
   const prompt = lastUserOf(body);
   assert.doesNotMatch(JSON.stringify(body.messages), /Your question\?|Output pattern/i);
-  assert.match(prompt, /ask exactly one new focused question grounded in the context above, and end it with the exact label of the supplied source that motivates it \(one of \[S1\]\)/);
+  assert.match(prompt, /ask exactly one new focused question grounded in the context above, and end it with the exact label of the supplied source that motivates it \(one of \[S1\]\)/i);
   assert.match(prompt, /Do not answer your new question/);
   assert.doesNotMatch(prompt, /assessment/, "a first Socratic turn has no learner answer to assess");
 
   const sourceFree = lastUserOf(buildOllamaRequest({ ...baseRequest, task: "socratic", context: "", contextCitations: [] }, config));
-  assert.match(sourceFree, /ask exactly one new focused question\./);
+  assert.match(sourceFree, /ask exactly one new focused question\./i);
   assert.doesNotMatch(sourceFree, /\[S\d+\]/);
 });
 
-test("a Socratic turn after the tutor's question assesses the learner's answer before one cited question", () => {
-  const request = {
-    ...baseRequest,
-    task: "socratic",
-    prompt: "OLS picks the weights that minimize squared error and has a closed-form solution.",
-    history: [
-      { role: "user", content: "Teach me OLS one question at a time." },
-      { role: "assistant", content: "What quantity does ordinary least squares minimize? [S1]" },
-    ],
-  };
-  const body = buildOllamaRequest(request, config);
-  const prompt = lastUserOf(body);
-  assert.match(prompt, /if the learner's latest message answers your previous question, open with a one- or two-sentence assessment of that answer that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question/);
-  assert.match(prompt, /\[S1\]/);
-  assert.match(systemOf(body), /first assess that answer in one or two sentences/);
-  // The existing grounded-question recovery wording is kept.
-  assert.match(systemOf(body), /cite the source that motivates your question using its exact \[S#\] label/);
+// Issue #82. Each Socratic turn gets its own framing, decided by the server
+// from the learner's visible wording and the history's shape, never a
+// conditional left to the model. The requests below are built by the
+// client's own action builders, conversation window and fit path, so a
+// change of wording or of history shaping on either side fails here.
+const TUTOR_QUESTION = "Ridge adds a penalty on the size of the weights. As λ grows, what happens to the coefficients? [S1]";
+const EXPLANATION = "## Ridge regression\n\nRidge shrinks every coefficient toward zero as λ grows, trading a little bias for lower variance. [S1]";
+const HINT_TURN = "Think about the gradient of the penalty near zero. [S1]\n\nTry answering your previous question again.";
+const ridgeSources = [{ citationNumber: 1, title: "Linear regression", section: "Ridge", text: "Ridge adds an L2 penalty that shrinks coefficients toward zero; it rarely sets one exactly to zero." }];
+// An ordinary send keeps the turns' citation labels; a session action (hint,
+// reveal, next question) sends them without (`unlabelled`). Either way the
+// window collapses whitespace, as the client's memory does.
+const tutorRequest = ({ task = "socratic", prompt, history = [], sources = ridgeSources, unlabelled = false }) => fitTutorRequest({
+  mode: { task },
+  prompt,
+  sources,
+  history: tutorConversationWindow(
+    history.map((message) => ({ role: message.role, content: unlabelled ? withoutCitationLabels(message.content) : message.content })),
+    { prompt, sources: sources.length > 0 },
+  ).messages,
+}).payload;
+const bridged = mistakeTutorRequest({
+  prompt: "What does ridge's L2 penalty do to the coefficients as λ grows?",
+  expected: "It shrinks them toward zero but rarely makes any exactly zero.",
+  response: "It sets the least important coefficients to exactly zero.",
+});
+const starterLesson = { id: "notes/part-05/01-linear.md", title: "Linear Regression and Regularization", isIndex: false, partNumber: 5, source: "builtin" };
+const socraticStarter = buildStarterPrompts(
+  { recent: starterLesson, last: starterLesson, mistakes: [], reviewItems: [] },
+  { limit: 8, lessonText: () => "## Least squares\n\n## Ridge regression" },
+).find((starter) => starter.modeId === "socratic");
+const checkChip = ANSWER_FOLLOW_UPS.find((item) => item.id === "check").prompt;
+const REVEAL_ANSWER = "Ridge's penalty gradient 2λw vanishes near zero, so coefficients shrink without reaching exactly zero. Does that make sense?";
+
+const SOCRATIC_TURNS = [
+  ["a session start", "open", { prompt: SOCRATIC_START_PROMPT }],
+  ["a session start after an explanation", "open", { prompt: SOCRATIC_START_PROMPT, history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: EXPLANATION }] }],
+  ["a lesson's Socratic starter", "open", { prompt: socraticStarter?.prompt }],
+  ["Check my understanding after an answer that ends asking something", "open", { prompt: checkChip, history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: `${EXPLANATION}\n\nWant to see an example?` }] }],
+  ["a hint request", "hint", { prompt: HINT_PROMPT, unlabelled: true, history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["an older client's hint request", "hint", { prompt: "Give me one hint for your last question without revealing the answer.", unlabelled: true, history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["a second hint request", "hint", { prompt: HINT_PROMPT, unlabelled: true, history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }, { role: "user", content: HINT_PROMPT }, { role: "assistant", content: HINT_TURN }] }],
+  ["the next question after a reveal", "open", { prompt: NEXT_QUESTION_PROMPT, unlabelled: true, history: [{ role: "user", content: REVEAL_PROMPT }, { role: "assistant", content: REVEAL_ANSWER }] }],
+  ["an older client's next question after a reveal", "open", { prompt: "Ask me the next question in this session.", unlabelled: true, history: [{ role: "user", content: REVEAL_PROMPT }, { role: "assistant", content: REVEAL_ANSWER }] }],
+  ["a mistake from the notebook", "diagnose", { prompt: bridged.prompt }],
+  ["an older client's mistake from the notebook", "diagnose", { prompt: "Work through this mistake with me, one question at a time. Start by asking what I think went wrong, and do not give me the answer straight away.\n\nQuestion: Why?\nExpected answer: Because." }],
+  ["the learner's reply to the diagnostic question", "answer", { prompt: "I mixed ridge up with lasso.", history: [{ role: "user", content: bridged.prompt }, { role: "assistant", content: "What made you expect exact zeros? [S1]" }] }],
+  ["an answer to the tutor's question", "answer", { prompt: "They get smaller but never exactly zero.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }] }],
+  ["an answer after a hint that asks to try again", "answer", { prompt: "The pull weakens near zero, so they never reach it.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }, { role: "user", content: HINT_PROMPT }, { role: "assistant", content: HINT_TURN }] }],
+  ["an answer to a question whose label sits on its own line", "answer", { prompt: "They shrink toward zero.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: "Ridge adds a penalty on the weights. As λ grows, what happens to the coefficients?\n\n[S1]" }] }],
+  ["an answer to a question in bold", "answer", { prompt: "They shrink toward zero.", history: [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: "Ridge adds a penalty on the weights.\n\n**As λ grows, what happens to the coefficients?** [S1]" }] }],
+  ["an answer to an answer check's own question", "answer", { prompt: "What does λ control in ridge?\n\nMy answer: The strength of the penalty on the weights.", history: [{ role: "user", content: "Check my answer." }, { role: "assistant", content: "Not quite: ridge keeps every feature. [S1]" }] }],
+  ["free text after an explanation that asked nothing", "open", { prompt: "Now question me on ridge.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: EXPLANATION }] }],
+  ["free text after an offer of an example", "open", { prompt: "Yes, then quiz me on it.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: `${EXPLANATION}\n\nWould you like to see a worked example?` }] }],
+  ["free text after a rhetorical question mid-answer", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: "Why does ridge help? Correlated features stop fighting over one weight. [S1]" }] }],
+  ["free text after a question that is only a heading", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Explain ridge." }, { role: "assistant", content: "## Why does ridge shrink?\n\nThe penalty grows with the weights. [S1]" }] }],
+  ["free text after a question inside code only", "open", { prompt: "Question me on this.", history: [{ role: "user", content: "Show code." }, { role: "assistant", content: "Use this:\n\n```python\nok = input('ready?')\n```" }] }],
+];
+
+test("the framing reads history as the client's window sends it", () => {
+  // The window collapses whitespace and keeps citation labels on ordinary
+  // sends, so paragraph breaks cannot be what marks the closing question.
+  const sent = tutorRequest(SOCRATIC_TURNS.find(([name]) => name === "an answer to a question whose label sits on its own line")[2]);
+  assert.equal(sent.history.at(-1).content, "Ridge adds a penalty on the weights. As λ grows, what happens to the coefficients? [S1]");
+  assert.equal(socraticTurnFraming(sent), "answer");
+  const heading = tutorRequest(SOCRATIC_TURNS.find(([name]) => name === "free text after a question that is only a heading")[2]);
+  assert.equal(heading.history.at(-1).content, "## Why does ridge shrink? The penalty grows with the weights. [S1]");
+  assert.equal(socraticTurnFraming(heading), "open");
+});
+
+test("each tutor action's Socratic request lands in its own framing", () => {
+  assert.ok(socraticStarter, "the starters offered no Socratic start");
+  for (const [name, framing, turn] of SOCRATIC_TURNS) {
+    assert.equal(socraticTurnFraming(tutorRequest(turn)), framing, name);
+  }
+});
+
+test("only an answer to the tutor's question is assessed; other turns are told there is none", () => {
+  for (const [name, framing, turn] of SOCRATIC_TURNS) {
+    const body = buildOllamaRequest(tutorRequest(turn), config);
+    const system = systemOf(body);
+    const prompt = lastUserOf(body);
+    const format = prompt.slice(prompt.lastIndexOf("Required response format:"));
+    if (framing === "answer") {
+      assert.match(system, /The learner has just answered your previous question: first assess that answer in one or two sentences/, name);
+      assert.match(format, /^Required response format: open with a one- or two-sentence assessment of the learner's answer to your previous question that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question grounded in the context above, and end it with the exact label of the supplied source that motivates it \(one of \[S1\]\)/, name);
+      continue;
+    }
+    assert.doesNotMatch(`${system}\n${format}`, /assessment|first assess|has just answered/, `${name}: an assessment instruction reached a turn with no answer`);
+    assert.match(format, /Do not praise, assess, or correct anything|do not praise, assess, or correct anything|do not say whether their earlier answer was right or wrong/, name);
+    if (framing === "hint") {
+      assert.match(system, /asks for a hint, so there is no learner answer to assess, praise, or correct/, name);
+      assert.match(format, /this is a hint request, not an answer\. Do not praise, assess, or correct anything\. Give exactly one short hint grounded in the context above, and end the hint with the exact label of the supplied source that motivates it \(one of \[S1\]\)\. Then ask the learner to try your previous question again\. Do not reveal the answer, do not ask a new question/, name);
+    } else if (framing === "diagnose") {
+      assert.match(system, /first ask one diagnostic question about what they think went wrong, and explain only after they reply/, name);
+      assert.match(format, /reply with exactly one short diagnostic question and nothing else, at most two sentences/, name);
+      assert.match(format, /End it with the exact label of the supplied source that covers the original question \(one of \[S1\]\), without saying what that source states/, name);
+      assert.match(format, /do not state, paraphrase, or hint at the expected answer or any fact from the sources/, name);
+    } else {
+      assert.match(system, /has not answered a question of yours in this line of questioning, so there is no learner answer to assess, praise, or correct, and your own earlier turns are not their answers/, name);
+      assert.match(format, /the learner has not answered a question of yours yet, so do not praise, assess, or correct anything, and do not refer to a previous answer of theirs\. Ask exactly one new focused question grounded in the context above/, name);
+    }
+  }
+});
+
+test("reveals and wrap-ups carry no Socratic framing at all", () => {
+  const history = [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }];
+  const reveal = buildOllamaRequest(tutorRequest({ task: "explain", prompt: REVEAL_PROMPT, history }), config);
+  const wrap = sessionWrapUp([
+    { role: "user", mode: "socratic", content: SOCRATIC_START_PROMPT },
+    { role: "assistant", mode: "socratic", content: TUTOR_QUESTION },
+    { role: "user", mode: "hint", content: HINT_PROMPT },
+    { role: "assistant", mode: "hint", content: "Think about the gradient near zero. [S1]" },
+  ]);
+  const wrapUp = buildOllamaRequest(tutorRequest({ task: "summarize", prompt: wrap.prompt, history: wrap.historyWindow.messages, sources: [] }), config);
+  for (const [name, body] of [["reveal", reveal], ["wrap-up", wrapUp]]) {
+    const text = `${systemOf(body)}\n${lastUserOf(body)}`;
+    assert.doesNotMatch(text, /Required response format|assess/, `${name} was framed as a Socratic turn`);
+  }
+  assert.match(lastUserOf(wrapUp), /I have not answered any of your questions yet, so do not credit me with anything/);
+});
+
+test("a hint's grounding repair asks for a cited hint, not a new question", async () => {
+  const history = [{ role: "user", content: SOCRATIC_START_PROMPT }, { role: "assistant", content: TUTOR_QUESTION }];
+  const { result, error, bodies } = await run({
+    stream: true,
+    request: tutorRequest({ prompt: HINT_PROMPT, history }),
+    replies: ["Think about the gradient near zero.", "Think about the gradient near zero. [S1] Try the question again."],
+  });
+  assert.equal(error, null, error?.message);
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[1].messages.at(-1).content, /Your hint itself must cite the supplied source that supports it, without revealing the answer/);
+  assert.doesNotMatch(bodies[1].messages.at(-1).content, /Your question itself must cite/);
+  assert.match(result.outputText, /\[S1\]/);
 });
 
 test("Fast prose carries an explicit brevity target that Balanced, Deep, and structured requests do not", () => {

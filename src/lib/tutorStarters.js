@@ -115,7 +115,7 @@ const socraticStarter = (lesson, heading) => ({
   kind: "socratic",
   label: `Teach me ${heading} step by step`,
   modeId: "socratic",
-  prompt: `Teach me “${heading}” from the lesson “${lessonName(lesson)}” step by step, one focused question at a time. Start by checking what I already understand.`,
+  prompt: `Teach me “${heading}” from the lesson “${lessonName(lesson)}” step by step, one focused question at a time. I have not answered anything yet, so start by asking what I already understand.`,
   documentId: lesson.id,
 });
 

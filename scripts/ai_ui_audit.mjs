@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 
+import { socraticTurnFraming } from "../server/ai/ollama.mjs";
+import { createApplicationServer, silentLogger } from "../server/server.mjs";
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { buildTrackRound, normalizeTrackBank } from "../src/lib/interviewTracks.js";
 import { createMistake } from "../src/lib/mistakes.js";
 import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
+import { HINT_PROMPT, NEXT_QUESTION_PROMPT } from "../src/lib/tutorSession.js";
 import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
@@ -2365,7 +2368,10 @@ try {
     await page.$$eval(".ai-tutor__feedback button", (nodes) => nodes.find((node) => node.textContent.includes("Answer this")).click());
     await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
     assert.equal(await activeMode(page), "Socratic");
-    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /Is the number of layers a parameter or a hyperparameter\?\n\nMy answer: $/);
+    const answerCheckDraft = await page.$eval(".ai-tutor__composer textarea", (field) => field.value);
+    assert.match(answerCheckDraft, /Is the number of layers a parameter or a hyperparameter\?\n\nMy answer: $/);
+    // Issue #82: the learner's answer to the check's own question is assessed.
+    assert.equal(socraticTurnFraming({ prompt: `${answerCheckDraft}A hyperparameter.`, history: [] }), "answer", "an answer to the check's question would not be assessed");
     await setComposerPrompt(page, "");
 
     // An answer check that breaks its schema is shown as an error and kept
@@ -2622,7 +2628,7 @@ try {
         if (body.task === "summarize") return "## Session recap\n\n**Right:** the penalty shrinks the weights.\n\n**Missed:** why that lowers variance.";
         if (body.prompt.startsWith("Reveal the answer")) return `## The answer\n\nAs λ grows, ridge shrinks every weight toward zero, trading a little bias for lower variance. [${citation}]`;
         if (body.task === "explain") return `## Ridge regression\n\nRidge adds an L2 penalty to the loss, so large weights cost more. [${citation}]`;
-        if (body.prompt.startsWith("Give me one hint")) return `Think about what the penalty does to a large weight. What happens to it as λ grows? [${citation}]`;
+        if (body.prompt.startsWith(HINT_PROMPT)) return `Think about what the penalty does to a large weight. What happens to it as λ grows? [${citation}]`;
         return `Let's check. What happens to the ridge regression weights as the penalty λ grows? [${citation}]`;
       },
     },
@@ -2668,6 +2674,9 @@ try {
     await page.$eval(sendSelector, (button) => button.click());
     await waitForAnswers(page, 3);
     assert.equal(calls.respond.at(-1).body.task, "socratic", "the learner's answer left the session's task");
+    // Issue #82: only the learner's own reply is framed as an answer.
+    assert.equal(socraticTurnFraming(calls.respond.at(-2).body), "open", "Check my understanding was framed as an answer to assess");
+    assert.equal(socraticTurnFraming(calls.respond.at(-1).body), "answer", "the learner's reply was not framed as an answer");
     assert.equal((await strip()).status, "Socratic session · question 2");
     const stripLayout = await page.evaluate(() => {
       const nav = document.querySelector(".bottom-nav");
@@ -2693,7 +2702,8 @@ try {
     await waitForAnswers(page, 4);
     const hint = calls.respond.at(-1).body;
     assert.equal(hint.task, "socratic");
-    assert.equal(hint.prompt.startsWith("Give me one hint for your last question without revealing the answer."), true);
+    assert.equal(hint.prompt.startsWith(HINT_PROMPT), true);
+    assert.equal(socraticTurnFraming(hint), "hint", "the server would not frame the Hint action as a hint request (issue #82)");
     assert.equal(hint.webSearch, false, "a hint used the web");
     assert.ok(hint.history.length >= 4, `a hint forgot the session: ${hint.history.length} messages`);
     assert.match(hint.history.at(-1).content, /What happens to the ridge regression weights/, "the hint's memory did not end with the question it is about");
@@ -2726,6 +2736,8 @@ try {
     await clickStrip("Next question");
     await waitForAnswers(page, 6);
     assert.equal(calls.respond.at(-1).body.task, "socratic");
+    assert.equal(calls.respond.at(-1).body.prompt.startsWith(NEXT_QUESTION_PROMPT), true);
+    assert.equal(socraticTurnFraming(calls.respond.at(-1).body), "open", "Next question was framed as an answer after the reveal");
     const long = await strip();
     assert.equal(long.status, "Socratic session · question 3 · time to wrap up", "a ten-message session did not suggest Wrap up");
     assert.deepEqual(long.suggested, ["Wrap up"]);
@@ -2997,6 +3009,7 @@ try {
     const workedThrough = calls.respond.at(-1).body;
     assert.equal(workedThrough.task, "socratic");
     assert.equal(workedThrough.prompt.startsWith(request.prompt), true);
+    assert.equal(socraticTurnFraming(workedThrough), "diagnose", "a worked-through mistake would not start with a diagnostic question (issue #82)");
     assert.equal(workedThrough.webSearch, false);
     assert.match(workedThrough.context, /Regularization|Regression/, `the mistake's topic was not retrieved: ${workedThrough.documentTitle}`);
     await setComposerPrompt(page, "");

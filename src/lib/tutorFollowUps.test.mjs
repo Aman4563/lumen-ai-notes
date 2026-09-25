@@ -11,6 +11,7 @@ import {
   followUpRetrievalQuery,
   followUpScope,
   followUpsForMessage,
+  isFollowUpPrompt,
   questionForAnswer,
   topicQuestionFor,
   withoutCitationLabels,
@@ -106,4 +107,12 @@ test("a follow-up of a follow-up searches with the learner's own question", () =
   // A chip with nothing before it is still the best there is.
   assert.equal(topicQuestionFor(history.slice(2), "a2").id, "u2");
   assert.equal(topicQuestionFor(history, "u1"), null);
+});
+
+test("Check my understanding says the learner has not answered, and the earlier wording is still a chip (issue #82)", () => {
+  const check = ANSWER_FOLLOW_UPS.find((item) => item.id === "check").prompt;
+  assert.equal(check, "Ask me one question that checks whether I understood your previous answer. I have not answered anything yet, so wait for my reply before explaining.");
+  assert.equal(isFollowUpPrompt(check), true);
+  assert.equal(isFollowUpPrompt("Ask me one question that checks whether I understood your previous answer. Wait for my reply before explaining."), true, "a stored chip in the earlier wording became a learner answer");
+  assert.equal(isFollowUpPrompt("It trades bias for variance."), false);
 });

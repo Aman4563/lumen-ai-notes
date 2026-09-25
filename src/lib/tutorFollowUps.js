@@ -20,7 +20,9 @@ export const ANSWER_FOLLOW_UPS = Object.freeze([
   { id: "deeper", label: "Go deeper", modeId: "explain", prompt: "Go one level deeper than your previous answer: the underlying mechanism, the key assumption, and one case where it breaks down." },
   { id: "quiz", label: "Quiz me on this", modeId: "quiz", prompt: "Create 2 multiple-choice questions that test the explanation in your previous answer. Explain each answer." },
   { id: "flashcards", label: "Make flashcards", modeId: "flashcards", prompt: "Create 3 short flashcards from the key ideas in your previous answer." },
-  { id: "check", label: "Check my understanding", modeId: "socratic", prompt: "Ask me one question that checks whether I understood your previous answer. Wait for my reply before explaining." },
+  // "I have not answered" tells the server there is no learner answer to
+  // assess (issue #82); the explanation it follows is the tutor's own.
+  { id: "check", label: "Check my understanding", modeId: "socratic", prompt: "Ask me one question that checks whether I understood your previous answer. I have not answered anything yet, so wait for my reply before explaining." },
 ]);
 
 /** After a quiz. */
@@ -70,7 +72,9 @@ export const questionForAnswer = (history, answerId) => {
 };
 
 // A chip's wording and a session hint or reveal name no topic.
-const CHIP_PROMPTS = new Set([...ANSWER_FOLLOW_UPS, ...QUIZ_FOLLOW_UPS, ...FLASHCARD_FOLLOW_UPS].map((item) => item.prompt));
+// Earlier chip wording is still in stored conversations.
+const LEGACY_CHIP_PROMPTS = Object.freeze(["Ask me one question that checks whether I understood your previous answer. Wait for my reply before explaining."]);
+const CHIP_PROMPTS = new Set([...[...ANSWER_FOLLOW_UPS, ...QUIZ_FOLLOW_UPS, ...FLASHCARD_FOLLOW_UPS].map((item) => item.prompt), ...LEGACY_CHIP_PROMPTS]);
 const TOPICLESS_MODES = new Set(["hint", "reveal"]);
 /** Whether a question is a one-tap follow-up's fixed wording. */
 export const isFollowUpPrompt = (content) => CHIP_PROMPTS.has(clean(content));

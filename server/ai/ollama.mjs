@@ -29,7 +29,9 @@ Safety and grounding rules:
 const TASK_INSTRUCTIONS = Object.freeze({
   tutor: "Answer as an adaptive tutor. Explain, check understanding, and end with one useful next action.",
   explain: "Follow the learner's requested scope and length exactly. Within that bound, explain the concept in layers: intuition, mechanics, example, failure modes, and interview-level takeaways. End when the requested final item is complete.",
-  socratic: "Use the Socratic method. When the learner has just answered your previous question, first assess that answer in one or two sentences: say whether it is correct, partly correct, or a misconception, and why. Then ask exactly one focused question; do not reveal the full solution unless the learner asks. When curriculum sources are supplied, cite the source that motivates your question using its exact [S#] label, even when you make no factual claim. Place the label after the question without revealing the answer.",
+  // The turn-specific part of a Socratic instruction comes from
+  // `socraticTurnFraming` (see SOCRATIC_TURN_INSTRUCTIONS below).
+  socratic: "Use the Socratic method: guide the learner with one focused question at a time, and do not reveal the full solution unless the learner asks. When curriculum sources are supplied, cite the source that motivates your question using its exact [S#] label, even when you make no factual claim. Place the label after the question without revealing the answer.",
   quiz: "Create a discriminating quiz that tests recall, application, and misconceptions. Every answer explanation must teach why alternatives fail. Silently remove any question whose keyed answer is not directly supported by the supplied context.",
   flashcards: "Create atomic active-recall cards. Avoid vague prompts, oversized answers, and simple copy-completion cues. Each front must unambiguously ask for a claim supported by the supplied context; silently remove any card whose back contradicts or exceeds that context.",
   interview: "Act as a senior technical interviewer. Follow the learner's requested scope and length. When asked for a question, ask one focused question and wait for the learner's answer; do not supply the answer or a full interview guide. Probe assumptions, trade-offs, failure handling, measurement, and production constraints where relevant.",
@@ -38,6 +40,95 @@ const TASK_INSTRUCTIONS = Object.freeze({
   answer_feedback: "Evaluate the learner answer against the question and supplied context. Be precise, constructive, and calibration-aware.",
   code_review: "Review the supplied code as a rigorous senior engineer. Report findings in priority order: correctness defects first, then complexity/performance, edge cases and failure handling, API/idiom quality, and missing tests. Label every finding as either a Defect or a Convention/alternative. A Defect gives a wrong result, crash, or data/security problem for a concrete input that you have traced through the code, including edge cases such as empty or single-element input. A Convention/alternative covers style, idiom, naming, and valid alternative definitions or designs (for example population versus sample variance); never present one as a defect. Quote the exact fragment each finding concerns, explain the concrete failure it can cause, and propose a specific fix (a short corrected snippet where useful) that is itself correct and numerically stable (for example, never replace a two-pass variance with the cancellation-prone E[x^2] - E[x]^2 shortcut). Do not state a library's default behavior, version, or API contract unless you are certain; otherwise tell the learner to confirm it in the official documentation. Say clearly when the code looks correct. If no code was actually supplied, say so and ask for it instead of inventing code to review.",
 });
+
+// A Socratic turn is framed by the server instead of by a conditional the
+// small model cannot hold (issue #82): with "when the learner has just
+// answered…" in every Socratic prompt, qwen3.5:4b praised a "previous answer"
+// on session starts, called a hint request "your hint", and corrected a
+// bridged mistake before asking anything. The learner's latest message is
+//   diagnose: a mistake brought from the notebook ("Work through this
+//             mistake…"), worked through from a diagnostic question;
+//   hint:     a hint request for the tutor's last question (the Hint action's
+//             "hint for your last question");
+//   open:     a turn that says it is not an answer ("I have not answered", as
+//             in a session start, Check my understanding and Next question,
+//             or "Ask me the next question"), or any turn that does not
+//             follow a question of the tutor's;
+//   answer:   a reply to the tutor's question: the tutor's last turn ends by
+//             asking one (an offer such as "Want to see an example?" does
+//             not count), or it was a hint and the learner tries again; or
+//             the learner answers a question quoted in the message itself
+//             ("My answer: …", as an answer check's prefilled question).
+// The markers are the visible wording of the tutor's own action prompts
+// (src/lib/tutorSession.js, tutorFollowUps.js, tutorBridge.js,
+// tutorStarters.js, AiTutor.jsx), older wording included;
+// server/ai/quality.test.mjs pins each of those prompts to its branch. The
+// history arrives as the client's conversation window sends it: whitespace
+// collapsed to single spaces, long turns clipped, and citation labels kept
+// on ordinary sends.
+const MISTAKE_WALKTHROUGH_MARKER = /^\s*Work through this mistake\b/i;
+const HINT_MARKER = /\bhint for your (?:last|previous) question\b/i;
+const NOT_ANSWERING_MARKER = /\bI have not answered\b|^\s*Ask me the next question\b/i;
+const OWN_ANSWER_MARKER = /(?:^|\n)\s*My answer:\s*\S/i;
+const OFFER_MARKER = /\b(?:would you like|do you want|want (?:me )?to|shall I|should I|would it help)\b/i;
+
+/** The question a tutor turn ends by asking, or "" when it ends otherwise. */
+const closingQuestion = (content) => {
+  const text = withoutMarkdownCode(content)
+    .replace(/\[[SW][1-9]\d*\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    // Emphasis, quotes and brackets may close a question: "**Why?**".
+    .replace(/[\s*_~"'”’)\]]+$/u, "");
+  if (!text.endsWith("?")) return "";
+  return text.match(/[^.!?]*\?+$/u)?.[0].trim() || "";
+};
+
+const SOCRATIC_TURN_INSTRUCTIONS = Object.freeze({
+  answer: "The learner has just answered your previous question: first assess that answer in one or two sentences, saying whether it is correct, partly correct, or a misconception, and why. Then ask exactly one new focused question.",
+  hint: "The learner has not answered your previous question yet and asks for a hint, so there is no learner answer to assess, praise, or correct. Give one hint that does not reveal the answer, then ask them to try that same question again; do not ask a new question.",
+  diagnose: "The learner brings back a question they got wrong earlier. Its expected answer and their earlier answer are reference for you, not a reply to assess. Do not explain the idea, state or hint at the expected answer or any fact from the sources, or say whether their earlier answer was right yet: first ask one diagnostic question about what they think went wrong, and explain only after they reply.",
+  open: "The learner has not answered a question of yours in this line of questioning, so there is no learner answer to assess, praise, or correct, and your own earlier turns are not their answers. Open directly with one focused question.",
+});
+
+export const socraticTurnFraming = (request) => {
+  const prompt = String(request?.prompt || "");
+  if (MISTAKE_WALKTHROUGH_MARKER.test(prompt)) return "diagnose";
+  if (HINT_MARKER.test(prompt)) return "hint";
+  if (NOT_ANSWERING_MARKER.test(prompt)) return "open";
+  if (OWN_ANSWER_MARKER.test(prompt)) return "answer";
+  const history = Array.isArray(request?.history) ? request.history : [];
+  const previous = history.at(-1);
+  if (previous?.role !== "assistant") return "open";
+  // After a hint the learner tries the hinted question again.
+  const asked = history.at(-2);
+  if (asked?.role === "user" && HINT_MARKER.test(String(asked.content || ""))) return "answer";
+  // Only a question the tutor's turn ends with (outside code) counts: an
+  // explanation with a question as a heading, or a rhetorical question
+  // mid-answer, did not ask the learner anything.
+  const question = closingQuestion(previous.content);
+  return question && !OFFER_MARKER.test(question) ? "answer" : "open";
+};
+
+const socraticQuestionFormat = (framing, sourceLabels) => {
+  const cite = (what) => (sourceLabels.length
+    ? ` grounded in the context above, and end ${what} with the exact label of the supplied source that motivates it (one of ${sourceLabels.join(", ")})`
+    : "");
+  const noHeading = "do not put a heading or a label word in front of it";
+  if (framing === "hint") {
+    return `\nRequired response format: this is a hint request, not an answer. Do not praise, assess, or correct anything. Give exactly one short hint${cite("the hint")}. Then ask the learner to try your previous question again. Do not reveal the answer, do not ask a new question, and ${noHeading}.`;
+  }
+  if (framing === "diagnose") {
+    const label = sourceLabels.length
+      ? ` End it with the exact label of the supplied source that covers the original question (one of ${sourceLabels.join(", ")}), without saying what that source states.`
+      : "";
+    return `\nRequired response format: reply with exactly one short diagnostic question and nothing else, at most two sentences, asking what the learner was thinking when they gave their earlier answer or what they now think went wrong.${label} Do not explain the concept, do not state, paraphrase, or hint at the expected answer or any fact from the sources, and do not say whether their earlier answer was right or wrong until they reply. ${noHeading[0].toUpperCase()}${noHeading.slice(1)}.`;
+  }
+  if (framing === "answer") {
+    return `\nRequired response format: open with a one- or two-sentence assessment of the learner's answer to your previous question that says whether it is correct, partly correct, or a misconception, and why; then ask exactly one new focused question${cite("it")}. Do not answer your new question, and ${noHeading}.`;
+  }
+  return `\nRequired response format: the learner has not answered a question of yours yet, so do not praise, assess, or correct anything, and do not refer to a previous answer of theirs. Ask exactly one new focused question${cite("it")}. Do not answer your new question, and ${noHeading}.`;
+};
 
 const FAST_PROFILE_INSTRUCTION = "Fast profile: keep the answer brief, about 150 words or fewer unless the learner explicitly asks for more detail or a specific length. Lead with the direct answer, prefer a short list to long paragraphs, include only the most important formula or example, and skip optional background.";
 
@@ -92,7 +183,11 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
   const profileInstruction = responseProfile === "fast" && request.responseFormat !== "structured"
     ? `\n${FAST_PROFILE_INSTRUCTION}`
     : "";
-  const system = `${BASE_INSTRUCTIONS}\n\nCurrent server date: ${currentDate}.\nTask-specific instruction: ${TASK_INSTRUCTIONS[request.task]}\n${completionInstruction}${profileInstruction}\n${searchInstruction}${schemaInstruction}`;
+  const socraticFraming = request.task === "socratic" ? socraticTurnFraming(request) : null;
+  const taskInstruction = socraticFraming
+    ? `${TASK_INSTRUCTIONS.socratic} ${SOCRATIC_TURN_INSTRUCTIONS[socraticFraming]}`
+    : TASK_INSTRUCTIONS[request.task];
+  const system = `${BASE_INSTRUCTIONS}\n\nCurrent server date: ${currentDate}.\nTask-specific instruction: ${taskInstruction}\n${completionInstruction}${profileInstruction}\n${searchInstruction}${schemaInstruction}`;
   const sourceLabels = (request.contextCitations || []).map((number) => `[S${number}]`);
   const citationRequirement = !sourceLabels.length
     ? ""
@@ -101,12 +196,7 @@ export const buildOllamaRequest = (request, config, messagesOverride, { allowSea
       : `\n\nRequired citations: cite the supplied sources with these exact labels: ${sourceLabels.join(", ")}. Write each label on its own in square brackets exactly as shown, never inside code. End every paragraph or list item that uses the sources with the label of the source that supports it, and include at least one label in your first paragraph. Cite only source-supported text. A question must cite the source that motivates it, even without a factual claim.`;
   // Describe the Socratic shape instead of showing a literal template: the
   // 4B model copied an "Output pattern: Your question?" example verbatim.
-  // A prior assistant turn means the learner's message is probably an answer
-  // that deserves a brief assessment before the next question.
-  const learnerMayBeAnswering = (request.history || []).some((message) => message?.role === "assistant");
-  const questionFormat = request.task === "socratic"
-    ? `\nRequired response format: ${learnerMayBeAnswering ? "if the learner's latest message answers your previous question, open with a one- or two-sentence assessment of that answer that says whether it is correct, partly correct, or a misconception, and why; then " : ""}ask exactly one new focused question${sourceLabels.length ? ` grounded in the context above, and end it with the exact label of the supplied source that motivates it (one of ${sourceLabels.join(", ")})` : ""}. Do not answer your new question, and do not put a heading or a label word in front of it.`
-    : "";
+  const questionFormat = socraticFraming ? socraticQuestionFormat(socraticFraming, sourceLabels) : "";
   const learnerRequest = `Learner level: ${request.difficulty}\nTask: ${request.prompt}${conversationMemory}${contextBlock}${citationRequirement}${questionFormat}`;
   const messages = messagesOverride || [
     { role: "system", content: system },
@@ -742,7 +832,11 @@ const addGroundingRecoveryInstruction = (messages, request, errorCode, hasWebEvi
     hasWebEvidence ? "Use at least one exact uppercase [W#] label from the supplied web-result IDs for web-supported claims." : "",
     webEvidenceUnavailable ? "The approved web search returned no usable public evidence, so use no [W#] label and answer only from the supplied library sources." : "",
     "Do not invent or lowercase citation labels, and keep citation text outside code spans.",
-    request.task === "socratic" ? "Your question itself must cite the supplied source that motivates it, even without an answer or factual claim." : "",
+    request.task === "socratic"
+      ? socraticTurnFraming(request) === "hint"
+        ? "Your hint itself must cite the supplied source that supports it, without revealing the answer."
+        : "Your question itself must cite the supplied source that motivates it, even without an answer or factual claim."
+      : "",
   ].filter(Boolean).join(" ");
   const structuredPlacement = request.responseFormat === "structured"
     ? "Keep citations inside schema string values (for flashcards, put them in each supported back); emit no text outside the JSON."

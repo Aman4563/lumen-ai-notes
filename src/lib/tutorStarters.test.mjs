@@ -92,6 +92,7 @@ test("with a lesson, weak spots come first, then quiz, explain and interview", (
   assert.deepEqual(desktop.map((starter) => starter.kind), ["mistake", "card", "quiz", "explain", "interview", "socratic"]);
   assert.equal(desktop[2].label, "Quiz me on Least squares");
   assert.equal(desktop[5].label, "Teach me Ridge regression step by step");
+  assert.match(desktop[5].prompt, /one focused question at a time\. I have not answered anything yet, so start by asking what I already understand\.$/, "a Socratic starter did not say there is no answer yet (issue #82)");
   assert.deepEqual(desktop.map((starter) => starter.modeId), ["explain", "explain", "quiz", "explain", "interview", "socratic"]);
 });
 

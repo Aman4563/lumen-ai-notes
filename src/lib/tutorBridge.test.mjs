@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TUTOR_BRIDGE_PROMPT_CHARS, assessmentMissesRequest, mistakeTutorRequest } from "./tutorBridge.js";
+import { MISTAKE_WALKTHROUGH_LEAD, TUTOR_BRIDGE_PROMPT_CHARS, assessmentMissesRequest, mistakeTutorRequest } from "./tutorBridge.js";
 
 test("a mistake opens as a Socratic walk-through with clipped fields", () => {
   const request = mistakeTutorRequest({
@@ -15,7 +15,10 @@ test("a mistake opens as a Socratic walk-through with clipped fields", () => {
   assert.equal(request.documentId, "notes/part-05/lasso.md");
   assert.equal(request.label, "Why does lasso produce sparse weights?");
   assert.equal(request.retrievalQuery, "Why does lasso produce sparse weights? The L1 penalty has corners at zero.", "the search words were not the mistake's topic");
-  assert.equal(request.prompt, "Work through this mistake with me, one question at a time. Start by asking what I think went wrong, and do not give me the answer straight away.\n\nQuestion: Why does lasso produce sparse weights?\nExpected answer: The L1 penalty has corners at zero.\nMy answer: Because it squares the weights.");
+  // The server starts a walk-through from its opening words with a
+  // diagnostic question, and explains only after the learner replies (#82).
+  assert.equal(MISTAKE_WALKTHROUGH_LEAD, "Work through this mistake with me, one question at a time. First ask me what I think went wrong, and do not explain it or give me the answer until I reply.");
+  assert.equal(request.prompt, `${MISTAKE_WALKTHROUGH_LEAD}\n\nQuestion: Why does lasso produce sparse weights?\nExpected answer: The L1 penalty has corners at zero.\nMy answer: Because it squares the weights.`);
   // Every field is clipped to 600 characters, and the whole question fits
   // On-device Lite's 1,800-character box: the learner's answer gives way
   // first, and nothing is cut off mid-line by the engine.
