@@ -263,14 +263,22 @@ try {
 
   // Manual capture: the Log-mistake dialog records a categorized entry, and
   // repeating the same prompt merges instead of duplicating.
-  // The closed phone drawer is inert (React's prop); earlier App-level dialogs
-  // can clear that, so re-establish it to prove this dialog restores it.
-  await page.$eval(".app-sidebar", (node) => { node.inert = true; });
-  await clickByText(page, ".review-mistakes button", "Log mistake");
+  // The closed phone drawer is inert (React's prop), and the App dialogs used
+  // above (the card editor) must have left it that way.
+  assert.equal(await page.$eval(".app-sidebar", (node) => node.inert), true, "an earlier dialog re-exposed the closed phone drawer");
+  await page.$$eval(".review-mistakes button", (nodes) => { const opener = nodes.find((node) => node.textContent.includes("Log mistake")); opener?.focus(); opener?.click(); });
   await page.waitForSelector(".mistake-dialog");
   // Issue #54 (REV-8): the dialog renders outside the view and makes the app
   // shell inert while open.
   assert.deepEqual(await page.evaluate(() => [document.querySelector(".mistake-dialog").closest(".view-container") === null, ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "the mistake dialog must inert the background it covers");
+  // The dialog shares the App's modal flag: the shortcut sheet opened over it
+  // and closed again must not re-expose the shell behind the mistake dialog.
+  await page.$eval(".mistake-dialog .modal-actions .button.ghost", (node) => node.focus());
+  await page.keyboard.press("?");
+  await page.waitForSelector(".shortcuts-dialog", { timeout: 5_000 });
+  await page.$$eval(".shortcuts-dialog button", (nodes) => nodes.find((node) => node.textContent.trim() === "Done")?.click());
+  await page.waitForSelector(".shortcuts-dialog", { hidden: true, timeout: 5_000 });
+  assert.deepEqual(await page.evaluate(() => [Boolean(document.querySelector(".mistake-dialog")), ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "closing a dialog opened over the mistake dialog re-exposed the shell behind it");
   const manualFields = await page.$$(".mistake-dialog textarea");
   await manualFields[0].type("Wrote the softmax gradient with the wrong sign");
   await manualFields[1].type("The Jacobian diagonal is p_i(1 - p_i); off-diagonals are -p_i p_j.");
@@ -286,6 +294,8 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("softmax gradient") && card.textContent.includes("Formula")), { timeout: 5_000 });
   await page.waitForFunction(() => !document.querySelector(".mistake-dialog"));
   assert.deepEqual(await page.evaluate(() => [".app-sidebar", ".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)), [true, false, false, false], "closing the dialog must restore the shell and keep the closed phone drawer inert");
+  await page.waitForFunction(() => document.activeElement?.closest(".review-mistakes") && document.activeElement.textContent.includes("Log mistake"), { timeout: 5_000 })
+    .catch(() => assert.fail("closing the mistake dialog must return focus to Log mistake"));
   await clickByText(page, ".review-mistakes button", "Log mistake");
   await page.waitForSelector(".mistake-dialog");
   const repeatFields = await page.$$(".mistake-dialog textarea");

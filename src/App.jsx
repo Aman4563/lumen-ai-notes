@@ -1192,6 +1192,10 @@ export default function App() {
   const [createOpen, setCreateOpen] = useState(false);
   const [manageDocumentId, setManageDocumentId] = useState("");
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Dialogs owned by a route component but portaled outside #main-content
+  // (the review center's mistake dialog) count here; see appModalOpen.
+  const [componentModals, setComponentModals] = useState(0);
+  const trackComponentModal = useCallback((open) => setComponentModals((count) => Math.max(0, count + (open ? 1 : -1))), []);
   const [aiInsert, setAiInsert] = useState(null);
   const [encryptedImport, setEncryptedImport] = useState(null);
   const [assessmentDraft, setAssessmentDraft] = useState(null);
@@ -1240,9 +1244,10 @@ export default function App() {
 
   // Every App-level modal hides the shell behind it. inert/aria-hidden are
   // rendered as props from this one flag, so closing any dialog restores each
-  // region to its own state (the closed mobile drawer stays inert).
+  // region to its own state (the closed mobile drawer stays inert). Portaled
+  // component dialogs join the same flag instead of setting inert themselves.
   const manageDocument = manageDocumentId ? profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null : null;
-  const appModalOpen = settingsOpen || installOpen || createOpen || shortcutsOpen || Boolean(reviewDraft) || Boolean(backupCandidate) || Boolean(manageDocument) || Boolean(encryptedImport) || Boolean(assessmentDraft);
+  const appModalOpen = settingsOpen || installOpen || createOpen || shortcutsOpen || Boolean(reviewDraft) || Boolean(backupCandidate) || Boolean(manageDocument) || Boolean(encryptedImport) || Boolean(assessmentDraft) || componentModals > 0;
   const sidebarHidden = appModalOpen || (compactNavigation && !sidebarOpen);
   sidebarHiddenRef.current = sidebarHidden;
 
@@ -3356,7 +3361,7 @@ export default function App() {
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onInsertConsumed={consumeAiInsert} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onRestoreMistake={restoreMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} /></Suspense>}
+          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onRestoreMistake={restoreMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} onModalChange={trackComponentModal} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
           </ErrorBoundary>
         </main>

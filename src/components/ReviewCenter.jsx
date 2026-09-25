@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { exportReviewCards } from "../lib/cardInterchange.js";
 import { INTERVIEW_ANSWER_SECONDS, INTERVIEW_PREP_SECONDS, selectInterviewRound } from "../lib/interview.js";
 import { ROUND_TYPES, buildTrackRound, normalizeTrackBank } from "../lib/interviewTracks.js";
@@ -7,6 +7,7 @@ import { checkLabAnswer, labMistakeDraft, normalizeLabBank } from "../lib/labs.j
 import { MISTAKE_CATEGORIES, mistakeAnalytics } from "../lib/mistakes.js";
 import { UndoStrip, withUndoSlot } from "./UndoStrip.jsx";
 import { useCommitOnHide } from "../hooks/useCommitOnHide.js";
+import { useModalDialog } from "../hooks/useModalDialog.js";
 import {
   Archive,
   ArchiveRestore,
@@ -54,30 +55,6 @@ import {
 
 const FOCUSABLE = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
 const REVIEW_DECK_PAGE_SIZE = 24;
-const SHELL_REGIONS = ".app-sidebar, .app-topbar, .view-container, .bottom-nav, .update-banner";
-
-/**
- * Background isolation for dialogs the review center opens itself (REV-8).
- * It applies the app's modal convention (inert + aria-hidden on the shell
- * regions) but restores each region's previous state on close, so a closed
- * phone drawer stays inert. The dialog must render outside .view-container
- * (see MistakeDialog's portal) or it would inert itself.
- */
-function useInertShell(active) {
-  useEffect(() => {
-    if (!active) return undefined;
-    const regions = [...document.querySelectorAll(SHELL_REGIONS)].map((region) => ({ region, inert: region.inert, hidden: region.getAttribute("aria-hidden") }));
-    regions.forEach(({ region }) => {
-      region.inert = true;
-      region.setAttribute("aria-hidden", "true");
-    });
-    return () => regions.forEach(({ region, inert, hidden }) => {
-      region.inert = inert;
-      if (hidden === null) region.removeAttribute("aria-hidden");
-      else region.setAttribute("aria-hidden", hidden);
-    });
-  }, [active]);
-}
 
 export function ReviewCardDialog({ draft, onClose, onSave }) {
   const [front, setFront] = useState("");
@@ -173,7 +150,7 @@ export function ReviewCardDialog({ draft, onClose, onSave }) {
 }
 
 /** Manual mistake capture (LEARN-005): log an error you caught yourself. */
-export function MistakeDialog({ open, onClose, onLog }) {
+export function MistakeDialog({ open, onClose, onLog, onModalChange }) {
   const [prompt, setPrompt] = useState("");
   const [expected, setExpected] = useState("");
   const [response, setResponse] = useState("");
@@ -181,43 +158,26 @@ export function MistakeDialog({ open, onClose, onLog }) {
   const [hints, setHints] = useState("");
   const [tags, setTags] = useState("");
   const dialogRef = useRef(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-  useInertShell(open);
+  // The shell goes inert through the App's modal flag (REV-8), so an App
+  // dialog opened or closed over this one never re-exposes the background,
+  // and closing this one restores each region to the state the App renders.
+  // A layout effect sets the flag before the dialog is painted.
+  useLayoutEffect(() => {
+    if (!open || !onModalChange) return undefined;
+    onModalChange(true);
+    return () => onModalChange(false);
+  }, [onModalChange, open]);
+  // Focus, Tab wrap, Escape, and focus return follow the shared dialog contract.
+  useModalDialog(open, dialogRef, { onClose, initialFocus: (dialog) => dialog.querySelector("textarea") });
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open) return;
     setPrompt("");
     setExpected("");
     setResponse("");
     setCategory("misconception");
     setHints("");
     setTags("");
-    const previous = document.activeElement;
-    dialogRef.current?.querySelector("textarea")?.focus();
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = [...(dialogRef.current?.querySelectorAll(FOCUSABLE) || [])];
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      const target = previous;
-      requestAnimationFrame(() => {
-        if (target?.isConnected && !target.closest?.("[inert]")) target.focus?.();
-        else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected) target.focus?.(); });
-      });
-    };
   }, [open]);
 
   if (!open) return null;
@@ -234,7 +194,7 @@ export function MistakeDialog({ open, onClose, onLog }) {
     });
   };
 
-  // Portaled out of .view-container so the shell can be inert behind it.
+  // Portaled out of the route view (#main-content), which goes inert behind it.
   return createPortal(
     <div className="modal-layer review-dialog-layer">
       <button className="modal-scrim" onClick={onClose} aria-label="Close mistake dialog" type="button" />
@@ -470,6 +430,7 @@ export default function ReviewCenter({
   onScheduleCorrective,
   onLogMistake,
   onImportCards,
+  onModalChange,
 }) {
   const [session, setSession] = useState(false);
   const [mistakeFilter, setMistakeFilter] = useState("all");
@@ -924,7 +885,7 @@ export default function ReviewCenter({
           })()}
         </div>
       </section>}
-      <MistakeDialog open={mistakeDialogOpen} onClose={() => setMistakeDialogOpen(false)} onLog={(draft) => { onLogMistake?.(draft); setMistakeDialogOpen(false); }} />
+      <MistakeDialog open={mistakeDialogOpen} onClose={() => setMistakeDialogOpen(false)} onLog={(draft) => { onLogMistake?.(draft); setMistakeDialogOpen(false); }} onModalChange={onModalChange} />
       <section className="review-deck-section" ref={deckSectionRef}>
         <div className="section-heading review-deck-heading"><div><span className="eyebrow">Your knowledge deck</span><h2 ref={deckHeadingRef} tabIndex={-1}>{deckItems.length} {showArchived ? "archived" : "active"} card{deckItems.length === 1 ? "" : "s"}</h2></div><div className="review-deck-tools"><label className="review-deck-search"><Search size={16} aria-hidden="true" /><input value={deckQuery} onChange={(event) => setDeckQuery(event.target.value)} aria-label="Search review cards" placeholder="Search cards or tags" /></label><button className="button ghost" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived} type="button">{showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />} {showArchived ? "Show active" : `Archived (${stats.archived})`}</button><button className="button ghost" onClick={exportDeck} disabled={!profile.reviewItems.some((item) => !item.archived)} title="Download the deck as a shareable JSON file (authoring fields only — no schedule)" type="button"><Download size={16} /> Export deck</button><input ref={importInputRef} type="file" accept=".json,application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onImportCards?.(file); }} /><button className="button ghost" onClick={() => importInputRef.current?.click()} disabled={!onImportCards} title="Import a lumen.cards.v1 JSON file; duplicates are skipped and imported cards start as new" type="button"><Upload size={16} /> Import</button></div></div>
         {deckItems.length ? <><p className="review-deck-range">Showing {deckPageStart + 1}–{deckPageStart + visibleDeckItems.length} of {deckItems.length}</p><div className="review-deck-list">{visibleDeckItems.map((item) => { const source = documentMap.get(item.documentId); return <article className={item.suspended ? "review-deck-card suspended" : "review-deck-card"} data-card-id={item.id} key={item.id}><div className="review-card-state"><Brain size={18} /><span>{item.suspended ? "Paused" : isNewReviewItem(item) ? "New" : `${formatInterval(item.intervalDays)} interval`}</span><small>{REVIEW_CARD_TYPES.find((type) => type.id === item.type)?.label}</small></div><div className="review-card-copy"><div className="review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.front) }} /><div className="review-deck-answer review-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.back) }} />{item.tags?.length > 0 && <div className="review-tags">{item.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}{source && <button className="text-button" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={14} /> {source.title}</button>}</div><div className="review-card-actions"><button className="icon-button" onClick={() => onEdit(item)} aria-label="Edit review card" title="Edit" type="button"><Edit3 size={17} /></button><button className="icon-button" onClick={() => onToggleSuspend(item.id)} aria-label={item.suspended ? "Resume review card" : "Pause review card"} title={item.suspended ? "Resume" : "Pause"} type="button">{item.suspended ? <Play size={17} /> : <Pause size={17} />}</button><button className="icon-button" onClick={() => actOnDeckCard(onToggleArchive, item.id)} aria-label={item.archived ? "Restore review card" : "Archive review card"} title={item.archived ? "Restore" : "Archive"} type="button">{item.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</button><button className="icon-button danger" onClick={() => actOnDeckCard(onDelete, item.id)} aria-label="Delete review card" title="Delete permanently" type="button"><Trash2 size={17} /></button></div></article>; })}</div>{deckPageCount > 1 && <nav className="review-deck-pagination" aria-label="Review card pages"><span aria-live="polite" aria-atomic="true">Page {visibleDeckPage} of {deckPageCount}</span><div><button className="button ghost" onClick={() => changeDeckPage(1)} disabled={visibleDeckPage === 1} aria-label="First review card page" type="button">First</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage - 1)} disabled={visibleDeckPage === 1} aria-label="Previous review card page" type="button">Previous</button><button className="button ghost" onClick={() => changeDeckPage(visibleDeckPage + 1)} disabled={visibleDeckPage === deckPageCount} aria-label="Next review card page" type="button">Next</button><button className="button ghost" onClick={() => changeDeckPage(deckPageCount)} disabled={visibleDeckPage === deckPageCount} aria-label="Last review card page" type="button">Last</button></div></nav>}</> : <div className="empty-state review-empty"><Brain size={34} /><h2>{normalizedDeckQuery ? "No matching review card" : showArchived ? "No archived cards" : "Build your first recall prompt"}</h2><p>{normalizedDeckQuery ? "Try a broader prompt, answer, type, or tag." : "Create one manually, or turn any clipping or highlight into a source-linked card."}</p>{!normalizedDeckQuery && !showArchived && <button className="button primary" onClick={() => onCreate(null)} type="button">Create first card</button>}</div>}
