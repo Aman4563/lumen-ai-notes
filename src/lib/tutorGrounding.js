@@ -1,3 +1,15 @@
+// A deictic word must name lesson material itself: "the current state of the
+// art" or "the open problems in RL" are general questions, not requests
+// about the open lesson.
+const OPEN_LESSON_REFERENCE = /\b(?:this|these|that|current|open|opened|selected|highlighted)\s+(?:lessons?|lectures?|chapters?|sections?|material|excerpts?|passages?|pages?|notes?|topics?|documents?|readings?|text)\b/iu;
+
+/**
+ * True when a Library-first request is about the lesson the learner has open
+ * ("explain this lesson", "the selected material", an Ask AI excerpt). Such
+ * wording shares no terms with the lesson, so retrieval must reserve it.
+ */
+export const refersToOpenLesson = (prompt) => OPEN_LESSON_REFERENCE.test(String(prompt || ""));
+
 /** A web query is allowed only when both independent gates are true. */
 export const shouldUseWebFallback = ({ learnerAllowedWeb, trace }) => (
   learnerAllowedWeb === true && trace?.webFallback?.recommended === true

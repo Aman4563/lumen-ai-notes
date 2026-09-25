@@ -22,6 +22,33 @@ export async function auditViewportScrolling({ browser, baseUrl, artifactDirecto
     // iframe embedding, so retain its security headers and use a regular tab.
     await page.goto(`${baseUrl}/#/home`, { waitUntil: "networkidle2" });
     await page.waitForSelector(".welcome-block");
+    // Seed one completed tutor turn: hidden per-message status text once
+    // extended the page far below the composer, which an empty tutor hides.
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("study-data")) request.result.createObjectStore("study-data");
+      };
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const store = request.result.transaction("study-data", "readwrite").objectStore("study-data");
+        const get = store.get("profile");
+        get.onerror = () => reject(get.error);
+        get.onsuccess = () => {
+          const profile = get.result && typeof get.result === "object" ? get.result : {};
+          const createdAt = new Date().toISOString();
+          profile.aiTutorHistory = [
+            { id: "viewport-audit-user", role: "user", content: "Why does repeated holdout inspection leak information?", mode: "explain", createdAt },
+            { id: "viewport-audit-answer", role: "assistant", content: "## Holdout evaluation\n\nEvery look at the holdout lets later choices adapt to it, so its estimate becomes optimistic.\n\n- Freeze choices first.\n- Look once.", mode: "explain", createdAt, responseProfile: "balanced", durationMs: 1_200 },
+          ];
+          const put = store.put(profile, "profile");
+          put.onerror = () => reject(put.error);
+          put.onsuccess = () => resolve();
+        };
+      };
+    }));
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector(".welcome-block");
     const settle = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const clickLabel = async (selector, label) => {
       const buttons = await page.$$(selector);

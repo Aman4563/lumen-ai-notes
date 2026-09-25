@@ -337,7 +337,13 @@ Critical history distinction:
 - Mac tutor history is automatically retained as disclosed local profile data, capped at
   50 messages, clearable, and included in backups;
 - phone tutor history is App/React session memory, survives route/engine switches, but is
-  cleared by a full reload and excluded from backups.
+  cleared by a full reload and excluded from backups;
+- an unsent Mac tutor question with its mode, scope, depth and profile is kept per tab in
+  sessionStorage (`lumen.ai.tutor-draft.v1`) so route and engine switches do not lose it;
+  it never enters the profile or backups and never includes web-fallback permission;
+- leaving the Mac tutor mid-answer saves the question with a visible `incomplete` answer
+  (partial text, or an interrupted notice). Incomplete answers are never sent back to the
+  model as conversation memory.
 
 ## 5. AI product behavior: exact current semantics
 
@@ -381,6 +387,13 @@ Source scopes are:
 A learner can ask a free question without opening an article. The old “only opened article
 is usable” behavior is no longer the default.
 
+Library first also reserves up to six passages of the open lesson when the request is about
+it (“this lesson”, “the selected material”, an unedited mode default, or a Reader Ask AI
+excerpt), because such wording never matches the lesson lexically. Reserved passages lead
+the evidence, go through the same byte fit and `[S#]` labelling, and do not recommend web
+fallback. **Choose sources** lists the whole catalog; a lecture's text loads through the
+Reader's cache only when ticked, still capped at eight.
+
 ### 5.3 What “Library first, then web” actually means
 
 This phrase has a precise implementation meaning:
@@ -395,6 +408,10 @@ This phrase has a precise implementation meaning:
    unavailable, nothing matches, or lexical coverage/confidence is weak;
 5. web is eligible only if the learner separately allowed it for that request;
 6. strong local evidence keeps web off even when permission was checked.
+
+When an authorized search ran but kept no usable web evidence, the server may answer from
+the library with an in-text notice and report `webSearch.requested && !used` with
+`rounds > 0`. The Mac tutor shows that as its failed-fallback badge, never as “not needed”.
 
 This is **pre-generation retrieval sufficiency**, not “generate an answer, have another
 judge decide it is inadequate, then browse.” If answer-level post-generation insufficiency
@@ -480,6 +497,12 @@ while it is generated. Buffering prevents a fluent unsupported draft from appear
 remaining after citation validation rejects it. The UI now says grounded text appears after
 completion/citation validation instead of misleadingly saying it is waiting for a first
 token.
+
+While text streams, the Mac tutor follows it inside the conversation only, never the page.
+Following only ever scrolls down, so any upward move by the learner stops it and scrolling
+back near the end resumes it; iOS rubber-band positions past either end are ignored. Phase
+announcements come only from the request still in flight, so a stale phase can never follow
+(and replace) the outcome announcement.
 
 If product leadership later wants provisional grounded drafts, design an explicit
 “unverified draft” state, removal behavior, accessibility announcement, persistence rule,
@@ -693,6 +716,13 @@ worker termination is authoritative. Cancellation can terminate an unresponsive 
 clear engine state, update status, and require an explicit reload. Retry is gated so it
 cannot silently reload a model whose status became unloaded.
 
+Leaving On-device Lite (another route, or switching to Mac local) cancels in-flight work at
+once but schedules the unload: returning within 45 seconds keeps the loaded model instead
+of reloading roughly 879 MiB. `pagehide` or the page becoming hidden releases it
+immediately. Tests inject a shorter `releaseDelayMs` on the engine. The chosen engine is a
+per-browser UI preference (`lumen.ai.engine.v1` in localStorage), never profile or backup
+data.
+
 These behaviors are strongly mocked/tested but have not been accepted under actual iOS
 suspend, GPU reset, memory pressure, storage eviction, or long generation.
 
@@ -715,7 +745,14 @@ GFM headings, emphasis, lists, blockquotes, tables, links, code, code-copy contr
 `$...$`, display `$$...$$`, and compatible fenced Mermaid. Model HTML is never trusted.
 
 Structured Quiz/Flashcard/Study-plan results use dedicated validated React components.
-They are not general Markdown/KaTeX/Mermaid surfaces. Keep documentation scoped accordingly.
+Each string field renders through a sanitized inline variant of the tutor renderer: KaTeX
+math, emphasis, code spans and citation controls, but never blocks, fences or Mermaid.
+
+Tutor answers shift Markdown headings to h4–h6 below the tutor's h2 and a per-message h3
+(classes keep the visual size). Wide tables and display equations sit in `.ai-tutor__scroll`
+wrappers that become named, focusable groups only when they overflow. Copy and conversation
+export produce the Markdown source (structured results as readable Markdown), a per-answer
+`Sources:` list resolving `[S#]`/`[W#]`, and an incomplete-answer marker.
 
 Mermaid is lazy-loaded only when a completed surface actually contains a supported fence.
 One shared serialized renderer is used by Reader, Teaching Mode, Mac tutor, and phone tutor

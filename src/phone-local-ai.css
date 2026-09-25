@@ -17,7 +17,7 @@
 .phone-local-ai-heading > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
 .phone-local-ai-heading small { color: var(--ink-soft); font-size: .78rem; }
 .phone-local-ai-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; color: var(--teal); background: var(--teal-soft); }
-.phone-local-ai-badge { margin-left: auto; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--gold) 32%, var(--line)); border-radius: 999px; font-size: .72rem; font-weight: 750; color: color-mix(in srgb, var(--gold) 45%, var(--ink)); background: var(--gold-soft); }
+.phone-local-ai-badge { flex: none; margin-left: auto; white-space: nowrap; overflow-wrap: normal; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--gold) 32%, var(--line)); border-radius: 999px; font-size: .72rem; font-weight: 750; color: color-mix(in srgb, var(--gold) 45%, var(--ink)); background: var(--gold-soft); }
 .phone-local-ai-badge.ready { border-color: color-mix(in srgb, var(--teal) 32%, var(--line)); color: color-mix(in srgb, var(--teal) 45%, var(--ink)); background: var(--teal-soft); }
 .phone-local-ai-badge.blocked { border-color: color-mix(in srgb, var(--coral) 32%, var(--line)); color: color-mix(in srgb, var(--coral) 45%, var(--ink)); background: var(--coral-soft); }
 .phone-local-ai-copy { margin: 0; color: var(--ink-soft); line-height: 1.55; }
@@ -53,3 +53,7 @@
 @media (prefers-reduced-motion: reduce) {
   .phone-local-ai .spin { animation: none; }
 }
+
+/* 44px touch targets for the disclosure rows. */
+.phone-local-ai-message > summary { margin-block: -11px; padding-block: 14px; cursor: pointer; }
+.phone-local-ai-message[open] > summary { margin-bottom: 0; }

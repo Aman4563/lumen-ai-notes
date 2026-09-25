@@ -14,6 +14,7 @@ export const LIBRARY_RETRIEVAL_LIMITS = Object.freeze({
   documentsReturned: 8,
   passages: 12,
   passagesPerDocument: 3,
+  reservedPassages: 6,
   bytes: 48_000,
   passageBytes: 7_000,
 });
@@ -297,7 +298,7 @@ const sourceForDocument = async (record, { edits, personalNotes, loadSource, sig
   return cleanText(loaded);
 };
 
-const makeCandidatePassages = (record, markdown, personalNote, query, selectedDocumentId) => {
+const makeCandidatePassages = (record, markdown, personalNote, query, selectedDocumentId, { includeUnmatched = false } = {}) => {
   const revision = cleanText(record.document?.updatedAt || record.document?.revision, 120).trim()
     || hashText(markdown);
   const sourceType = record.document?.source === "custom" || record.id.startsWith("custom/") ? "custom" : "builtin";
@@ -309,7 +310,9 @@ const makeCandidatePassages = (record, markdown, personalNote, query, selectedDo
   sections.forEach((section, sectionIndex) => {
     sectionPassages(section).forEach((text, passageIndex) => {
       const result = lexicalScore({ title: record.document?.title, metadata: section.section, body: markdownToSearchText(text) }, query);
-      if (!result.matches) return;
+      // A reserved (open) lesson contributes passages even when a deictic
+      // request such as "explain this lesson" shares no terms with them.
+      if (!result.matches && !includeUnmatched) return;
       const selectionBoost = record.id === selectedDocumentId ? 1.5 : 0;
       const noteBoost = section.section === "Personal note" ? 1.25 : 0;
       const score = result.score + selectionBoost + noteBoost + Math.min(1.5, Math.log2(Math.max(2, text.length)) / 8);
@@ -327,13 +330,49 @@ const makeCandidatePassages = (record, markdown, personalNote, query, selectedDo
         sourceType: section.section === "Personal note" ? "personal-note" : sourceType,
         score,
         coverage: result.coverage,
+        matched: result.matches > 0,
+        ordinal: candidates.length,
       });
     });
   });
   return candidates;
 };
 
-const selectDiversifiedPassages = (candidates, limits) => {
+/**
+ * Picks the open lesson's passages for a request about "this lesson": its
+ * opening passage, then its best query matches, then its earliest remaining
+ * sections, preferring one passage per section. Returned in reading order.
+ */
+const reservedDocumentPassages = (candidates, documentId, count) => {
+  if (!documentId || count < 1) return [];
+  const all = candidates.filter((candidate) => candidate.documentId === documentId)
+    .sort((left, right) => left.ordinal - right.ordinal);
+  // A bare heading line is not evidence.
+  const body = (candidate) => candidate.text.replace(/^#+\s.*$/gmu, "").trim().length;
+  const own = all.some((candidate) => body(candidate) >= 40) ? all.filter((candidate) => body(candidate) >= 40) : all;
+  if (!own.length) return [];
+  const opener = own.find((candidate) => body(candidate) >= 160) || own[0];
+  const picks = [opener];
+  const sections = new Set([opener.section]);
+  const take = (pool, distinctSections) => {
+    for (const candidate of pool) {
+      if (picks.length >= count) return;
+      if (picks.includes(candidate) || (distinctSections && sections.has(candidate.section))) continue;
+      picks.push(candidate);
+      sections.add(candidate.section);
+    }
+  };
+  const matched = own.filter((candidate) => candidate.matched)
+    .sort((left, right) => right.score - left.score || left.ordinal - right.ordinal);
+  take(matched, true);
+  take(own, true);
+  take(matched, false);
+  take(own, false);
+  picks.forEach((candidate) => { candidate.reserved = true; });
+  return picks.sort((left, right) => left.ordinal - right.ordinal);
+};
+
+const selectDiversifiedPassages = (candidates, limits, reserved = []) => {
   const sorted = [...candidates].sort((left, right) => right.score - left.score
     || right.coverage - left.coverage
     || left.documentId.localeCompare(right.documentId)
@@ -342,25 +381,13 @@ const selectDiversifiedPassages = (candidates, limits) => {
   const selected = [];
   const counts = new Map();
   const admittedDocuments = new Set();
+  const reservedCounts = new Map();
+  reserved.forEach((candidate) => reservedCounts.set(candidate.documentId, (reservedCounts.get(candidate.documentId) || 0) + 1));
   let bytes = 0;
   let budgetTruncated = false;
 
-  while (selected.length < limits.maxPassages) {
-    let bestIndex = -1;
-    let bestAdjustedScore = -Infinity;
-    sorted.forEach((passage, index) => {
-      if (passage.selected) return;
-      const count = counts.get(passage.documentId) || 0;
-      if (count >= limits.maxPassagesPerDocument) return;
-      if (!admittedDocuments.has(passage.documentId) && admittedDocuments.size >= limits.maxDocuments) return;
-      const adjusted = passage.score * (count ? 0.72 / count : 1);
-      if (adjusted > bestAdjustedScore) {
-        bestAdjustedScore = adjusted;
-        bestIndex = index;
-      }
-    });
-    if (bestIndex < 0) break;
-    const candidate = sorted[bestIndex];
+  // Returns false when the byte budget is exhausted.
+  const admit = (candidate) => {
     candidate.selected = true;
     const metadataBytes = byteLength([
       candidate.id,
@@ -374,14 +401,14 @@ const selectDiversifiedPassages = (candidates, limits) => {
     const remaining = limits.maxBytes - bytes - metadataBytes;
     if (remaining < 180) {
       budgetTruncated = true;
-      break;
+      return false;
     }
     const maximum = Math.min(limits.maxPassageBytes, remaining);
     const text = clipUtf8(candidate.text, maximum);
     const textBytes = byteLength(text);
     if (!text || textBytes > remaining) {
       budgetTruncated = true;
-      continue;
+      return true;
     }
     selected.push({ ...candidate, text, rank: selected.length + 1 });
     delete selected.at(-1).selected;
@@ -389,6 +416,31 @@ const selectDiversifiedPassages = (candidates, limits) => {
     admittedDocuments.add(candidate.documentId);
     counts.set(candidate.documentId, (counts.get(candidate.documentId) || 0) + 1);
     if (text !== candidate.text) budgetTruncated = true;
+    return true;
+  };
+
+  // Reserved open-lesson passages go first, through the same byte accounting.
+  for (const candidate of reserved) {
+    if (selected.length >= limits.maxPassages) break;
+    if (!admit(candidate)) return { passages: selected, bytes, budgetTruncated };
+  }
+
+  while (selected.length < limits.maxPassages) {
+    let bestIndex = -1;
+    let bestAdjustedScore = -Infinity;
+    sorted.forEach((passage, index) => {
+      if (passage.selected) return;
+      const count = counts.get(passage.documentId) || 0;
+      if (count >= Math.max(limits.maxPassagesPerDocument, reservedCounts.get(passage.documentId) || 0)) return;
+      if (!admittedDocuments.has(passage.documentId) && admittedDocuments.size >= limits.maxDocuments) return;
+      const adjusted = passage.score * (count ? 0.72 / count : 1);
+      if (adjusted > bestAdjustedScore) {
+        bestAdjustedScore = adjusted;
+        bestIndex = index;
+      }
+    });
+    if (bestIndex < 0) break;
+    if (!admit(sorted[bestIndex])) break;
   }
   return { passages: selected, bytes, budgetTruncated };
 };
@@ -397,8 +449,11 @@ const confidenceFor = (passages, query, { indexAvailable, failedLoads }) => {
   if (!passages.length || !query.terms.length) {
     return { score: 0, level: "none", coverage: 0, lexicalStrength: 0, diversity: 0 };
   }
-  const top = passages[0];
-  const coverage = Math.max(...passages.slice(0, 3).map((passage) => passage.coverage));
+  // Reserved open-lesson passages lead the list in reading order; judge the
+  // evidence by the relevance-ordered selection that follows them.
+  const ranked = [...passages.filter((passage) => !passage.reserved), ...passages.filter((passage) => passage.reserved)];
+  const top = ranked[0];
+  const coverage = Math.max(...ranked.slice(0, 3).map((passage) => passage.coverage));
   const lexicalStrength = Math.min(1, top.score / Math.max(18, 8 + query.terms.length * 5));
   const uniqueDocuments = new Set(passages.map((passage) => passage.documentId)).size;
   const diversity = Math.min(1, uniqueDocuments / Math.min(3, passages.length));
@@ -421,6 +476,11 @@ const fallbackDecision = ({ rawQuery, confidence, indexAvailable, passages }) =>
     recommended: true,
     code: "time_sensitive_question",
     reason: "The question asks for current or version-specific information that local notes may not contain.",
+  };
+  if (passages.some((passage) => passage.reserved)) return {
+    recommended: false,
+    code: "open_lesson_reserved",
+    reason: "The request is about the open lesson, and that lesson's passages are attached.",
   };
   if (!indexAvailable && confidence.level !== "high") return {
     recommended: true,
@@ -508,7 +568,15 @@ export const retrieveLibrary = async (queryValue, options = {}) => {
     .sort((left, right) => right.lexical.score - left.lexical.score
       || right.lexical.coverage - left.lexical.coverage
       || left.id.localeCompare(right.id));
+  // A request about the open lesson ("explain this lesson", an unedited mode
+  // default, or an Ask AI excerpt) reserves that lesson's passages, whether
+  // or not its generic wording matches the lesson lexically.
+  const reservedCount = boundedInteger(options.reservedPassages, 0, Math.min(LIBRARY_RETRIEVAL_LIMITS.reservedPassages, limits.maxPassages), 0);
+  const reservedRecord = reservedCount && options.reservedDocumentId
+    ? records.find((record) => record.id === options.reservedDocumentId) || null
+    : null;
   const candidateRecords = matched.slice(0, limits.maxCandidateDocuments);
+  if (reservedRecord && !candidateRecords.includes(reservedRecord)) candidateRecords.push(reservedRecord);
   const loadStartedAt = globalThis.performance?.now?.() ?? Date.now();
   const loadedResults = await Promise.all(candidateRecords.map(async (record) => {
     try {
@@ -527,9 +595,13 @@ export const retrieveLibrary = async (queryValue, options = {}) => {
   throwIfAborted(options.signal);
 
   const passageCandidates = loadedResults.flatMap(({ record, markdown }) => (
-    makeCandidatePassages(record, markdown, record.personal, query, options.selectedDocumentId)
+    makeCandidatePassages(record, markdown, record.personal, query, options.selectedDocumentId, { includeUnmatched: record === reservedRecord })
   ));
-  const selection = selectDiversifiedPassages(passageCandidates, limits);
+  const reserved = reservedRecord ? reservedDocumentPassages(passageCandidates, reservedRecord.id, reservedCount) : [];
+  const reservedIds = new Set(reserved.map((candidate) => candidate.id));
+  // Unmatched open-lesson passages are eligible only as reserved passages.
+  const eligible = passageCandidates.filter((candidate) => candidate.matched || reservedIds.has(candidate.id));
+  const selection = selectDiversifiedPassages(eligible, limits, reserved);
   const failedLoads = loadedResults.filter((result) => result.error);
   const confidence = confidenceFor(selection.passages, query, { indexAvailable: corpusSearchComplete, failedLoads: failedLoads.length });
   const webFallback = fallbackDecision({ rawQuery, confidence, indexAvailable: corpusSearchComplete, passages: selection.passages });
@@ -551,7 +623,7 @@ export const retrieveLibrary = async (queryValue, options = {}) => {
   const finishedAt = globalThis.performance?.now?.() ?? Date.now();
 
   return {
-    passages: selection.passages.map(({ coverage, ...passage }) => ({
+    passages: selection.passages.map(({ coverage, matched: _matched, ordinal: _ordinal, ...passage }) => ({
       ...passage,
       score: Number(passage.score.toFixed(3)),
     })),
@@ -574,6 +646,8 @@ export const retrieveLibrary = async (queryValue, options = {}) => {
         failedDocuments: failedLoads.map((result) => result.record.id).slice(0, 8),
         returnedDocuments: sources.length,
         returnedPassages: selection.passages.length,
+        reservedDocumentId: reservedRecord ? reservedRecord.id : "",
+        reservedPassages: selection.passages.filter((passage) => reservedIds.has(passage.id)).length,
       },
       budget: {
         maximumBytes: limits.maxBytes,

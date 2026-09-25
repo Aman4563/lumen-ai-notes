@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import { Cpu, Laptop } from "lucide-react";
 import { recoverableImport } from "../lib/chunkRecovery.js";
 import "../ai-learning-studio.css";
@@ -19,9 +19,34 @@ export const AI_ENGINE_OPTIONS = Object.freeze([
   },
 ]);
 
+// The engine choice is a per-browser UI preference, not study data: it stays
+// out of the profile and backups and survives route changes and reloads.
+const ENGINE_PREFERENCE_KEY = "lumen.ai.engine.v1";
+
+const readEnginePreference = () => {
+  try {
+    const stored = globalThis.localStorage?.getItem(ENGINE_PREFERENCE_KEY);
+    return AI_ENGINE_OPTIONS.some((option) => option.id === stored) ? stored : "mac-local";
+  } catch {
+    return "mac-local";
+  }
+};
+
+const rememberEnginePreference = (engine) => {
+  try {
+    globalThis.localStorage?.setItem(ENGINE_PREFERENCE_KEY, engine);
+  } catch {
+    // Restricted storage only loses the preference, never the engine switch.
+  }
+};
+
 export default function AiLearningStudio(props) {
-  const [engineMode, setEngineMode] = useState("mac-local");
+  const [engineMode, setEngineModeState] = useState(readEnginePreference);
   const [interactionLocked, setInteractionLocked] = useState(false);
+  const setEngineMode = useCallback((engine) => {
+    setEngineModeState(engine);
+    rememberEnginePreference(engine);
+  }, []);
 
   return (
     <section className="ai-learning-studio" data-ai-engine={engineMode}>
@@ -58,12 +83,14 @@ export default function AiLearningStudio(props) {
 
       {engineMode === "mac-local" ? (
         <Suspense fallback={<div className="view-loading" role="status">Opening the Mac-local tutor…</div>}>
-          <AiTutor {...props} onInteractionChange={setInteractionLocked} />
+          <AiTutor {...props} onInteractionChange={setInteractionLocked} onUseOnDevice={() => setEngineMode("phone-local")} />
         </Suspense>
       ) : (
         <Suspense fallback={<div className="view-loading" role="status">Opening the on-device workspace…</div>}>
           <PhoneLocalAiTutor
             sources={props.sources}
+            insertPrompt={props.insertPrompt}
+            onInsertConsumed={props.onInsertConsumed}
             retrieveLibrary={props.retrieveLibrary}
             initialHistory={props.phoneSessionHistory}
             onHistoryChange={props.onPhoneSessionHistoryChange}

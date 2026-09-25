@@ -20,6 +20,9 @@ import {
   WifiOff,
 } from "lucide-react";
 import PhoneLocalAiSettings from "./PhoneLocalAiSettings";
+import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
+import { useScrollableRegions } from "../lib/useScrollableRegions.js";
+import { revealFocusedField } from "../lib/revealField.js";
 import {
   getPhoneLocalAiEngine,
   inspectPhoneLocalAiRequestFit,
@@ -28,10 +31,8 @@ import {
   selectCitablePhoneSources,
   selectCompletedPhoneHistory,
 } from "../lib/phoneLocalAi.js";
-import {
-  phoneTutorMarkdownPlainText,
-  renderPhoneTutorMarkdown,
-} from "../lib/phoneTutorMarkdown.js";
+import { renderPhoneTutorInlineMarkdown, renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
+import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../phone-local-ai-tutor.css";
@@ -81,6 +82,34 @@ const cleanText = (value, maximum = 20_000) => String(value ?? "")
 const sourceText = (source) => cleanText(source?.text ?? source?.content ?? source?.excerpt ?? source?.markdown ?? "", 100_000);
 const sourceId = (source, index) => cleanText(source?.id ?? source?.documentId ?? source?.slug, 240) || `phone-source-${index}`;
 const createId = () => globalThis.crypto?.randomUUID?.() || `phone-ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+// Leaving On-device Lite releases its ~880 MB of GPU memory, but not at once:
+// coming back within the grace period (a quick look at a lesson, or toggling
+// engines) keeps the loaded model instead of reloading it. Hiding or leaving
+// the page releases it immediately. An injected engine may shorten the delay.
+const MODEL_RELEASE_DELAY_MS = 45_000;
+let pendingModelRelease = null;
+
+const cancelModelRelease = (engine) => {
+  if (!pendingModelRelease || pendingModelRelease.engine !== engine) return;
+  clearTimeout(pendingModelRelease.timer);
+  globalThis.removeEventListener?.("pagehide", pendingModelRelease.releaseNow);
+  globalThis.document?.removeEventListener("visibilitychange", pendingModelRelease.releaseWhenHidden);
+  pendingModelRelease = null;
+};
+
+const scheduleModelRelease = (engine) => {
+  if (pendingModelRelease) pendingModelRelease.releaseNow();
+  const releaseNow = () => {
+    cancelModelRelease(engine);
+    void engine.unload?.().catch(() => {});
+  };
+  const releaseWhenHidden = () => { if (globalThis.document?.visibilityState === "hidden") releaseNow(); };
+  const delay = Number.isFinite(engine.releaseDelayMs) ? Math.max(0, engine.releaseDelayMs) : MODEL_RELEASE_DELAY_MS;
+  pendingModelRelease = { engine, releaseNow, releaseWhenHidden, timer: setTimeout(releaseNow, delay) };
+  globalThis.addEventListener?.("pagehide", releaseNow);
+  globalThis.document?.addEventListener("visibilitychange", releaseWhenHidden);
+};
 
 const writeClipboard = async (value) => {
   const text = String(value || "");
@@ -249,6 +278,7 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
   );
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
+  useScrollableRegions(responseRef, html);
   const handleClick = async (event) => {
     const codeButton = event.target.closest?.(".code-copy");
     if (codeButton) {
@@ -330,60 +360,47 @@ const EvidenceDetails = ({ message, onNavigateSource }) => {
 };
 
 /**
- * Renders [S#]/[W#] labels inside structured string fields as the same
- * navigable citations the prose surface produces. Text is emitted as React
- * nodes, never HTML, so it stays safe inside legends, labels, and list items.
+ * Renders a structured string field (quiz option, card side, plan step) as
+ * sanitized inline Markdown: KaTeX math, emphasis, code spans, and the same
+ * navigable [S#]/[W#] citation controls the prose surface produces.
  */
 const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSource }) => {
-  const sourceMap = useMemo(() => new Map(sources.map((source, index) => [
-    `[S${Number.isSafeInteger(source?.citationNumber) ? source.citationNumber : index + 1}]`,
-    source,
-  ])), [sources]);
-  const webMap = useMemo(() => new Map(citations.map((citation, index) => [
-    `[W${Number.isSafeInteger(citation?.index) ? citation.index : index + 1}]`,
-    citation,
-  ])), [citations]);
-  return String(text ?? "").split(/(\[(?:S|W)\d+\])/g).map((part, index) => {
-    const match = part.match(/^\[([SW])\d+\]$/);
-    if (!match) return <span key={`${index}-${part.slice(0, 12)}`}>{part}</span>;
-    if (match[1] === "W") {
-      const web = webMap.get(part);
-      if (!web) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited web evidence that was not supplied" key={`${part}-${index}`}>{part}</span>;
-      return <a className="ai-tutor__citation" href={web.url} target="_blank" rel="noopener noreferrer" aria-label={`Open web citation ${part}: ${web.title}`} key={`${part}-${index}`}>{part}</a>;
-    }
-    const source = sourceMap.get(part);
-    if (!source) return <span className="ai-tutor__citation ai-tutor__citation--missing" title="The response cited a source that was not supplied" key={`${part}-${index}`}>{part}</span>;
-    return (
-      <button
-        className="ai-tutor__citation"
-        type="button"
-        aria-label={`Open citation ${part}: ${source.title}`}
-        onClick={() => onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor })}
-        key={`${part}-${index}`}
-      >
-        {part}
-      </button>
-    );
-  });
+  const markup = useMemo(() => ({ __html: renderPhoneTutorInlineMarkdown(text, sources, citations) }), [citations, sources, text]);
+  const handleClick = (event) => {
+    const citationButton = event.target.closest?.("[data-ai-citation]");
+    if (!citationButton) return;
+    // A citation inside a quiz option label must not also pick that option.
+    event.preventDefault();
+    const requested = Number(citationButton.dataset.aiCitation?.match(/^S(\d+)$/)?.[1]);
+    const source = Number.isSafeInteger(requested)
+      ? sources.find((candidate, index) => (Number.isSafeInteger(candidate?.citationNumber) ? candidate.citationNumber : index + 1) === requested)
+      : null;
+    if (source) onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor });
+  };
+  // renderPhoneTutorInlineMarkdown sanitizes model-authored HTML with DOMPurify.
+  return <span className="phone-tutor__inline-md" onClick={handleClick} dangerouslySetInnerHTML={markup} />;
 };
 
 const QuizResult = ({ quiz, messageId, sources = [], citations = [], onNavigateSource }) => {
   const [answers, setAnswers] = useState({});
   const [revealed, setRevealed] = useState({});
+  // "Check answer" is replaced by its feedback; focus follows it there.
+  const focusFeedbackRef = useRef("");
   const cite = (text) => <InlineFieldCitations text={text} sources={sources} citations={citations} onNavigateSource={onNavigateSource} />;
   return (
     <div className="phone-tutor__quiz">
       <h4>{quiz.title}</h4><p>{cite(quiz.instructions)}</p>
       {quiz.questions.map((question, questionIndex) => (
         <fieldset key={question.id}>
-          <legend>{questionIndex + 1}. {cite(question.prompt)}</legend>
+          <legend><span className="phone-tutor__quiz-number">{questionIndex + 1}.</span> {cite(question.prompt)}</legend>
           {question.options.map((option, optionIndex) => {
             const checked = answers[question.id] === optionIndex;
             const open = revealed[question.id];
             const correct = optionIndex === question.correctIndex;
-            return <label className={open && correct ? "is-correct" : open && checked ? "is-incorrect" : ""} key={`${question.id}-${optionIndex}`}><input type="radio" name={`${messageId}-${question.id}`} checked={checked} disabled={open} onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} /><span>{cite(option)}</span></label>;
+            const mark = open && correct ? (checked ? "Your answer · correct" : "Correct answer") : open && checked ? "Your answer · incorrect" : "";
+            return <label className={open && correct ? "is-correct" : open && checked ? "is-incorrect" : ""} key={`${question.id}-${optionIndex}`}><input type="radio" name={`${messageId}-${question.id}`} checked={checked} disabled={open} onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} /><span><strong>{String.fromCharCode(65 + optionIndex)}.</strong> {cite(option)}{mark && <small className="phone-tutor__option-mark">{mark}</small>}</span></label>;
           })}
-          {!revealed[question.id] ? <button type="button" disabled={!Number.isSafeInteger(answers[question.id])} onClick={() => setRevealed((current) => ({ ...current, [question.id]: true }))}>Check answer</button> : <div className="phone-tutor__quiz-feedback" role="status"><strong>{answers[question.id] === question.correctIndex ? "Correct" : `Answer ${question.correctIndex + 1} is correct.`}</strong><p>{cite(question.explanation)}</p></div>}
+          {!revealed[question.id] ? <button type="button" disabled={!Number.isSafeInteger(answers[question.id])} onClick={() => { focusFeedbackRef.current = question.id; setRevealed((current) => ({ ...current, [question.id]: true })); }}>Check answer</button> : <div className="phone-tutor__quiz-feedback" tabIndex={-1} ref={(node) => { if (node && focusFeedbackRef.current === question.id) { focusFeedbackRef.current = ""; node.focus({ preventScroll: true }); } }}><strong>{answers[question.id] === question.correctIndex ? `Correct — ${String.fromCharCode(65 + question.correctIndex)} is right.` : `Not quite — the correct answer is ${String.fromCharCode(65 + question.correctIndex)}.`}</strong><p>{cite(question.explanation)}</p></div>}
         </fieldset>
       ))}
     </div>
@@ -395,32 +412,39 @@ const FlashcardResult = ({ cards, message, onCreateFlashcardDrafts, onNavigateSo
   const [revealed, setRevealed] = useState({});
   const [saveState, setSaveState] = useState({ status: "idle", message: "" });
   const save = async () => {
-    if (!onCreateFlashcardDrafts || !selected.length || saveState.status === "saving") return;
+    if (!onCreateFlashcardDrafts || !selected.length || ["saving", "saved", "exists"].includes(saveState.status)) return;
     const chosen = selected.map((index) => cards[index]);
     setSaveState({ status: "saving", message: "Adding selected cards…" });
     try {
-      await onCreateFlashcardDrafts(chosen, {
+      const result = await onCreateFlashcardDrafts(chosen, {
         mode: "on-device-flashcards",
         sourceIds: message.sources.map((source) => source.documentId || source.id).filter(Boolean),
         webCitationStyle: "explicit-w",
         webSources: message.citations.map(({ index, title, url }) => ({ index, title, url })),
       });
-      setSaveState({ status: "saved", message: `${chosen.length} card${chosen.length === 1 ? "" : "s"} added to review.` });
-    } catch {
-      setSaveState({ status: "error", message: "Cards were not saved. Your selection is still available to retry." });
+      const added = Number.isSafeInteger(result?.added) ? result.added : chosen.length;
+      const skipped = Number.isSafeInteger(result?.skipped) ? result.skipped : 0;
+      if (!added && skipped) setSaveState({ status: "exists", message: "Already in Review: these cards are in your deck." });
+      else setSaveState({ status: "saved", message: `${added} card${added === 1 ? "" : "s"} added to review${skipped ? `; ${skipped} already in Review` : ""}.` });
+    } catch (error) {
+      setSaveState({ status: "error", message: `Cards were not saved.${error instanceof Error && error.message ? ` ${error.message.replace(/\.?$/, ".")}` : ""} Your selection is still available to retry.` });
     }
+  };
+  const changeSelection = (update) => {
+    setSelected(update);
+    setSaveState((current) => current.status === "saving" ? current : { status: "idle", message: "" });
   };
   return (
     <div className="phone-tutor__flashcards">
-      <div className="phone-tutor__flashcard-head"><strong>{selected.length}/{cards.length} selected</strong><button type="button" onClick={() => setSelected(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear" : "Select all"}</button></div>
+      <div className="phone-tutor__flashcard-head"><strong>{selected.length}/{cards.length} selected</strong><button type="button" onClick={() => changeSelection(selected.length === cards.length ? [] : cards.map((_, index) => index))}>{selected.length === cards.length ? "Clear" : "Select all"}</button></div>
       {cards.map((card, index) => <article key={`${message.id}-card-${index}`}>
-        <label><input type="checkbox" checked={selected.includes(index)} onChange={() => setSelected((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])} /><span>Select card {index + 1}</span></label>
+        <label><input type="checkbox" checked={selected.includes(index)} onChange={() => changeSelection((current) => current.includes(index) ? current.filter((item) => item !== index) : [...current, index])} /><span>Select card {index + 1}</span></label>
         <small>Prompt</small><p><InlineFieldCitations text={card.front} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>
         <button type="button" aria-expanded={Boolean(revealed[index])} onClick={() => setRevealed((current) => ({ ...current, [index]: !current[index] }))}>{revealed[index] ? "Hide answer" : "Reveal answer"}<ChevronDown size={15} aria-hidden="true" /></button>
         {revealed[index] && <div className="phone-tutor__card-answer"><small>Answer</small><p><InlineFieldCitations text={card.back} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>{card.hint && <p><strong>Hint:</strong> <InlineFieldCitations text={card.hint} sources={message.sources} citations={message.citations} onNavigateSource={onNavigateSource} /></p>}</div>}
         {card.tags.length > 0 && <div className="phone-tutor__tags">{card.tags.map((tag, tagIndex) => <span key={`${tagIndex}-${tag}`}>{tag}</span>)}</div>}
       </article>)}
-      {onCreateFlashcardDrafts && <button className="phone-tutor__primary" type="button" disabled={!selected.length || saveState.status === "saving"} onClick={save}><Check size={16} aria-hidden="true" /> Add selected to review</button>}
+      {onCreateFlashcardDrafts && <button className="phone-tutor__primary" type="button" disabled={!selected.length} aria-disabled={["saving", "saved", "exists"].includes(saveState.status) || undefined} onClick={save}><Check size={16} aria-hidden="true" /> {saveState.status === "saved" ? "Added to Review" : saveState.status === "exists" ? "Already in Review" : "Add selected to review"}</button>}
       {saveState.message && <p className={`phone-tutor__save-status is-${saveState.status}`} role="status">{saveState.message}</p>}
     </div>
   );
@@ -441,9 +465,12 @@ const AssistantResult = ({ message, onCreateFlashcardDrafts, onNavigateSource, o
 const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HISTORY_MESSAGES)
   .map((message) => ({ ...message, content: cleanText(message.content, 600) }));
 
-export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange }) {
+export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, onInsertConsumed, retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange }) {
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
   const promptId = useId();
+  const promptFieldRef = useRef(null);
+  const headingRef = useRef(null);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const controllerRef = useRef(null);
   const pendingSearchRef = useRef(null);
   const lastRequestRef = useRef(null);
@@ -572,9 +599,31 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
       onHistoryChange?.(historyRef.current.filter((message) => message.id !== activeUserMessageId));
       activeUserMessageIdRef.current = null;
     }
-    void engine.unload?.().catch(() => {});
+    scheduleModelRelease(engine);
     onInteractionChange?.(false);
   }, [engine, onInteractionChange]);
+
+  // Returning within the release grace period keeps the loaded model.
+  useEffect(() => { cancelModelRelease(engine); }, [engine]);
+
+  // Reader "Ask AI" excerpts reach this engine too; each is applied once and
+  // is added below an unsent question the learner wrote rather than over it.
+  const consumedInsertRef = useRef(null);
+  useEffect(() => {
+    if (!insertPrompt?.text || consumedInsertRef.current === insertPrompt.nonce) return;
+    consumedInsertRef.current = insertPrompt.nonce;
+    const lecture = cleanText(insertPrompt.title, 200);
+    const inserted = `Explain this excerpt from my lecture${lecture ? ` “${lecture}”` : ""} in context:\n\n"${insertPrompt.text}"`;
+    setPrompt((current) => {
+      const draft = current.trim();
+      const keepDraft = Boolean(draft) && !PHONE_TUTOR_MODES.some((mode) => mode.prompt === draft) && !draft.startsWith("Explain this excerpt from my lecture");
+      return cleanText(keepDraft ? `${draft}\n\n${inserted}` : inserted, MAX_PROMPT_CHARS);
+    });
+    onInsertConsumed?.(insertPrompt.nonce);
+    // The device panel above the composer finishes loading after mount, so
+    // keep the composer in view until the page settles.
+    globalThis.setTimeout?.(() => revealFocusedField(promptFieldRef.current), 0);
+  }, [insertPrompt]);
 
   const finalize = useCallback((result, spec) => {
     const citations = sanitizePhoneCitations(result.citations);
@@ -823,18 +872,27 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
     run(regeneratedSpec, { appendUser: false });
   };
 
+  // Copy and Save use readable Markdown: exact code and math, structured
+  // results as the learner saw them, and a list resolving [S#]/[W#] labels.
+  const messageMarkdown = (message, includeSources = true) => tutorMessageMarkdown({
+    role: "assistant",
+    content: message.content,
+    data: message.data,
+    citationSources: message.sources || [],
+    webSources: message.citations || [],
+  }, { includeSources });
+
   const copyMessage = async (message) => {
-    const content = message.data ? JSON.stringify(message.data, null, 2) : phoneTutorMarkdownPlainText(message.content);
-    const copied = await writeClipboard(content);
+    const copied = await writeClipboard(messageMarkdown(message));
     setCopiedMessageId(copied ? message.id : "");
-    onNotify?.(copied ? "Answer copied." : "This browser did not allow clipboard access.", copied ? "success" : "error");
+    onNotify?.(copied ? "Answer copied as Markdown." : "This browser did not allow clipboard access.", copied ? "success" : "error");
     if (copied) globalThis.setTimeout?.(() => setCopiedMessageId((current) => current === message.id ? "" : current), 1_800);
   };
 
   const saveMessageNote = (message) => {
-    if (typeof onSaveAnswerNote !== "function" || message.data) return;
+    if (typeof onSaveAnswerNote !== "function") return;
     const saved = onSaveAnswerNote({
-      content: message.content,
+      content: messageMarkdown(message, false),
       title: `AI ${(PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "tutor").toLocaleLowerCase()} answer (on-device)`,
       citationSources: message.sources || [],
       webSources: (message.citations || []).map(({ index, title, url }) => ({ index, title, url })),
@@ -870,15 +928,15 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
   return (
     <section className="phone-tutor" aria-labelledby="phone-tutor-title">
       <header className="phone-tutor__header">
-        <div className="phone-tutor__identity"><span><Cpu size={23} aria-hidden="true" /></span><div><small>Built with Llama · Safari WebGPU · experimental</small><h2 id="phone-tutor-title">Lumen On-device Lite</h2></div></div>
-        {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => { activeUserMessageIdRef.current = null; setHistory([]); lastRequestRef.current = null; setRequestState({ status: "idle", message: "" }); }}><Trash2 size={18} /></button>}
+        <div className="phone-tutor__identity"><span><Cpu size={23} aria-hidden="true" /></span><div><small>Built with Llama · Safari WebGPU · experimental</small><h2 id="phone-tutor-title" ref={headingRef} tabIndex={-1}>Lumen On-device Lite</h2></div></div>
+        {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => setConfirmClearOpen(true)}><Trash2 size={18} /></button>}
       </header>
 
       <details className="phone-tutor__disclosure"><summary>Privacy and session details</summary><p>Answers run on this device. This conversation clears on reload and is excluded from backups. {PHONE_LOCAL_AI_DISCLOSURE.inference} Web searches require approval of the exact query. <a href="./licenses/LLAMA_3_2_COMMUNITY_LICENSE.txt" target="_blank" rel="noopener noreferrer">Llama 3.2 license</a>.</p></details>
 
       <PhoneLocalAiSettings engine={engine} onNotify={onNotify} onStatusChange={setEngineStatus} interactionBusy={interactionLocked} />
 
-      <div className="phone-tutor__mode-tabs" aria-label="On-device tutor mode">
+      <div className="phone-tutor__mode-tabs" role="group" aria-label="On-device tutor mode">
         {PHONE_TUTOR_MODES.map((mode) => <button type="button" aria-pressed={mode.id === modeId} className={mode.id === modeId ? "is-selected" : ""} disabled={interactionLocked} onClick={() => selectMode(mode.id)} key={mode.id}>{mode.label}</button>)}
       </div>
       <p className="phone-tutor__mode-description">{currentMode.description}</p>
@@ -904,7 +962,8 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
             <div className="phone-tutor__messages" aria-live="polite" aria-relevant="additions">
               {history.map((message) => (
                 <article className={`phone-tutor__message is-${message.role}`} key={message.id}>
-                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{!message.data && typeof onSaveAnswerNote === "function" && <button type="button" aria-label="Save this answer to your notebook as a labeled AI note" disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Again</button>}</div>}</div>
+                  <h3 className="visually-hidden">{message.role === "assistant" ? "On-device answer" : "Your question"}, {PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</h3>
+                  <div className="phone-tutor__message-meta"><span><strong>{message.role === "assistant" ? "On-device Lite" : "You"}</strong><small>{PHONE_TUTOR_MODES.find((mode) => mode.task === message.task)?.label || "Tutor"}</small></span>{message.role === "assistant" && <div className="phone-tutor__message-actions"><button type="button" aria-label="Copy this on-device answer" onClick={() => copyMessage(message)}><Copy size={14} aria-hidden="true" />{copiedMessageId === message.id ? "Copied" : "Copy"}</button>{typeof onSaveAnswerNote === "function" && <button type="button" aria-label={savedNoteMessageIds.has(message.id) ? "Saved to notes" : "Save to notes: this answer becomes a labeled AI note in your notebook"} disabled={savedNoteMessageIds.has(message.id)} onClick={() => saveMessageNote(message)}><NotebookPen size={14} aria-hidden="true" />{savedNoteMessageIds.has(message.id) ? "Saved" : "Save"}</button>}{message.requestUserMessageId === lastRequestRef.current?.userMessageId && <button type="button" aria-label="Regenerate this on-device answer" disabled={interactionLocked || !engineStatus.loaded} onClick={() => regenerate(message)}><RotateCcw size={14} aria-hidden="true" />Regenerate</button>}</div>}</div>
                   {message.role === "assistant" ? <AssistantResult message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} onCopy={(copied) => onNotify?.(copied ? "Code copied." : "This browser did not allow clipboard access.", copied ? "success" : "error")} /> : <p className="phone-tutor__user-text">{message.content}</p>}
                   {message.role === "assistant" && <EvidenceDetails message={{ ...message, sources: message.sources || [], citations: message.citations || [] }} onNavigateSource={onNavigateSource} />}
                 </article>
@@ -930,12 +989,29 @@ export default function PhoneLocalAiTutor({ sources = [], retrieveLibrary, engin
         <div className="phone-tutor__composer-head"><div><label><span>Depth</span><select value={depth} disabled={interactionLocked} onChange={(event) => setDepth(event.target.value)}>{DEPTHS.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label><span>Answer length</span><select value={responseLength} disabled={interactionLocked || currentMode.structured} onChange={(event) => setResponseLength(event.target.value)}>{RESPONSE_LENGTHS.map((item) => <option value={item.id} key={item.id}>{item.label} · {item.tokens} tokens</option>)}</select></label></div><span>{PHONE_LOCAL_MODEL.label}</span></div>
         <label className={`phone-tutor__search-toggle ${allowSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={allowSearch} disabled={interactionLocked || sourceMode !== "library-first" || typeof retrieveLibrary !== "function"} onChange={(event) => setAllowSearch(event.target.checked)} /><span><strong>Allow current-web fallback</strong><small>{sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "You approve the exact query before it is sent." : "Select Library first to use web fallback."}</small></span></label>
         <label className="phone-tutor__prompt-label" htmlFor={promptId}>What should the on-device tutor help you learn?</label>
-        <textarea id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} />
+        <textarea ref={promptFieldRef} id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} />
         <div className="phone-tutor__composer-foot"><span>{prompt.trim().length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}</span><span>{sourceMode === "library-first" ? "Up to 2 passages retrieved at send time" : `${buildPhoneContext(selectedSources).length.toLocaleString()} pre-fit source characters`}</span></div>
         <div className="phone-tutor__send-row"><div><strong>Runs locally after the model is loaded.</strong><small>{currentMode.structured ? "Structured output is validated before it is shown; it does not stream partial JSON." : "The answer streams from the phone model as tokens arrive."}</small></div><button className="phone-tutor__primary" type="submit" disabled={!ready}><Send size={17} aria-hidden="true" /> Generate {currentMode.label}</button></div>
         {!engineStatus.loaded && <p className="phone-tutor__disabled-reason">Load the model above to start.</p>}
         {engineStatus.loaded && Boolean(prompt.trim()) && !requestFit.fits && <p className="phone-tutor__disabled-reason" role="alert">{requestFit.message}</p>}
       </form>
+
+      <TutorConfirmDialog
+        open={confirmClearOpen}
+        title="Clear this on-device session?"
+        body="This removes the on-device conversation from this tab. Your lessons, notes and review cards are not deleted."
+        confirmLabel="Clear session"
+        onConfirm={() => {
+          setConfirmClearOpen(false);
+          activeUserMessageIdRef.current = null;
+          setHistory([]);
+          lastRequestRef.current = null;
+          setRequestState({ status: "idle", message: "" });
+          // The Clear button disappears with the conversation.
+          globalThis.setTimeout?.(() => headingRef.current?.focus(), 0);
+        }}
+        onCancel={() => setConfirmClearOpen(false)}
+      />
     </section>
   );
 }

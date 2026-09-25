@@ -197,7 +197,8 @@ try {
   const sendButtonSelector = ".phone-tutor__send-row button[type='submit']";
   assert.equal(await page.$eval(sendButtonSelector, (button) => button.disabled), false, "loaded local model did not enable a valid prompt");
   await page.click(sendButtonSelector);
-  await page.waitForSelector(".phone-tutor__message.is-streaming .phone-tutor__safe-response h2");
+  // A model "##" heading renders as h4 below the per-message heading.
+  await page.waitForSelector(".phone-tutor__message.is-streaming .phone-tutor__safe-response h4.ai-tutor__md-h2");
   await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant")].some((node) => node.textContent.includes("negative loss gradient")));
   assert.ok(await page.$(".phone-tutor__message.is-assistant .katex-display"), "display LaTeX was not rendered through KaTeX");
   assert.ok(await page.$(".phone-tutor__message.is-assistant table"), "GFM table was not rendered");
@@ -405,10 +406,17 @@ try {
   assert.deepEqual(undersizedButtons, [], `undersized phone AI controls: ${JSON.stringify(undersizedButtons)}`);
   await page.click(sendButtonSelector);
   await page.waitForSelector(".phone-tutor__search-consent");
-  await page.evaluate(() => window.__UNMOUNT_PHONE_AI_AUDIT__());
+  // Leaving releases the model after a short grace period, so a quick return
+  // does not reload it; the release itself must still happen.
+  const unloadsBeforeLeaving = await page.evaluate(() => {
+    const before = window.__PHONE_AI_AUDIT__.unloadCalls;
+    window.__UNMOUNT_PHONE_AI_AUDIT__();
+    return { before, immediately: window.__PHONE_AI_AUDIT__.unloadCalls };
+  });
+  assert.equal(unloadsBeforeLeaving.immediately, unloadsBeforeLeaving.before, "leaving On-device Lite unloaded the model without a grace period");
   await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.searchDecisions.some((decision) => decision.searchId === "audit-search-3" && decision.consent === false));
   assert.ok(await page.evaluate(() => window.__PHONE_AI_AUDIT__.cancelCalls >= 1), "unmount did not cancel pending on-device work");
-  await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.unloadCalls >= 1);
+  await page.waitForFunction((before) => window.__PHONE_AI_AUDIT__.unloadCalls > before, {}, unloadsBeforeLeaving.before);
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.loaded), false, "leaving On-device Lite retained its hidden GPU model");
   assert.equal((await page.evaluate(() => window.__PHONE_AI_AUDIT__.interactionStates)).at(-1), false, "unmount left the parent engine picker locked");
   assert.equal(runtimeErrors.length, 0, `phone AI browser errors: ${runtimeErrors.join(" | ")}`);

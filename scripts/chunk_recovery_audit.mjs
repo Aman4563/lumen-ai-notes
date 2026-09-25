@@ -80,8 +80,8 @@ try {
   assert.equal(blockedPhoneCss, 1, "the stale on-device tutor CSS request was not simulated exactly once");
   assert.equal(await navigationWasReload(page), true, "stale on-device tutor CSS did not trigger the bounded reload");
 
-  // Engine selection is intentionally in-memory, so choose it again after the
-  // repaired document loads and verify the now-available CSS/module pair works.
+  // The repaired document may already restore the remembered engine; choosing
+  // it again is harmless and verifies the now-available CSS/module pair works.
   await page.click('[data-ai-engine-option="phone-local"]');
   await page.waitForSelector(".phone-local-ai", { timeout: 30_000 });
   assert.equal(await page.$(".fatal-error"), null, "on-device tutor remained on the fatal error screen after recovery");

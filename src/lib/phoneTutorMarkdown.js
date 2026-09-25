@@ -1,4 +1,4 @@
-import { renderTutorMarkdown, tutorMarkdownPlainText } from "./tutorMarkdown.js";
+import { renderTutorInlineMarkdown, renderTutorMarkdown, tutorMarkdownPlainText } from "./tutorMarkdown.js";
 
 /**
  * Phone and Mac tutors share explicit `[W#]` web references. Bare numeric
@@ -21,5 +21,10 @@ export const renderPhoneTutorMarkdown = (markdown, librarySources = [], citation
   const sources = preparePhoneLibraryCitationSources(librarySources);
   return renderTutorMarkdown(adaptPhoneWebCitations(markdown, citations), sources, citations);
 };
+
+/** One structured-result field, with the same citation numbering as prose. */
+export const renderPhoneTutorInlineMarkdown = (text, librarySources = [], citations = []) => (
+  renderTutorInlineMarkdown(adaptPhoneWebCitations(text), preparePhoneLibraryCitationSources(librarySources), citations)
+);
 
 export const phoneTutorMarkdownPlainText = tutorMarkdownPlainText;

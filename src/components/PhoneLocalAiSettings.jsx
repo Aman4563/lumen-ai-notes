@@ -178,7 +178,7 @@ export default function PhoneLocalAiSettings({ engine: providedEngine, onNotify,
       </div>
 
       <div className="phone-local-ai-privacy"><ShieldCheck size={17} /><span><strong>Local answers need no repeated consent.</strong> A separate approval appears only when an exact live-search query would leave this device. Only <code>/api/local-search</code> may be called.</span></div>
-      <div className="phone-local-ai-privacy"><Database size={17} /><span>Model files use this site's browser cache. “Delete model” removes them without touching lessons, notes, reviews, or whiteboards.</span></div>
+      <div className="phone-local-ai-privacy"><Database size={17} /><span>Model files use this site's browser cache. “Clear model files” removes them without touching lessons, notes, reviews, or whiteboards.</span></div>
     </section>
   );
 }

@@ -82,6 +82,7 @@ import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
 import { recoverableImport } from "./lib/chunkRecovery.js";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
+import { downloadBlob } from "./lib/download.js";
 import {
   buildReviewQueue,
   createReviewItem,
@@ -129,19 +130,6 @@ const routeFor = (view, documentId) => {
   if (view === "reader") return `#/read/${encodeURIComponent(documentId)}`;
   if (view === "board") return `#/board/${encodeURIComponent(documentId)}`;
   return `#/${view === "settings" ? "home" : view}`;
-};
-
-const downloadBlob = (name, parts, type = "application/octet-stream") => {
-  const url = URL.createObjectURL(new Blob(parts, { type }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  document.body.appendChild(link);
-  link.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-    link.remove();
-  }, 2_000);
 };
 
 const downloadText = (name, value, type = "application/json") => {
@@ -1484,13 +1472,25 @@ export default function App() {
     setSaveStatus("saving");
     saveTimer.current = setTimeout(() => {
       if (profileReplacementRef.current) return;
-      const localSnapshot = profile;
-      const baseSnapshot = profileBaseRef.current;
+      let localSnapshot = null;
       let mergeConflicts = [];
       saveQueue.current = saveQueue.current
         .catch(() => {})
         .then(() => {
           if (profileReplacementRef.current) return null;
+          // Capture the merge base only once the previous queued save has
+          // committed. A base read when the timer fired predates that commit,
+          // so this tab's own rapid follow-up edit (for example a tutor turn
+          // updated after retrieval) looked like a concurrent create and was
+          // cloned as a sync conflict. Every commit and remote merge advances
+          // both refs together, so the pair is always consistent here.
+          localSnapshot = profileRef.current;
+          const baseSnapshot = profileBaseRef.current;
+          if (localSnapshot === baseSnapshot) {
+            // An earlier queued save already committed this state.
+            if (sequence === saveSequence.current) setSaveStatus("saved");
+            return null;
+          }
           return updateData("profile", (stored) => {
           const result = mergeProfileVersions(baseSnapshot, localSnapshot, stored, {
             writerId: profileWriterIdRef.current,
@@ -1535,23 +1535,38 @@ export default function App() {
 
   useEffect(() => {
     const flush = () => {
-      const localSnapshot = profileRef.current;
-      const baseSnapshot = profileBaseRef.current;
-      if (!hydrated || profileReplacementRef.current || localSnapshot === baseSnapshot) return;
+      if (!hydrated || profileReplacementRef.current || profileRef.current === profileBaseRef.current) return;
+      let localSnapshot = null;
       saveQueue.current = saveQueue.current
         .catch(() => {})
-        .then(() => profileReplacementRef.current ? null : updateData("profile", (stored) => mergeProfileVersions(baseSnapshot, localSnapshot, stored, {
-          writerId: profileWriterIdRef.current,
-        }).profile))
+        .then(() => {
+          if (profileReplacementRef.current) return null;
+          // Same rule as the debounced save: read the base after any queued
+          // save has committed, never before.
+          localSnapshot = profileRef.current;
+          const baseSnapshot = profileBaseRef.current;
+          if (localSnapshot === baseSnapshot) return null;
+          return updateData("profile", (stored) => mergeProfileVersions(baseSnapshot, localSnapshot, stored, {
+            writerId: profileWriterIdRef.current,
+          }).profile);
+        })
         .then((committedValue) => {
           if (!committedValue) return;
           const committed = normalizeProfile(committedValue);
+          const current = profileRef.current;
           profileBaseRef.current = committed;
           signalProfileSyncRef.current(committed);
-          if (profileRef.current === localSnapshot) {
+          if (current === localSnapshot) {
             profileRef.current = committed;
             setProfile(committed);
+            return;
           }
+          const rebased = mergeProfileVersions(localSnapshot, current, committed, {
+            advanceRevision: false,
+            writerId: profileWriterIdRef.current,
+          });
+          profileRef.current = rebased.profile;
+          setProfile(rebased.profile);
         })
         .catch(() => {});
     };
@@ -1900,6 +1915,23 @@ export default function App() {
       }];
     });
   }, [allDocumentMap, builtInSources, currentDocument.id, profile.customDocuments, profile.edits, profile.recent]);
+  // "Choose sources" lists the whole library; a lecture's text loads only when
+  // the learner ticks it, through the same cache the Reader uses.
+  const aiSourceCatalog = useMemo(() => allDocuments.map((document) => ({
+    id: document.id,
+    title: document.title,
+    section: document.partTitle || (document.partNumber ? `Part ${document.partNumber}` : ""),
+  })), [allDocuments]);
+  const loadAiSource = useCallback(async (id) => {
+    const document = allDocumentMap.get(id);
+    if (!document) throw new Error("This lesson is no longer in your library.");
+    const edited = profileRef.current.edits[id];
+    if (typeof edited === "string") return edited;
+    if (document.source === "custom") return document.raw || "";
+    const text = await loadDocumentSource(id);
+    setBuiltInSources((current) => current[id] ? current : { ...current, [id]: text });
+    return text;
+  }, [allDocumentMap]);
   const retrieveLibrarySources = useCallback((query, options = {}) => retrieveLibrary(query, {
     ...options,
     documents: allDocuments,
@@ -2533,26 +2565,36 @@ export default function App() {
       .map((card) => materializeAiFlashcard(card, metadata))
       .slice(0, 20);
     if (!candidates.length) throw new Error("No valid flashcards were supplied");
-    let added = 0;
-    let skipped = 0;
-    setProfile((current) => {
-      const fingerprints = new Set(current.reviewItems.map((item) => `${item.front.trim().toLocaleLowerCase()}\u0000${item.back.trim().toLocaleLowerCase()}`));
-      const documentId = metadata.sourceIds?.find((id) => allDocumentMap.has(id)) || "";
-      const created = [];
-      candidates.forEach((card) => {
-        const front = card.front.trim();
-        const back = `${card.back.trim()}${card.hint?.trim() ? `\n\nHint: ${card.hint.trim()}` : ""}`;
-        const fingerprint = `${front.toLocaleLowerCase()}\u0000${back.toLocaleLowerCase()}`;
-        if (fingerprints.has(fingerprint)) { skipped += 1; return; }
-        fingerprints.add(fingerprint);
-        created.push(createReviewItem({ type: "basic", front, back, tags: [...(card.tags || []), "ai-draft"], documentId }));
-      });
-      added = Math.min(created.length, Math.max(0, 10_000 - current.reviewItems.length));
-      if (!added) return current;
-      return { ...current, reviewItems: [...created.slice(0, added), ...current.reviewItems] };
+    // Decide what is new from the latest committed profile, outside the state
+    // updater: React may defer an updater, so counts assigned inside it could
+    // still read 0 here and report a failure for cards that were saved.
+    const fingerprintOf = (front, back) => `${front.trim().toLocaleLowerCase()}\u0000${back.trim().toLocaleLowerCase()}`;
+    const seen = new Set(profileRef.current.reviewItems.map((item) => fingerprintOf(item.front, item.back)));
+    const documentId = metadata.sourceIds?.find((id) => allDocumentMap.has(id)) || "";
+    const fresh = [];
+    candidates.forEach((card) => {
+      const front = card.front.trim();
+      const back = `${card.back.trim()}${card.hint?.trim() ? `\n\nHint: ${card.hint.trim()}` : ""}`;
+      const fingerprint = fingerprintOf(front, back);
+      if (seen.has(fingerprint)) return;
+      seen.add(fingerprint);
+      fresh.push({ front, back, tags: [...(card.tags || []), "ai-draft"] });
     });
-    if (!added) throw new Error("Every generated card already exists or the review deck is full");
-    notify(`${added} AI flashcard${added === 1 ? "" : "s"} added to review${skipped ? `; ${skipped} duplicate${skipped === 1 ? " was" : "s were"} skipped` : ""}.`);
+    const skipped = candidates.length - fresh.length;
+    const room = Math.max(0, 10_000 - profileRef.current.reviewItems.length);
+    const created = fresh.slice(0, room).map((card) => createReviewItem({ type: "basic", ...card, documentId }));
+    if (!created.length) {
+      if (fresh.length) throw new Error("The review deck is full. Archive or delete cards before adding more.");
+      return { added: 0, skipped };
+    }
+    setProfile((current) => {
+      const existing = new Set(current.reviewItems.map((item) => fingerprintOf(item.front, item.back)));
+      const unique = created.filter((item) => !existing.has(fingerprintOf(item.front, item.back)));
+      if (!unique.length) return current;
+      return { ...current, reviewItems: [...unique, ...current.reviewItems].slice(0, 10_000) };
+    });
+    notify(`${created.length} AI flashcard${created.length === 1 ? "" : "s"} added to review${skipped ? `; ${skipped} already in Review` : ""}.`);
+    return { added: created.length, skipped };
   }, [allDocumentMap, notify]);
 
   const saveAiAnswerNote = useCallback((payload = {}) => {
@@ -2641,10 +2683,14 @@ export default function App() {
   const askAiAboutSelection = useCallback((text) => {
     const excerpt = String(text || "").replace(/\s+/g, " ").trim().slice(0, 2_000);
     if (!excerpt) return;
-    setAiInsert({ text: excerpt, nonce: Date.now() });
+    // The tutor consumes the insert once (onInsertConsumed) and names the
+    // lecture it came from; the composer itself announces the insertion.
+    setAiInsert({ text: excerpt, title: currentDocument.title, nonce: Date.now() });
     changeView("ai");
-    notify("Selection inserted into the AI tutor prompt — review and send when ready.");
-  }, [changeView, notify]);
+  }, [changeView, currentDocument.title]);
+  const consumeAiInsert = useCallback((nonce) => {
+    setAiInsert((current) => current?.nonce === nonce ? null : current);
+  }, []);
 
   const startAssessment = useCallback((partNumber) => {
     rememberDialogOpener();
@@ -3240,7 +3286,7 @@ export default function App() {
           {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} />}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
-            : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onNotify={notify} /></Suspense></div>)}
+            : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onInsertConsumed={consumeAiInsert} onNotify={notify} /></Suspense></div>)}
           {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </main>
