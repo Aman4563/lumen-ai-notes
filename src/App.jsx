@@ -70,7 +70,6 @@ import { adoptVaultConfig, checkSyncHeader, clearSyncBaseline, clearVaultConfig,
 import { buildConceptMap } from "./lib/conceptMap.js";
 import { migrateItemsToFsrs } from "./lib/fsrs.js";
 import { MAX_ASSESSMENTS, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
-import AssessmentDialog from "./components/AssessmentDialog.jsx";
 import { copyText } from "./lib/clipboard.js";
 import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, updateMistake } from "./lib/mistakes.js";
@@ -81,7 +80,6 @@ import { StorageBudgetError } from "./lib/storageBudget.js";
 import { materializeAiCardProvenance, materializeAiFlashcard } from "./lib/aiProvenance.js";
 import { recoverableImport } from "./lib/chunkRecovery.js";
 import { retrieveLibrary } from "./lib/libraryRetrieval.js";
-import ReviewCenter, { ReviewCardDialog } from "./components/ReviewCenter";
 import {
   buildReviewQueue,
   createReviewItem,
@@ -111,6 +109,11 @@ const Whiteboard = lazy(() => recoverableImport(() => import("./components/White
 const AiLearningStudio = lazy(() => recoverableImport(() => import("./components/AiLearningStudio")));
 const StorageHealth = lazy(() => recoverableImport(() => import("./components/StorageHealth")));
 const DeviceEvidence = lazy(() => recoverableImport(() => import("./components/DeviceEvidence")));
+// The review center, its card editor, and the readiness check load on first
+// use; keeping them out of the startup bundle holds it under its 750 KB budget.
+const ReviewCenter = lazy(() => recoverableImport(() => import("./components/ReviewCenter")));
+const ReviewCardDialog = lazy(() => recoverableImport(() => import("./components/ReviewCenter").then((module) => ({ default: module.ReviewCardDialog }))));
+const AssessmentDialog = lazy(() => recoverableImport(() => import("./components/AssessmentDialog.jsx")));
 
 const parseRoute = () => {
   const hash = window.location.hash || "#/home";
@@ -2101,7 +2104,28 @@ export default function App() {
     notify(`${items.length} highlight${items.length === 1 ? "" : "s"} exported as Markdown.`);
   }, [annotationExportText, notify]);
 
+  // The card editor and readiness check load on demand, so they mount a render
+  // after the background has gone inert and focus has left their opener. App
+  // remembers the opener and returns focus to it when the dialog closes.
+  const dialogOpenerRef = useRef(null);
+  const rememberDialogOpener = () => {
+    const active = document.activeElement;
+    dialogOpenerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  };
+  useEffect(() => {
+    if (reviewDraft || assessmentDraft || !dialogOpenerRef.current) return undefined;
+    const target = dialogOpenerRef.current;
+    dialogOpenerRef.current = null;
+    let frame = requestAnimationFrame(() => {
+      if (!target.isConnected) return;
+      if (!target.closest("[inert]")) target.focus();
+      else frame = requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [assessmentDraft, reviewDraft]);
+
   const openReviewDraft = useCallback((sourceItem) => {
+    rememberDialogOpener();
     if (!sourceItem) {
       setReviewDraft({ front: "", back: "", tags: [], documentId: "", sourceClippingId: "", sourceTitle: "" });
       return;
@@ -2122,6 +2146,7 @@ export default function App() {
   const closeReviewDraft = useCallback(() => setReviewDraft(null), []);
 
   const editReviewCard = useCallback((item) => {
+    rememberDialogOpener();
     const source = allDocumentMap.get(item.documentId);
     setReviewDraft({ ...item, sourceTitle: source?.title || "" });
   }, [allDocumentMap]);
@@ -2299,6 +2324,7 @@ export default function App() {
   }, [changeView, notify]);
 
   const startAssessment = useCallback((partNumber) => {
+    rememberDialogOpener();
     const built = buildAssessment({ partNumber }, { documents: allDocuments, profile: profileRef.current });
     if (!built.ok) {
       notify(built.reason, "warning", 7000);
@@ -2883,7 +2909,7 @@ export default function App() {
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onNotify={notify} /></Suspense></div>)}
-          {view === "review" && <ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} />}
+          {view === "review" && <Suspense fallback={<div className="view-loading" role="status">Opening the review center…</div>}><ReviewCenter profile={profile} documents={allDocuments} onCreate={openReviewDraft} onEdit={editReviewCard} onGrade={gradeReview} onUndo={undoReviewGrade} onBury={buryReviewItem} onOpenSource={openDocument} onToggleSuspend={toggleReviewSuspend} onToggleArchive={toggleReviewArchive} onDelete={deleteReviewItem} onSettingsChange={updateReviewSettings} onCalibrate={calibrateScheduler} mistakes={profile.mistakes || []} onEditMistake={editMistake} onDeleteMistake={deleteMistake} onScheduleCorrective={scheduleCorrectiveReview} onLogMistake={logManualMistake} onImportCards={importCardsFile} /></Suspense>}
           {view === "board" && <Suspense fallback={<div className="view-loading" role="status">Restoring whiteboard…</div>}><Whiteboard documentId={currentDocument.id} documentTitle={currentDocument.title} notify={notify} /></Suspense>}
         </div>
 
@@ -2899,8 +2925,8 @@ export default function App() {
       <ManageDocumentDialog doc={profile.customDocuments.find((doc) => doc.id === manageDocumentId) || null} collections={profile.collections} onClose={() => setManageDocumentId("")} onSave={manageCustomDocument} />
       <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <EncryptedImportDialog pending={encryptedImport} onSubmit={unlockEncryptedImport} onCancel={() => setEncryptedImport(null)} />
-      {assessmentDraft && <AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} />}
-      <ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} />
+      {assessmentDraft && <Suspense fallback={null}><AssessmentDialog assessment={assessmentDraft} onFinish={finishAssessment} onClose={() => setAssessmentDraft(null)} onOpenSource={(documentId) => { setAssessmentDraft(null); openDocument(documentId); }} /></Suspense>}
+      {reviewDraft && <Suspense fallback={null}><ReviewCardDialog draft={reviewDraft} onClose={closeReviewDraft} onSave={saveReviewCard} /></Suspense>}
       {updateRegistration && <div className="update-banner" role="status"><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={() => setToast(null)} />
     </div>
