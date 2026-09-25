@@ -2104,7 +2104,28 @@ export default function App() {
     notify(`${items.length} highlight${items.length === 1 ? "" : "s"} exported as Markdown.`);
   }, [annotationExportText, notify]);
 
+  // The card editor and readiness check load on demand, so they mount a render
+  // after the background has gone inert and focus has left their opener. App
+  // remembers the opener and returns focus to it when the dialog closes.
+  const dialogOpenerRef = useRef(null);
+  const rememberDialogOpener = () => {
+    const active = document.activeElement;
+    dialogOpenerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  };
+  useEffect(() => {
+    if (reviewDraft || assessmentDraft || !dialogOpenerRef.current) return undefined;
+    const target = dialogOpenerRef.current;
+    dialogOpenerRef.current = null;
+    let frame = requestAnimationFrame(() => {
+      if (!target.isConnected) return;
+      if (!target.closest("[inert]")) target.focus();
+      else frame = requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [assessmentDraft, reviewDraft]);
+
   const openReviewDraft = useCallback((sourceItem) => {
+    rememberDialogOpener();
     if (!sourceItem) {
       setReviewDraft({ front: "", back: "", tags: [], documentId: "", sourceClippingId: "", sourceTitle: "" });
       return;
@@ -2125,6 +2146,7 @@ export default function App() {
   const closeReviewDraft = useCallback(() => setReviewDraft(null), []);
 
   const editReviewCard = useCallback((item) => {
+    rememberDialogOpener();
     const source = allDocumentMap.get(item.documentId);
     setReviewDraft({ ...item, sourceTitle: source?.title || "" });
   }, [allDocumentMap]);
@@ -2302,6 +2324,7 @@ export default function App() {
   }, [changeView, notify]);
 
   const startAssessment = useCallback((partNumber) => {
+    rememberDialogOpener();
     const built = buildAssessment({ partNumber }, { documents: allDocuments, profile: profileRef.current });
     if (!built.ok) {
       notify(built.reason, "warning", 7000);
