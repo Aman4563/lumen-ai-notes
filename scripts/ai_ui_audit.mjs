@@ -1086,8 +1086,9 @@ try {
     attachDiagnostics(page, "tutor-keyboard");
     await page.evaluateOnNewDocument(() => {
       try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
-      // An in-page stream that delivers deltas over time, used once below to
-      // check that following an answer never scrolls the page itself.
+      // An in-page stream that delivers deltas over time, used below to check
+      // that following an answer never scrolls the page itself and that a
+      // learner can scroll back inside the conversation while it streams.
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (input, init = {}) => {
         const url = typeof input === "string" ? input : input.url;
@@ -1095,7 +1096,8 @@ try {
         if (!slow || !url.includes("/api/ai/respond/stream")) return nativeFetch(input, init);
         window.__lumenAuditSlowStream = null;
         const encoder = new TextEncoder();
-        const text = Array.from({ length: 40 }, (_, index) => `Paragraph ${index + 1} explains why a final holdout must stay untouched.\n\n`).join("");
+        const paragraphs = Number.isSafeInteger(slow?.paragraphs) ? slow.paragraphs : 40;
+        const text = Array.from({ length: paragraphs }, (_, index) => `Paragraph ${index + 1} explains why a final holdout must stay untouched.\n\n`).join("");
         const approach = { summary: "Stream a long answer.", steps: ["Answer in parts."] };
         const response = { ok: true, requestId: "audit-slow-stream", outputText: text, data: null, status: "completed", model: "audit-local-model", usage: { inputTokens: 10, outputTokens: 400, totalTokens: 410 }, webSearch: { requested: false, used: false, rounds: 0 }, sources: [], approach };
         const stream = new ReadableStream({
@@ -1185,6 +1187,26 @@ try {
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
+
+    // Inside the conversation, a learner who scrolls back up while text
+    // streams stays there; scrolling back to the end resumes following.
+    await setPrompt("Keyboard check: stream a longer answer.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
+    await page.$eval(sendSelector, (button) => button.click());
+    await page.waitForFunction(() => {
+      const surface = document.querySelector(".ai-tutor__conversation");
+      return /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && surface.scrollHeight > surface.clientHeight + 300;
+    }, { timeout: 8_000 });
+    await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = 0; });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
+    assert.equal(readBack.streaming, true, "the long stream finished before the scroll-back check could run");
+    assert.ok(readBack.top < 60, `streaming pulled the conversation back down after the learner scrolled up: ${JSON.stringify(readBack)}`);
+    await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = surface.scrollHeight; });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const resumed = await page.$eval(".ai-tutor__conversation", (surface) => ({ gap: surface.scrollHeight - surface.scrollTop - surface.clientHeight, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
+    assert.ok(!resumed.streaming || resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
 
     // A learner's own Stop is a neutral note that receives focus.
     await setPrompt("Keyboard check: stop this one.");

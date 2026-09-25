@@ -1017,14 +1017,15 @@ export default function AiTutor({
   const requestNoticeRef = useRef(null);
   const focusStopOnMountRef = useRef(false);
   const pendingFocusRef = useRef(null);
-  const programmaticScrollAtRef = useRef(0);
+  // The conversation's last observed scroll position and height, to tell a
+  // learner scrolling up from the tutor following new text downwards.
+  const conversationScrollRef = useRef({ top: 0, height: 0 });
   const userScrolledRef = useRef(false);
   const [announcement, setAnnouncement] = useState({ text: "", id: 0 });
   const announce = useCallback((text) => setAnnouncement((current) => ({ text, id: current.id + 1 })), []);
   const scrollConversationToEnd = useCallback(() => {
     const surface = conversationRef.current;
     if (!surface) return;
-    programmaticScrollAtRef.current = Date.now();
     surface.scrollTop = surface.scrollHeight;
   }, []);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
@@ -1376,10 +1377,7 @@ export default function AiTutor({
   // when needed, the page, allowing for the fixed top bar.
   const revealMessageStart = useCallback((target) => {
     const surface = conversationRef.current;
-    if (surface?.contains(target)) {
-      programmaticScrollAtRef.current = Date.now();
-      surface.scrollTop = Math.max(0, target.offsetTop - 8);
-    }
+    if (surface?.contains(target)) surface.scrollTop = Math.max(0, target.offsetTop - 8);
     const topbar = document.querySelector(".app-topbar")?.getBoundingClientRect();
     const visibleTop = Math.max(0, topbar?.bottom ?? 0) + 12;
     const top = target.getBoundingClientRect().top;
@@ -1659,8 +1657,9 @@ export default function AiTutor({
       streamFrameRef.current = 0;
       updateActiveResponse((current) => ({ ...current, content: streamedText }));
       // Follow inside the conversation only; the page itself never moves
-      // while a learner reads elsewhere.
-      if (followStreamRef.current) requestAnimationFrame(scrollConversationToEnd);
+      // while a learner reads elsewhere. Check again when the frame runs: a
+      // learner's scroll-up in between has already stopped following.
+      if (followStreamRef.current) requestAnimationFrame(() => { if (followStreamRef.current) scrollConversationToEnd(); });
     };
     const queueDelta = (delta) => {
       if (typeof delta !== "string" || !delta || streamTruncated) return;
@@ -2354,11 +2353,23 @@ export default function AiTutor({
         </aside>}
 
         <section className="ai-tutor__conversation" aria-label="Conversation" ref={conversationRef} onScroll={(event) => {
-          // Ignore the tutor's own scrolling; a learner scrolling up pauses
-          // following, scrolling back to the end resumes it.
-          if (Date.now() - programmaticScrollAtRef.current < 150) return;
+          // Following only ever scrolls down, so any upward move (that is not
+          // a shrinking answer clamping the position) is the learner reading
+          // back: stop following. Returning near the end resumes it; content
+          // that grew between a follow scroll and its event changes nothing.
           const surface = event.currentTarget;
-          followStreamRef.current = surface.scrollHeight - surface.scrollTop - surface.clientHeight < 140;
+          const top = surface.scrollTop;
+          const end = surface.scrollHeight - surface.clientHeight;
+          const previous = conversationScrollRef.current;
+          conversationScrollRef.current = { top, height: surface.scrollHeight };
+          // iOS rubber-banding reports positions well past either end;
+          // settling back from past the end is not a move up.
+          if (top < -1 || top > end + 1) return;
+          if (top < Math.min(previous.top, end) - 1 && surface.scrollHeight >= previous.height) {
+            followStreamRef.current = false;
+            return;
+          }
+          if (end - top < 140) followStreamRef.current = true;
         }}>
           {setupRequired && <div className="ai-tutor__setup-card">
               {configState.status === "pairing" ? <LockKeyhole size={26} aria-hidden="true" /> : <ServerOff size={26} aria-hidden="true" />}
