@@ -449,7 +449,7 @@ try {
   await clickByText(page, ".document-tools button", "Whiteboard");
   await page.waitForSelector(".board-canvas");
   const boardKey = `board:${documentId}`;
-  const canvasBox = await boardPageBox(page);
+  let canvasBox = await boardPageBox(page);
   const touchTap = async (x, y) => {
     await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
     await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
@@ -478,6 +478,9 @@ try {
   // upper half of the board, where the tap's follow-up click used to land on
   // the new dialog's scrim and close it immediately.
   await page.click('button[aria-label="Text"]');
+  // Toolbar panels opened above (shapes, page tools) push the canvas down, and
+  // wrap to more rows with wider fonts: re-measure before tapping.
+  canvasBox = await boardPageBox(page);
   await touchTap(canvasBox.left + canvasBox.width * 0.28, canvasBox.top + canvasBox.height * 0.2);
   await page.waitForSelector(".board-text-dialog");
   await delay(450);
@@ -487,6 +490,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("3 objects"));
 
   await page.click('button[aria-label="Sticky note"]');
+  canvasBox = await boardPageBox(page);
   await touchTap(canvasBox.left + canvasBox.width * 0.7, canvasBox.top + canvasBox.height * 0.2);
   await page.waitForSelector(".board-text-dialog");
   await delay(450);
@@ -500,6 +504,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("4 objects"));
 
   // BOARD-EDIT: double-clicking placed text reopens it for editing, prefilled.
+  canvasBox = await boardPageBox(page);
   await page.mouse.click(canvasBox.left + canvasBox.width * 0.28 + 12, canvasBox.top + canvasBox.height * 0.2 + 10);
   await page.mouse.click(canvasBox.left + canvasBox.width * 0.28 + 12, canvasBox.top + canvasBox.height * 0.2 + 10, { clickCount: 2 });
   await page.waitForFunction(() => document.querySelector(".board-text-dialog textarea")?.value === "Gradient flow", { timeout: 5_000 })
