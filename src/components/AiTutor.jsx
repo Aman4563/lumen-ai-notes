@@ -149,6 +149,7 @@ const MAX_WEB_SOURCES = 8;
 const MAX_VISIBLE_HISTORY = 50;
 const MAX_RESPONSE_CHARS = 160_000;
 const LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY = "lumen.ai.local-disclosure-ack.v1";
+const DISCLOSURE_REASON = "Review and acknowledge the local-model disclosure once on this browser to enable generation.";
 const WEB_FALLBACK_STATES = new Set(["off", "armed", "not-needed", "searching", "used", "failed"]);
 
 const readLocalDisclosureAcknowledgement = () => {
@@ -2424,8 +2425,12 @@ export default function AiTutor({
                   : requestTooLarge
                     ? `This request is ${requestPayloadBytes.toLocaleString()} UTF-8 bytes; reduce it below the server's ${configuredRequestByteLimit.toLocaleString()}-byte local-model budget.`
                     : !localDisclosureAcknowledged
-                      ? "Review and acknowledge the local-model disclosure once on this browser to enable generation."
+                      ? DISCLOSURE_REASON
                       : "";
+  // An empty box (its placeholder and the dimmed Send say so) and the
+  // disclosure (its checkbox sits right above the question) need no visible
+  // line in the docked composer; screen readers still get the reason.
+  const quietReason = configState.status === "ready" && (!prompt.trim() || disabledReason === DISCLOSURE_REASON);
 
   // "Jump to latest" while an answer streams out of view after the learner
   // scrolled away; "Answer ready" for a while after it lands out of view.
@@ -2746,7 +2751,7 @@ export default function AiTutor({
           <span className="ai-tutor__character-count" id={counterId}>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>
         </div>
         <span className="visually-hidden" id={sendSummaryId}>{effectiveWebSearch ? "Sends to the local model on the Lumen server, with current-web fallback allowed for this request." : "Sends to the local model on the Lumen server. Web fallback is off."}</span>
-        <p className="ai-tutor__disabled-reason" id={sendReasonId} role="status">{disabledReason}</p>
+        <p className={`ai-tutor__disabled-reason${quietReason ? " is-quiet" : ""}`} id={sendReasonId} role="status">{disabledReason}</p>
       </form>
 
       <TutorSheet

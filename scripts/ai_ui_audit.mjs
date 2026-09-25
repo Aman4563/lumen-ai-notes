@@ -421,6 +421,13 @@ try {
   // Until acknowledged, the local-model disclosure is in the composer
   // itself, never only inside the options sheet.
   assert.equal(await page.$eval(".ai-tutor__composer .ai-tutor__consent-card", (node) => node.getBoundingClientRect().height > 0), true, "the unacknowledged disclosure was not shown in the composer");
+  // The checkbox above the question is the visible reason; the repeated
+  // sentence is not drawn in the dock but still names why Send is off.
+  assert.deepEqual(await page.$eval(".ai-tutor__disabled-reason", (node) => ({
+    text: /acknowledge the local-model disclosure/.test(node.textContent),
+    drawn: node.getBoundingClientRect().height > 1,
+    linked: document.querySelector(".ai-tutor__send").getAttribute("aria-describedby").split(" ").includes(node.id),
+  })), { text: true, drawn: false, linked: true }, "the disclosure reason was lost, drawn twice or unlinked from Send");
   const optionsFocus = await page.evaluate(() => {
     const opener = document.querySelector(".ai-tutor__options-toggle");
     opener.focus();
@@ -1715,12 +1722,18 @@ try {
             innerWidth,
             narrow: matchMedia("(max-width: 980px)").matches,
             nestedScroll: conversation.scrollHeight - conversation.clientHeight,
+            reason: (() => {
+              const node = document.querySelector(".ai-tutor__disabled-reason");
+              const rect = node.getBoundingClientRect();
+              return { text: node.textContent, drawn: rect.height > 1 && rect.width > 1, span: span(rect), linked: document.querySelector(".ai-tutor__send").getAttribute("aria-describedby")?.split(" ").includes(node.id) === true };
+            })(),
           };
         });
         const inView = ([top, bottom]) => top >= layout.topbar - 1 && bottom <= layout.navTop + 1;
         assert.ok(inView(layout.field) && inView(layout.send), `${viewport.name} ${state}: the question box or Send left the visible area: ${JSON.stringify(layout)}`);
         assert.equal(layout.scrollWidth, layout.innerWidth, `${viewport.name} ${state}: the page scrolls sideways`);
         if (layout.narrow) assert.ok(layout.nestedScroll <= 1, `${viewport.name} ${state}: the conversation became a nested scroller: ${JSON.stringify(layout)}`);
+        return layout;
       };
       await checkLayout("first load");
       await setLayoutPrompt(Array.from({ length: 8 }, (_, line) => `Line ${line + 1} of a long draft about ridge and lasso penalties.`).join("\n"));
@@ -1733,9 +1746,18 @@ try {
       await checkLayout("streaming");
       await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 10_000 });
       assert.equal(await page.$(".ai-tutor__request-note"), null, `${viewport.name}: a double tap on Send stopped the answer`);
-      await checkLayout("answer");
+      // An empty box needs no visible reason line in the dock (the
+      // placeholder and the dimmed Send say it), but Send still names it.
+      const emptyBox = await checkLayout("answer");
+      assert.match(emptyBox.reason.text, /Enter a learning request/, `${viewport.name}: the empty box lost its disabled reason`);
+      assert.deepEqual([emptyBox.reason.drawn, emptyBox.reason.linked], [false, true], `${viewport.name}: the empty-box reason was drawn in the dock or unlinked from Send: ${JSON.stringify(emptyBox.reason)}`);
       await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
       await checkLayout("answer, page top");
+      // A reason the learner must act on stays visible, above the navigation.
+      await setLayoutPrompt("Too long. ".repeat(600));
+      const tooLong = await checkLayout("prompt too long");
+      assert.match(tooLong.reason.text, /Shorten the prompt|reduce it below/, `${viewport.name}: an over-long prompt gave no reason: ${JSON.stringify(tooLong.reason)}`);
+      assert.ok(tooLong.reason.drawn && tooLong.reason.linked && tooLong.reason.span[1] <= tooLong.navTop + 1, `${viewport.name}: the over-long prompt's reason was hidden, unlinked or under the navigation: ${JSON.stringify(tooLong)}`);
     } finally {
       await layoutContext.close();
     }

@@ -1428,6 +1428,17 @@
   margin: 0;
 }
 
+/* Still read out and linked from Send, just not drawn (see quietReason). */
+.ai-tutor__disabled-reason.is-quiet {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .ai-tutor__spin {
   animation: ai-tutor-spin 0.85s linear infinite;
 }
@@ -2451,6 +2462,17 @@
 
   .ai-page .ai-tutor__conversation :is(button, a, input, select, [tabindex]) {
     scroll-margin-bottom: calc(var(--ai-composer-space, 90px) + 12px);
+  }
+}
+
+/* Wide screens: the docked composer rests over the lower part of the
+   conversation column, so the welcome sits at its top, beside the evidence
+   scope heading, rather than in its middle. */
+@media (min-width: 981px) {
+  .ai-tutor__welcome {
+    min-height: 0;
+    padding-top: 22px;
+    place-content: start center;
   }
 }
 
