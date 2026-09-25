@@ -2262,6 +2262,7 @@ try {
       feedback: (body) => {
         const citation = String(body.context).match(/^\[(S\d+)\]/)?.[1] || "S1";
         const valid = { score: 10, correct: false, feedback: `The learning rate is chosen before training and never updated by gradient descent. [${citation}]`, strengths: ["STRENGTH-TEXT"], gaps: ["Parameters are fitted from data; hyperparameters are set by you."], improvedAnswer: `The weights are learned; the learning rate is a hyperparameter. [${citation}]`, nextQuestion: "Is the number of layers a parameter or a hyperparameter?" };
+        if (feedbackReply === "disputed") return { ...valid, correct: true };
         return feedbackReply === "invalid" ? { ...valid, verdict: "extra key" } : valid;
       },
     },
@@ -2396,9 +2397,22 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.deepEqual((await storedMistakes()).map((mistake) => mistake.occurrences), [1, 1], "a second Save changed the notebook");
 
+    // An answer check that sides with the learner says so beside the key
+    // instead of overruling it, and never claims an already saved miss was
+    // left out of the notebook.
+    feedbackReply = "disputed";
+    await questionAction(2, "Explain my mistake");
+    await waitForAnswers(page, 3);
+    feedbackReply = "valid";
+    assert.match(await page.$$eval(".ai-tutor__feedback", (nodes) => nodes.at(-1).textContent), /second look disagrees with the quiz key/, "a check that sided with the learner did not say so");
+    const disputeNote = await page.$$eval(".ai-tutor__quiz-question", (nodes) => nodes[2].querySelector(".ai-tutor__quiz-dispute")?.textContent || "");
+    assert.match(disputeNote, /disagreed with this key/, "the disputed quiz question had no note");
+    assert.doesNotMatch(disputeNote, /not saved/, "the dispute note denied a miss that was already in the notebook");
+    assert.match(disputeNote, /saved to your mistake notebook before the check/);
+
     // New quiz on my weak spots names the missed concepts.
     await clickByText(page, ".ai-tutor__quiz-summary button", "New quiz on my weak spots");
-    await waitForAnswers(page, 3);
+    await waitForAnswers(page, 4);
     const weakSpots = calls.respond.at(-1).body;
     assert.equal(weakSpots.task, "quiz");
     assert.equal(weakSpots.webSearch, false);

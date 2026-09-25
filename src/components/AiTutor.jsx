@@ -898,7 +898,9 @@ const QuizResult = ({
                 <strong>{correct ? `Correct — ${answerLetter} is right.` : `Not quite — the correct answer is ${answerLetter}.`}</strong>
                 {!correct && sure === "certain" && <p className="ai-tutor__confident-miss">You were certain. A confident miss is the most useful one to fix.</p>}
                 <p>{cite(question.explanation)}</p>
-                {!correct && explanation?.disputed && <p className="ai-tutor__quiz-dispute">The answer check disagreed with this key, so it is not saved as a mistake. Check the sources before trusting either.</p>}
+                {!correct && explanation?.disputed && <p className="ai-tutor__quiz-dispute">{state.saved[question.id]
+                  ? "The answer check disagreed with this key. This miss was saved to your mistake notebook before the check; check the sources before trusting either."
+                  : "The answer check disagreed with this key, so it is not saved as a mistake. Check the sources before trusting either."}</p>}
                 {!correct && onExplainMistake && (explanation?.answerId ? (
                   <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => onShowExplanation?.(explanation.answerId)}>See the explanation</button>
                 ) : (
