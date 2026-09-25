@@ -2126,6 +2126,183 @@ try {
     await startersScenario.context.close();
   }
 
+  // Quiz follow-through (TFEAT-01). Answers, confidence and checks survive
+  // leaving #/ai; the score is shown and announced once; "Explain my
+  // mistake" sends a Fast answer_feedback check without the web, history or
+  // the quiz's citation labels, even with the Quiz mode selected, and its
+  // result hides the score and strengths; an invalid result is never kept;
+  // misses are saved to the mistake notebook once, confident misses first;
+  // a new quiz targets the weak spots; Regenerate never leaves the composer
+  // in the hidden answer-check mode.
+  const threeQuestionQuiz = {
+    title: "Parameters and hyperparameters",
+    instructions: "Choose the best answer.",
+    questions: [
+      { id: "q1", prompt: "Which of these is learned during training? [S1]", options: ["The learning rate", "The weights", "The batch size"], correctIndex: 1, explanation: "Weights are fitted by gradient descent; the others are chosen before training. [S1]", difficulty: "beginner" },
+      { id: "q2", prompt: "What does ridge add to the loss?", options: ["An L2 penalty", "An L1 penalty"], correctIndex: 0, explanation: "Ridge adds a squared L2 penalty.", difficulty: "intermediate" },
+      { id: "q3", prompt: "Which split must stay untouched until the end?", options: ["Validation", "Test"], correctIndex: 1, explanation: "The test split gives the final estimate.", difficulty: "beginner" },
+    ],
+  };
+  let feedbackReply = "valid";
+  const quizScenario = await newIsolatedPage("quiz-follow-through", {
+    mocks: {
+      quiz: threeQuestionQuiz,
+      feedback: (body) => {
+        const citation = String(body.context).match(/^\[(S\d+)\]/)?.[1] || "S1";
+        const valid = { score: 10, correct: false, feedback: `The learning rate is chosen before training and never updated by gradient descent. [${citation}]`, strengths: ["STRENGTH-TEXT"], gaps: ["Parameters are fitted from data; hyperparameters are set by you."], improvedAnswer: `The weights are learned; the learning rate is a hyperparameter. [${citation}]`, nextQuestion: "Is the number of layers a parameter or a hyperparameter?" };
+        return feedbackReply === "invalid" ? { ...valid, verdict: "extra key" } : valid;
+      },
+    },
+  });
+  try {
+    const { page, calls } = quizScenario;
+    const watchAnnouncements = () => page.evaluate(() => {
+      window.__lumenAuditAnnouncements = [];
+      const region = document.querySelector(".ai-tutor > p.visually-hidden[role='status']");
+      new MutationObserver(() => window.__lumenAuditAnnouncements.push(region.textContent.trim())).observe(region, { childList: true, characterData: true, subtree: true });
+    });
+    const questionAction = (questionIndex, label) => page.$$eval(".ai-tutor__quiz-question", (nodes, [index, text]) => {
+      const button = [...nodes[index].querySelectorAll("button")].find((node) => node.textContent.trim() === text);
+      button?.click();
+      return Boolean(button);
+    }, [questionIndex, label]);
+    const choose = (questionIndex, optionIndex) => page.$$eval(".ai-tutor__quiz-question", (nodes, [index, option]) => nodes[index].querySelectorAll(".ai-tutor__quiz-options input")[option].click(), [questionIndex, optionIndex]);
+    const storedMistakes = async () => (await readProfile(page)).mistakes;
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await chooseMode(page, "Quiz");
+    await setComposerPrompt(page, "Quiz me on parameters versus hyperparameters.");
+    await page.$eval(sendSelector, (button) => button.click());
+    await waitForAnswers(page, 1);
+    await page.waitForSelector(".ai-tutor__quiz-question", { timeout: 5_000 });
+    await watchAnnouncements();
+    await choose(0, 0);
+    assert.deepEqual(await page.$eval(".ai-tutor__quiz-question .ai-tutor__confidence", (node) => ({
+      legend: node.querySelector("legend").textContent,
+      options: [...node.querySelectorAll("label")].map((label) => [label.textContent, label.querySelector("input").type, Math.round(label.getBoundingClientRect().height) >= 44]),
+    })), { legend: "How sure are you?", options: [["Guessing", "radio", true], ["Fairly sure", "radio", true], ["Certain", "radio", true]] }, "confidence was not a native radio group of 44px choices before Check answer");
+    await page.$$eval(".ai-tutor__quiz-question", (nodes) => nodes[0].querySelectorAll(".ai-tutor__confidence input")[2].click());
+    assert.equal(await questionAction(0, "Check answer"), true);
+    assert.equal(await page.$(".ai-tutor__quiz-summary"), null, "the score appeared before every question was checked");
+    await choose(1, 0);
+    await questionAction(1, "Check answer");
+    await choose(2, 0);
+    await questionAction(2, "Check answer");
+    await page.waitForSelector(".ai-tutor__quiz-summary", { timeout: 5_000 });
+    assert.equal(await page.$eval(".ai-tutor__quiz-summary h5", (node) => node.textContent), "1 of 3 correct");
+    assert.deepEqual(await page.$$eval(".ai-tutor__quiz-misses li", (nodes) => nodes.map((node) => node.textContent)), ["Question 1You were certain", "Question 3"], "the confident miss was not listed first and marked");
+    assert.match(await page.$eval(".ai-tutor__quiz-summary", (node) => node.textContent), /You were certain about one answer you missed/);
+    assert.deepEqual((await page.evaluate(() => window.__lumenAuditAnnouncements)).filter((text) => text.startsWith("Quiz complete")), ["Quiz complete: 1 of 3 correct. You were certain about 1 of the answers you missed."], "the score was not announced exactly once");
+    assert.equal(await page.$(".ai-tutor__quiz-summary [role='status'], .ai-tutor__quiz-summary[aria-live]"), null, "the score card was its own live region");
+    assert.match(await page.$$eval(".ai-tutor__quiz-feedback", (nodes) => nodes[0].textContent), /You were certain/);
+
+    // Leaving #/ai keeps what was chosen and checked, and the score is not
+    // announced again.
+    await page.evaluate(() => { window.location.hash = "#/home"; });
+    await page.waitForSelector(".ai-tutor", { hidden: true, timeout: 10_000 });
+    await page.evaluate(() => { window.location.hash = "#/ai"; });
+    await page.waitForSelector(".ai-tutor__quiz-summary", { timeout: 10_000 });
+    await watchAnnouncements();
+    assert.deepEqual(await page.$$eval(".ai-tutor__quiz-question", (nodes) => nodes.map((node) => [
+      [...node.querySelectorAll(".ai-tutor__quiz-options input")].findIndex((input) => input.checked),
+      Boolean(node.querySelector(".ai-tutor__quiz-feedback")),
+    ])), [[0, true], [0, true], [0, true]], "quiz answers or checks were lost when the learner left #/ai");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.deepEqual(await page.evaluate(() => window.__lumenAuditAnnouncements.filter((text) => text.startsWith("Quiz complete"))), [], "the score was announced again after returning");
+
+    // Explain my mistake, with the Quiz mode still selected in the composer.
+    assert.equal(await activeMode(page), "Quiz");
+    const beforeCheck = calls.respond.length;
+    assert.equal(await questionAction(0, "Explain my mistake"), true, "a wrong answer offered no Explain my mistake");
+    await waitForAnswers(page, 2);
+    assert.equal(calls.respond.length, beforeCheck + 1);
+    const check = calls.respond.at(-1).body;
+    assert.equal(check.task, "answer_feedback", "the Library-first refit changed the answer check's task");
+    assert.equal(check.responseFormat, "structured");
+    assert.equal(check.responseProfile, "fast");
+    assert.equal(check.webSearch, false);
+    assert.equal(check.history.length, 0, "the answer check sent conversation history");
+    assert.match(check.prompt, /My answer: A\. The learning rate\nAnswer key: B\. The weights\nKey explanation: Weights are fitted/);
+    assert.equal(/\[S\d+\]/.test(check.prompt), false, "the quiz's citation labels were copied into the answer check");
+    assert.match(await page.$$eval(".ai-tutor__message--user .ai-tutor__user-prompt", (nodes) => nodes.at(-1).textContent), /^Quiz question: Which of these is learned during training\?/, "the answer check was not a visible question");
+    const feedbackCard = await page.$eval(".ai-tutor__feedback", (node) => ({
+      headings: [...node.querySelectorAll("h4, h5")].map((heading) => heading.textContent),
+      text: node.textContent,
+      citations: [...node.querySelectorAll("button.ai-tutor__citation")].length,
+    }));
+    assert.deepEqual(feedbackCard.headings, ["Why that answer missed", "Why", "What was missing", "Correct reasoning", "Check yourself"]);
+    assert.equal(/STRENGTH-TEXT|\b10\b|score/i.test(feedbackCard.text), false, "the answer check showed its score or strengths");
+    assert.ok(feedbackCard.citations >= 1, "the answer check's supplied citation did not render as a control");
+    assert.equal(await page.evaluate(() => document.activeElement === [...document.querySelectorAll(".ai-tutor__message--assistant")].at(-1)), true, "focus did not move to the answer check");
+    assert.equal(await page.$$eval(".ai-tutor__quiz-question", (nodes) => [...nodes[0].querySelectorAll("button")].map((node) => node.textContent).includes("See the explanation")), true);
+    // Regenerate reopens the check as an Explain question, never the hidden mode.
+    await page.$$eval(".ai-tutor__message--assistant", (nodes) => [...nodes.at(-1).querySelectorAll(".ai-tutor__message-actions button")].find((node) => node.textContent.includes("Edit & regenerate")).click());
+    assert.equal(await activeMode(page), "Explain", "Regenerate left the composer in the answer-check mode");
+    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /^Quiz question: /);
+    await page.$$eval(".ai-tutor__feedback button", (nodes) => nodes.find((node) => node.textContent.includes("Answer this")).click());
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 });
+    assert.equal(await activeMode(page), "Socratic");
+    assert.match(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), /Is the number of layers a parameter or a hyperparameter\?\n\nMy answer: $/);
+    await setComposerPrompt(page, "");
+
+    // An answer check that breaks its schema is shown as an error and kept
+    // nowhere.
+    feedbackReply = "invalid";
+    await questionAction(2, "Explain my mistake");
+    await page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
+    assert.match(await page.$eval(".ai-tutor__request-error", (node) => node.textContent), /failed local safety validation/);
+    assert.equal(await page.$$eval(".ai-tutor__feedback", (nodes) => nodes.length), 1, "an invalid answer check was shown as a result");
+    await waitForStoredHistory(page, 5);
+    const storedChecks = (await readProfile(page)).aiTutorHistory.filter((message) => message.role === "assistant" && message.mode === "feedback");
+    assert.equal(storedChecks.length, 1, "an invalid answer check was saved to history");
+    feedbackReply = "valid";
+
+    // Save misses: once, confident first, linked to the quiz's lesson.
+    assert.deepEqual(await storedMistakes(), [], "a quiz logged a mistake without being asked");
+    await clickByText(page, ".ai-tutor__quiz-summary button", "Save misses for review");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__quiz-summary .ai-tutor__draft-status")?.textContent.includes("Saved 2 misses"), { timeout: 5_000 });
+    assert.match(await page.$eval(".ai-tutor__quiz-summary", (node) => node.textContent), /Saved for review/);
+    await page.waitForFunction(() => new Promise((resolve) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onsuccess = () => {
+        const get = request.result.transaction("study-data", "readonly").objectStore("study-data").get("profile");
+        get.onsuccess = () => resolve((get.result?.mistakes || []).length === 2);
+        get.onerror = () => resolve(false);
+      };
+      request.onerror = () => resolve(false);
+    }), { timeout: 8_000 });
+    const saved = await storedMistakes();
+    assert.deepEqual(saved.map((mistake) => [mistake.prompt, mistake.response, mistake.category, mistake.occurrences]), [
+      ["Which of these is learned during training?", "A. The learning rate", "misconception", 1],
+      ["Which split must stay untouched until the end?", "A. Validation", "misconception", 1],
+    ], "misses were not saved confident-first without citation labels");
+    assert.match(saved[0].expected, /^B\. The weights\n\nWeights are fitted by gradient descent; the others are chosen before training\.$/);
+    assert.deepEqual(saved[0].tags, ["ai-quiz", "ai-draft", "confident-miss"]);
+    assert.ok(saved.every((mistake) => mistake.documentId), "saved misses were not linked to the quiz's lesson");
+    await clickByText(page, ".ai-tutor__quiz-summary button", "Saved for review");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__quiz-summary .ai-tutor__draft-status")?.textContent.includes("already in your mistake notebook"), { timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.deepEqual((await storedMistakes()).map((mistake) => mistake.occurrences), [1, 1], "a second Save changed the notebook");
+
+    // New quiz on my weak spots names the missed concepts.
+    await clickByText(page, ".ai-tutor__quiz-summary button", "New quiz on my weak spots");
+    await waitForAnswers(page, 3);
+    const weakSpots = calls.respond.at(-1).body;
+    assert.equal(weakSpots.task, "quiz");
+    assert.equal(weakSpots.webSearch, false);
+    assert.equal(weakSpots.history.length, 0);
+    assert.match(weakSpots.prompt, /ideas I got wrong in my last quiz:\n- Which of these is learned during training\?\n- Which split must stay untouched until the end\?/);
+    const quizTargets = await page.$$eval(".ai-tutor__quiz-summary button, .ai-tutor__quiz-feedback button", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)).filter((height) => height > 0));
+    assert.equal(quizTargets.every((height) => height >= 44), true, `quiz follow-through targets under 44px: ${quizTargets}`);
+
+    // The notebook shows the saved misses.
+    await page.evaluate(() => { window.location.hash = "#/review"; });
+    await page.waitForFunction(() => document.querySelectorAll(".mistake-card").length === 2, { timeout: 10_000 }).catch(() => assert.fail("the saved quiz misses were not in the mistake notebook"));
+    assert.match(await page.$eval(".mistake-card", (node) => node.textContent), /Which of these is learned during training\?/, "the confident miss was not first in the mistake notebook");
+  } finally {
+    await quizScenario.context.close();
+  }
+
   let modelOnline = false;
   const recovery = await newAuditPage("service-recovers", () => modelOnline ? secureConfig : {
     ...secureConfig, service: { ...secureConfig.service, reachable: false },

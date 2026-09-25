@@ -866,7 +866,7 @@
   border-radius: 14px;
 }
 
-.ai-tutor__quiz-question legend {
+.ai-tutor__quiz-question > legend {
   display: grid;
   float: left;
   grid-template-columns: 28px minmax(0, 1fr);
@@ -936,6 +936,193 @@
 .ai-tutor__quiz-feedback p {
   margin: 4px 0 0;
   line-height: 1.52;
+}
+
+/* "How sure are you?" before Check answer (TFEAT-01): a native radio
+   group drawn as a compact three-way segmented choice. */
+.ai-tutor__confidence {
+  min-width: 0;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+}
+
+.ai-tutor__confidence legend {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--ink-soft, #566078);
+  font-size: 0.76rem;
+  font-weight: 740;
+}
+
+.ai-tutor__confidence > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-tutor__confidence label {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  gap: 6px;
+  padding: 6px 10px;
+  white-space: nowrap;
+  color: var(--ink-soft, #566078);
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+  cursor: pointer;
+}
+
+.ai-tutor__confidence label.is-active {
+  color: var(--ai-accent-ink);
+  background: var(--ai-accent-soft);
+  border-color: color-mix(in srgb, var(--ai-accent) 55%, transparent);
+}
+
+/* The native radio stays for keyboards and screen readers; the segment
+   shows the choice with a fill, a border and a check mark. */
+.ai-tutor__confidence input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+.ai-tutor__confidence label.is-active span::before {
+  content: "✓ ";
+}
+
+.ai-tutor__confidence label:focus-within {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.ai-tutor__confident-miss,
+.ai-tutor__quiz-dispute {
+  font-weight: 650;
+}
+
+.ai-tutor__explain-mistake,
+.ai-tutor__quiz-feedback > .ai-tutor__button {
+  margin-top: 10px;
+}
+
+.ai-tutor__explain-mistake {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+}
+
+.ai-tutor__explain-mistake small {
+  color: var(--ink-soft, #566078);
+  font-size: 0.74rem;
+}
+
+/* The score once every question is checked. */
+.ai-tutor__quiz-summary {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  background: var(--paper, #fffdf8);
+  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
+  border-radius: 14px;
+}
+
+.ai-tutor__quiz-summary h5 {
+  margin: 0;
+  font-size: 1.02rem;
+}
+
+.ai-tutor__quiz-summary p {
+  margin: 0;
+  color: var(--ink-soft, #566078);
+  line-height: 1.5;
+}
+
+.ai-tutor__quiz-misses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-tutor__quiz-misses li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  background: var(--coral-soft, #fff0e9);
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.ai-tutor__confident-badge {
+  color: var(--ai-tutor-danger);
+}
+
+.ai-tutor__quiz-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* An answer check: the quiz key stays above it in the conversation. */
+.ai-tutor__feedback {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-tutor__feedback section {
+  padding: 11px 13px;
+  background: var(--paper-2, #f9f7f1);
+  border: 1px solid var(--line, rgba(23, 32, 53, 0.1));
+  border-radius: 12px;
+}
+
+.ai-tutor__feedback h5 {
+  margin: 0 0 4px;
+  color: var(--ink-soft, #566078);
+  font-size: 0.74rem;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+}
+
+.ai-tutor__feedback section p,
+.ai-tutor__feedback section ul {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.ai-tutor__feedback section ul {
+  padding-left: 20px;
+}
+
+.ai-tutor__feedback-check .ai-tutor__button {
+  margin-top: 9px;
+}
+
+.ai-tutor__feedback-dispute {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--gold-soft, #fff6df);
+  border-radius: 10px;
+  line-height: 1.5;
+}
+
+@media (max-width: 719px) {
+  .ai-tutor__quiz-summary-actions .ai-tutor__button { flex: 1 1 100%; justify-content: center; min-height: 44px; }
 }
 
 .ai-tutor__flashcards {

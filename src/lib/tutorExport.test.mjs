@@ -67,3 +67,10 @@ test("conversation export names mode, profile and state in each heading", () => 
   assert.match(markdown, /Sources:\n- \[S1\] Linear Regression/);
   assert.match(markdown, /## Lumen Tutor · Explain · Fast · stopped early\n\n> \*\*Incomplete answer:\*\*/);
 });
+
+test("an answer check reads without its score or strengths", () => {
+  const markdown = structuredResultMarkdown({ score: 20, correct: false, feedback: "It is set before training.", strengths: ["Named the update"], gaps: ["Parameters are learned"], improvedAnswer: "A hyperparameter.", nextQuestion: "Is batch size learned?" });
+  assert.equal(markdown, "### Answer check\n\n**Why:** It is set before training.\n\n**What was missing:**\n\n- Parameters are learned\n\n**Correct reasoning:** A hyperparameter.\n\n**Check yourself:** Is batch size learned?");
+  assert.doesNotMatch(markdown, /20|Named the update/);
+  assert.match(structuredResultMarkdown({ score: 90, correct: true, feedback: "F", strengths: [], gaps: [], improvedAnswer: "I", nextQuestion: null }), /disagreed with the quiz key/);
+});

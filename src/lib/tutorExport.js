@@ -13,6 +13,7 @@ const letter = (index) => String.fromCharCode(65 + index);
 const isQuiz = (data) => Array.isArray(data?.questions) && data.questions.every((question) => Array.isArray(question?.options));
 const isFlashcards = (data) => Array.isArray(data?.cards);
 const isStudyPlan = (data) => Array.isArray(data?.milestones);
+const isAnswerFeedback = (data) => typeof data?.feedback === "string" && typeof data?.improvedAnswer === "string" && Array.isArray(data?.gaps);
 
 const quizMarkdown = (quiz, level) => {
   const lines = [heading(level, `Quiz: ${text(quiz.title) || "Check your understanding"}`)];
@@ -55,12 +56,26 @@ const studyPlanMarkdown = (plan, level) => {
   return lines.join("\n");
 };
 
+// An answer check reads as the learner saw it: no score or strengths, which
+// the tutor hides for keyed quiz questions.
+const answerFeedbackMarkdown = (data, level) => {
+  const lines = [heading(level, "Answer check")];
+  if (data.correct === true) lines.push("", "*The tutor's second look disagreed with the quiz key.*");
+  lines.push("", `**Why:** ${text(data.feedback)}`);
+  const gaps = data.gaps.map(text).filter(Boolean);
+  if (gaps.length) lines.push("", "**What was missing:**", "", ...gaps.map((gap) => `- ${gap}`));
+  lines.push("", `**Correct reasoning:** ${text(data.improvedAnswer)}`);
+  if (text(data.nextQuestion)) lines.push("", `**Check yourself:** ${text(data.nextQuestion)}`);
+  return lines.join("\n");
+};
+
 /** Markdown for a validated structured result, or "" when `data` is not one. */
 export const structuredResultMarkdown = (data, { headingLevel = 3 } = {}) => {
   if (!data || typeof data !== "object") return "";
   if (isQuiz(data)) return quizMarkdown(data, headingLevel);
   if (isFlashcards(data)) return flashcardsMarkdown(data, headingLevel);
   if (isStudyPlan(data)) return studyPlanMarkdown(data, headingLevel);
+  if (isAnswerFeedback(data)) return answerFeedbackMarkdown(data, headingLevel);
   return "";
 };
 

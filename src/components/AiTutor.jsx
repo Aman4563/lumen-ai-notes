@@ -13,6 +13,7 @@ import {
   Cpu,
   ExternalLink,
   FileQuestion,
+  Lightbulb,
   LoaderCircle,
   LockKeyhole,
   MessageCircleQuestion,
@@ -57,12 +58,26 @@ import {
   tutorRequestLimits,
 } from "../lib/tutorRequest";
 import {
+  CONFIDENCE_LEVELS,
+  answerFeedbackPrompt,
+  feedbackRetrievalQuery,
+  normalizeQuizState,
+  pruneQuizStates,
+  quizMissDrafts,
+  quizSummary,
+  readQuizStates,
+  validateTutorAnswerFeedback,
+  weakSpotQuiz,
+  writeQuizStates,
+} from "../lib/tutorQuiz.js";
+import {
   citedDocumentId,
   followUpPair,
   followUpRetrievalQuery,
   followUpScope,
   followUpsForMessage,
   questionForAnswer,
+  withoutCitationLabels,
 } from "../lib/tutorFollowUps.js";
 import { buildStarterPrompts } from "../lib/tutorStarters.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
@@ -520,6 +535,7 @@ const validateStructuredResult = (task, value) => {
   if (task === "quiz") return validateTutorQuiz(value);
   if (task === "flashcards") return validateTutorFlashcards(value);
   if (task === "study_plan") return validateTutorStudyPlan(value);
+  if (task === "answer_feedback") return validateTutorAnswerFeedback(value);
   return false;
 };
 
@@ -690,12 +706,80 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
 
 const optionLetter = (index) => String.fromCharCode(65 + index);
 
-const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSource }) => {
-  const [answers, setAnswers] = useState({});
-  const [checked, setChecked] = useState({});
+/**
+ * An interactive quiz (TFEAT-01). What the learner chose, how sure they were
+ * and what they checked live in the tutor's per-tab quiz state, so leaving
+ * #/ai keeps them. Once every question is checked the score is shown and
+ * announced once; misses can be explained, saved to the mistake notebook or
+ * turned into a new quiz.
+ */
+const QuizResult = ({
+  quiz,
+  message,
+  onNavigateSource,
+  quizState,
+  onQuizStateChange,
+  onAnnounce,
+  explanations = {},
+  explainUnavailable = "",
+  requestBusy = false,
+  onExplainMistake,
+  onShowExplanation,
+  onSaveMisses,
+  onWeakSpotQuiz,
+}) => {
+  const messageId = message.id;
+  const { citationSources, webSources } = message;
+  const state = useMemo(() => normalizeQuizState(quizState), [quizState]);
+  const { answers, checked, confidence } = state;
+  const explainReasonId = useId();
+  const summaryTitleId = useId();
+  const [saveStatus, setSaveStatus] = useState({ status: "idle", message: "" });
   // "Check answer" is replaced by its feedback; focus follows it there.
   const focusFeedbackRef = useRef("");
   const cite = (text, className) => <InlineRichText className={className} text={text} citationSources={citationSources} webSources={webSources} onNavigateSource={onNavigateSource} />;
+  const summary = quizSummary(quiz, state);
+  const disputed = new Set(Object.entries(explanations).filter(([, explanation]) => explanation.disputed).map(([questionId]) => questionId));
+  const documentIds = citationSources.map((source) => source.original?.documentId || source.original?.id || "");
+  const unsaved = quizMissDrafts(quiz, state, { documentIds, disputed });
+  const savable = summary.misses.filter(({ question }) => !disputed.has(question.id));
+  const allSaved = savable.length > 0 && unsaved.length === 0;
+  const change = (updater) => onQuizStateChange?.(messageId, updater);
+  const check = (question) => {
+    focusFeedbackRef.current = question.id;
+    const next = { ...state, checked: { ...state.checked, [question.id]: true } };
+    const after = quizSummary(quiz, next);
+    const announceNow = after.complete && !state.summaryAnnounced;
+    change((current) => ({ ...current, checked: { ...current.checked, [question.id]: true }, summaryAnnounced: current.summaryAnnounced || announceNow }));
+    // The score is announced once, through the tutor's one status region.
+    if (announceNow) onAnnounce?.(`Quiz complete: ${after.correct} of ${after.total} correct.${after.confidentMisses ? ` You were certain about ${after.confidentMisses} of the answers you missed.` : ""}`);
+  };
+  const saveMisses = async () => {
+    if (!onSaveMisses || saveStatus.status === "saving") return;
+    if (!unsaved.length) {
+      setSaveStatus({ status: "saved", message: "These misses are already in your mistake notebook." });
+      return;
+    }
+    setSaveStatus({ status: "saving", message: "Saving your misses…" });
+    try {
+      const result = await onSaveMisses(unsaved.map(({ questionId: _questionId, ...draft }) => draft));
+      const added = Number.isSafeInteger(result?.added) ? result.added : unsaved.length;
+      const merged = Number.isSafeInteger(result?.merged) ? result.merged : 0;
+      change((current) => ({ ...current, saved: { ...current.saved, ...Object.fromEntries(unsaved.map((draft) => [draft.questionId, true])) } }));
+      const noun = (count) => `${count} miss${count === 1 ? "" : "es"}`;
+      setSaveStatus({
+        status: "saved",
+        message: added && merged
+          ? `Saved ${noun(added)} to your mistake notebook. ${merged === 1 ? "One was" : `${merged} were`} already there, so ${merged === 1 ? "its count" : "their counts"} went up.`
+          : added
+            ? `Saved ${noun(added)} to your mistake notebook. Correct ${added === 1 ? "it" : "them"} in Review.`
+            : `${merged === 1 ? "This miss was" : "These misses were"} already in your mistake notebook, so ${merged === 1 ? "its count" : "their counts"} went up.`,
+      });
+    } catch (error) {
+      const reason = error instanceof Error && error.message ? ` ${error.message.replace(/\.?$/, ".")}` : "";
+      setSaveStatus({ status: "error", message: `Your misses were not saved.${reason} Try again.` });
+    }
+  };
   return (
     <div className="ai-tutor__quiz">
       <div className="ai-tutor__result-title"><FileQuestion size={20} aria-hidden="true" /><div><h4>{quiz.title}</h4><p>{cite(quiz.instructions)}</p></div></div>
@@ -704,6 +788,8 @@ const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSo
         const revealed = checked[question.id];
         const correct = chosen === question.correctIndex;
         const answerLetter = optionLetter(question.correctIndex);
+        const sure = confidence[question.id] || "";
+        const explanation = explanations[question.id];
         return (
           <fieldset className="ai-tutor__quiz-question" key={question.id}>
             <legend><span className="ai-tutor__quiz-number">{questionIndex + 1}</span>{cite(question.prompt, "ai-tutor__quiz-prompt")}</legend>
@@ -719,7 +805,7 @@ const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSo
                       name={`quiz-${messageId}-${question.id}`}
                       checked={chosen === optionIndex}
                       disabled={revealed}
-                      onChange={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))}
+                      onChange={() => change((current) => ({ ...current, answers: { ...current.answers, [question.id]: optionIndex } }))}
                     />
                     <span className="ai-tutor__quiz-option-text">
                       <span className="ai-tutor__option-letter">{optionLetter(optionIndex)}.</span> {cite(option)}
@@ -729,8 +815,21 @@ const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSo
                 );
               })}
             </div>
+            {!revealed && Number.isSafeInteger(chosen) && (
+              <fieldset className="ai-tutor__confidence">
+                <legend>How sure are you?</legend>
+                <div>
+                  {CONFIDENCE_LEVELS.map((level) => (
+                    <label className={sure === level.id ? "is-active" : ""} key={level.id}>
+                      <input type="radio" name={`quiz-${messageId}-${question.id}-confidence`} value={level.id} checked={sure === level.id} onChange={() => change((current) => ({ ...current, confidence: { ...current.confidence, [question.id]: level.id } }))} />
+                      <span>{level.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
             {!revealed ? (
-              <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={!Number.isSafeInteger(chosen)} onClick={() => { focusFeedbackRef.current = question.id; setChecked((current) => ({ ...current, [question.id]: true })); }}>Check answer</button>
+              <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={!Number.isSafeInteger(chosen)} onClick={() => check(question)}>Check answer</button>
             ) : (
               <div
                 className={correct ? "ai-tutor__quiz-feedback is-correct" : "ai-tutor__quiz-feedback is-incorrect"}
@@ -742,12 +841,71 @@ const QuizResult = ({ quiz, messageId, citationSources, webSources, onNavigateSo
                 }}
               >
                 <strong>{correct ? `Correct — ${answerLetter} is right.` : `Not quite — the correct answer is ${answerLetter}.`}</strong>
+                {!correct && sure === "certain" && <p className="ai-tutor__confident-miss">You were certain. A confident miss is the most useful one to fix.</p>}
                 <p>{cite(question.explanation)}</p>
+                {!correct && explanation?.disputed && <p className="ai-tutor__quiz-dispute">The answer check disagreed with this key, so it is not saved as a mistake. Check the sources before trusting either.</p>}
+                {!correct && onExplainMistake && (explanation?.answerId ? (
+                  <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => onShowExplanation?.(explanation.answerId)}>See the explanation</button>
+                ) : (
+                  <div className="ai-tutor__explain-mistake">
+                    <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={requestBusy || Boolean(explainUnavailable)} aria-describedby={explainUnavailable ? explainReasonId : undefined} onClick={() => onExplainMistake(message, question, chosen)}>{explanation?.pending ? <><LoaderCircle className="ai-tutor__spin" size={16} aria-hidden="true" /> Checking your answer…</> : "Explain my mistake"}</button>
+                    {explainUnavailable && <small id={explainReasonId}>{explainUnavailable}</small>}
+                  </div>
+                ))}
               </div>
             )}
           </fieldset>
         );
       })}
+      {summary.complete && (
+        <section className="ai-tutor__quiz-summary" aria-labelledby={summaryTitleId}>
+          <h5 id={summaryTitleId}>{summary.correct} of {summary.total} correct</h5>
+          <p>{!summary.misses.length
+            ? "Every answer was right."
+            : summary.confidentMisses
+              ? `You were certain about ${summary.confidentMisses === 1 ? "one answer" : `${summary.confidentMisses} answers`} you missed. Review ${summary.confidentMisses === 1 ? "it" : "those"} first.`
+              : `Review the ${summary.misses.length === 1 ? "one" : summary.misses.length} you missed while ${summary.misses.length === 1 ? "it is" : "they are"} fresh.`}</p>
+          {summary.misses.length > 0 && (
+            <ul className="ai-tutor__quiz-misses">
+              {summary.misses.map((miss) => <li key={miss.question.id}><span>Question {miss.index + 1}</span>{miss.confidence === "certain" && <span className="ai-tutor__confident-badge">You were certain</span>}</li>)}
+            </ul>
+          )}
+          {summary.misses.length > 0 && (
+            <div className="ai-tutor__quiz-summary-actions">
+              {onSaveMisses && savable.length > 0 && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" aria-disabled={allSaved || saveStatus.status === "saving" || undefined} onClick={saveMisses}>{saveStatus.status === "saving" ? <LoaderCircle className="ai-tutor__spin" size={16} aria-hidden="true" /> : allSaved ? <Check size={16} aria-hidden="true" /> : <NotebookPen size={16} aria-hidden="true" />} {allSaved ? "Saved for review" : "Save misses for review"}</button>}
+              {onWeakSpotQuiz && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" disabled={requestBusy} onClick={() => onWeakSpotQuiz(message, summary.misses)}><FileQuestion size={16} aria-hidden="true" /> New quiz on my weak spots</button>}
+            </div>
+          )}
+          {saveStatus.message && <p className={`ai-tutor__draft-status is-${saveStatus.status}`} role="status">{saveStatus.message}</p>}
+        </section>
+      )}
+    </div>
+  );
+};
+
+/**
+ * "Explain my mistake" (TFEAT-01): the answer check for one keyed quiz miss.
+ * Its score and strengths are not shown (correctness is already known), and
+ * the quiz key stays visible above it. A check that sides with the learner
+ * says so instead of overruling the key.
+ */
+const FeedbackResult = ({ feedback, message, question, onNavigateSource, onAnswerCheck }) => {
+  const cite = (text) => <InlineRichText text={text} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
+  const evidence = message.citationSources[0];
+  return (
+    <div className="ai-tutor__feedback">
+      <div className="ai-tutor__result-title"><Lightbulb size={20} aria-hidden="true" /><div><h4>Why that answer missed</h4>{question && <p>{withoutCitationLabels(question.prompt)}</p>}</div></div>
+      {feedback.correct === true && <p className="ai-tutor__feedback-dispute">The tutor&rsquo;s second look disagrees with the quiz key. {evidence ? <>Check {cite(`[S${evidence.citationNumber}]`)} before trusting either answer.</> : "Check the lesson before trusting either answer."}</p>}
+      <section><h5>Why</h5><p>{cite(feedback.feedback)}</p></section>
+      {feedback.gaps.length > 0 && <section><h5>What was missing</h5><ul>{feedback.gaps.map((gap, index) => <li key={`${index}-${gap}`}>{cite(gap)}</li>)}</ul></section>}
+      <section><h5>Correct reasoning</h5><p>{cite(feedback.improvedAnswer)}</p></section>
+      {feedback.nextQuestion && (
+        <section className="ai-tutor__feedback-check">
+          <h5>Check yourself</h5>
+          <p>{cite(feedback.nextQuestion)}</p>
+          {onAnswerCheck && <button className="ai-tutor__button ai-tutor__button--secondary" type="button" onClick={() => onAnswerCheck(message, feedback.nextQuestion)}><MessageCircleQuestion size={16} aria-hidden="true" /> Answer this</button>}
+        </section>
+      )}
     </div>
   );
 };
@@ -834,8 +992,9 @@ const StudyPlanResult = ({ plan, citationSources, webSources, onNavigateSource }
   </div>
 );
 
-const AssistantMessage = ({ message, onCreateFlashcardDrafts, onNavigateSource, streaming = false }) => {
-  if (message.mode === "quiz" && validateTutorQuiz(message.data)) return <QuizResult quiz={message.data} messageId={message.id} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
+const AssistantMessage = ({ message, onCreateFlashcardDrafts, onNavigateSource, streaming = false, study = {} }) => {
+  if (message.mode === "quiz" && validateTutorQuiz(message.data)) return <QuizResult quiz={message.data} message={message} onNavigateSource={onNavigateSource} {...study} />;
+  if (message.mode === "feedback" && validateTutorAnswerFeedback(message.data)) return <FeedbackResult feedback={message.data} message={message} question={study.feedbackQuestion} onNavigateSource={onNavigateSource} onAnswerCheck={study.onAnswerCheck} />;
   if (message.mode === "flashcards" && validateTutorFlashcards(message.data)) return <FlashcardResult cards={message.data.cards} message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />;
   if (message.mode === "study-plan" && validateTutorStudyPlan(message.data)) return <StudyPlanResult plan={message.data} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} />;
   return <SafeResponseText text={message.content} citationSources={message.citationSources} webSources={message.webSources} onNavigateSource={onNavigateSource} streaming={streaming} />;
@@ -1016,6 +1175,8 @@ const FollowUps = ({ items, disabled = false, onChoose }) => (
  * - initialHistory / historyTombstones / onHistoryChange: optional parent-owned local persistence
  * - onNavigateSource(source, { citation, sourceId }): opens an exact cited source
  * - onCreateFlashcardDrafts(cards, metadata): persists learner-selected drafts
+ * - onSaveQuizMisses(drafts): records quiz misses in the mistake notebook and
+ *   returns { added, merged }
  * - retrieveLibrary(query, options): optional local retrieval adapter
  * - studyContext: { recent, last, next, mistakes, reviewItems } for the
  *   suggested starts shown while the conversation is empty
@@ -1039,6 +1200,7 @@ export default function AiTutor({
   onHistoryChange,
   onNavigateSource,
   onCreateFlashcardDrafts,
+  onSaveQuizMisses,
   onSaveAnswerNote,
   onInteractionChange,
   retrieveLibrary,
@@ -1192,6 +1354,16 @@ export default function AiTutor({
   const [activeResponse, setActiveResponse] = useState(null);
   const [requestElapsed, setRequestElapsed] = useState(0);
   const [sourceWarning, setSourceWarning] = useState("");
+  // Quiz answers, confidence, checks and saves per quiz message (TFEAT-01),
+  // kept for this tab so leaving #/ai does not lose them.
+  const [quizStates, setQuizStates] = useState(readQuizStates);
+  useEffect(() => { writeQuizStates(quizStates); }, [quizStates]);
+  const updateQuizState = useCallback((messageId, updater) => setQuizStates((current) => ({
+    ...current,
+    [messageId]: { ...normalizeQuizState(updater(normalizeQuizState(current[messageId]))), updatedAt: Date.now() },
+  })), []);
+  // Moving focus to a message on request needs a render to apply it.
+  const [, setFocusRequest] = useState(0);
   const currentMode = modeById(modeId);
   useEffect(() => {
     rememberTutorDraft({ prompt, modeId, sourceMode, difficulty, responseProfile });
@@ -1553,6 +1725,13 @@ export default function AiTutor({
 
   const historyRef = useRef(history);
   historyRef.current = history;
+  // A quiz removed from the conversation takes its state with it. An empty
+  // history may simply not be loaded yet, so it prunes nothing.
+  useEffect(() => {
+    if (!history.length) return;
+    const live = new Set(history.map((message) => message.id));
+    setQuizStates((current) => pruneQuizStates(current, live));
+  }, [history]);
   const lastExternalHistoryRef = useRef({
     signature: historySignature(normalizedExternalHistory),
     history: normalizedExternalHistory,
@@ -2308,6 +2487,71 @@ export default function AiTutor({
     });
   };
 
+  // "Explain my mistake" for one keyed quiz miss: a Fast answer check that
+  // retrieves with the question itself and favours the quiz's lesson. Its
+  // question id is recorded on the quiz so the answer can be found again.
+  const noHistory = { messages: [], conversationSummary: "", compactedMessages: 0 };
+  const explainMistake = (quizMessage, question, chosenIndex) => {
+    if (requestState.status === "loading") return;
+    const { promptLimit: fastPromptLimit } = tutorRequestLimits(configState.config, "fast");
+    const scope = followUpScope(quizMessage, normalizedSources);
+    const userMessageId = createId();
+    const started = startTutorAction({
+      mode: modeById("feedback"),
+      prompt: answerFeedbackPrompt(question, chosenIndex, { maxChars: fastPromptLimit }),
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      historyWindow: noHistory,
+      responseProfile: "fast",
+      webSearch: false,
+      retrievalQuery: feedbackRetrievalQuery(question),
+      selectedDocumentId: citedDocumentId(quizMessage),
+      userMessageId,
+      stageHint: "Checking your answer against your library (about 20 s)",
+    });
+    if (started) updateQuizState(quizMessage.id, (current) => ({ ...current, explained: { ...current.explained, [question.id]: userMessageId } }));
+  };
+
+  const quizWeakSpots = (quizMessage, misses) => {
+    if (requestState.status === "loading") return;
+    const next = weakSpotQuiz(misses);
+    const scope = followUpScope(quizMessage, normalizedSources);
+    startTutorAction({
+      mode: modeById("quiz"),
+      prompt: next.prompt,
+      sourceMode: scope.sourceMode,
+      sources: scope.sources,
+      historyWindow: noHistory,
+      retrievalQuery: next.retrievalQuery,
+      selectedDocumentId: citedDocumentId(quizMessage),
+      webSearch: false,
+    });
+  };
+
+  const showExplanation = (answerId) => {
+    pendingFocusRef.current = { kind: "message", id: answerId, focus: true, scroll: true };
+    setFocusRequest((count) => count + 1);
+  };
+
+  // "Answer this" puts the check question in the box in Socratic mode, with
+  // the cursor after "My answer:". A draft the learner wrote is kept above.
+  const answerCheck = (feedbackMessage, nextQuestion) => {
+    if (requestState.status === "loading") return;
+    const check = `${withoutCitationLabels(nextQuestion)}\n\nMy answer: `;
+    const draft = prompt.trim();
+    const keepDraft = Boolean(draft) && !MODE_OPTIONS.some((mode) => mode.prompt === draft);
+    setModeId("socratic");
+    setPrompt((keepDraft ? `${draft}\n\n${check}` : check).slice(0, MAX_PROMPT_CHARS));
+    retrievalHintRef.current = citedDocumentId(feedbackMessage);
+    outboundChanged();
+    setComposerNotice("Write your answer after “My answer:”, then send.");
+    window.setTimeout(() => {
+      focusComposer();
+      const field = promptRef.current;
+      field?.setSelectionRange?.(field.value.length, field.value.length);
+    }, 0);
+  };
+
   const submit = (event) => {
     event?.preventDefault?.();
     if (!requestReady) return;
@@ -2457,6 +2701,7 @@ export default function AiTutor({
   const confirmClear = () => {
     setConfirmClearOpen(false);
     publishHistory([]);
+    setQuizStates({});
     lastRequestRef.current = null;
     retrievalHintRef.current = "";
     setRequestState({ status: "idle", error: null });
@@ -2577,6 +2822,57 @@ export default function AiTutor({
   };
 
   const reuseNotice = `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`;
+
+  // Each "Explain my mistake" a quiz sent, found again in the conversation:
+  // the answer right after its question (and whether it disputed the key),
+  // or still pending while that request runs.
+  const loading = requestState.status === "loading";
+  const quizExplanations = useMemo(() => {
+    const byQuiz = {};
+    Object.entries(quizStates).forEach(([quizId, state]) => {
+      byQuiz[quizId] = Object.fromEntries(Object.entries(state.explained).map(([questionId, questionMessageId]) => {
+        const index = history.findIndex((message) => message.id === questionMessageId);
+        const answer = index >= 0 ? history[index + 1] : null;
+        if (answer?.role === "assistant" && answer.mode === "feedback" && validateTutorAnswerFeedback(answer.data)) {
+          return [questionId, { answerId: answer.id, disputed: answer.data.correct === true }];
+        }
+        return [questionId, { pending: loading && index >= 0 && index === history.length - 1 }];
+      }));
+    });
+    return byQuiz;
+  }, [history, loading, quizStates]);
+  // The quiz question an answer check is about.
+  const feedbackQuestionFor = (message) => {
+    const asked = questionForAnswer(history, message.id);
+    if (!asked) return null;
+    for (const [quizId, state] of Object.entries(quizStates)) {
+      const questionId = Object.keys(state.explained).find((id) => state.explained[id] === asked.id);
+      if (!questionId) continue;
+      return history.find((item) => item.id === quizId)?.data?.questions?.find((question) => question.id === questionId) || null;
+    }
+    return null;
+  };
+  // Answer checks are a separate server task; a server without it keeps the
+  // button, disabled with the reason.
+  const serverTasks = configState.config?.supportedTasks;
+  const serverStructuredTasks = configState.config?.structuredTasks;
+  const feedbackUnavailable = configState.status === "ready"
+    && (!Array.isArray(serverTasks) || !serverTasks.includes("answer_feedback")
+      || (Array.isArray(serverStructuredTasks) && !serverStructuredTasks.includes("answer_feedback")))
+    ? "This AI server cannot check quiz answers."
+    : "";
+  const studyFor = (message) => (message.mode === "quiz" ? {
+    quizState: quizStates[message.id],
+    onQuizStateChange: updateQuizState,
+    onAnnounce: announce,
+    explanations: quizExplanations[message.id] || {},
+    explainUnavailable: feedbackUnavailable,
+    requestBusy: loading,
+    onExplainMistake: explainMistake,
+    onShowExplanation: showExplanation,
+    onSaveMisses: onSaveQuizMisses,
+    onWeakSpotQuiz: quizWeakSpots,
+  } : message.mode === "feedback" ? { feedbackQuestion: feedbackQuestionFor(message), onAnswerCheck: answerCheck } : undefined);
 
   // Suggested starts (TFEAT-04): four on a phone, six on wider screens,
   // using lesson headings only when that lesson's text is already loaded.
@@ -2852,7 +3148,7 @@ export default function AiTutor({
                     <h3 className="visually-hidden" id={titleId}>{message.role === "assistant" ? `Tutor answer, ${modeLabel}${message.incomplete ? ", stopped early" : ""}` : `Your question, ${modeLabel}`}</h3>
                     <div className="ai-tutor__message-meta"><strong>{message.role === "assistant" ? "Lumen Tutor" : "You"}</strong><span>{modeLabel}</span>{message.role === "assistant" && <span>{RESPONSE_PROFILES.find((item) => item.id === message.responseProfile)?.label || "Balanced"}</span>}{message.usage && <span>{message.usage.outputTokens.toLocaleString()} tokens</span>}{message.durationMs !== null && message.role === "assistant" && <span>{(message.durationMs / 1_000).toFixed(message.durationMs < 10_000 ? 1 : 0)}s</span>}{message.incomplete && <span className="is-warning">Stopped early</span>}{message.truncated && <span className="is-warning">Display capped</span>}{message.role === "assistant" && <WebFallbackBadge status={message.webFallbackStatus} />}</div>
                     {message.role === "assistant"
-                      ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
+                      ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} study={studyFor(message)} />
                       : <p className="ai-tutor__user-prompt">{message.content}</p>}
                     <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, reuseNotice)} onSaveAnswerNote={onSaveAnswerNote} />
                     {(() => {
