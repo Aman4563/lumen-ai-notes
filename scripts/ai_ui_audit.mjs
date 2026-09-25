@@ -2630,7 +2630,7 @@ try {
     await waitForAnswers(page, 7);
     const wrap = calls.respond.at(-1).body;
     assert.equal(wrap.task, "summarize");
-    assert.equal(wrap.prompt.startsWith("Recap this practice session: what I got right, what I missed, and 3 things to review."), true);
+    assert.equal(wrap.prompt.startsWith("Recap this practice session: what I got right in my own answers, what I missed or needed revealed, and 3 things to review."), true);
     assert.equal(wrap.context, "", "Wrap up sent library text");
     assert.deepEqual(wrap.contextCitations, []);
     assert.equal(wrap.webSearch, false);

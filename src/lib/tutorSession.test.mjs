@@ -68,7 +68,7 @@ test("a hint retrieves with the tutor's last question, without labels or Markdow
 
 test("wrap up recaps the session's own turns and says when it covers only the latest", () => {
   const short = sessionWrapUp(socraticRun.slice(2), { inputLimit: 8_740 });
-  assert.equal(short.prompt, "Recap this practice session: what I got right, what I missed, and 3 things to review.");
+  assert.equal(short.prompt, "Recap this practice session: what I got right in my own answers, what I missed or needed revealed, and 3 things to review.");
   assert.equal(short.covered, 4);
   assert.equal(short.total, 4);
   assert.deepEqual(short.historyWindow.messages.map((message) => message.role), ["user", "assistant", "user", "assistant"]);

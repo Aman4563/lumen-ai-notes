@@ -21,7 +21,9 @@ export const SESSION_WRAP_UP_AFTER = 10;
 export const HINT_PROMPT = "Give me one hint for your last question without revealing the answer.";
 export const REVEAL_PROMPT = "Reveal the answer to your last question and explain it step by step.";
 export const NEXT_QUESTION_PROMPT = "Ask me the next question in this session.";
-const WRAP_UP_ASK = "what I got right, what I missed, and 3 things to review.";
+// Credit goes to the learner's own answers: a hint or a revealed answer is
+// the tutor's work, not something the learner got right.
+const WRAP_UP_ASK = "what I got right in my own answers, what I missed or needed revealed, and 3 things to review.";
 
 const clean = (value) => String(value ?? "").replace(/\r\n?/g, "\n").trim();
 
