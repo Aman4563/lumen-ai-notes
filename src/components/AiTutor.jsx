@@ -3514,7 +3514,10 @@ export default function AiTutor({
                       : <p className="ai-tutor__user-prompt">{message.content}</p>}
                     <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, reuseNotice)} onSaveAnswerNote={onSaveAnswerNote} listen={listenFor(message)} />
                     {(() => {
-                      const followUps = followUpsForMessage(message, { isLast: index === history.length - 1 });
+                      // A follow-up sends its answer as memory, so an answer
+                      // from before a long break (below the divider's "not
+                      // sent") offers none.
+                      const followUps = followUpsForMessage(message, { isLast: index === history.length - 1 && index >= contextStart });
                       return followUps.length > 0 && <FollowUps items={followUps} disabled={requestState.status === "loading"} onChoose={(item) => runFollowUp(message, item)} />;
                     })()}
                   </article>

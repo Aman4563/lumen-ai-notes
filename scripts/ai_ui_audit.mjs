@@ -2476,6 +2476,9 @@ try {
     await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
     await page.waitForSelector(".ai-tutor__context-break", { timeout: 10_000 });
     assert.equal(await page.$eval(".ai-tutor__context-break", (node) => node.previousElementSibling?.dataset.messageId && !node.nextElementSibling?.dataset.messageId), true, "a stale conversation did not end with the break divider");
+    // A follow-up would send the stale answer as its memory, against the
+    // divider's promise, so the answer before the break offers none.
+    assert.equal(await page.$(".ai-tutor__follow-ups"), null, "an answer from before the break offered follow-ups");
     await setComposerPrompt(page, "What is dropout?");
     await page.$eval(sendSelector, (button) => button.click());
     await waitForAnswers(page, 2);
