@@ -263,10 +263,19 @@ function useModalKeyboard(active, dialogRef, onClose) {
       // focus() on an element inside an inert region is a silent no-op.
       // Deferring one frame restores the opener after the background is
       // interactive again (BUG-003 focus-restoration defect).
+      // Only restore when focus was actually lost: if the learner already moved
+      // into another control (a dialog underneath, a field they clicked), a late
+      // restore would steal focus mid-typing and drop keystrokes.
       const target = previouslyFocused;
+      const dialog = dialogRef.current;
+      const focusLost = () => {
+        const current = document.activeElement;
+        return !current || current === document.body || !current.isConnected || Boolean(dialog?.contains(current)) || Boolean(current.closest?.("[inert]"));
+      };
       requestAnimationFrame(() => {
+        if (!focusLost()) return;
         if (target?.isConnected && !target.closest?.("[inert]")) target.focus?.();
-        else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected) target.focus?.(); });
+        else if (target?.isConnected) requestAnimationFrame(() => { if (target.isConnected && focusLost()) target.focus?.(); });
       });
     };
   }, [active, dialogRef]);

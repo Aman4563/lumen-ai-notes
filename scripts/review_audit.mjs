@@ -283,6 +283,14 @@ try {
   await page.keyboard.press("Tab");
   assert.ok(await page.evaluate(() => Boolean(document.activeElement?.closest(".shortcuts-dialog"))), "Tab in the shortcut sheet moved focus to the mistake dialog behind it");
   await page.keyboard.press("Escape");
+  // Moving focus right after the sheet closes must stick: the sheet's deferred
+  // restore may only reclaim focus that was lost, never a field in use.
+  assert.ok(await page.evaluate(async () => {
+    document.querySelector(".mistake-dialog textarea")?.focus();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return document.activeElement === document.querySelector(".mistake-dialog textarea");
+  }), "closing the shortcut sheet pulled focus away from the field the learner moved to");
   await page.waitForSelector(".shortcuts-dialog", { hidden: true, timeout: 5_000 });
   assert.deepEqual(await page.evaluate(() => [Boolean(document.querySelector(".mistake-dialog")), ...[".app-topbar", ".view-container", ".bottom-nav"].map((selector) => document.querySelector(selector).inert)]), [true, true, true, true], "Escape in a dialog opened over the mistake dialog closed it too or re-exposed the shell behind it");
   const manualFields = await page.$$(".mistake-dialog textarea");
