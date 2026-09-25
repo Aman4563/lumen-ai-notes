@@ -1158,7 +1158,8 @@ try {
 
     await page.evaluate(() => { location.hash = "#/ai"; });
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
-    await clickByText(page, ".ai-tutor__mode-tabs button", "Flashcards");
+    // Phones pick the mode from a select (#57).
+    await chooseMode(page, "Flashcards");
     await page.$eval(".ai-tutor__composer textarea", (field) => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Make a flashcard about holdout leakage.");
       field.dispatchEvent(new Event("input", { bubbles: true }));
