@@ -355,7 +355,9 @@ validated text-delta events plus a matching terminal envelope.
   before structured data reaches the UI. Markdown prose is parsed as GFM and
   KaTeX with trusted features disabled; raw HTML in it is shown as text, and
   citation controls come only from `[S#]`/`[W#]` markers. Model links keep only
-  `http(s)`/`mailto` targets and never wrap a citation. The result is then
+  `http(s)`/`mailto` targets off the app's own host and never wrap a citation, and
+  Markdown images become links that load nothing. Answers saved to notes and AI
+  flashcards keep the same rules in the Notebook and Review. The result is then
   sanitized with DOMPurify. Mermaid
   definitions render under strict settings and the returned SVG is sanitized
   again, with diagram links removed.

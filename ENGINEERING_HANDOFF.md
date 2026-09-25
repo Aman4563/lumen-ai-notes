@@ -555,7 +555,20 @@ uppercase `[W1]`, `[W2]`, … labels. Current guards:
   link whose label shows a citation marker (`[[S1]](url)`, or `&#91;S1&#93;`) renders
   without its link. A citation button inside a model's `<a>` followed the model's URL on
   click (on the phone, an in-app `#/read/…` route), and an in-app link would open a library
-  note that no citation validated. Mermaid diagram links are dropped for the same reason.
+  note that no citation validated. Mermaid diagram links are dropped for the same reason;
+- a model link to the app's own host (any scheme or port, absolute or autolinked) also
+  renders as text, and kept links are written as the normalized address: a browser
+  resolved `http:#/read/…` against the page, so it opened an app route (issue #81);
+- a Markdown image in a tutor answer never loads: a remote image becomes a link that
+  opens it in a new tab, and any other image shows its alt text. An `<img>` fetched its
+  URL on render (`img-src https:`), which could carry prompt or source details to any
+  host (issue #81);
+- saved AI output keeps these rules. An answer saved to notes is an `ai-tutor` clipping
+  (shown as plain text in the Notebook), and AI flashcards and cards made from an AI
+  clipping carry the `ai-draft` tag; Review renders those cards with the untrusted
+  profile (`untrustedMarkdown.js`) in the deck, sessions, interview rounds and the card
+  dialog preview. Saved text has no evidence, so its `[S#]`/`[W#]` markers stay plain
+  text. An edit keeps `ai-draft`. No path opens saved AI text in the Reader (issue #81).
 
 These are syntax/provenance integrity checks, not claim-level entailment. One valid citation
 can still be attached to a weakly supported or partially unsupported claim. The main release
@@ -753,8 +766,9 @@ Prose/Markdown surfaces use Marked + KaTeX + DOMPurify. Supported presentation i
 GFM headings, emphasis, lists, blockquotes, tables, links, code, code-copy controls, inline
 `$...$`, display `$$...$$`, and compatible fenced Mermaid. Model HTML is never trusted:
 the tutor renderer shows it as text before DOMPurify runs, because DOMPurify's default
-profile keeps `<button>` and `data-*`. The Reader's renderer still passes author HTML to
-DOMPurify.
+profile keeps `<button>` and `data-*`. The same untrusted rules (`untrustedMarkdown.js`,
+without KaTeX) render saved AI output in Review. The Reader's renderer still passes author
+HTML and images to DOMPurify, for learner-authored content only.
 
 Structured Quiz/Flashcard/Study-plan results use dedicated validated React components.
 Each string field renders through a sanitized inline variant of the tutor renderer: KaTeX
@@ -1579,7 +1593,12 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 
 - Sanitize Markdown/KaTeX output and Mermaid SVG.
 - Tutor renderers show model-authored HTML as text; only the renderer creates citation
-  controls, never inside a model link, and model links never target an in-app route.
+  controls, never inside a model link, and model links never target an in-app route or
+  the app's own host.
+- Model Markdown never loads an image; a remote image is a link the learner opens.
+- Saved AI output (`ai-tutor` clippings, `ai-draft` cards) renders with the untrusted
+  profile wherever it appears; provenance survives edits. Only learner content uses the
+  Reader renderer.
 - Rendered Mermaid SVG keeps no link targets.
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
@@ -1632,6 +1651,8 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - [src/lib/tutorGrounding.js](./src/lib/tutorGrounding.js) — safe S-labelled context blocks.
 - [src/lib/aiProvenance.js](./src/lib/aiProvenance.js) — durable AI draft/source materialization.
 - [src/lib/tutorMarkdown.js](./src/lib/tutorMarkdown.js) — sanitized prose/citations; model HTML as text.
+- [src/lib/untrustedMarkdown.js](./src/lib/untrustedMarkdown.js) — shared untrusted rules
+  (links, images, raw HTML) and the renderer for saved AI output.
 - [src/lib/markdown.js](./src/lib/markdown.js) — shared Markdown extension points.
 - [src/lib/mermaidDiagrams.js](./src/lib/mermaidDiagrams.js) and
   [src/lib/useMermaidDiagrams.js](./src/lib/useMermaidDiagrams.js) — diagram lifecycle.
