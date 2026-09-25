@@ -486,6 +486,42 @@ try {
   await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("Answer ready did not move focus to the new On-device answer"));
   assert.equal(await page.$(".phone-tutor__jump"), null, "the On-device pill stayed after it was used");
   await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+
+  // Keyboard (TFEAT-10). On a touch screen Return stays a new line and no
+  // hint is shown; Up arrow in an empty box brings back the last question;
+  // Esc stops a running answer, which (like Cancel) releases the model, so
+  // it is then loaded again explicitly.
+  const phoneField = ".phone-tutor__composer textarea";
+  const lastQuestion = await page.$$eval(".phone-tutor__message.is-user .phone-tutor__user-text", (nodes) => nodes.at(-1).textContent);
+  const callsBeforeKeys = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length);
+  assert.equal(await page.$(".phone-tutor__key-hint"), null, "a phone showed the keyboard hint");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Phone line");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+  });
+  await page.keyboard.press("Enter");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.$eval(phoneField, (field) => field.value), "Phone line\n", "Return did not start a new line in On-device Lite on a phone");
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls.length), callsBeforeKeys, "Return sent the question in On-device Lite on a phone");
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.focus();
+    field.setSelectionRange(0, 0);
+  });
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await page.$eval(phoneField, (field) => field.value), lastQuestion, "Up arrow did not bring back the last On-device question");
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 60; });
+  await page.click(sendButtonSelector);
+  await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
+  await page.$eval(".phone-tutor__working button", (button) => button.focus());
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".phone-tutor__request-state.is-cancelled", { timeout: 5_000 }).catch(() => assert.fail("Escape did not stop the On-device answer"));
+  await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Available"), { timeout: 5_000 });
+  await (await page.$(".phone-local-ai-actions .button.primary")).click();
+  await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Loaded"), { timeout: 10_000 });
   await page.click(".phone-tutor__search-toggle input");
 
   await page.click(sendButtonSelector);

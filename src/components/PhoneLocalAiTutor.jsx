@@ -26,6 +26,7 @@ import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { revealFocusedField } from "../lib/revealField.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { scrollBehavior } from "../lib/motion.js";
+import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
 import {
   getPhoneLocalAiEngine,
   inspectPhoneLocalAiRequestFit,
@@ -475,8 +476,11 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
   const promptId = useId();
   const modeDescriptionId = useId();
+  const keyHintId = useId();
   // Phones pick the mode from a native select; wider screens show chips.
   const compactModes = useMediaQuery("(max-width: 719px)");
+  // Enter sends only with a mouse or trackpad (TFEAT-10).
+  const finePointer = useMediaQuery(FINE_POINTER_QUERY);
   const promptFieldRef = useRef(null);
   const headingRef = useRef(null);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
@@ -895,6 +899,31 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
     engine.cancel?.();
   };
 
+  const keyHint = composerKeyHint({ finePointer, platform: currentPlatform() });
+  const onPromptKeyDown = (event) => {
+    if (composerEnterAction(event, { finePointer }) === "send") {
+      event.preventDefault();
+      submit(event);
+      return;
+    }
+    if (!shouldRecallLastQuestion(event, event.currentTarget)) return;
+    const lastQuestion = [...history].reverse().find((message) => message.role === "user");
+    if (!lastQuestion) return;
+    event.preventDefault();
+    if (PHONE_TUTOR_MODES.some((mode) => mode.id === lastQuestion.mode)) setModeId(lastQuestion.mode);
+    setPrompt(cleanText(lastQuestion.content, MAX_PROMPT_CHARS));
+    setRequestState({ status: "idle", message: "" });
+  };
+  // Esc stops a running answer from anywhere in this tutor, except from the
+  // Clear dialog or an open disclosure.
+  const stopOnEscape = (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented || !busy || confirmClearOpen) return;
+    if (event.target?.closest?.("details[open], [role='dialog'], [role='alertdialog']")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancel();
+  };
+
   const jumpLabel = busy && streamingText && !endInView
     ? "Jump to latest"
     : readyMessageId && !endInView && history.some((message) => message.id === readyMessageId) ? "Answer ready" : "";
@@ -983,7 +1012,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   };
 
   return (
-    <section className="phone-tutor" aria-labelledby="phone-tutor-title">
+    <section className="phone-tutor" aria-labelledby="phone-tutor-title" onKeyDown={stopOnEscape}>
       <header className="phone-tutor__header">
         <div className="phone-tutor__identity"><span><Cpu size={23} aria-hidden="true" /></span><div><small>Built with Llama · Safari WebGPU · experimental</small><h2 id="phone-tutor-title" ref={headingRef} tabIndex={-1}>Lumen On-device Lite</h2></div></div>
         {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => setConfirmClearOpen(true)}><Trash2 size={18} /></button>}
@@ -1057,8 +1086,8 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
         <div className="phone-tutor__composer-head"><div><label><span>Depth</span><select value={depth} disabled={interactionLocked} onChange={(event) => setDepth(event.target.value)}>{DEPTHS.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label><span>Answer length</span><select value={responseLength} disabled={interactionLocked || currentMode.structured} onChange={(event) => setResponseLength(event.target.value)}>{RESPONSE_LENGTHS.map((item) => <option value={item.id} key={item.id}>{item.label} · {item.tokens} tokens</option>)}</select></label></div><span>{PHONE_LOCAL_MODEL.label}</span></div>
         <label className={`phone-tutor__search-toggle ${allowSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={allowSearch} disabled={interactionLocked || sourceMode !== "library-first" || typeof retrieveLibrary !== "function"} onChange={(event) => setAllowSearch(event.target.checked)} /><span><strong>Allow current-web fallback</strong><small>{sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "You approve the exact query before it is sent." : "Select Library first to use web fallback."}</small></span></label>
         <label className="phone-tutor__prompt-label" htmlFor={promptId}>What should the on-device tutor help you learn?</label>
-        <textarea ref={promptFieldRef} id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} />
-        <div className="phone-tutor__composer-foot"><span>{prompt.trim().length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}</span><span>{sourceMode === "library-first" ? "Up to 2 passages retrieved at send time" : `${buildPhoneContext(selectedSources).length.toLocaleString()} pre-fit source characters`}</span></div>
+        <textarea ref={promptFieldRef} id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} aria-describedby={keyHint ? keyHintId : undefined} onKeyDown={onPromptKeyDown} />
+        <div className="phone-tutor__composer-foot"><span>{prompt.trim().length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}</span>{keyHint && <span className="phone-tutor__key-hint" id={keyHintId}>{keyHint}</span>}<span>{sourceMode === "library-first" ? "Up to 2 passages retrieved at send time" : `${buildPhoneContext(selectedSources).length.toLocaleString()} pre-fit source characters`}</span></div>
         <div className="phone-tutor__send-row"><div><strong>Runs locally after the model is loaded.</strong><small>{currentMode.structured ? "Structured output is validated before it is shown; it does not stream partial JSON." : "The answer streams from the phone model as tokens arrive."}</small></div><button className="phone-tutor__primary" type="submit" disabled={!ready}><Send size={17} aria-hidden="true" /> Generate {currentMode.label}</button></div>
         {!engineStatus.loaded && <p className="phone-tutor__disabled-reason">Load the model above to start.</p>}
         {engineStatus.loaded && Boolean(prompt.trim()) && !requestFit.fits && <p className="phone-tutor__disabled-reason" role="alert">{requestFit.message}</p>}

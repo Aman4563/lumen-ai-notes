@@ -353,6 +353,45 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
   return calls;
 };
 
+// An in-page stream that delivers deltas over time, armed per request with
+// window.__lumenAuditSlowStream = { paragraphs, phases }. It checks
+// following, scrolling back, Stop and Esc without a real model.
+const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    const slow = window.__lumenAuditSlowStream;
+    if (!slow || !url.includes("/api/ai/respond/stream")) return nativeFetch(input, init);
+    window.__lumenAuditSlowStream = null;
+    const encoder = new TextEncoder();
+    const paragraphs = Number.isSafeInteger(slow?.paragraphs) ? slow.paragraphs : 40;
+    const text = Array.from({ length: paragraphs }, (_, index) => `Paragraph ${index + 1} explains why a final holdout must stay untouched.\n\n`).join("");
+    const approach = { summary: "Stream a long answer.", steps: ["Answer in parts."] };
+    const response = { ok: true, requestId: "audit-slow-stream", outputText: text, data: null, status: "completed", model: "audit-local-model", usage: { inputTokens: 10, outputTokens: 400, totalTokens: 410 }, webSearch: { requested: false, used: false, rounds: 0 }, sources: [], approach };
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (event) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)); } catch { /* aborted */ } };
+        send({ type: "start", protocol: "lumen.ai.ndjson.v1", requestId: response.requestId, model: response.model, responseFormat: "markdown", responseProfile: "balanced", startedAt: new Date().toISOString() });
+        send({ type: "approach", requestId: response.requestId, approach });
+        for (const [phase, message] of Array.isArray(slow?.phases) ? slow.phases : []) {
+          await new Promise((resolve) => setTimeout(resolve, slow.phaseDelayMs || 400));
+          if (init.signal?.aborted) return;
+          send({ type: "phase", requestId: response.requestId, phase, message });
+        }
+        const pieces = text.match(/[\s\S]{1,120}/g);
+        for (let index = 0; index < pieces.length; index += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          if (init.signal?.aborted) return;
+          send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
+        }
+        send({ type: "complete", requestId: response.requestId, response });
+        try { controller.close(); } catch { /* aborted */ }
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" } });
+  };
+});
+
 const newAuditPage = async (label, configFactory, options) => {
   const page = await browser.newPage();
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
@@ -1425,38 +1464,8 @@ try {
     attachDiagnostics(page, "tutor-keyboard");
     await page.evaluateOnNewDocument(() => {
       try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
-      // An in-page stream that delivers deltas over time, used below to check
-      // that following an answer never scrolls the page itself and that a
-      // learner can scroll back inside the conversation while it streams.
-      const nativeFetch = window.fetch.bind(window);
-      window.fetch = async (input, init = {}) => {
-        const url = typeof input === "string" ? input : input.url;
-        const slow = window.__lumenAuditSlowStream;
-        if (!slow || !url.includes("/api/ai/respond/stream")) return nativeFetch(input, init);
-        window.__lumenAuditSlowStream = null;
-        const encoder = new TextEncoder();
-        const paragraphs = Number.isSafeInteger(slow?.paragraphs) ? slow.paragraphs : 40;
-        const text = Array.from({ length: paragraphs }, (_, index) => `Paragraph ${index + 1} explains why a final holdout must stay untouched.\n\n`).join("");
-        const approach = { summary: "Stream a long answer.", steps: ["Answer in parts."] };
-        const response = { ok: true, requestId: "audit-slow-stream", outputText: text, data: null, status: "completed", model: "audit-local-model", usage: { inputTokens: 10, outputTokens: 400, totalTokens: 410 }, webSearch: { requested: false, used: false, rounds: 0 }, sources: [], approach };
-        const stream = new ReadableStream({
-          async start(controller) {
-            const send = (event) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)); } catch { /* aborted */ } };
-            send({ type: "start", protocol: "lumen.ai.ndjson.v1", requestId: response.requestId, model: response.model, responseFormat: "markdown", responseProfile: "balanced", startedAt: new Date().toISOString() });
-            send({ type: "approach", requestId: response.requestId, approach });
-            const pieces = text.match(/[\s\S]{1,120}/g);
-            for (let index = 0; index < pieces.length; index += 1) {
-              await new Promise((resolve) => setTimeout(resolve, 60));
-              if (init.signal?.aborted) return;
-              send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
-            }
-            send({ type: "complete", requestId: response.requestId, response });
-            try { controller.close(); } catch { /* aborted */ }
-          },
-        });
-        return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" } });
-      };
     });
+    await installSlowStream(page);
     const wideAnswer =(citation) => `## Wide evidence\n\nRepeated holdout inspection leaks information. [${citation}]\n\n| Signal | Risk | Mitigation that is deliberately long | Owner |\n| --- | --- | --- | --- |\n| Repeated inspection | Optimistic estimate | Freeze every choice before the final look | Evaluation lead |\n\n$$\n\\hat{w} = \\arg\\min_w \\sum_{i=1}^{n}(y_i - x_i^T w)^2 + \\lambda \\lVert w \\rVert_2^2 + \\gamma \\lVert w \\rVert_1 + \\text{a deliberately long tail term}\n$$\n\nDone.`;
     await installAiMocks(page, () => secureConfig, { responseDelayMs: 900, answerText: wideAnswer });
     await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
@@ -1470,6 +1479,16 @@ try {
       return { tag: node?.tagName || "", className: String(node?.className || ""), text: node?.textContent?.replace(/\s+/g, " ").trim().slice(0, 60) || "", label: node?.getAttribute?.("aria-label") || "" };
     });
     const announcement = () => page.$eval(".ai-tutor > p.visually-hidden[role='status']", (node) => node.textContent.trim());
+
+    // On a touch screen Return stays a new line; Send is the button. No
+    // keyboard hint is shown there.
+    assert.equal(await page.$(".ai-tutor__key-hint"), null, "a phone showed the keyboard hint");
+    await setPrompt("Phone line");
+    await page.$eval(".ai-tutor__composer textarea", (field) => { field.focus(); field.setSelectionRange(field.value.length, field.value.length); });
+    await page.keyboard.press("Enter");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "Phone line\n", "Return did not start a new line on a phone");
+    assert.equal(await page.$(".ai-tutor__message--streaming"), null, "Return sent the question on a phone");
 
     await setPrompt("Keyboard check: why does repeated holdout inspection leak information?");
     await page.$eval(sendSelector, (button) => button.focus());
@@ -1717,6 +1736,107 @@ try {
     } finally {
       await layoutContext.close();
     }
+  }
+
+  // Keyboard sending with a mouse or trackpad (TFEAT-10): Enter sends and
+  // Shift+Enter starts a new line; Code review keeps Enter for code and
+  // sends with Cmd/Ctrl+Enter; Enter never sends while an input method is
+  // composing; Up arrow brings back the last question; Esc stops a running
+  // answer, but first closes the options sheet.
+  const desktopKeysContext = await browser.createBrowserContext();
+  try {
+    const page = await desktopKeysContext.newPage();
+    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+    attachDiagnostics(page, "tutor-desktop-keys");
+    await page.evaluateOnNewDocument(() => {
+      try { localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+    });
+    await installSlowStream(page);
+    const calls = await installAiMocks(page, () => secureConfig);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    const field = ".ai-tutor__composer textarea";
+    const setKeysPrompt = (value) => page.$eval(field, (node, text) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(node, text);
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.focus();
+      node.setSelectionRange(text.length, text.length);
+    }, value);
+    const fieldValue = () => page.$eval(field, (node) => node.value);
+    const waitForAnswerCount = (count) => page.waitForFunction((expected) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= expected
+      && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 }, count);
+    const pressWith = async (modifier, key) => {
+      await page.keyboard.down(modifier);
+      await page.keyboard.press(key);
+      await page.keyboard.up(modifier);
+    };
+
+    // The shortcuts sheet ("?") lists the tutor's keys.
+    await page.evaluate(() => document.activeElement?.blur?.());
+    await page.keyboard.type("?");
+    await page.waitForSelector(".shortcuts-dialog", { timeout: 5_000 });
+    const tutorShortcuts = await page.$$eval(".shortcuts-dialog .shortcut-group", (groups) => groups.find((group) => group.querySelector("h3")?.textContent === "AI tutor")?.textContent || "");
+    assert.match(tutorShortcuts, /Shift \+ Enter[\s\S]*⌘\/Ctrl \+ Enter[\s\S]*Esc[\s\S]*Stop the answer/, "the shortcuts sheet did not list the AI tutor keys");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".shortcuts-dialog", { hidden: true, timeout: 5_000 });
+
+    assert.equal(await page.$eval(".ai-tutor__key-hint", (node) => node.textContent), "Enter to send · Shift+Enter for a new line", "the keyboard hint was missing on a desktop");
+    assert.equal(await page.$eval(field, (node) => node.getAttribute("aria-describedby").split(" ").includes(document.querySelector(".ai-tutor__key-hint").id)), true, "the keyboard hint was not linked to the question box");
+
+    await setKeysPrompt("Keyboard send: why does repeated holdout inspection leak information?");
+    await page.keyboard.press("Enter");
+    await waitForAnswerCount(1);
+    assert.equal(calls.respond.length, 1, "Enter did not send exactly once");
+    assert.equal(await page.evaluate((selector) => document.activeElement === document.querySelector(selector), field), true, "a keyboard send moved focus out of the question box");
+
+    await setKeysPrompt("Line one");
+    await pressWith("Shift", "Enter");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await fieldValue(), "Line one\n", "Shift+Enter did not start a new line");
+    assert.equal(calls.respond.length, 1, "Shift+Enter sent the question");
+
+    await chooseMode(page, "Code review");
+    assert.match(await page.$eval(".ai-tutor__key-hint", (node) => node.textContent), /^(⌘|Ctrl\+)Enter to send · Enter for a new line$/, "the Code review hint did not name the send shortcut");
+    await setKeysPrompt("Review this snippet:");
+    await page.keyboard.press("Enter");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await fieldValue(), "Review this snippet:\n", "Enter did not start a new line in Code review");
+    assert.equal(calls.respond.length, 1, "Enter sent the question in Code review");
+    await page.keyboard.type("total = sum(values)");
+    await pressWith("Meta", "Enter");
+    await waitForAnswerCount(2);
+    assert.equal(calls.respond.length, 2, "Cmd+Enter did not send in Code review");
+    assert.equal(calls.respond[1].body.task, "code_review");
+
+    await chooseMode(page, "Explain");
+    await setKeysPrompt("Composing text");
+    await page.$eval(field, (node) => node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, isComposing: true })));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(calls.respond.length, 2, "Enter sent the question while an input method was composing");
+
+    await setKeysPrompt("");
+    await page.keyboard.press("ArrowUp");
+    assert.equal(await fieldValue(), "Review this snippet:\ntotal = sum(values)", "Up arrow did not bring back the last question");
+    assert.equal(await activeMode(page), "Code review", "Up arrow did not restore the last question's mode");
+    await chooseMode(page, "Explain");
+
+    await setKeysPrompt("Keyboard stop: stream this one.");
+    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 60 }; });
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
+    await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
+    await page.waitForSelector(".tutor-sheet", { timeout: 5_000 });
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+    assert.ok(await page.$(".ai-tutor__message--streaming"), "Escape in the options sheet stopped the answer");
+    await page.$eval(field, (node) => node.focus());
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".ai-tutor__request-note", { timeout: 5_000 });
+    assert.equal(await page.$(".ai-tutor__message--streaming"), null, "Escape did not stop the answer");
+    assert.match(await page.$$eval(".ai-tutor__message--assistant", (nodes) => nodes.at(-1).textContent), /Stopped early/, "the stopped answer was not marked as stopped early");
+    assert.match(await page.$eval(".ai-tutor > p.visually-hidden[role='status']", (node) => node.textContent), /Generation stopped/, "Escape's stop was not announced");
+  } finally {
+    await desktopKeysContext.close();
   }
 
   let modelOnline = false;

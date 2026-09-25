@@ -150,12 +150,14 @@ class AuditPhoneEngine {
       const paragraphs = this.slowNextGeneration;
       this.slowNextGeneration = 0;
       let text = "";
-      for (let index = 0; index < paragraphs && !signal?.aborted; index += 1) {
-        text += `Paragraph ${index + 1} keeps the on-device answer streaming [S1].\n\n`;
-        onToken?.(`Paragraph ${index + 1}`, text);
-        await wait(60);
-      }
-      this.generationActive = false;
+      try {
+        for (let index = 0; index < paragraphs; index += 1) {
+          if (signal?.aborted) throw Object.assign(new Error("cancelled"), { code: "LOCAL_AI_CANCELLED" });
+          text += `Paragraph ${index + 1} keeps the on-device answer streaming [S1].\n\n`;
+          onToken?.(`Paragraph ${index + 1}`, text);
+          await wait(60);
+        }
+      } finally { this.generationActive = false; }
       return {
         status: "completed",
         provider: "on-device-lite",

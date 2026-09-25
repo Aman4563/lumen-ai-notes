@@ -2512,3 +2512,9 @@
 @media (forced-colors: active) {
   .ai-tutor__jump { border: 2px solid ButtonText; }
 }
+
+/* Keyboard hint on devices where Enter sends (TFEAT-10). */
+.ai-tutor__key-hint {
+  color: var(--ink-soft, #566078);
+  font-size: 0.7rem;
+}

@@ -38,6 +38,7 @@ import {
 import { renderTutorInlineMarkdown, renderTutorMarkdown } from "../lib/tutorMarkdown";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
+import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import TutorSheet from "./TutorSheet.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
@@ -1002,6 +1003,7 @@ export default function AiTutor({
   const pairingErrorId = useId();
   const modeDescriptionId = useId();
   const optionsSummaryId = useId();
+  const keyHintId = useId();
   const sourceNumbersRef = useRef(new Map());
   const nextSourceNumberRef = useRef(1);
   const requestControllerRef = useRef(null);
@@ -1058,6 +1060,8 @@ export default function AiTutor({
   const [optionsOpen, setOptionsOpen] = useState(false);
   // Phones pick the mode from a native select; wider screens show chips.
   const compactModes = useMediaQuery("(max-width: 719px)");
+  // Enter sends only with a mouse or trackpad (TFEAT-10).
+  const finePointer = useMediaQuery(FINE_POINTER_QUERY);
   const sourceModeRefs = useRef({});
   const pairingInputRef = useRef(null);
   const [storedDraft] = useState(readTutorDraft);
@@ -2409,6 +2413,36 @@ export default function AiTutor({
     pendingFocusRef.current = { kind: "message", id, focus: true, scroll: true };
   };
 
+  const reuseNotice = `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`;
+  const codeMode = currentMode.id === "code-review";
+  const keyHint = setupRequired ? "" : composerKeyHint({ finePointer, codeMode, platform: currentPlatform() });
+
+  const onPromptKeyDown = (event) => {
+    if (composerEnterAction(event, { finePointer, codeMode }) === "send") {
+      // Not ready: nothing is sent, the new line is not typed either, and
+      // the reason stays visible under the box.
+      event.preventDefault();
+      submit(event);
+      return;
+    }
+    if (shouldRecallLastQuestion(event, event.currentTarget) && requestState.status !== "loading") {
+      const lastQuestion = [...history].reverse().find((message) => message.role === "user");
+      if (!lastQuestion) return;
+      event.preventDefault();
+      preparePrompt(lastQuestion, reuseNotice);
+    }
+  };
+
+  // Esc stops a running answer from anywhere in the tutor, but never from
+  // the options sheet, the Clear dialog or an open disclosure.
+  const stopOnEscape = (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented || requestState.status !== "loading" || optionsOpen || confirmClearOpen) return;
+    if (event.target?.closest?.("details[open], [role='dialog'], [role='alertdialog']")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    requestControllerRef.current?.abort();
+  };
+
   // Non-default request options, shown on the Options button.
   const optionsSummary = [
     difficulty !== "intermediate" ? DIFFICULTIES.find((item) => item.id === difficulty)?.label : "",
@@ -2432,7 +2466,7 @@ export default function AiTutor({
   );
 
   return (
-    <section className={`ai-tutor ${className}`.trim()} aria-labelledby={headingId}>
+    <section className={`ai-tutor ${className}`.trim()} aria-labelledby={headingId} onKeyDown={stopOnEscape}>
       <header className="ai-tutor__header">
         <div className="ai-tutor__identity">
           <span className="ai-tutor__mark" aria-hidden="true"><BrainCircuit size={24} /></span>
@@ -2595,7 +2629,7 @@ export default function AiTutor({
                     {message.role === "assistant"
                       ? <AssistantMessage message={message} onCreateFlashcardDrafts={onCreateFlashcardDrafts} onNavigateSource={onNavigateSource} />
                       : <p className="ai-tutor__user-prompt">{message.content}</p>}
-                    <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, `Request restored. Edit it and review its grounding${localDisclosureAcknowledged ? "" : " and the local-model disclosure"}, then send.`)} onSaveAnswerNote={onSaveAnswerNote} />
+                    <MessageActions message={message} requestBusy={requestState.status === "loading"} onNavigateSource={onNavigateSource} onPrepareRegenerate={prepareRegenerate} onReusePrompt={(request) => preparePrompt(request, reuseNotice)} onSaveAnswerNote={onSaveAnswerNote} />
                   </article>
                 );
               })}
@@ -2636,7 +2670,7 @@ export default function AiTutor({
             excerpt is kept for when the tutor becomes available. */}
         <label className="ai-tutor__prompt-label" htmlFor={promptId}>Your question</label>
         <div className="ai-tutor__submit-row">
-          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event); } }} maxLength={promptLimit} rows={1} placeholder="Ask a question…" />
+          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}${keyHint ? ` ${keyHintId}` : ""}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={onPromptKeyDown} maxLength={promptLimit} rows={1} placeholder="Ask a question…" />
           {requestState.status === "loading" ? (
             <button
               className="ai-tutor__button ai-tutor__button--secondary ai-tutor__send is-stop"
@@ -2659,6 +2693,7 @@ export default function AiTutor({
           {!setupRequired && <button className="ai-tutor__options-toggle" type="button" aria-haspopup="dialog" aria-expanded={optionsOpen} aria-describedby={optionsSummary ? optionsSummaryId : undefined} onClick={() => setOptionsOpen(true)}><SlidersHorizontal size={16} aria-hidden="true" /> Options{optionsSummary && <span className="ai-tutor__options-summary" id={optionsSummaryId}>{optionsSummary}</span>}</button>}
           {!setupRequired && !localDisclosureAcknowledged && <button type="button" className="ai-tutor__text-button" onClick={() => { setPrivacyOpen(true); setOptionsOpen(true); }}>What is sent?</button>}
           {!setupRequired && effectiveWebSearch && <WebFallbackBadge status="armed" />}
+          {keyHint && <span className="ai-tutor__key-hint" id={keyHintId}>{keyHint}</span>}
           <span className="ai-tutor__character-count" id={counterId}>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>
         </div>
         <span className="visually-hidden" id={sendSummaryId}>{effectiveWebSearch ? "Sends to the local model on the Lumen server, with current-web fallback allowed for this request." : "Sends to the local model on the Lumen server. Web fallback is off."}</span>
