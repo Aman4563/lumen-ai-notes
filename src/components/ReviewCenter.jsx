@@ -279,7 +279,8 @@ function LabBench({ lab, onClose, onLogMistake, onOpenSource }) {
   };
 
   return (
-    <div className="page review-session-page lab-bench" aria-label={`Lab: ${lab.title}`}>
+    <div className="page review-session-page lab-bench">
+      <h1 className="visually-hidden">Lab: {lab.title}</h1>
       <header className="review-session-header">
         <button className="button ghost" onClick={onClose} type="button"><ArrowLeft size={17} /> {finished ? "Done" : "Exit lab"}</button>
         <div><strong>{Math.min(taskIndex + 1, lab.tasks.length)}/{lab.tasks.length}</strong><span>task</span></div>
@@ -372,7 +373,8 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
     const hits = results.filter((result) => result.hit).length;
     const misses = results.length - hits;
     return (
-      <div className="page review-session-page interview-round" aria-label="Interview round summary">
+      <div className="page review-session-page interview-round">
+        <h1 className="visually-hidden">Interview round summary</h1>
         <header className="review-session-header"><button className="button ghost" onClick={onClose} type="button"><ArrowLeft size={17} /> Done</button><div><strong>{hits}/{results.length}</strong><span>answered well</span></div><span /></header>
         <div className="review-stage">
           <article className="review-flashcard revealed interview-summary">
@@ -387,7 +389,8 @@ function InterviewRound({ cards, onClose, onLogMistake }) {
   }
 
   return (
-    <div className="page review-session-page interview-round" aria-label="Timed interview round">
+    <div className="page review-session-page interview-round">
+      <h1 className="visually-hidden">Timed interview round</h1>
       <header className="review-session-header">
         <button className="button ghost" onClick={onClose} type="button"><ArrowLeft size={17} /> End round</button>
         <div><strong>{index + 1}/{cards.length}</strong><span>question</span></div>
@@ -747,6 +750,7 @@ export default function ReviewCenter({
     const sessionTotal = sessionDone + queue.length;
     return (
       <div className="page review-session-page">
+        <h1 className="visually-hidden">{crunch ? "Extra practice" : "Review session"}</h1>
         <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
         <header className="review-session-header">
           <button className="button ghost" onClick={endSession} type="button"><ArrowLeft size={17} /> End session</button>
