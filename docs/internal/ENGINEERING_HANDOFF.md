@@ -968,7 +968,7 @@ are safe. Reload Lumen while connected to the Lumen server." `loadWarmTool` tell
 with the probe chunk recovery just ran for that failure, or its own `probeAppServer()` call
 when the cooldown skipped it. Library retrieval rejects with that typed error inside
 `retrieveLibrarySources`; both tutors fall back without library evidence and add the reason to
-their status line. Markdown and text uploads need no tool, also beside HTML or EPUB files in
+their status line (`audit:ai-ui`'s `library-unavailable` case and `audit:phone-ai-ui` check it). Markdown and text uploads need no tool, also beside HTML or EPUB files in
 the same selection: when the converters cannot load, the Markdown and text files still import
 and each HTML or EPUB file is listed as not imported, with the reason. Creating or leaving a
 vault's membership and the device identity need no tool either: `syncIdentity.js` keeps the
@@ -1056,7 +1056,9 @@ imports (also chosen together with an HTML page, which is listed as not imported
 stays readable TeX source. With the server kept up but the warm files missing, a saved answer's
 math never reloads the page, and backup export gets one bounded reload, then says the app files
 need refreshing. With KaTeX held, a focused link in a saved answer keeps focus when KaTeX
-arrives, and that answer draws its math once focus leaves. An update drill republishes the same
+arrives and when another tab's tutor turn renders it again, and that answer draws its math once
+focus leaves; a focused citation in a saved study plan's field keeps focus through such a turn
+too. An update drill republishes the same
 files as another build: that worker installs and waits, must fill its own cache with the warm
 tools, and after it takes over with the server stopped, backup export still works. A last check
 holds the Notebook and Settings chunks until each screen has opened, asserts that each shows
