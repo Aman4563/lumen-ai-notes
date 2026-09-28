@@ -77,17 +77,19 @@ export default function TutorSheet({ open, title, description, onClose, children
         tabIndex={-1}
         ref={panelRef}
       >
-        <header className="tutor-sheet__head">
+        {/* Plain boxes: a header or footer outside the page's main content
+            would be a second banner or content-info landmark. */}
+        <div className="tutor-sheet__head">
           <div>
             <h2 id={titleId}>{title}</h2>
             {description && <p id={descriptionId}>{description}</p>}
           </div>
           <button className="tutor-sheet__close" type="button" aria-label={closeLabel} onClick={() => onClose?.()}><X size={20} aria-hidden="true" /></button>
-        </header>
+        </div>
         <div className="tutor-sheet__body">{children}</div>
-        <footer className="tutor-sheet__foot">
+        <div className="tutor-sheet__foot">
           <button className="tutor-sheet__done" type="button" onClick={() => onClose?.()}>Done</button>
-        </footer>
+        </div>
       </div>
     </div>,
     document.body,

@@ -172,6 +172,26 @@ try {
         }
         await runAxe(page, label);
       }
+      // On-device Lite (#94): its first open with the docked question box, its
+      // Options sheet and the engine card's details. The engine choice is
+      // remembered, so the Mac tutor is chosen again afterwards.
+      await navigate(page, ROUTES.find((route) => route.name === "ai"));
+      await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
+      await page.waitForSelector(".phone-tutor__composer", { timeout: 20_000 });
+      await page.waitForFunction(() => !/Checking/.test(document.querySelector(".phone-local-ai-badge")?.textContent || "Checking"), { timeout: 15_000 });
+      await settle(page);
+      await runAxe(page, `${viewportName}/${theme}/ai-on-device`);
+      await page.$eval(".phone-tutor__options", (button) => button.click());
+      await page.waitForSelector(".tutor-sheet");
+      await settle(page);
+      await runAxe(page, `${viewportName}/${theme}/ai-on-device-options`);
+      await page.$eval(".tutor-sheet__done", (button) => button.click());
+      await page.waitForSelector(".tutor-sheet", { hidden: true });
+      await page.$eval(".phone-local-ai-more > summary", (summary) => summary.click());
+      await settle(page);
+      await runAxe(page, `${viewportName}/${theme}/ai-on-device-details`);
+      await page.$eval('[data-ai-engine-option="mac-local"]', (button) => button.click());
+      await page.waitForSelector(".ai-tutor", { timeout: 20_000 });
       check(new Set(titles.values()).size === ROUTES.length, `${viewportName}/${theme}: document titles are not unique per route (${JSON.stringify([...titles])})`);
       check(titles.get("home") === "Lumen AI Notes" && titles.get("library") === "Library · Lumen", `${viewportName}/${theme}: unexpected page titles (${JSON.stringify([...titles])})`);
 
@@ -326,7 +346,7 @@ try {
 
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
   assert.equal(findings.length, 0, `accessibility failures:\n${findings.map((finding) => `- ${finding}`).join("\n")}`);
-  console.log(`Accessibility audit passed: ${stats.axeRuns} axe runs (WCAG 2.2 A/AA + best practice) across ${ROUTES.length} routes, Settings, and the drawer in Paper, Night, and Contrast at phone and desktop widths; ${stats.checks} structural checks (one main landmark, skip link, per-route titles, aria-current, heading focus on navigation, drawer inert after dialogs, live-region toasts, offline status, Ctrl+K guard, forced colors); ${stats.allowlisted} allowlisted nodes owned by later component waves.`);
+  console.log(`Accessibility audit passed: ${stats.axeRuns} axe runs (WCAG 2.2 A/AA + best practice) across ${ROUTES.length} routes, On-device Lite with its Options sheet and engine details, Settings, and the drawer in Paper, Night, and Contrast at phone and desktop widths; ${stats.checks} structural checks (one main landmark, skip link, per-route titles, aria-current, heading focus on navigation, drawer inert after dialogs, live-region toasts, offline status, Ctrl+K guard, forced colors); ${stats.allowlisted} allowlisted nodes owned by later component waves.`);
 } finally {
   await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

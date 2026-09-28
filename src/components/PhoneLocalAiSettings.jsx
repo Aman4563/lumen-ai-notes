@@ -131,27 +131,45 @@ export default function PhoneLocalAiSettings({ engine: providedEngine, onNotify,
   const controlsBusy = busy || Boolean(operationState) || interactionBusy;
   const displayState = operationState || status.state;
   const storageAvailable = Number(status.storage?.available) || 0;
+  const primaryAction = !status.loaded && status.state !== "loading"
+    ? <button type="button" className="button primary" onClick={load} disabled={controlsBusy || !status.supported || (!status.cached && !status.consented && !consentChecked)}><Download size={16} />{status.cached ? "Load model" : `Download & load (~${formatBytes(PHONE_LOCAL_MODEL.approximateDownloadBytes)})`}</button>
+    : status.state === "loading" && <button type="button" className="button danger" onClick={cancel}><Square size={15} /> Cancel</button>;
+  // The card keeps only what the next step needs above the chat (#94): once
+  // the model is loaded it is one line (model, size, Manage). The model's
+  // facts, device notes, privacy notes and the memory and file controls sit
+  // behind the disclosure.
   return (
     <section className="phone-local-ai" aria-labelledby="phone-local-ai-title">
       <div className="phone-local-ai-heading">
         <span className="phone-local-ai-icon" aria-hidden="true"><Cpu size={20} /></span>
-        <span><strong id="phone-local-ai-title">On-device Lite</strong><small>Free local inference · no LLM API key</small></span>
+        <span><strong id="phone-local-ai-title">On-device Lite</strong><small>{status.loaded ? `${PHONE_LOCAL_MODEL.label} · ${formatBytes(PHONE_LOCAL_MODEL.approximateDownloadBytes)}` : "Free local inference · no LLM API key"}</small></span>
         <span className={`phone-local-ai-badge ${status.loaded ? "ready" : status.supported ? "available" : "blocked"}`}>
           {displayState === "deleting" ? "Deleting" : displayState === "releasing" ? "Releasing" : status.loaded ? "Loaded" : displayState === "checking" ? "Checking" : status.supported ? "Available" : "Unsupported"}
         </span>
       </div>
 
-      <p className="phone-local-ai-copy">{PHONE_LOCAL_AI_DISCLOSURE.inference} {PHONE_LOCAL_AI_DISCLOSURE.limitations}</p>
-      <dl className="phone-local-ai-facts">
-        <div><dt>Model</dt><dd>{PHONE_LOCAL_MODEL.label}</dd></div>
-        <div><dt>First download</dt><dd>about {formatBytes(PHONE_LOCAL_MODEL.approximateDownloadBytes)}</dd></div>
-        <div><dt>GPU memory</dt><dd>about {formatBytes(PHONE_LOCAL_MODEL.approximateGpuMemoryBytes)} + overhead</dd></div>
-        <div><dt>Context</dt><dd>{PHONE_LOCAL_MODEL.contextWindowTokens.toLocaleString()} tokens</dd></div>
-        {status.storage?.known && <div><dt>Browser headroom</dt><dd>{formatBytes(storageAvailable)}</dd></div>}
-      </dl>
+      {/* Beside the heading while closed, so it comes next in the Tab order;
+          opened, its notes take a full row under the heading. */}
+      <details className="phone-local-ai-more">
+        <summary>{status.loaded ? "Manage" : "Details"}</summary>
+        <p className="phone-local-ai-copy">{PHONE_LOCAL_AI_DISCLOSURE.inference} {PHONE_LOCAL_AI_DISCLOSURE.limitations}</p>
+        <dl className="phone-local-ai-facts">
+          <div><dt>Model</dt><dd>{PHONE_LOCAL_MODEL.label}</dd></div>
+          <div><dt>First download</dt><dd>about {formatBytes(PHONE_LOCAL_MODEL.approximateDownloadBytes)}</dd></div>
+          <div><dt>GPU memory</dt><dd>about {formatBytes(PHONE_LOCAL_MODEL.approximateGpuMemoryBytes)} + overhead</dd></div>
+          <div><dt>Context</dt><dd>{PHONE_LOCAL_MODEL.contextWindowTokens.toLocaleString()} tokens</dd></div>
+          {status.storage?.known && <div><dt>Browser headroom</dt><dd>{formatBytes(storageAvailable)}</dd></div>}
+        </dl>
+        {status.supported && status.warnings?.length > 0 && <div className="phone-local-ai-message"><strong>Device and storage notes</strong><ul>{status.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
+        {(status.loaded || status.cached || status.consented || status.state === "error") && <div className="phone-local-ai-actions">
+          {status.loaded && <button type="button" className="button ghost" onClick={unload} disabled={controlsBusy}><Square size={15} /> Release memory</button>}
+          {(status.cached || status.consented || status.state === "error") && <button type="button" className="button ghost" onClick={remove} disabled={controlsBusy}><Trash2 size={16} /> Clear model files</button>}
+        </div>}
+        <div className="phone-local-ai-privacy"><ShieldCheck size={17} /><span><strong>Local answers need no repeated consent.</strong> A separate approval appears only when an exact live-search query would leave this device. Only <code>/api/local-search</code> may be called.</span></div>
+        <div className="phone-local-ai-privacy"><Database size={17} /><span>Model files use this site's browser cache. “Clear model files” removes them without touching lessons, notes, reviews, or whiteboards.</span></div>
+      </details>
 
       {status.reasons?.length > 0 && <div className="phone-local-ai-message error" role="alert"><strong>Cannot run on this browser</strong><ul>{status.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></div>}
-      {status.supported && status.warnings?.length > 0 && <details className="phone-local-ai-message"><summary>Device and storage notes</summary><ul>{status.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></details>}
 
       {!status.cached && status.supported && !status.consented && status.state !== "loading" && (
         <label className="phone-local-ai-consent">
@@ -169,16 +187,10 @@ export default function PhoneLocalAiSettings({ engine: providedEngine, onNotify,
 
       {error && <p className="phone-local-ai-error" role="alert">{error}</p>}
 
-      <div className="phone-local-ai-actions">
-        {!status.loaded && status.state !== "loading" && <button type="button" className="button primary" onClick={load} disabled={controlsBusy || !status.supported || (!status.cached && !status.consented && !consentChecked)}><Download size={16} />{status.cached ? "Load model" : `Download & load (~${formatBytes(PHONE_LOCAL_MODEL.approximateDownloadBytes)})`}</button>}
-        {status.state === "loading" && <button type="button" className="button danger" onClick={cancel}><Square size={15} /> Cancel</button>}
-        {status.loaded && <button type="button" className="button ghost" onClick={unload} disabled={controlsBusy}><Square size={15} /> Release memory</button>}
-        {(status.cached || status.consented || status.state === "error") && <button type="button" className="button ghost" onClick={remove} disabled={controlsBusy}><Trash2 size={16} /> Clear model files</button>}
+      {(primaryAction || status.state === "checking") && <div className="phone-local-ai-actions">
+        {primaryAction}
         {status.state === "checking" && <span className="phone-local-ai-working"><LoaderCircle className="spin" size={16} /> Checking WebGPU and cache…</span>}
-      </div>
-
-      <div className="phone-local-ai-privacy"><ShieldCheck size={17} /><span><strong>Local answers need no repeated consent.</strong> A separate approval appears only when an exact live-search query would leave this device. Only <code>/api/local-search</code> may be called.</span></div>
-      <div className="phone-local-ai-privacy"><Database size={17} /><span>Model files use this site's browser cache. “Clear model files” removes them without touching lessons, notes, reviews, or whiteboards.</span></div>
+      </div>}
     </section>
   );
 }

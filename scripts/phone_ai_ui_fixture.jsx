@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { BookOpen, Cpu, Home, Laptop, LibraryBig, Menu, NotebookPen, Sparkles } from "lucide-react";
 import PhoneLocalAiTutor from "../src/components/PhoneLocalAiTutor.jsx";
 import { useSpeech } from "../src/hooks/useSpeech.js";
 import {
@@ -8,6 +9,8 @@ import {
 } from "../src/lib/phoneLocalAi.js";
 import "katex/dist/katex.min.css";
 import "../src/styles.css";
+import "../src/responsive.css";
+import "../src/ai-learning-studio.css";
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -283,11 +286,43 @@ const insertConsumed = (nonce) => {
   setHostInsert((current) => (current?.nonce === nonce ? null : current));
 };
 
+// ?shell renders the tutor inside the app's top bar, page, engine picker
+// and bottom navigation (the app's own classes and styles), so the dock is
+// measured against them (#94). ?history=N opens it with N earlier turns of
+// this session, and ?loaded with the model already downloaded and loaded.
+const params = new URLSearchParams(location.search);
+const initialHistory = Array.from({ length: Number(params.get("history")) || 0 }, (_, index) => [
+  { id: `fit-q${index}`, role: "user", task: "explain", mode: "explain", content: `Question ${index + 1}: why does gradient descent step against the gradient?`, data: null, citations: [], sources: [] },
+  { id: `fit-a${index}`, role: "assistant", task: "explain", mode: "explain", content: `## Answer ${index + 1}\n\n${Array.from({ length: 5 }, (_, paragraph) => `Paragraph ${paragraph + 1} of answer ${index + 1}: the gradient points uphill, so each step moves the parameters the other way by the learning rate times the slope.`).join("\n\n")}`, data: null, citations: [], sources: [] },
+]).flat();
+if (params.has("loaded")) Object.assign(engine, { cached: true, consented: true, loaded: true, state: "ready" });
+
+const Shell = ({ children }) => (
+  <div className="app-shell">
+    <div className="app-main">
+      <header className="app-topbar"><button className="icon-button menu-button" aria-label="Open menu" type="button"><Menu size={21} /></button><button className="mobile-brand" aria-label="Lumen home" type="button"><span aria-hidden="true">L</span><strong>Lumen</strong></button></header>
+      <main id="main-content" className="view-container">
+        <div className="page ai-page">
+          <header className="page-title"><h1>AI learning studio</h1></header>
+          <section className="ai-learning-studio" data-ai-engine="phone-local">
+            <div className="ai-engine-picker" role="group" aria-labelledby="audit-engine-title"><h2 id="audit-engine-title">Tutor engine</h2><div className="ai-engine-picker__options"><button type="button" aria-pressed="false"><Laptop size={18} aria-hidden="true" /><strong>Mac local</strong></button><button type="button" className="is-selected" aria-pressed="true"><Cpu size={18} aria-hidden="true" /><strong>On-device Lite</strong></button></div></div>
+            {children}
+          </section>
+        </div>
+      </main>
+      <nav className="bottom-nav" aria-label="Mobile navigation">
+        {[["Home", Home], ["Library", LibraryBig], ["Read", BookOpen], ["AI Tutor", Sparkles], ["Notebook", NotebookPen]].map(([label, Icon]) => <button className={label === "AI Tutor" ? "active" : ""} type="button" key={label}><Icon size={20} aria-hidden="true" /><span>{label}</span></button>)}
+      </nav>
+    </div>
+  </div>
+);
+
 function AuditHost() {
   const speech = useSpeech({});
   const [insert, setInsert] = React.useState(null);
   setHostInsert = setInsert;
-  return <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} speech={speech} insertPrompt={insert} onInsertConsumed={insertConsumed} onNavigateSource={navigateSource} onSaveAnswerNote={saveAnswerNote} onInteractionChange={interactionChange} onNotify={notify} />;
+  const tutor = <PhoneLocalAiTutor engine={engine} sources={sources} retrieveLibrary={retrieveLibrary} speech={speech} insertPrompt={insert} onInsertConsumed={insertConsumed} onNavigateSource={navigateSource} onSaveAnswerNote={saveAnswerNote} onInteractionChange={interactionChange} onNotify={notify} initialHistory={initialHistory} />;
+  return params.has("shell") ? <Shell>{tutor}</Shell> : tutor;
 }
 
 const root = createRoot(document.getElementById("root"));

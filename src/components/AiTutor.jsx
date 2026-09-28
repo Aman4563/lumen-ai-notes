@@ -43,6 +43,7 @@ import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
 import { checkingStepHoldMs, holdStep, progressAnnouncement, tutorProgressSteps } from "../lib/tutorProgress.js";
 import { isPageReadBack } from "../lib/scrollIntent.js";
+import { fitQuestionBox, holdLatest, useTutorDock } from "../hooks/useTutorDock.js";
 import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import TutorSheet from "./TutorSheet.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
@@ -1128,15 +1129,19 @@ export default function AiTutor({
   const pendingFocusRef = useRef(null);
   // The conversation's last observed scroll position and height, to tell a
   // learner scrolling up from the tutor following new text downwards.
-  const conversationScrollRef = useRef({ top: 0, height: 0 });
+  const conversationScrollRef = useRef({ top: 0, height: 0, atEnd: false });
+  // Where the tutor's own last follow scroll put the conversation, so its
+  // scroll event is not taken for the learner returning to the end.
+  const autoTopRef = useRef(-1);
   const userScrolledRef = useRef(false);
   const [announcement, setAnnouncement] = useState({ text: "", id: 0 });
   const announce = useCallback((text) => setAnnouncement((current) => ({ text, id: current.id + 1 })), []);
   // Following an answer keeps its newest text in view, just above the
-  // docked composer. Wide screens scroll the conversation's own scroller to
-  // its end; the page itself only ever moves down, and only as far as that
-  // end (or, on phones, the end of the conversation) needs.
-  const composerSpaceRef = useRef(0);
+  // docked composer or, where it is not docked, the bottom navigation. Wide
+  // screens scroll the conversation's own scroller to its end; the page
+  // itself only ever moves down, and only as far as that end (or, on
+  // phones, the end of the conversation) needs.
+  const { cover: dockCover, coverRef: dockCoverRef } = useTutorDock({ composerRef, fieldRef: promptRef, conversationRef });
   const [following, setFollowingState] = useState(true);
   const setFollowing = useCallback((value) => {
     followStreamRef.current = value;
@@ -1147,13 +1152,21 @@ export default function AiTutor({
     const end = conversationEndRef.current;
     if (!surface) return;
     const ownScroller = getComputedStyle(surface).overflowY !== "visible" && surface.scrollHeight > surface.clientHeight + 1;
-    if (ownScroller) surface.scrollTop = surface.scrollHeight;
+    if (ownScroller) {
+      const before = surface.scrollTop;
+      surface.scrollTop = surface.scrollHeight;
+      if (surface.scrollTop !== before) autoTopRef.current = surface.scrollTop;
+    }
     const edge = ownScroller ? surface : end;
     if (!edge) return;
-    const visibleBottom = window.innerHeight - composerSpaceRef.current - 12;
+    // A dock that is growing (a long excerpt placed in it) can be taller
+    // than it was last measured.
+    const composer = composerRef.current;
+    const dockTop = composer && getComputedStyle(composer).position === "sticky" ? composer.getBoundingClientRect().top : window.innerHeight;
+    const visibleBottom = Math.min(window.innerHeight - dockCoverRef.current, dockTop) - 12;
     const overshoot = edge.getBoundingClientRect().bottom - visibleBottom;
     if (overshoot > 1) window.scrollBy({ top: overshoot, behavior: "instant" });
-  }, []);
+  }, [dockCoverRef]);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   // Phones pick the mode from a native select; wider screens show chips.
@@ -1170,9 +1183,13 @@ export default function AiTutor({
   const [pairingCode, setPairingCode] = useState("");
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState("");
-  const [prompt, setPrompt] = useState(() => asTrimmedString(initialPrompt, MAX_PROMPT_CHARS)
-    || asTrimmedString(storedDraft?.prompt, MAX_PROMPT_CHARS)
-    || initialModeOption.prompt);
+  // The box starts empty, with the mode's suggested question as its
+  // placeholder and one tap away (#93): Send is never armed with a default
+  // question, and the dock stays one line tall.
+  const [prompt, setPrompt] = useState(() => {
+    const stored = asTrimmedString(storedDraft?.prompt, MAX_PROMPT_CHARS);
+    return asTrimmedString(initialPrompt, MAX_PROMPT_CHARS) || (MODE_OPTIONS.some((mode) => mode.prompt === stored) ? "" : stored);
+  });
   const latestPromptRef = useRef(prompt);
   latestPromptRef.current = prompt;
   const onInsertConsumedRef = useRef(onInsertConsumed);
@@ -1525,65 +1542,64 @@ export default function AiTutor({
     if (activeResponse && followStreamRef.current) scrollConversationToEnd();
   }, [activeResponse, scrollConversationToEnd]);
 
-  // The sticky composer's height (plus its offset from the bottom) is
-  // published so scrolled-to content and focus stop above it instead of
-  // behind it.
-  const [composerSpace, setComposerSpace] = useState(0);
+  // A saved conversation opens at its latest turn (#93). It runs after the
+  // host has opened the page at its top, and keeps the end in view while
+  // math and diagrams finish rendering, until the learner scrolls. A
+  // question placed in the box from another screen keeps that when the box
+  // is docked, and so stays in view; an undocked box is revealed instead.
+  const openedAtLatestRef = useRef(false);
+  const openingRef = useRef(null);
+  // Read through a ref: the insert being consumed must not end the hold.
+  const openInsertRef = useRef(insertPrompt);
+  openInsertRef.current = insertPrompt;
   useLayoutEffect(() => {
-    const composer = composerRef.current;
-    if (!composer) return undefined;
-    const root = document.documentElement;
-    let frame = 0;
-    const measure = () => {
-      frame = 0;
-      // Large text on a small screen can make the dock taller than the room
-      // between the top bar and the bottom navigation, hiding the whole
-      // conversation behind it. Past about 60% of that room it stays in the
-      // page flow instead (back above 50%, so it does not flicker). The
-      // question box's own growth is left out, so typing never moves it.
-      const field = promptRef.current;
-      const fieldStyle = field ? getComputedStyle(field) : null;
-      const px = (value) => Number.parseFloat(value) || 0;
-      const oneLine = fieldStyle ? Math.max(px(fieldStyle.minHeight), px(fieldStyle.lineHeight) + px(fieldStyle.paddingTop) + px(fieldStyle.paddingBottom) + px(fieldStyle.borderTopWidth) + px(fieldStyle.borderBottomWidth)) : 0;
-      const growth = field ? Math.max(0, field.offsetHeight - oneLine) : 0;
-      const top = Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0);
-      const nav = document.querySelector(".bottom-nav");
-      const bottom = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : window.innerHeight;
-      const share = (composer.offsetHeight - growth) / Math.max(1, bottom - top);
-      const undocked = composer.dataset.dock === "off";
-      if (!undocked && share > 0.6) composer.dataset.dock = "off";
-      else if (undocked && share < 0.5) delete composer.dataset.dock;
-      const style = getComputedStyle(composer);
-      const offset = style.position === "sticky" ? Number.parseFloat(style.bottom) || 0 : 0;
-      const space = style.position === "sticky" ? Math.ceil(composer.offsetHeight + offset) : 0;
-      root.style.setProperty("--ai-composer-space", `${space}px`);
-      root.style.scrollPaddingBottom = space ? `${space + 12}px` : "";
-      composerSpaceRef.current = space;
-      setComposerSpace((current) => Math.abs(current - space) > 2 ? space : current);
-    };
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
-    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
-    observer?.observe(composer);
-    window.addEventListener("resize", schedule);
-    measure();
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", schedule);
-      if (frame) cancelAnimationFrame(frame);
-      root.style.removeProperty("--ai-composer-space");
-      root.style.scrollPaddingBottom = "";
-    };
+    if (openedAtLatestRef.current || !history.length) return undefined;
+    openedAtLatestRef.current = true;
+    const insert = openInsertRef.current;
+    const inserting = insert?.nonce && consumedInsertRef.current !== insert.nonce;
+    if (pendingFocusRef.current || (inserting && getComputedStyle(composerRef.current).position !== "sticky")) return undefined;
+    const stop = holdLatest(scrollConversationToEnd, () => {
+      // The messages grow as they render; the chrome above them settles.
+      const surface = conversationRef.current;
+      return [surface, surface?.querySelector(".ai-tutor__messages"), surface?.closest(".ai-tutor")];
+    }, () => { if (openingRef.current === stop) openingRef.current = null; });
+    openingRef.current = stop;
+    return stop;
+  }, [history.length, scrollConversationToEnd]);
+  // On wide screens a longer question (or taller chrome) shrinks the
+  // conversation's own scroller; one that was at its end stays there, so the
+  // newest text and the follow-ups are not pushed under the box.
+  useEffect(() => {
+    const surface = conversationRef.current;
+    if (!surface || typeof ResizeObserver !== "function") return undefined;
+    const observer = new ResizeObserver(() => {
+      if (!conversationScrollRef.current.atEnd || surface.scrollHeight - surface.scrollTop - surface.clientHeight <= 2) return;
+      surface.scrollTop = surface.scrollHeight;
+      autoTopRef.current = surface.scrollTop;
+    });
+    observer.observe(surface);
+    return () => observer.disconnect();
   }, []);
+  // A server that asks for pairing puts its form first: when its check
+  // answers while the conversation is being opened, the page returns to the
+  // tutor's top, where the form is. (With AI off the conversation is still
+  // there to read, so it stays at its latest turn.)
+  useLayoutEffect(() => {
+    if (!openingRef.current || configState.status !== "pairing") return;
+    openingRef.current();
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [configState.status]);
 
-  // The question box grows with its text (up to about six lines, then it
-  // scrolls), including text placed there by a mode, Ask AI or a restore.
+  // The question box grows with its text (up to about six lines, or on wide
+  // screens what the conversation can spare, then it scrolls), including
+  // text placed there by a mode, Ask AI or a restore. The conversation's
+  // own scroller keeps its place, or its end, meanwhile.
   useLayoutEffect(() => {
     const field = promptRef.current;
     if (!field) return undefined;
     const fit = () => {
-      field.style.height = "auto";
-      const borders = field.offsetHeight - field.clientHeight;
-      field.style.height = `${field.scrollHeight + borders}px`;
+      const top = fitQuestionBox(field, conversationRef.current);
+      if (top >= 0) autoTopRef.current = top;
     };
     fit();
     window.addEventListener("resize", fit);
@@ -1648,10 +1664,10 @@ export default function AiTutor({
     const observer = new IntersectionObserver(([entry]) => {
       setAtLatest(entry.isIntersecting);
       if (entry.isIntersecting && inFlightRef.current) setFollowing(true);
-    }, { rootMargin: `0px 0px -${Math.max(0, composerSpace)}px 0px` });
+    }, { rootMargin: `0px 0px -${Math.max(0, dockCover)}px 0px` });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [composerSpace, setFollowing]);
+  }, [dockCover, setFollowing]);
 
   // After an answer lands while the learner is reading elsewhere, the pill
   // offers it for eight seconds.
@@ -1781,10 +1797,10 @@ export default function AiTutor({
     const visibleTop = Math.max(0, topbar?.bottom ?? 0) + 12;
     // The start belongs near the top of the band above the docked composer,
     // so most of the answer shows.
-    const visibleBottom = window.innerHeight - composerSpaceRef.current;
+    const visibleBottom = window.innerHeight - dockCoverRef.current;
     const top = target.getBoundingClientRect().top;
     if (top < visibleTop || top > visibleTop + (visibleBottom - visibleTop) * 0.35) window.scrollBy({ top: top - visibleTop, behavior: scrollBehavior() });
-  }, []);
+  }, [dockCoverRef]);
 
   // Applies focus/scroll requested by the last state change once the target
   // (a new answer, the outcome note or the tutor heading) is rendered.
@@ -2699,10 +2715,17 @@ export default function AiTutor({
     const previousDefault = currentMode.prompt;
     setModeId(nextMode.id);
     outboundChanged();
+    // An empty box shows the new mode's suggestion; the old one is cleared.
     if (!prompt.trim() || prompt === previousDefault) {
-      setPrompt(nextMode.prompt);
+      setPrompt("");
       retrievalHintRef.current = "";
     }
+  };
+  const applyModeSuggestion = () => {
+    setPrompt(currentMode.prompt);
+    retrievalHintRef.current = "";
+    outboundChanged();
+    window.setTimeout(focusComposer, 0);
   };
 
   // A graded practice answer is edited where it was written: in the practice
@@ -2926,7 +2949,9 @@ export default function AiTutor({
           : configState.status !== "ready"
             ? ""
             : !prompt.trim()
-              ? "Enter a learning request to enable generation."
+              // A first visit starts with an empty box: the disclosure is
+              // still what to do first.
+              ? localDisclosureAcknowledged ? "Enter a learning request to enable generation." : DISCLOSURE_REASON
               : promptTooLong
                 ? `Shorten the prompt to ${promptLimit.toLocaleString()} characters for this server’s input limit.`
                 : contextTooSmall
@@ -3220,7 +3245,8 @@ export default function AiTutor({
       <header className="ai-tutor__header">
         <div className="ai-tutor__identity">
           <span className="ai-tutor__mark" aria-hidden="true"><BrainCircuit size={24} /></span>
-          <div><span className="ai-tutor__eyebrow">Grounded learning assistant</span><h2 id={headingId} ref={headingRef} tabIndex={-1}>Lumen AI Tutor</h2></div>
+          {/* The session's statistics sit under (wide screens: beside) the title. */}
+          <div><span className="ai-tutor__eyebrow">Grounded learning assistant</span><h2 id={headingId} ref={headingRef} tabIndex={-1}>Lumen AI Tutor</h2>{sessionStats && <p className="ai-tutor__session-stats">{sessionStats.count} answers in this conversation{sessionStats.median !== null ? ` · median ${(sessionStats.median / 1_000).toFixed(1)}s` : ""}{sessionStats.tokens ? ` · ${sessionStats.tokens.toLocaleString()} output tokens` : ""}</p>}</div>
         </div>
         <div className="ai-tutor__header-actions">
           {history.length > 0 && <button className="ai-tutor__icon-button" type="button" onClick={exportConversation} aria-label="Export conversation as Markdown" title="Export conversation"><Download size={18} /></button>}
@@ -3229,8 +3255,6 @@ export default function AiTutor({
           {onClose && <button className="ai-tutor__button ai-tutor__button--ghost" type="button" onClick={onClose}>Close</button>}
         </div>
       </header>
-
-      {sessionStats && <p className="ai-tutor__session-stats">{sessionStats.count} answers in this conversation{sessionStats.median !== null ? ` · median ${(sessionStats.median / 1_000).toFixed(1)}s` : ""}{sessionStats.tokens ? ` · ${sessionStats.tokens.toLocaleString()} output tokens` : ""}</p>}
 
       <div className={`ai-tutor__connection ai-tutor__connection--${configState.status}`} role="status">
         {configIcon}<span>{configState.message}</span>
@@ -3348,7 +3372,11 @@ export default function AiTutor({
           const top = surface.scrollTop;
           const end = surface.scrollHeight - surface.clientHeight;
           const previous = conversationScrollRef.current;
-          conversationScrollRef.current = { top, height: surface.scrollHeight };
+          conversationScrollRef.current = { top, height: surface.scrollHeight, atEnd: end - top <= 2 };
+          // The tutor's own follow scroll can land just after the learner
+          // pressed a key or wheeled up elsewhere to read back (#93).
+          const own = Math.abs(top - autoTopRef.current) <= 1;
+          autoTopRef.current = -1;
           // iOS rubber-banding reports positions well past either end;
           // settling back from past the end is not a move up.
           if (top < -1 || top > end + 1) return;
@@ -3356,7 +3384,7 @@ export default function AiTutor({
             if (followStreamRef.current) setFollowing(false);
             return;
           }
-          if (end - top < 140 && !followStreamRef.current) setFollowing(true);
+          if (end - top < 140 && !followStreamRef.current && !own) setFollowing(true);
         }}>
           {setupRequired && <div className="ai-tutor__setup-card">
               {configState.status === "pairing" ? <LockKeyhole size={26} aria-hidden="true" /> : <ServerOff size={26} aria-hidden="true" />}
@@ -3508,7 +3536,7 @@ export default function AiTutor({
             excerpt is kept for when the tutor becomes available. */}
         <label className="ai-tutor__prompt-label" htmlFor={promptId}>{answering ? "Your answer" : "Your question"}</label>
         <div className="ai-tutor__submit-row">
-          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}${keyHint ? ` ${keyHintId}` : ""}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={onPromptKeyDown} maxLength={promptLimit} rows={1} placeholder={answering ? "Type your answer…" : "Ask a question…"} />
+          <textarea ref={promptRef} id={promptId} value={prompt} aria-describedby={`${counterId} ${sendReasonId}${keyHint ? ` ${keyHintId}` : ""}`} aria-invalid={promptTooLong || requestTooLarge || undefined} onChange={(event) => { setPrompt(event.target.value); outboundChanged(); }} onKeyDown={onPromptKeyDown} maxLength={promptLimit} rows={1} placeholder={answering ? "Type your answer…" : currentMode.prompt.split("\n")[0] || "Ask a question…"} />
           {requestState.status === "loading" ? (
             <button
               className="ai-tutor__button ai-tutor__button--secondary ai-tutor__send is-stop"
@@ -3530,9 +3558,10 @@ export default function AiTutor({
         <div className="ai-tutor__composer-meta">
           {!setupRequired && <button className="ai-tutor__options-toggle" type="button" aria-haspopup="dialog" aria-expanded={optionsOpen} aria-describedby={optionsSummary ? optionsSummaryId : undefined} onClick={() => setOptionsOpen(true)}><SlidersHorizontal size={16} aria-hidden="true" /> Options{optionsSummary && <span className="ai-tutor__options-summary" id={optionsSummaryId}>{optionsSummary}</span>}</button>}
           {!setupRequired && !localDisclosureAcknowledged && <button type="button" className="ai-tutor__text-button" onClick={() => { setPrivacyOpen(true); setOptionsOpen(true); }}>What is sent?</button>}
+          {!setupRequired && localDisclosureAcknowledged && !answering && !prompt.trim() && currentMode.prompt && <button type="button" className="ai-tutor__text-button ai-tutor__suggest" title={currentMode.prompt} onClick={applyModeSuggestion}><Sparkles size={16} aria-hidden="true" /><span>Use suggestion</span></button>}
           {!setupRequired && effectiveWebSearch && <WebFallbackBadge status="armed" />}
           {keyHint && <span className="ai-tutor__key-hint" id={keyHintId}>{keyHint}</span>}
-          <span className="ai-tutor__character-count" id={counterId}>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>
+          <span className={`ai-tutor__character-count${prompt.trim() ? "" : " visually-hidden"}`} id={counterId}>{prompt.trim().length.toLocaleString()} / {promptLimit.toLocaleString()}<span className="visually-hidden"> characters</span></span>
         </div>
         <span className="visually-hidden" id={sendSummaryId}>{effectiveWebSearch ? "Sends to the local model on the Lumen server, with current-web fallback allowed for this request." : "Sends to the local model on the Lumen server. Web fallback is off."}</span>
         <p className={`ai-tutor__disabled-reason${quietReason ? " is-quiet" : ""}`} id={sendReasonId} role="status">{disabledReason}</p>
