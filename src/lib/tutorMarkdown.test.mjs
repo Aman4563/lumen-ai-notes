@@ -106,6 +106,25 @@ test("pending math marks the spans KaTeX draws once it loads, also beside a stra
   }
 });
 
+// Review round 2: an answer that holds focus renders with the state it was
+// drawn with. Rendering it again after KaTeX loaded (another tab's turn, new
+// evidence arrays) must give the same TeX-source markup, not KaTeX.
+test("an answer drawn before KaTeX loaded renders the same markup until it takes the new state", async () => {
+  await ensureTutorMath();
+  assert.equal(getTutorMathState(), "ready");
+  // Captured by the first test, before KaTeX loaded.
+  const answerBefore = pendingParity[PARITY_INPUTS.length - 1];
+  const fieldBefore = pendingParity.at(-1);
+  for (const math of ["idle", "loading", "failed"]) {
+    // New arrays with the same evidence, as a merged tutor turn produces.
+    assert.equal(renderTutorMarkdownUnsanitized(PARITY_INPUTS.at(-1), [...sources], [...web], { math }), answerBefore, `an answer held at "${math}" rendered differently after KaTeX loaded`);
+    assert.equal(renderTutorInlineMarkdownUnsanitized(PARITY_INLINE_INPUTS.at(-1), [...sources], [...web], { math }), fieldBefore, `a field held at "${math}" rendered differently after KaTeX loaded`);
+  }
+  const drawn = renderTutorMarkdownUnsanitized("Loss $x^2$ [S1].", sources, web, { math: "ready" });
+  assert.equal(drawn, render("Loss $x^2$ [S1]."), "an answer that took the ready state does not draw what the live renderer draws");
+  assert.doesNotMatch(drawn, /ai-tutor__math-pending/u);
+});
+
 test("renders known library and web citations as the renderer's own controls", () => {
   const result = render("Evidence [S1] and current facts [W1].");
   assert.match(result, /<button class="ai-tutor__citation" type="button" data-ai-citation="S1"/);

@@ -166,7 +166,14 @@ const PENDING_MATH_EXTENSIONS = [{
   ],
 }];
 
-let tutorMarked = createTutorMarked(PENDING_MATH_EXTENSIONS);
+const pendingTutorMarked = createTutorMarked(PENDING_MATH_EXTENSIONS);
+let mathTutorMarked = null;
+
+// The renderer for one render. `math` is the load state an answer was drawn
+// with (useTutorMathFor): an answer that holds focus keeps the TeX source it
+// was drawn with, also when its evidence or a new tutor turn renders it again
+// after KaTeX has loaded. Without `math`, the live state decides.
+const tutorMarkedFor = (math) => (mathTutorMarked && (math === undefined || math === "ready") ? mathTutorMarked : pendingTutorMarked);
 
 // A small store for the KaTeX load, read by the tutors through
 // useSyncExternalStore (src/hooks/useTutorMath.js) so rendered answers
@@ -197,7 +204,7 @@ export const ensureTutorMath = () => {
   if (!mathLoad) {
     mathLoad = import("./tutorMath.js")
       .then(({ tutorMathExtensions }) => {
-        tutorMarked = createTutorMarked(tutorMathExtensions);
+        mathTutorMarked = createTutorMarked(tutorMathExtensions);
         setMathState("ready");
       })
       .catch((error) => {
@@ -241,9 +248,10 @@ export const normalizeTutorMathDelimiters = (markdown) => {
  * Tutor Markdown before DOMPurify: model-authored HTML is already text and
  * the only citation controls are the renderer's own. Exported for unit tests,
  * because DOMPurify needs a DOM; the UI uses renderTutorMarkdown. `appOrigin`
- * (default: the page's origin) names the host whose links render as text.
+ * (default: the page's origin) names the host whose links render as text;
+ * `math` is the KaTeX load state to draw with (default: the live state).
  */
-export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], webSources = [], { appOrigin } = {}) => tutorMarked.parse(
+export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], webSources = [], { appOrigin, math } = {}) => tutorMarkedFor(math).parse(
   normalizeTutorMathDelimiters(markdown),
   { tutorCitations: citationContext(citationSources, webSources), untrustedAppOrigin: appOrigin },
 );
@@ -252,12 +260,12 @@ export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], w
  * Marked accepts an unfinished paragraph/list/fence, which lets the same
  * renderer safely handle both completed answers and in-flight stream chunks.
  */
-export const renderTutorMarkdown = (markdown, citationSources = [], webSources = []) => (
-  sanitizeMarkdownHtml(renderTutorMarkdownUnsanitized(markdown, citationSources, webSources))
+export const renderTutorMarkdown = (markdown, citationSources = [], webSources = [], { math } = {}) => (
+  sanitizeMarkdownHtml(renderTutorMarkdownUnsanitized(markdown, citationSources, webSources, { math }))
 );
 
 /** One structured field before DOMPurify; see renderTutorMarkdownUnsanitized. */
-export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [], webSources = [], { appOrigin } = {}) => tutorMarked.parseInline(
+export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [], webSources = [], { appOrigin, math } = {}) => tutorMarkedFor(math).parseInline(
   String(text || "").replace(/\r\n?/g, "\n").replace(/\n+/g, " "),
   { tutorCitations: citationContext(citationSources, webSources), untrustedAppOrigin: appOrigin },
 );
@@ -268,8 +276,8 @@ export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [],
  * citation controls as prose. Inline parsing cannot produce blocks, fences or
  * Mermaid diagrams.
  */
-export const renderTutorInlineMarkdown = (text, citationSources = [], webSources = []) => (
-  sanitizeMarkdownHtml(renderTutorInlineMarkdownUnsanitized(text, citationSources, webSources))
+export const renderTutorInlineMarkdown = (text, citationSources = [], webSources = [], { math } = {}) => (
+  sanitizeMarkdownHtml(renderTutorInlineMarkdownUnsanitized(text, citationSources, webSources, { math }))
 );
 
 // Plain text that keeps code, math and identifiers such as `for _ in` intact.

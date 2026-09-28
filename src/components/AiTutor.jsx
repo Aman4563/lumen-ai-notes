@@ -674,10 +674,13 @@ const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.l
 const InlineRichText = ({ text, citationSources = [], webSources = [], onNavigateSource, className = "" }) => {
   const fieldRef = useRef(null);
   const math = useTutorMathFor(fieldRef);
-  const markup = useMemo(
-    () => ({ __html: renderTutorInlineMarkdown(text, citationSources, webSources) }),
-    [citationSources, math, text, webSources], // eslint-disable-line react-hooks/exhaustive-deps
+  const html = useMemo(
+    () => renderTutorInlineMarkdown(text, citationSources, webSources, { math }),
+    [citationSources, math, text, webSources],
   );
+  // The same markup keeps the same object, so React leaves the field (and a
+  // focused citation in it) alone when only the evidence arrays are new.
+  const markup = useMemo(() => ({ __html: html }), [html]);
   const handleClick = useCallback((event) => {
     const citation = event.target.closest?.("[data-ai-citation]");
     if (!citation) return;
@@ -719,8 +722,8 @@ const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource,
   const responseRef = useRef(null);
   const math = useTutorMathFor(responseRef);
   const html = useMemo(
-    () => renderTutorMarkdown(text, citationSources, webSources),
-    [citationSources, math, text, webSources], // eslint-disable-line react-hooks/exhaustive-deps
+    () => renderTutorMarkdown(text, citationSources, webSources, { math }),
+    [citationSources, math, text, webSources],
   );
   // Keep React from replacing renderer-owned diagrams on unrelated updates.
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);

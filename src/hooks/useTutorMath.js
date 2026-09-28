@@ -21,12 +21,15 @@ export const useTutorMath = () => {
 
 /**
  * The math state one rendered answer (the element `ref` points at) draws
- * with; the answer lists it among its memo inputs, so TeX source shown before
- * KaTeX loaded becomes KaTeX without a new message. Drawing it replaces the
- * answer's markup, which would destroy a focused link or citation inside it
- * and drop keyboard and screen-reader focus to the page. So while focus is
- * inside the answer it keeps the state it was drawn with, and takes the new
- * one once focus has left it (a window blur leaves focus inside).
+ * with; the answer passes it to the renderer (`{ math }`) and lists it among
+ * its memo inputs, so TeX source shown before KaTeX loaded becomes KaTeX
+ * without a new message. Drawing it replaces the answer's markup, which would
+ * destroy a focused link or citation inside it and drop keyboard and
+ * screen-reader focus to the page. So while focus is inside the answer it
+ * keeps the state it was drawn with, and takes the new one once focus has
+ * left it (a window blur leaves focus inside). Because the renderer draws
+ * with this state, not the live one, a render for another reason (another
+ * tab's turn, new evidence arrays) gives the same markup while it is held.
  */
 export const useTutorMathFor = (ref) => {
   const math = useTutorMath();

@@ -17,7 +17,10 @@ import "../phone-tutor-results.css";
 const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSource }) => {
   const fieldRef = useRef(null);
   const math = useTutorMathFor(fieldRef);
-  const markup = useMemo(() => ({ __html: renderPhoneTutorInlineMarkdown(text, sources, citations) }), [citations, math, sources, text]); // eslint-disable-line react-hooks/exhaustive-deps
+  const html = useMemo(() => renderPhoneTutorInlineMarkdown(text, sources, citations, { math }), [citations, math, sources, text]);
+  // The same markup keeps the same object, so React leaves the field (and a
+  // focused citation in it) alone when only the evidence arrays are new.
+  const markup = useMemo(() => ({ __html: html }), [html]);
   const handleClick = (event) => {
     const citationButton = event.target.closest?.("[data-ai-citation]");
     if (!citationButton) return;

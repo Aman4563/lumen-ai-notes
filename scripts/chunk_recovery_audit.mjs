@@ -164,9 +164,11 @@ const seedWarmDrillProfile = (page) => page.evaluate((lectureId) => new Promise(
 }), EDITED_LECTURE);
 
 // Saved tutor turns only, for the math drills.
+// Each answer is its Markdown, or { content, mode, data, citationSources }
+// for a structured answer.
 const seedTutorHistory = (page, answers) => page.evaluate((contents) => new Promise((resolveSeed, reject) => {
   const now = new Date().toISOString();
-  const turn = (id, role, content) => ({ id, role, content, mode: "explain", createdAt: now, requestId: null, data: null, citationSources: [], webSources: [], responseProfile: "balanced" });
+  const turn = (id, role, answer) => ({ id, role, content: answer, mode: "explain", createdAt: now, requestId: null, data: null, citationSources: [], webSources: [], responseProfile: "balanced", ...(typeof answer === "object" ? answer : {}) });
   const request = indexedDB.open("lumen-ai-notes", 1);
   request.onerror = () => reject(request.error);
   request.onsuccess = () => {
@@ -604,6 +606,42 @@ const settingsErrorDrill = async () => {
   }
 };
 
+// Another tab's tutor turn, delivered as the app's save path delivers it: a
+// newer profile revision in IndexedDB, then a signal on the sync channel.
+// Resolves once this tab shows the turn's answer.
+const postOtherTabTurn = async (page, answer) => {
+  await page.evaluate((text) => new Promise((resolveTurn, reject) => {
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction("study-data", "readwrite");
+      const store = transaction.objectStore("study-data");
+      const get = store.get("profile");
+      get.onsuccess = () => {
+        const profile = get.result;
+        const now = new Date().toISOString();
+        const stamp = Date.now();
+        const turn = (id, role, content) => ({ id, role, content, mode: "explain", createdAt: now, requestId: null, data: null, citationSources: [], webSources: [], responseProfile: "balanced" });
+        store.put({
+          ...profile,
+          aiTutorHistory: [...(profile.aiTutorHistory || []), turn(`other-tab-q-${stamp}`, "user", "A question asked in another tab"), turn(`other-tab-a-${stamp}`, "assistant", text)],
+          syncMeta: { ...profile.syncMeta, revision: (Number(profile.syncMeta?.revision) || 0) + 1, updatedAt: now, writerId: "math-focus-other-tab" },
+        }, "profile");
+      };
+      transaction.oncomplete = () => {
+        const channel = new BroadcastChannel("lumen-profile-sync-v1");
+        channel.postMessage({ origin: "math-focus-other-tab", revision: 0, at: Date.now() });
+        channel.close();
+        resolveTurn();
+      };
+      transaction.onerror = () => reject(transaction.error);
+    };
+  }), answer);
+  await page.waitForFunction((text) => [...document.querySelectorAll(".ai-tutor__response-text")].some((node) => node.textContent.includes(text)), { timeout: 10_000 }, answer)
+    .catch(() => assert.fail(`another tab's tutor turn ("${answer}") never reached this tab, so the answers were not rendered again`));
+  await page.evaluate(() => new Promise((resolveFrames) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolveFrames, 150)))));
+};
+
 // Review round 1: KaTeX arriving must not destroy a focused control inside a
 // saved answer. That answer keeps its TeX source while focus is inside it
 // and draws KaTeX once focus leaves; an answer without focus draws at once.
@@ -629,6 +667,17 @@ const mathFocusDrill = async () => {
     await seedTutorHistory(page, [
       "It is $x^2$, the square of x. See [the KaTeX guide](https://katex.org/docs/supported.html) for syntax.",
       "A second answer: $y^2$, with no link.",
+      {
+        content: "A study plan for squares.",
+        mode: "study-plan",
+        data: {
+          title: "Squares",
+          goal: "Master $z^2$ from the roadmap [S1].",
+          milestones: [{ title: "Square a number", outcome: "You can square a number.", activities: ["Square three numbers."], estimatedMinutes: 20, evidenceOfMastery: "Three correct squares." }],
+          cautions: [],
+        },
+        citationSources: [{ id: "roadmap-s1", title: "Course roadmap", citationNumber: 1, original: { documentId: "notes/00-roadmap.md", title: "Course roadmap" } }],
+      },
     ]);
     // The recovery drill on this origin chose On-device Lite; these are
     // saved Mac tutor answers.
@@ -656,10 +705,39 @@ const mathFocusDrill = async () => {
       };
     });
     assert.deepEqual(kept, { tag: "A", text: "the KaTeX guide", pending: true }, "KaTeX arriving moved focus out of the answer being read");
+    // Review round 2: another tab's tutor turn arrives while the answer is
+    // held. Merging it rebuilds every answer's evidence arrays, so the held
+    // answer renders again; it must render the TeX source it was drawn with,
+    // not KaTeX, or the new markup destroys the focused link.
+    await postOtherTabTurn(page, "An answer from another tab.");
+    const keptThroughTurn = await page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        tag: active?.tagName,
+        text: active?.textContent,
+        pending: Boolean(active?.closest?.(".ai-tutor__response-text")?.querySelector(".ai-tutor__math-pending")),
+      };
+    });
+    assert.deepEqual(keptThroughTurn, { tag: "A", text: "the KaTeX guide", pending: true }, "a tutor turn from another tab redrew the held answer with KaTeX and moved focus out of it");
     await page.$eval('[aria-label="Open settings"]', (button) => button.focus());
     await page.waitForFunction((selector) => document.querySelector(selector)?.closest(".ai-tutor__response-text")?.querySelector(".katex"), { timeout: 10_000 }, linkSelector)
       .catch(() => assert.fail("the answer did not draw its math once focus left it"));
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Open settings", "drawing the math took focus back");
+    // Review round 2: a structured answer's field (a study plan goal with
+    // math and a citation) is rebuilt with new, equal evidence arrays by
+    // another tab's turn. The same markup must leave the field's DOM, and
+    // the citation focused in it, in place.
+    const citationSelector = '.ai-tutor__study-plan .ai-tutor__inline-md button[data-ai-citation="S1"]';
+    await page.waitForFunction((selector) => document.querySelector(selector)?.closest(".ai-tutor__inline-md")?.querySelector(".katex"), { timeout: 10_000 }, citationSelector)
+      .catch(() => assert.fail("the study plan's goal did not draw its math or its citation"));
+    await page.$eval(citationSelector, (button) => button.focus());
+    await postOtherTabTurn(page, "A second answer from another tab.");
+    const keptInField = await page.evaluate(() => ({
+      tag: document.activeElement?.tagName,
+      citation: document.activeElement?.dataset?.aiCitation || "",
+      inPlan: Boolean(document.activeElement?.closest?.(".ai-tutor__study-plan")),
+    }));
+    assert.deepEqual(keptInField, { tag: "BUTTON", citation: "S1", inPlan: true }, "a tutor turn from another tab rebuilt a study plan field and moved focus off its citation");
   } finally {
     holding = false;
     held.splice(0).forEach((request) => void request.continue().catch(() => {}));

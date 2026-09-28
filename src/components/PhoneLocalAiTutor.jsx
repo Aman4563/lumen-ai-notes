@@ -291,8 +291,8 @@ const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, on
   const responseRef = useRef(null);
   const math = useTutorMathFor(responseRef);
   const html = useMemo(
-    () => renderPhoneTutorMarkdown(text, sources, citations),
-    [citations, math, sources, text], // eslint-disable-line react-hooks/exhaustive-deps
+    () => renderPhoneTutorMarkdown(text, sources, citations, { math }),
+    [citations, math, sources, text],
   );
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });

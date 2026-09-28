@@ -33,22 +33,22 @@ const phoneRenderArguments = (markdown, librarySources, citations) => [
  * The shared tutor renderer: model-authored HTML shows as text and citation
  * controls come only from validated [S#]/[W#] markers.
  */
-export const renderPhoneTutorMarkdown = (markdown, librarySources = [], citations = []) => (
-  renderTutorMarkdown(...phoneRenderArguments(markdown, librarySources, citations))
+export const renderPhoneTutorMarkdown = (markdown, librarySources = [], citations = [], options = {}) => (
+  renderTutorMarkdown(...phoneRenderArguments(markdown, librarySources, citations), options)
 );
 
 /** One structured-result field, with the same citation numbering as prose. */
-export const renderPhoneTutorInlineMarkdown = (text, librarySources = [], citations = []) => (
-  renderTutorInlineMarkdown(...phoneRenderArguments(text, librarySources, citations))
+export const renderPhoneTutorInlineMarkdown = (text, librarySources = [], citations = [], options = {}) => (
+  renderTutorInlineMarkdown(...phoneRenderArguments(text, librarySources, citations), options)
 );
 
 // The same renders before DOMPurify, for unit tests (DOMPurify needs a DOM).
-export const renderPhoneTutorMarkdownUnsanitized = (markdown, librarySources = [], citations = []) => (
-  renderTutorMarkdownUnsanitized(...phoneRenderArguments(markdown, librarySources, citations))
+export const renderPhoneTutorMarkdownUnsanitized = (markdown, librarySources = [], citations = [], options = {}) => (
+  renderTutorMarkdownUnsanitized(...phoneRenderArguments(markdown, librarySources, citations), options)
 );
 
-export const renderPhoneTutorInlineMarkdownUnsanitized = (text, librarySources = [], citations = []) => (
-  renderTutorInlineMarkdownUnsanitized(...phoneRenderArguments(text, librarySources, citations))
+export const renderPhoneTutorInlineMarkdownUnsanitized = (text, librarySources = [], citations = [], options = {}) => (
+  renderTutorInlineMarkdownUnsanitized(...phoneRenderArguments(text, librarySources, citations), options)
 );
 
 export const phoneTutorMarkdownPlainText = tutorMarkdownPlainText;
