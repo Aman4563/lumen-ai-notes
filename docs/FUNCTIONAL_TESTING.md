@@ -1608,4 +1608,137 @@ hit@1 0.913). The startup entry is 715,950 bytes and the route screens
 891,561 bytes (main 715,643 and 891,828). Against main, the main stylesheet
 grew 3,289 bytes minified (995 gzip) and the lazy tutor stylesheets shrank
 1,095 bytes. `npm run check:browser` passed all 13 suites on the first
-attempt, with no retries.
+attempt, with no retries, in the fixer's run. An independent re-verifier's
+full run with retries off, under heavy load (load average about 20), saw
+`ai-ui` fail once on an assertion this change does not touch ("a stale
+conversation did not end with the break divider", `ai_ui_audit.mjs:2701`);
+run alone with `LUMEN_BROWSER_RETRIES=0` it passed.
+
+## Bugs reproduced on 2026-09-28: themed select at large text and in narrow windows (#92)
+
+A re-verification of the review follow-up above (72d5eba) found two
+regressions it introduced, and select values that still shortened at 200%
+text although they fitted on main. The failures below come from 72d5eba,
+built into a scratch directory and served the way `check:browser` serves a
+build; "main" is e2f7997.
+
+- The Daily limits strip squeezed its Scheduler at large text. 72d5eba held
+  each label and select on one row at 740px and below, so at 360px with 200%
+  text the Scheduler read "Adaptiv…" (240px needed, 137px of room; 97px at
+  320px, 207px at 430px). Main fitted it at 360px and 430px. Each Daily limits
+  picker now has a row of its own, name at the start and select at the end; a
+  select too wide for its row drops under its one-word name at full width.
+  At 393px with default text all four still sit beside their names.
+- With a mouse, a narrow window with large text scrolled sideways. The
+  toolbar selects' rem minimum widths beat `max-inline-size: 100%`: Review
+  scrolled 11px at 400px with 150% text, 137px at 400px with 200%, 91px at
+  320px with 150% and 217px at 320px with 200%; Library 83px and the
+  highlights Purpose 76px at 320px with 200%. The suggested
+  `min-inline-size: min(width, 100%)` was tried and rejected: the percentage
+  resolves against a label that is itself sized by the select, so at 1280px
+  the widths followed the value again (Interview track 152–241px, Library Sort
+  142–168px) and at 400px with 150% text Review still scrolled 14px. The widths
+  are now `inline-size` in em of the select's own text, within a pixel of
+  before at 1280px (Sort 169px, was 168px; Interview track 252px), and a
+  width, unlike a minimum, shrinks with its row. The interview labels' grid
+  column, the mistake filter label and the highlights heading can now shrink,
+  Library Sort and the highlights Purpose drop under their names when the row
+  is too narrow, and
+  the mistake and highlights headings are single-line columns: as wrapping
+  columns they stretched their controls to the widest control, past the page.
+  In em the widths also hold every option at 16px in a narrow window, where
+  the rem minimums cut "Rapid fundamentals" and "Misconception" at 600px.
+- At 200% text a select's value was 32px (`max(16px, 1rem)`), against 22–26px
+  skins on main. At 360px Library Sort read "Curriculum or…" (246px needed,
+  235px of room) and the Listen language "All languages (1…" (283px, 262px),
+  although both fitted on main. Select text on phones and touch screens is
+  now `max(16px, 0.875rem)`: 16px at default size as before, so iOS still
+  never zooms, and 28px at 200%, in proportion with the 0.82rem buttons
+  beside it. At 360px with 200% text both values now fit.
+- The Teaching picker shared its row with the timer and presenter buttons at
+  393–430px with 200% text: at 430px "1. Introduction" needed 207px and had
+  135px (main fitted it). The switch to a row of its own was a 360px media
+  query; it is now a container query on the header actions at 23em, so it
+  follows the text size. With default text it now also takes its own row at
+  393–402px: beside the timer and buttons its value had about 7em of room, and
+  at 393px 72d5eba fitted "1. Introduction" (110px) only by squashing the
+  timer's clock icon to a few pixels. Without the squash it has 107px there.
+  The cost is a header row: 105px to 151px tall at 393px.
+- Found on the way, also on main: at 320px with 200% text the "Calibrate from
+  my history" link ran 36px past the page (it now wraps at phone widths), and
+  the notebook title ran 13px past the page in Linux Chrome (1px on macOS),
+  because "notebook" at 2.35rem is wider than the page. The phone title is now
+  `min(2.35rem, 21vw)`, which changes nothing at 360px and wider or at default
+  text.
+- Found on the way in the checks: in an emulated Linux Chrome, measuring a
+  dialog's select two frames after a theme change read the previous theme's
+  edge, because the reduced-motion colour transition had not finished. The
+  theme measurement now waits for running transitions. 72d5eba shows the same
+  failure there. And on Linux a viewport change drops Chrome's emulated mouse
+  until the next load, so the fine-pointer pass reloads after each size.
+
+Decided per select, at 360px with 200% text:
+
+- Must fit, and now fit: Library Sort, the Listen language, every Daily limits
+  picker, the Teaching picker ("1. Introduction"), the whiteboard page picker,
+  the On-device Depth and Answer length, and the dialog selects.
+- Allowed to shorten: the Listen voice ("Samantha · Default · On device" needs
+  388px of 262px), whose full name, language and on-device status are
+  repeated on the line below it; Settings "Up to 50 messages" (246px of 212px),
+  which main showed only by running the select past the settings drawer's
+  edge with its chevron off screen; and Card type and Interview track, which
+  main cut as well. They keep their chevron and an ellipsis, and the picker
+  lists every option in full. At 320px with 200% text the Listen language
+  also shortens (249px of 222px); main fitted it there with 22px text.
+
+How it is checked:
+
+- `audit:responsive`, at every viewport (phone-large-text is 360px with 200%
+  text): every option of each Daily limits select and of Library Sort, and the
+  Listen language's value, must fit inside its select's padding (a canvas
+  measurement in the select's font). The Daily limits and Sort selects are
+  checked by their widest option, so a short current value cannot hide one a
+  learner could pick.
+- `audit:controls`, phone pass: the Teaching picker shows "1. Introduction"
+  whole at 320px and 393px, and at 360px and 430px with 200% text.
+- `audit:controls`, a narrow fine-pointer pass in its own browser with a mouse
+  (`--blink-settings`, so headless Linux Chrome gets the customizable select
+  too): Library, Review and the notebook at 400px and 320px with 150% and 200%
+  text must not scroll sideways (2px tolerance) and must keep every select
+  inside the page's content box. Where Chrome supports the customizable
+  select, the pass also fails if the page did not use it, so it cannot pass
+  by testing the touch path.
+
+Against 72d5eba, `audit:responsive` (phone-large-text) fails with:
+
+```
+{"surface":"library-values","problems":["Select values cut short: Sort library results: “Curriculum order” needs 246px of 235px"]}
+{"surface":"narration-values","problems":["Select values cut short: Narration language: “All languages (180)” needs 283px of 262px"]}
+{"surface":"review-values","problems":["Select values cut short: Scheduling algorithm: “Adaptive (FSRS)” needs 240px of 137px"]}
+```
+
+and `audit:controls` with 17 findings, for example:
+
+```
+- selects/phone 430 at 200% text/teaching mode: the section picker clips its value: Jump to teaching section: “1. Introduction” needs 207px of 135px
+- narrow fine pointer/review at 400px with 150% text: the page scrolls sideways by 11px (select “Interview track”)
+- narrow fine pointer/library at 320px with 200% text: the page scrolls sideways by 83px (select “Sort library results”)
+- narrow fine pointer/review at 320px with 200% text: the page scrolls sideways by 217px (div “CategoryAllMisconceptionFormulaC”, label “CategoryAllMisconceptionFormulaC”, select “Category”)
+- narrow fine pointer/notebook at 320px with 200% text: the page scrolls sideways by 76px (div “PurposeAllImportantDefinitionsQu”, label “PurposeAllImportantDefinitionsQu”, select “Purpose”)
+```
+
+The new checks also pass on the committed build in Linux Chrome 154 (the
+puppeteer Docker image, through a loopback proxy so the page is a secure
+context): `audit:controls` in full, with the customizable select on all 12
+narrow screens, and `audit:responsive` at small-phone, phone and
+phone-large-text.
+
+Gate: `npm run check` passed (`audit:ai` 547/547, `audit:ai-eval` 27 cases,
+hit@1 0.913). The startup entry is 715,950 bytes and the route screens
+891,561 bytes (budgets 750,000 and 900,000). Against main the main stylesheet
+grew 3,491 bytes minified (1,071 gzip), 202 (76) more than 72d5eba, and the
+lazy tutor stylesheets still shrink 1,095 bytes. `npm run check:browser`
+passed all 13 suites on the first attempt with no retries (`responsive` 467
+checks, `a11y` 57 axe runs with the empty allowlist), at a load average of
+about 10–13 from other work on the machine. Only the docs and one CSS comment
+changed after that run; the built stylesheet is byte-identical.

@@ -1613,13 +1613,17 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   profile wherever it appears; provenance survives edits. Only learner content uses the
   Reader renderer.
 - Rendered Mermaid SVG keeps no link targets.
-- Every `<select>` is the native element with the shared `.ui-select` class (44px and 16px
-  text on phones and touch screens); screens add layout rules only, never a select skin. With
-  a mouse the customizable select sizes to its current value, so a toolbar select gets a fixed
-  or minimum width that fits every option. Its edge is `--control-border` (3:1) on purpose,
-  even beside text fields that still use `--line-strong`. An open in-page picker focuses its
-  `<option>`: keyboard shortcuts skip any target inside a select (`target.closest("select")`,
-  never `instanceof HTMLSelectElement`), and its Escape stays with it (`src/main.jsx`).
+- Every `<select>` is the native element with the shared `.ui-select` class (44px and
+  `max(16px, 0.875rem)` text on phones and touch screens: never under 16px, and in step with
+  larger text); screens add layout rules only, never a select skin. With a mouse the
+  customizable select sizes to its current value, so a toolbar select gets a fixed
+  `inline-size` in em that fits every option and shrinks with its row. Never give it a rem
+  minimum: a minimum beats `max-inline-size` and scrolls a narrow window sideways at large
+  text, and `min(…, 100%)` resolves against a label sized by the select, so the width follows
+  the value again. Its edge is `--control-border` (3:1) on purpose, even beside text fields
+  that still use `--line-strong`. An open in-page picker focuses its `<option>`: keyboard
+  shortcuts skip any target inside a select (`target.closest("select")`, never
+  `instanceof HTMLSelectElement`), and its Escape stays with it (`src/main.jsx`).
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).
