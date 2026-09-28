@@ -10,25 +10,27 @@ through it. The curriculum runs in 23 parts from problem framing and
 mathematics to foundation-model training, inference systems and senior
 interview preparation. The app installs from Safari, works offline, reads
 lectures aloud, schedules spaced review, and includes a private AI tutor that
-runs on your own Mac or on the phone itself. There is no account, and your
-study data is stored on your device.
+runs on your own Mac or, experimentally, in the phone's browser. There is no
+account, and your study data is stored on your device.
 
 ## Features
 
 ### Read and listen
 
-- **The full curriculum offline.** All 143 built-in lectures across 23 parts.
-  The app installs to the Home Screen; its shell is cached on install and each
-  lecture is kept for offline use once you have opened it.
-- **A reader built for technical text.** MathML formulas, Mermaid diagrams,
-  tables, copyable code blocks, find in lecture, bookmarks, reading progress
-  and your exact reading position.
+- **The full curriculum offline.** All 143 built-in lectures: 23 parts plus
+  the roadmap, navigator and coverage audits. The app installs to the Home
+  Screen; its shell is cached on install and each lecture is kept for offline
+  use once you have opened it.
+- **A reader built for technical text.** MathML formulas (and TeX math in
+  your own notes), Mermaid diagrams, tables, copyable code blocks, find in
+  lecture, bookmarks, reading progress and your exact reading position.
 - **Narration** with the voices your device provides, each labelled as on
   device or possibly using the network. Choose voice, speed, pitch and volume;
   read the current sentence, section, a selection or the whole lecture; save
   audio bookmarks; and teach the voice how to pronounce technical terms.
 - **Teaching mode** turns each major section into a slide, with an
-  active-recall switch that hides the section until you have explained it.
+  active-recall switch that hides the section until you have explained it,
+  and can print every section as a PDF.
 - **Themes and typography.** Paper, Night, Contrast or follow the system, with
   adjustable text size, line height and reading width.
 
@@ -37,16 +39,18 @@ study data is stored on your device.
 - **Spaced review.** Create cards by hand or from a highlight, including cloze
   cards. Schedule them with Classic (SM-2 family) or Adaptive (FSRS-4.5), which
   can calibrate to your own review history. Export and import decks as JSON.
-- **Mistake notebook.** Cards you fail, quiz misses and missed interview
-  points collect in one place, filtered by category, for corrective review.
+- **Mistake notebook.** Cards you fail, misses from readiness checks,
+  worksheet labs and Mac local tutor quizzes, and missed interview points
+  collect in one place, filtered by category, for corrective review.
 - **Readiness checks** for each part, built from your own cards.
 - **Interview practice.** Authored interview tracks with timed rounds and
   rubrics, plus worksheet labs (Python, SQL, debugging and metrics) with
   self-checks.
 - **Planning.** A home dashboard with today's plan, a study goal and the pace
-  it implies, mastery by part and a prerequisite map of the curriculum. An
-  optional app badge shows how many reviews are due; Lumen never sends
-  notifications.
+  it implies, mastery by part and a prerequisite map of the curriculum. Lumen
+  never sends notifications. An optional app badge counts due reviews in
+  browsers that allow it; iPhone shows web-app badges only after notification
+  permission is granted, and Lumen does not ask for it.
 
 ### AI tutor
 
@@ -55,15 +59,17 @@ study data is stored on your device.
   and can be stopped at any time.
 - **On-device Lite.** Llama 3.2 1B runs inside the browser through WebLLM on
   devices whose browser supports WebGPU. The model (about 710 MB) is
-  downloaded only after you approve it.
+  downloaded only after you approve it. It is experimental and not yet
+  verified on a physical iPhone; Mac local is the recommended engine.
 - **Grounded answers with citations.** By default the tutor searches your whole
   local library, including your own notes and edits, and cites the passages
   it used as `[S1]`, `[S2]` and so on. You can limit it to the current lesson,
   chosen sources, or no library at all.
-- **Modes.** Explain, Socratic, Quiz, Flashcards, Code review, Interview,
-  Summarize and Study plan. In a quiz you can mark how sure you are, confident
-  misses are listed first, and misses can be saved to the mistake notebook.
-  Generated flashcards can be added to your review deck.
+- **Modes.** Mac local offers Explain, Socratic, Quiz, Flashcards, Code
+  review, Interview, Summarize and Study plan; On-device Lite offers the same
+  without Code review. In a Mac local quiz you can mark how sure you are,
+  confident misses are listed first, and misses can be saved to the mistake
+  notebook. Generated flashcards can be added to your review deck.
 - **Optional web search** through a self-hosted [SearXNG](https://docs.searxng.org)
   instance. It is off by default and each request needs your approval.
 - No paid AI service or API key is used.
@@ -72,14 +78,16 @@ study data is stored on your device.
 
 - **Search** across built-in lectures and your own notes, ranked, with quoted
   phrases, `-term` exclusions and `title:`, `part:`, `tag:`, `has:code` and
-  `has:formula` filters.
+  `has:formula` filters. Press ⌘/Ctrl+K to search from anywhere, or `?` for
+  the keyboard shortcut sheet.
 - **Highlights** in four colours with comments and tags, a private note per
   lecture, and clippings collected in the Notebook.
 - **Your own notes.** Write new notes, import Markdown, text, HTML and EPUB
   files, edit a private copy of any built-in lecture with revision history,
-  and export a lecture as Markdown or HTML.
-- **Collections.** Organise documents with tags, collections, pinning and
-  archiving. Deleted items go to a trash you can restore from.
+  and export a lecture as Markdown, HTML or a printable PDF.
+- **Collections.** Organise your own notes and uploads with tags,
+  collections, pinning and archiving. Deleted ones stay restorable from the
+  trash for 30 days.
 - **Whiteboards.** Multi-page boards with pen, highlighter, eraser, lines,
   shapes, arrows, text and sticky notes, Apple Pencil pressure, undo and redo,
   and PNG, SVG or JSON export.
@@ -93,34 +101,39 @@ study data is stored on your device.
 - **Encrypted backups.** Export everything to one file, optionally encrypted
   with AES-256-GCM under a password. Backups are checksummed, and a restore is
   checked before it replaces anything.
-- **Sync without a server.** Each device in a sync vault writes one encrypted
-  file to a folder you share however you like, such as iCloud Drive,
-  Syncthing or a USB stick, and merges its peers' files. Open tabs of the same
-  app merge their changes as well.
+- **Storage health** in Settings shows how much space Lumen uses and can
+  remove optional offline files.
+- **Sync without a server.** Export your device's encrypted sync file to a
+  folder you share (iCloud Drive, Syncthing, a USB stick), then import your
+  peers' files to merge them. Nothing syncs in the background, and a vault
+  passphrase and HTTPS are required. Open tabs of the same app merge their
+  changes automatically.
 
 ## Privacy
 
 - Lumen has no cloud service or database of its own. Your study data leaves
   the device only in backup or sync files you export, in tutor requests to
-  your own Mac, and in web searches you approve, as described below.
+  the Mac that runs Lumen's server, in web searches you approve, and in text
+  read aloud by a voice marked "May use network", as described below.
 - AI features can be turned off entirely in Settings. You also choose how much
   Mac tutor history is kept, including none.
-- Mac local requests go from the app to Lumen's server on your own Mac, which
-  calls Ollama on that Mac. On-device Lite keeps prompts and lesson text inside
-  the browser; the model files are downloaded once from WebLLM/MLC model
-  hosting after you approve it.
-- Web search is off unless the person running the server enables it and you
-  approve the request. Queries then go through your self-hosted SearXNG to
-  the public search engines it is configured to use.
-- Narration uses the voices your device provides; some system voices may use
-  the network, and the voice picker says which.
+- Mac local requests go from the app to the Mac that runs Lumen's server,
+  which calls Ollama on that Mac. On-device Lite keeps prompts and lesson text
+  inside the browser; the model files are downloaded once from WebLLM/MLC
+  model hosting after you approve it.
+- Web search is off unless it is enabled on the Mac that runs Lumen's server
+  and you approve the request. Queries then go through your self-hosted
+  SearXNG to the public search engines it is configured to use.
+- Narration uses the voices your device provides. Voices marked "May use
+  network" can send the text they read to the platform's speech service; the
+  voice picker labels each voice.
 - A few lectures show images hosted on third-party sites, which load from
   those sites when you open the lecture.
 
 ## Quick start
 
-You need Node.js 20.19 or newer to run the app, and Node.js 26 (see `.nvmrc`)
-to run the full release checks.
+You need Node.js 20.19+ or 22.12+ to run the app, and Node.js 26 (see
+`.nvmrc`) to run the full release checks.
 
 ```sh
 npm ci
@@ -256,7 +269,8 @@ npm run check           # curriculum checks; unit, scale, storage, backup and
 npm run check:browser   # browser suites in Chrome against an isolated server
 ```
 
-`npm run check:release` runs both. The browser suites need Google Chrome (or
+`npm run check:release` runs both. The checks also need Ruby for the
+curriculum audit, and the browser suites need Google Chrome (or
 `CHROME_PATH`). See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the release
 gate and the constraints every change must respect, and
 [docs/README.md](docs/README.md) for the guides and design notes.
