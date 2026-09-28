@@ -66,6 +66,13 @@
   --select-menu-edge: var(--line-strong);
   --select-checked-ink: var(--accent-strong);
   --select-checked-bg: var(--accent-soft);
+  /* Narration (issue #97): the tint behind the block being read (text on it
+     keeps 4.5:1) and the mini player, whose edge keeps 3:1 on the page. */
+  --narration-block-bg: #fbf1da;
+  --audio-bar-bg: #172646;
+  --audio-bar-ink: #ffffff;
+  --audio-bar-ink-soft: #c9d0de;
+  --audio-bar-border: #172646;
 }
 
 [data-theme="dark"] {
@@ -105,6 +112,11 @@
   --sage: #5fb89f;
   --sage-deep: #7fd3bd;
   --control-border: #737a88;
+  --narration-block-bg: #3b3322;
+  --audio-bar-bg: #2b3650;
+  --audio-bar-ink: #f3f0e8;
+  --audio-bar-ink-soft: #c3c9d6;
+  --audio-bar-border: #9aa8f0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -145,6 +157,11 @@
     --sage: #5fb89f;
     --sage-deep: #7fd3bd;
     --control-border: #737a88;
+    --narration-block-bg: #3b3322;
+    --audio-bar-bg: #2b3650;
+    --audio-bar-ink: #f3f0e8;
+    --audio-bar-ink-soft: #c3c9d6;
+    --audio-bar-border: #9aa8f0;
   }
 }
 
@@ -184,6 +201,11 @@
   --sidebar-ink-muted: #ffffff;
   --sidebar-accent: #ffd24d;
   --control-border: #000000;
+  --narration-block-bg: #fff0a8;
+  --audio-bar-bg: #000000;
+  --audio-bar-ink: #ffffff;
+  --audio-bar-ink-soft: #ffffff;
+  --audio-bar-border: #000000;
 }
 
 /* Navy islands keep light text in every theme, so they carry their own
@@ -1998,15 +2020,15 @@ input[type="range"] {
   bottom: calc(25px + env(safe-area-inset-bottom));
   gap: 4px;
   padding: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--audio-bar-border);
   border-radius: 17px;
-  color: #fff;
-  background: #172646;
+  color: var(--audio-bar-ink);
+  background: var(--audio-bar-bg);
   box-shadow: var(--shadow-lg);
 }
 
 .audio-bar .icon-btn {
-  color: rgba(255, 255, 255, 0.75);
+  color: var(--audio-bar-ink-soft);
 }
 
 .audio-bar .audio-label {
@@ -5871,7 +5893,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   line-height: 1.4;
 }
 
-.speech-target-status.warning { color: #a45a32; }
+.speech-target-status.warning { color: var(--ai-warn); }
 
 .speech-choice-grid {
   /* One column at every width: a device lists up to hundreds of voices and
@@ -6457,9 +6479,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 
   .speech-popover { max-height: min(76dvh, 650px); }
   .speech-scope-grid button { min-height: 44px; }
-  .speech-sleep-row button { min-height: 40px; }
   .speech-range-grid { grid-template-columns: 1fr; gap: 2px; }
-  .speech-preset-row button { min-height: 42px; }
   .speech-controls .button { min-height: 44px; }
 
   .reader-action-menu {
@@ -6575,7 +6595,6 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   /* Mini player on two rows: the sentence gets the full width. */
   .audio-bar { flex-wrap: wrap; row-gap: 2px; }
   .reader-view .audio-bar .audio-label { order: -1; flex: 1 0 100%; max-width: none; padding: 2px 6px 0; }
-  .reader-view .audio-bar .icon-button { width: 38px; height: 38px; }
   .selection-toolbar { right: 8px; left: 8px; max-width: none; transform: none; }
   .selection-toolbar button { min-width: 0; flex: 1 1 0; }
   .theme-choices { grid-template-columns: 1fr; }
@@ -7166,13 +7185,16 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   transform: translateX(18px);
 }
 
+/* --danger text on an 8% tint of itself keeps 4.5:1 in every theme; the
+   fixed #c65d58 on its tint was about 3.6:1 (the Listen panel shows
+   narration messages here, issue #97). */
 .inline-warning {
   margin: 9px 0 0;
   padding: 9px 11px;
-  border: 1px solid color-mix(in srgb, #c84949 35%, var(--line));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
   border-radius: 10px;
-  color: #c65d58;
-  background: color-mix(in srgb, #c84949 9%, var(--paper));
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--paper));
   font-size: 0.72rem;
   line-height: 1.45;
 }
@@ -7385,8 +7407,16 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 
 .audio-bar .icon-button {
   flex: 0 0 auto;
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--audio-bar-ink);
 }
+
+/* The page's hover fill is --paper, which hid the light icons on the bar. */
+.audio-bar .icon-button:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--audio-bar-ink) 14%, transparent);
+}
+
+[data-theme="contrast"] .audio-bar { border-width: 2px; box-shadow: none; }
 
 .audio-bar .audio-label {
   display: grid;
@@ -7405,7 +7435,9 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 }
 
 .audio-bar .audio-label strong { font-size: 0.61rem; }
-.audio-bar .audio-label span { color: rgba(255, 255, 255, 0.72); font-size: 0.67rem; font-weight: 600; }
+.audio-bar .audio-label span { color: var(--audio-bar-ink-soft); font-size: 0.67rem; font-weight: 600; }
+/* A narration message is read whole, not cut to one line (issue #97). */
+.audio-bar .audio-label .audio-message { overflow: visible; color: var(--audio-bar-ink); line-height: 1.35; text-overflow: clip; white-space: normal; }
 
 .text-button.selection-ready {
   color: var(--ink);
@@ -7559,8 +7591,6 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 
 @media (max-width: 360px) {
   .time-left-suffix { display: none; }
-  .reader-view .audio-bar { gap: 2px; padding: 6px; }
-  .reader-view .audio-bar .icon-button { width: 34px; height: 36px; }
   .reader-actions .icon-button { width: 35px; }
 }
 
@@ -8269,7 +8299,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 .pronunciation-editor code { padding: 1px 5px; border-radius: 5px; background: var(--paper-3); }
 
 /* Wave 9: spoken-block follow */
-.markdown-body .narration-active { border-radius: 8px; background: rgba(246, 223, 174, 0.4); box-shadow: 0 0 0 6px rgba(246, 223, 174, 0.4); transition: background 300ms ease, box-shadow 300ms ease; }
+.markdown-body .narration-active { border-radius: 8px; background: var(--narration-block-bg); box-shadow: 0 0 0 6px var(--narration-block-bg); transition: background 300ms ease, box-shadow 300ms ease; }
 
 /* Wave 9: teaching print/PDF export */
 .teach-print-document { display: none; }
@@ -8490,9 +8520,61 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .reader-main a { color: #000 !important; text-decoration: underline; }
 }
 
-/* Narration playlist toggle (issue #17): matches the sleep-timer row. */
-.speech-autoadvance-row .setting-toggle { display: flex; align-items: center; gap: 10px; flex: 1; justify-content: space-between; }
-.speech-autoadvance-row .setting-toggle span { font-size: 0.86rem; }
+/* Narration playlist toggle (issue #17): the sleep-timer row's pattern, with
+   no settings divider and the chips' label scale (issue #97). The switch
+   keeps the .setting-toggle skin. */
+.speech-autoadvance-row .setting-toggle { display: flex; min-height: 0; align-items: center; gap: 10px; flex: 1; justify-content: space-between; border-top: 0; }
+.speech-autoadvance-row .setting-toggle span { color: var(--ink-soft); font-size: 0.68rem; font-weight: 750; }
+
+/* The mini player makes room for itself at the end of the lecture (issue
+   #97): Reader.jsx measures the part of the reading area it covers. */
+.reader-view.has-player .reader-scroll { padding-bottom: calc(var(--audio-bar-space, 0px) + 16px); }
+
+/* Narration on phones and touch screens (issue #97): 44px hit areas (Apple's
+   HIG and TC-21), primary labels at 12px or more and secondary metadata at
+   11px or more. This block follows every unconditional narration rule, so it
+   wins; the sleep chips' 40px phone rule once lost to their later 36px rule.
+   The mini player's seven controls fit one row down to 320px: 44×44 with 2px
+   gaps from 356px, 40×44 with 1px gaps at 360px and below (7 × 40 + 6 × 1 =
+   286px of the 288px inside the bar at 320px). */
+@media (max-width: 740px), (pointer: coarse) {
+  .speech-sleep-row button,
+  .speech-preset-row button,
+  .speech-bookmark-play { min-height: 44px; }
+  .speech-autoadvance-row .setting-toggle { min-height: 44px; }
+  .speech-popover .popover-heading .icon-button.small,
+  .speech-bookmark-row .icon-button.small { width: 44px; height: 44px; }
+  .speech-scope-fieldset legend,
+  .speech-choice-grid label > span,
+  .speech-range-grid label > span,
+  .speech-scope-grid button,
+  .speech-target-status,
+  .speech-voice-detail,
+  .speech-availability,
+  .speech-preset-row button,
+  .speech-sleep-row > span,
+  .speech-sleep-row button,
+  .speech-autoadvance-row .setting-toggle span,
+  .speech-bookmarks-title,
+  .speech-bookmark-play,
+  .speech-current,
+  .speech-popover .microcopy,
+  .audio-bar .audio-label strong,
+  .audio-bar .audio-label span { font-size: 0.75rem; }
+  .speech-preset-row button span,
+  .speech-scope-grid button span,
+  .speech-current strong { font-size: 0.6875rem; }
+  .reader-view .audio-bar .icon-button { width: 44px; height: 44px; }
+}
+
+@media (max-width: 430px) {
+  .reader-view .audio-bar { gap: 2px; padding: 6px; }
+}
+
+@media (max-width: 360px) {
+  .reader-view .audio-bar { gap: 1px; padding: 4px; }
+  .reader-view .audio-bar .icon-button { width: 40px; height: 44px; }
+}
 
 /* FSRS calibration controls (issue #16) in the review settings strip. */
 .review-calibrate { display: inline-flex; align-items: center; gap: 8px; }

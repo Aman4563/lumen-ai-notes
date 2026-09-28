@@ -68,6 +68,8 @@ const TEXT_PAIRS = [
   ["--accent-strong", "--accent-soft"], ["--on-primary", "--primary-bg"],
   ["--sidebar-ink", "--sidebar-bg"], ["--sidebar-ink-muted", "--sidebar-bg"], ["--sidebar-accent", "--sidebar-bg"],
   ["--select-ink", "--select-bg"], ["--select-ink", "--select-bg-hover"], ["--select-ink", "--select-menu-bg"], ["--select-checked-ink", "--select-checked-bg"],
+  // Issue #97: the block being read aloud and the mini player's text.
+  ["--ink", "--narration-block-bg"], ["--audio-bar-ink", "--audio-bar-bg"], ["--audio-bar-ink-soft", "--audio-bar-bg"],
 ];
 
 for (const [theme, palette] of Object.entries(THEMES)) {
@@ -96,6 +98,13 @@ for (const [theme, palette] of Object.entries(THEMES)) {
         assert.ok(value >= 3, `${theme}: ${token} on ${surface} is ${value.toFixed(2)}:1`);
       }
     }
+  });
+
+  // Issue #97: the mini player floats over the page, so its edge must stand
+  // out from the page (in Night the bar itself is only 1.03:1 on it).
+  test(`${theme}: the mini player's edge keeps 3:1 against the page`, () => {
+    const value = ratio(resolve(palette, "--audio-bar-border"), resolve(palette, "--paper-2"));
+    assert.ok(value >= 3, `${theme}: --audio-bar-border on --paper-2 is ${value.toFixed(2)}:1`);
   });
 
   test(`${theme}: the focus ring keeps 3:1 against its halo and every surface`, () => {
@@ -142,10 +151,11 @@ test("every custom property referenced by the app stylesheets is defined", () =>
   const defined = new Set(sheets.flatMap((sheet) => [...sheet.matchAll(/(--[\w-]+)\s*:/g)].map(([, name]) => name)));
   // Set at runtime from JavaScript: reader typography style props, whiteboard
   // swatches and landscape layout measurements (Whiteboard.jsx), each
-  // Mermaid diagram's readable width (mermaidDiagrams.js), and the tutor's
+  // Mermaid diagram's readable width (mermaidDiagrams.js), the tutor's
   // dock measurements: its height, the top bar, the bottom navigation, the
-  // keyboard offset and the wide column's question box cap (useTutorDock.js).
-  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space", "--ai-top", "--ai-nav-space", "--ai-dock-bottom", "--ai-field-max"]);
+  // keyboard offset and the wide column's question box cap (useTutorDock.js),
+  // and the reading area the narration mini player covers (Reader.jsx).
+  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space", "--ai-top", "--ai-nav-space", "--ai-dock-bottom", "--ai-field-max", "--audio-bar-space"]);
   const missing = [...new Set(sheets.flatMap((sheet) => [...sheet.matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name)))].filter((name) => !defined.has(name) && !runtime.has(name));
   assert.deepEqual(missing, [], `undefined custom properties: ${missing.join(", ")}`);
 });
