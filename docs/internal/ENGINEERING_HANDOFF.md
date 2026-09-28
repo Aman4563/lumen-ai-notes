@@ -1614,8 +1614,12 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   Reader renderer.
 - Rendered Mermaid SVG keeps no link targets.
 - Every `<select>` is the native element with the shared `.ui-select` class (44px and 16px
-  text on phones and touch screens); screens add layout rules only, never a select skin. An
-  open in-page picker keeps Escape to itself (`src/main.jsx`).
+  text on phones and touch screens); screens add layout rules only, never a select skin. With
+  a mouse the customizable select sizes to its current value, so a toolbar select gets a fixed
+  or minimum width that fits every option. Its edge is `--control-border` (3:1) on purpose,
+  even beside text fields that still use `--line-strong`. An open in-page picker focuses its
+  `<option>`: keyboard shortcuts skip any target inside a select (`target.closest("select")`,
+  never `instanceof HTMLSelectElement`), and its Escape stays with it (`src/main.jsx`).
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).
