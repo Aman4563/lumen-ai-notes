@@ -55,13 +55,6 @@
   .app-shell:has(> .update-banner) > .toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
 }
 
-/* Phones: each Daily limits picker keeps its label and select on one row. A
-   picker too wide to share a row takes a row of its own, and at large text
-   its capped label shrinks the select (REV-22) instead of stacking it. */
-@media screen and (max-width: 740px) {
-  .review-settings-strip label { flex-wrap: nowrap; }
-}
-
 @media screen and (max-width: 980px) {
   .board-view.advanced-board { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   .bottom-nav { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }

@@ -247,6 +247,23 @@ const selectProfile = normalizeProfile({
   reviewSettings: { ...initialProfile.reviewSettings, scheduler: "fsrs" },
   mistakes: [createMistake({ prompt: "What may the test split influence?", expected: "Nothing until choices are frozen.", category: "misconception", documentId: selectDocumentId })],
 });
+const seedSelectProfile = async (page) => {
+  await page.goto(`${baseUrl}#/home`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".welcome-block");
+  await page.evaluate((profile) => new Promise((resolve, reject) => {
+    const open = indexedDB.open("lumen-ai-notes", 1);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const transaction = db.transaction("study-data", "readwrite");
+      transaction.objectStore("study-data").put(profile, "profile");
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  }), selectProfile);
+  await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".welcome-block");
+};
 const SELECT_VIEWPORTS = [
   ["phone", { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true }],
   ["desktop", { width: 1280, height: 800, deviceScaleFactor: 1 }],
@@ -261,21 +278,7 @@ const auditThemedSelects = async () => {
     page.on("dialog", (dialog) => dialog.dismiss());
     await page.setViewport(viewport);
     await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
-    await page.goto(`${baseUrl}#/home`, { waitUntil: "networkidle2", timeout: 30_000 });
-    await page.waitForSelector(".welcome-block");
-    await page.evaluate((profile) => new Promise((resolve, reject) => {
-      const open = indexedDB.open("lumen-ai-notes", 1);
-      open.onerror = () => reject(open.error);
-      open.onsuccess = () => {
-        const db = open.result;
-        const transaction = db.transaction("study-data", "readwrite");
-        transaction.objectStore("study-data").put(profile, "profile");
-        transaction.oncomplete = () => { db.close(); resolve(); };
-        transaction.onerror = () => { db.close(); reject(transaction.error); };
-      };
-    }), selectProfile);
-    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
-    await page.waitForSelector(".welcome-block");
+    await seedSelectProfile(page);
 
     const phone = viewportName === "phone";
     const check = async (surface, expected) => {
@@ -370,11 +373,18 @@ const auditThemedSelects = async () => {
     await check("teaching mode", 1);
     const section = 'select[aria-label="Jump to teaching section"]';
     if (phone) {
-      // On a 320px phone the section picker takes its own row and shows a
-      // short section name whole (it once showed “1. Int…”).
-      await page.setViewport({ ...viewport, width: 320 });
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      for (const problem of clippedValueProblems(await selectValueFit(page, section))) findings.push(`selects/phone 320/teaching mode: the section picker clips its value: ${problem}`);
+      // Where the header row is narrow for its text the section picker takes
+      // its own row and shows a short section name whole: it once showed
+      // “1. Int…” at 320px, and with 200% text “1. Introd…” up to 430px.
+      for (const [width, textScale] of [[320, 1], [393, 1], [360, 2], [430, 2]]) {
+        await page.setViewport({ ...viewport, width });
+        await page.evaluate((scale) => new Promise((resolve) => {
+          document.documentElement.style.fontSize = scale === 1 ? "" : `${16 * scale}px`;
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        }), textScale);
+        for (const problem of clippedValueProblems(await selectValueFit(page, section))) findings.push(`selects/phone ${width}${textScale === 1 ? "" : ` at ${textScale * 100}% text`}/teaching mode: the section picker clips its value: ${problem}`);
+      }
+      await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
       await page.setViewport(viewport);
     } else {
       await selectsKeepTheirWidth("teaching mode", section);
@@ -538,6 +548,87 @@ const auditThemedSelects = async () => {
   return measured;
 };
 
+// Issue #92: a desktop browser can be narrow and use large text too (a split
+// window, Chrome's “Very large” font). With a mouse the toolbar selects once
+// kept rem minimum widths that beat max-inline-size, so the Review page
+// scrolled sideways (11px at 400px with 150% text, 217px at 320px with 200%)
+// and Library and the highlights Purpose ran past the page. This pass has its
+// own browser with a fine, hovering pointer, because headless Linux Chrome
+// reports none and would otherwise never draw the customizable select.
+const FINE_POINTER_ARGS = ["--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"];
+const auditNarrowFinePointer = async () => {
+  const fineProfileDirectory = await mkdtemp(join(tmpdir(), "lumen-controls-fine-"));
+  const fineBrowser = await puppeteer.launch({
+    executablePath: chromePath,
+    headless: true,
+    userDataDir: fineProfileDirectory,
+    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check", ...FINE_POINTER_ARGS],
+  });
+  const summary = { cases: 0, customizable: 0 };
+  try {
+    const page = await (await fineBrowser.createBrowserContext()).newPage();
+    page.on("pageerror", (error) => runtimeErrors.push(`narrow fine pointer: ${error.message}`));
+    await page.setViewport({ width: 400, height: 800, deviceScaleFactor: 1 });
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+    await seedSelectProfile(page);
+    for (const [width, textScale] of [[400, 1.5], [400, 2], [320, 1.5], [320, 2]]) {
+      // On Linux a viewport change drops the fine pointer until the next
+      // load, so each size starts with a reload.
+      await page.setViewport({ width, height: 800, deviceScaleFactor: 1 });
+      await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+      await page.waitForSelector(".app-main");
+      await page.evaluate((scale) => { document.documentElement.style.fontSize = `${16 * scale}px`; }, textScale);
+      for (const [surface, hash, ready] of [["library", "#/library", ".library-view-controls select"], ["review", "#/review", ".interview-track-strip select"], ["notebook", "#/notebook", ".annotation-section-heading select"]]) {
+        await page.evaluate((value) => { location.hash = value; }, hash);
+        await page.waitForSelector(ready, { timeout: 20_000 });
+        const state = await page.evaluate(async () => {
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const overflow = document.documentElement.scrollWidth - innerWidth;
+          const describe = (node) => `${node.tagName.toLowerCase()} “${(node.getAttribute("aria-label") || (node.tagName === "SELECT" && node.closest("label")?.firstChild?.textContent) || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 32)}”`;
+          // Chip rows that scroll sideways on purpose are not page overflow.
+          const scrolls = (node) => {
+            for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+              if (["auto", "scroll"].includes(getComputedStyle(parent).overflowX) && parent.scrollWidth > parent.clientWidth + 2) return true;
+            }
+            return false;
+          };
+          const culprits = overflow > 2 ? [...document.querySelectorAll(".page *")].filter((node) => node.getBoundingClientRect().right > innerWidth + 2 && !scrolls(node)).slice(-3).map(describe) : [];
+          const selects = [...document.querySelectorAll(".page select")].filter((node) => node.getClientRects().length);
+          const crossings = selects.flatMap((node) => {
+            const page = node.closest(".page");
+            const pageBox = page.getBoundingClientRect();
+            const pageStyle = getComputedStyle(page);
+            const left = pageBox.left + Number.parseFloat(pageStyle.paddingLeft);
+            const right = pageBox.right - Number.parseFloat(pageStyle.paddingRight);
+            const box = node.getBoundingClientRect();
+            return box.left < left - 1 || box.right > right + 1 ? [`${describe(node)} at ${Math.round(box.left)}–${Math.round(box.right)}px, page content ${Math.round(left)}–${Math.round(right)}px`] : [];
+          });
+          return {
+            overflow,
+            culprits,
+            crossings,
+            customizable: selects.some((node) => getComputedStyle(node).appearance === "base-select"),
+            // This browser has a mouse, so where Chrome has the customizable
+            // select the page must use it, or this pass tests the wrong path.
+            expected: CSS.supports("appearance", "base-select"),
+            pointer: matchMedia("(hover: hover) and (pointer: fine)").matches ? "fine" : "not fine",
+          };
+        });
+        summary.cases += 1;
+        if (state.customizable) summary.customizable += 1;
+        const where = `narrow fine pointer/${surface} at ${width}px with ${textScale * 100}% text`;
+        if (state.expected && !state.customizable) findings.push(`${where}: the selects are not the customizable select (pointer ${state.pointer}), so the mouse path went untested`);
+        if (state.overflow > 2) findings.push(`${where}: the page scrolls sideways by ${state.overflow}px (${state.culprits.join(", ")})`);
+        if (state.crossings.length) findings.push(`${where}: a select runs past the page content: ${state.crossings.join("; ")}`);
+      }
+    }
+  } finally {
+    await fineBrowser.close();
+    await rm(fineProfileDirectory, { recursive: true, force: true });
+  }
+  return summary;
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -696,10 +787,11 @@ try {
   ).catch(() => findings.push("settings drawer: background regions remained inert after the final close"));
 
   const selectsMeasured = await auditThemedSelects();
+  const narrow = await auditNarrowFinePointer();
 
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
   assert.equal(findings.length, 0, `control quality failures:\n${findings.map((finding) => `- ${finding}`).join("\n")}`);
-  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; opener focus-restore verified for all seven dialogs; and ${selectsMeasured} select measurements (Paper, Night and Contrast at 393px touch and 1280px) kept the themed select contract on every screen that hosts one.`);
+  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; opener focus-restore verified for all seven dialogs; ${selectsMeasured} select measurements (Paper, Night and Contrast at 393px touch and 1280px) kept the themed select contract on every screen that hosts one; and ${narrow.cases} narrow fine-pointer screens (library, review and notebook at 400px and 320px with 150% and 200% text, ${narrow.customizable} with the customizable select) kept every select inside the page with no sideways scroll.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

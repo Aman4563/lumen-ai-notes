@@ -126,21 +126,23 @@ export const selectContractProblems = (records, { surface, phone }) => {
 
 // The selected value's text (measured on a canvas in the select's font)
 // against the room inside its padding. A value that fits never reaches the
-// chevron, its fade or an ellipsis.
-export const selectValueFit = (page, selector) => page.$$eval(selector, (selects) => {
+// chevron, its fade or an ellipsis. With everyOption, each select reports its
+// widest option instead, so a short current value cannot hide one that a
+// learner could pick and then not read.
+export const selectValueFit = (page, selector, { everyOption = false } = {}) => page.$$eval(selector, (selects, every) => {
   const canvas = document.createElement("canvas").getContext("2d");
-  return selects.map((select) => {
+  return selects.filter((select) => select.getClientRects().length).map((select) => {
     const style = getComputedStyle(select);
     canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-    const text = select.selectedOptions[0]?.textContent || "";
+    const texts = every ? [...select.options].map((option) => option.textContent) : [select.selectedOptions[0]?.textContent || ""];
+    const [text, needed] = texts.map((value) => [value, canvas.measureText(value).width]).reduce((widest, entry) => (entry[1] > widest[1] ? entry : widest), ["", 0]);
     const room = select.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
-    const needed = canvas.measureText(text).width;
     return { name: select.getAttribute("aria-label") || select.closest("label")?.firstChild?.textContent?.trim() || "unnamed", text, needed, room, fits: needed <= room + 0.5 };
   });
-});
+}, everyOption);
 
 export const clippedValueProblems = (records) => records.filter((record) => !record.fits)
-  .map((record) => `“${record.text}” needs ${Math.ceil(record.needed)}px of ${Math.floor(record.room)}px`);
+  .map((record) => `${record.name}: “${record.text}” needs ${Math.ceil(record.needed)}px of ${Math.floor(record.room)}px`);
 
 // The customizable select sizes to its current value, so a toolbar select
 // can change width after a pick and move what sits beside it. Tries every
@@ -213,10 +215,15 @@ export const measureSelectsInThemes = async (page, themes = SELECT_THEMES) => {
   const byTheme = {};
   try {
     for (const theme of themes) {
-      await page.evaluate((value) => new Promise((resolve) => {
+      await page.evaluate(async (value) => {
         document.documentElement.dataset.theme = value;
-        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 60)));
-      }), theme);
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        // A slow machine can still be inside the (reduced-motion) colour
+        // transition two frames later: an emulated Linux run read the old
+        // theme's edge. Measure the settled colours.
+        await Promise.all(document.getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished.catch(() => {})));
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }, theme);
       byTheme[theme] = await measureSelects(page);
     }
   } finally {
