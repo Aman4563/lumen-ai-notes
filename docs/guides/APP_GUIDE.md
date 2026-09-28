@@ -171,8 +171,8 @@ this device yet. Reconnect once, and it will work offline." (for example
 files together with HTML or EPUB files, the Markdown and text files still
 import, and the notification lists each HTML or EPUB file that was not
 imported. Math shows its TeX source until the renderer is saved; the page never
-reloads for it, and an answer you are reading with the keyboard or VoiceOver
-switches to rendered math once focus leaves it. If Lumen's server is running but
+reloads for it, and an answer that has keyboard focus switches to rendered math
+once focus leaves it. If Lumen's server is running but
 is missing one of these tools, the action says Lumen needs fresh app files
 instead: reload Lumen while connected to the server.
 
