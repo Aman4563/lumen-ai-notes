@@ -869,6 +869,42 @@ Narration state rules (issue #96), which later narration work builds on:
   After such a cancel, the next utterance waits one task (session-guarded); the first
   Read stays synchronous inside the tap so iOS unlocks audio.
 
+Narration panel and player rules (issue #97), which #100–#103 build on:
+
+- Messages: `useSpeech` returns `notice {id, code, message, severity}` beside `error`, a
+  fresh object per event. Codes: `background` (pagehide or hidden; a second event while
+  already waiting for Resume adds nothing), `interrupted` (also a failed resume), `error`
+  (synthesis failures, an unsupported browser, an over-long or empty target, a failed
+  pause) and `sleep-ended`. The next utterance or `stop()` clears it. The Reader announces
+  notices from two persistent, initially empty regions (`.narration-live`: polite, and
+  `role="alert"` for errors), keyed by id so each is read once; every modal's background
+  selector excludes `.narration-live`. `sleep-ended` is a toast raised in App through
+  `onNotice`, so it is announced by the toast announcer on any screen, and the Reader
+  skips it. The panel's `.speech-live` shows text but is not a live region: spoken
+  sentences are never announced.
+- Player: it shows while speaking, paused, or failed with its queue intact (`canRetry`).
+  In the failed state Retry takes Pause's slot, beside Stop, and `togglePause` replays
+  `indexRef.current`; it never plays an empty queue (index 0 of an empty queue would
+  count as completion and start the playlist). A target over 500,000 characters stops the
+  reading it replaces. Keyboard focus follows the play control when it swaps. The bar
+  writes `--audio-bar-space` (the part of the reading area it covers) on `.reader-view`,
+  and `.has-player .reader-scroll` pads by that plus 16px.
+- Tokens: `--narration-block-bg` (the spoken block; #101 keeps it as the fallback tint where
+  the Highlight API is missing), `--audio-bar-bg`, `--audio-bar-ink`, `--audio-bar-ink-soft`
+  and `--audio-bar-border` (3:1 against `--paper-2`), in `:root`, Night, system-dark and
+  Contrast, pinned by `themeContrast.test.mjs`.
+- Sizes under `@media (max-width: 740px), (pointer: coarse)`: 44px targets for every
+  narration control, labels at 12px or more and metadata at 11px or more. The player's
+  seven controls fit one row: 44×44 with 2px gaps above 360px, 40×44 with 1px gaps at
+  360px and below (286px of 288px at 320px). A redesign (#102) keeps 44px targets.
+- Copy: `speechPlatform(navigator)` (`ios`, `mac`, `windows`, `android`, `other`; iPadOS by
+  its touch points) picks a `SPEECH_COPY` entry. Safari exposes only the voices built into
+  iOS, so no message advises installing a voice. Speeds show as `formatSpeechRate` (1.25×).
+- Teaching Mode opens on one persistent narration control (`data-teach-narrate`): Space
+  narrates, pauses and resumes.
+- `audit:a11y` scans screen `STATES` after the routes in every theme and viewport; #98 adds
+  its dialog states to the same list.
+
 The browser/OS controls which voices exist and whether a labeled voice truly remains
 offline. Physical-iPhone enumeration, Bluetooth/audio routing, phone calls/backgrounding,
 precise persisted resume, spoken-sentence highlighting, heading skip, bookmarks, sleep

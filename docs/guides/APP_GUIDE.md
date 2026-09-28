@@ -15,14 +15,15 @@ like an ordinary app. No account or server-side database is required.
   in the notebook;
 - editable local copies of built-in lectures;
 - creation and upload of `.md`, `.markdown`, and `.txt` notes;
-- text-to-speech using the voices reported by iOS, grouped and filtered by
-  language, with on-device/network disclosure, voice preview, speed, pitch,
-  volume, presets, pause/resume/stop, previous/next sentence, and current
-  sentence, current section, selected-text, or full-lecture scopes;
+- text-to-speech using the voices the device and browser report (on iPhone,
+  the voices built into iOS), grouped and filtered by language, with
+  on-device/network disclosure, voice preview, speed, pitch, volume, presets,
+  pause/resume/stop, previous/next sentence, Retry after a failed sentence, and
+  current sentence, current section, selected-text, or full-lecture scopes;
 - teaching mode, which turns each major section into a presentation-style slide
-  with section navigation, narration, active-recall conceal/reveal, adjustable
-  type, a resettable timer, keyboard control, swipe navigation, and fullscreen
-  where the browser supports it;
+  with section navigation, narration (Space starts and pauses it), active-recall
+  conceal/reveal, adjustable type, a resettable timer, keyboard control, swipe
+  navigation, and fullscreen where the browser supports it;
 - a versioned, multi-page whiteboard with page create, rename, duplicate, delete,
   and navigation; grid, dot, and plain backgrounds; select/move, pen, highlighter,
   eraser, line, rectangle, ellipse, arrow, text, and sticky-note tools; object
@@ -182,24 +183,30 @@ built-in lectures.
 
 ## Listen with different voices
 
-Open a lecture and tap the speaker button. Choose one of the voices reported by
-iOS, filter them by language, or tap **Test voice** before starting. Lumen labels
-each voice **On device** or **May use network** using the information iOS
-provides; it does not download a server voice model. Additional Apple voices can
-be installed under:
-
-`Settings → Accessibility → Spoken Content → Voices`
+Open a lecture and tap the speaker button. Choose one of the voices your device
+and browser report, filter them by language, or tap **Test voice** before
+starting. Lumen labels each voice **On device** or **Network** using the
+information the browser provides; it does not download a server voice model.
+On iPhone and iPad, Safari offers the voices built into iOS: voices downloaded
+in Settings → Accessibility → Spoken Content may not appear in the list. On a
+Mac the voices come from macOS and the browser.
 
 iOS may require the first speech action to follow a direct tap. Choose whether
 to read the current sentence, current section, selected passage, or full lecture.
 Lumen splits text into short sentence-oriented utterances for more reliable
 playback and exposes previous/next sentence controls in the compact player.
-Language, voice, speed, pitch, volume, and scope are saved on the device.
+Speed moves in steps of 0.05 (the **Review** preset is 1.25×). Language, voice,
+speed, pitch, volume, and scope are saved on the device.
 
 When Safari backgrounds Lumen, narration is stopped rather than allowed to begin
 audio invisibly. Return to Lumen and tap **Resume** to replay the current
-sentence. Available voices and their offline behavior still depend on the voices
-installed on that particular iPhone.
+sentence. The compact player keeps the reason on its second line whenever
+narration pauses on its own or a sentence fails, and screen readers announce it
+once. After a failed sentence, **Retry** (next to Stop) replays it. When the
+sleep timer ends a session, a notification says so. At the end of a lecture the
+page scrolls far enough that the player never covers the **Next** lecture card.
+Available voices and their offline behavior still depend on that particular
+device.
 
 ## Use the free local AI tutor
 

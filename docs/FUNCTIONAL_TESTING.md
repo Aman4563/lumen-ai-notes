@@ -404,6 +404,10 @@ on the active navigation item, and heading focus after navigation. It also
 checks that the closed drawer stays inert after Settings and a reader dialog
 close, that toasts reach persistent live regions and dismiss while the app
 re-renders, the offline status, the Ctrl+K dialog guard, and forced colors.
+After the routes it scans screen states the routes never open (its `STATES`
+list, issue #97): narration speaking, a failed sentence, the Listen panel and
+Teaching Mode, each in every theme and viewport, and an open dialog must hold
+focus.
 
 `src/lib/themeContrast.test.mjs` runs in `npm run check`. It parses the theme
 token blocks in `src/styles.css`. It requires 4.5:1 for every text token on
@@ -2959,3 +2963,132 @@ passed (`audit:ai` 574/574, `audit:ai-eval` 27 cases, hit@1 0.913). The full
 `npm run check:browser` passed all 13 suites on the first attempt with no
 retries, at a load average of about 11–12, including main's On-device Lite
 axe runs (`audit:a11y` 75 runs, empty allowlist).
+
+## Bugs reproduced on 2026-09-29: read-aloud panel, player and themes (#97)
+
+Against main (a79411c), built into a scratch directory and served the way
+`check:browser` serves a build, with `audit:audio`'s mocked iOS speech engine
+at 393×852 unless noted:
+
+- With the Listen panel closed (Read closes it), a `synthesis-failed` error
+  removed the player and said nothing. An interruption and `pagehide` left
+  the player paused with the spoken sentence as its second line; the
+  message lived only in the unmounted panel. The sleep timer ended
+  narration with no toast. While open, the panel's `role="status"` region
+  announced every spoken sentence.
+- At the end of chapter 1 the player (y 690–773) covered the Next card
+  (y 662–737): `elementFromPoint` at the card's centre hit `.audio-label`.
+- On phones the panel's Close and bookmark Delete were 40px, sleep chips
+  36px (their 40px phone rule lost to a later 36px rule), bookmark rows
+  29px, speed presets 42px, and player buttons 38×38 (34×36 at 320px). Text:
+  target status 9.92px, preset labels 9.92px, sleep chips 10.88px, preset
+  multipliers 8.96px, the Ready badge 7.68px, the player's label 9.76px. The
+  Playlist row drew the settings divider.
+- Review (1.25) showed "1.3×", and the step-0.1 slider held 1.3.
+- Teaching Mode opened with focus on Exit, so Space right after opening left
+  Teaching Mode.
+- A Mac Chrome user agent read "Voices come from iOS", "availability and
+  privacy depend on iOS", "iOS has not reported any voices" and "confirm the
+  iPhone is not in a restricted audio state". An iPhone was told to install a
+  voice in Settings → Accessibility → Spoken Content, which Safari's Web
+  Speech does not expose.
+- Measured on screen: the Night and system-dark target warning was 3.28:1
+  and text on the spoken block's tint 4.37:1; the player's edge was 1.49:1
+  against the Night page; the panel's message box (`.inline-warning`) was
+  3.59:1 in Paper, 3.81:1 in Night and 3.64:1 in Contrast.
+- A bookmark played mid-reading on a lecture over 500,000 characters said the
+  target was too long but left the previous reading playing.
+
+Already fixed by #96 (3a4de31) and only covered further here: a
+160-character bookmark no longer widens the panel.
+
+The fixes:
+
+- `useSpeech` returns `notice {id, code, message, severity}` (`background`,
+  `interrupted`, `error`, `sleep-ended`). The Reader announces each notice
+  once from two persistent, initially empty regions (`.narration-live`,
+  polite and `role="alert"`) that no dialog hides. The player stays up on an
+  error, shows the message as its second line, and Retry (beside Stop, in
+  Pause's place) replays the failed sentence through a new `togglePause`
+  branch. `sleep-ended` is a toast raised in App. The panel shows messages
+  but is no longer a live region. A second background event adds no second
+  notice, and an over-long target stops the reading it replaces.
+- The player writes `--audio-bar-space` on `.reader-view`, and
+  `.has-player .reader-scroll` pads by it plus 16px.
+- New tokens `--narration-block-bg`, `--audio-bar-bg`, `--audio-bar-ink`,
+  `--audio-bar-ink-soft` and `--audio-bar-border` in all four palettes; the
+  target warning uses `--ai-warn`; `.inline-warning` uses `--danger` on an 8%
+  tint of it.
+- One block under `@media (max-width: 740px), (pointer: coarse)`, after every
+  unconditional narration rule, sets 44px targets, 12px labels and 11px
+  metadata; the player's seven controls fit one row down to 320px (44×44
+  with 2px gaps, 40×44 with 1px gaps at 360px and below).
+- Speeds read `formatSpeechRate` (1.25×) and the slider steps by 0.05.
+- Teaching Mode has one persistent narration control, focused on open.
+- `speechPlatform(navigator)` picks a `SPEECH_COPY` entry for iOS, Mac,
+  Windows, Android or other.
+
+How each is now checked:
+
+- `audit:audio` runs 15 new cases, each in its own browser context. They
+  count the live regions holding each message (outermost `aria-live`,
+  `status`, `alert` and `log` regions), hit-test the Next card, measure
+  controls and text (at 320px in Contrast too, whose 2px edge is the
+  tightest fit), drive Teaching Mode from the keyboard, override the user
+  agent and platform through CDP (so the Mac case also runs on Linux), and
+  compute on-screen contrast from computed colours in Paper, Night,
+  system-dark (emulated) and Contrast. axe cannot read `color-mix()`
+  colours, so the message box is only checked here. Against main, 14 of the
+  15 fail:
+
+  ```
+  - synthesis-failed with the panel closed: after synthesis-failed the player disappeared
+  - interrupted with the panel closed: the player does not show “Narration was interrupted.”
+  - pagehide with the panel closed: the player does not show “Playback paused when Lumen left the foreground.”
+  - sleep expiry with the panel closed: the sleep timer ended narration without a toast
+  - the open panel while speaking: the panel's sentence display is a live region
+  - the Next card with the player visible: at 393×852 the player covers the Next card's centre: {"onCard":false,"hit":"audio-label","card":[662,737],"bar":[690,773]}
+  - narration control sizes on phones: at 393 px panel controls under 44px tall: Close 40px, sleep chip 36px, bookmark row 29px, bookmark Delete 40px, speed preset 42px; at 393 px panel text too small: target status 9.92px (needs 12), preset label 9.92px (needs 12), sleep chip 10.88px (needs 12), preset multiplier 8.96px (needs 11), Ready badge 7.68px (needs 11); at 393 px the Playlist row draws the settings divider (1px); at 393 px speaking player controls under 44px tall or 40px wide: 38×38, …; at 393 px the speaking player's label is 9.76px; at 393 px a failed sentence leaves no player to measure; (the same at 320 px, with 34×36 buttons, and at 320 px in Contrast)
+  - the Review speed: Review showed {"output":"1.3×","slider":"1.3","preset":"1.25×"}
+  - an over-long target while reading: an over-long target left the previous reading behind: {"player":false,"speaking":true}
+  - Teaching Mode and Space: Teaching Mode did not open with focus on its narration control
+  - Mac Chrome wording: Mac Chrome narration wording: text names iOS: “…availability and privacy depend on iOS Speed 1” | microcopy names iOS: “…Voices come from iOS” | empty names iOS: “…iOS has not reported any voices” | blocked names iOS: “…Tap Play again and confirm the iPhone is not in a restricted audio state” | …
+  - iPhone wording: iPhone narration wording: empty advises installing a voice: “Refresh the list, then install a voice in Settings → Accessibility → Spoken Content → Voices if needed” | the microcopy reads “Voices come from iOS. …”
+  - narration colours in every theme: Paper: the panel's message is 3.59:1 (needs 4.5:1); Night: text on the spoken block is 4.37:1 (needs 4.5:1); Night: the player's edge on the page is 1.49:1 (needs 3:1); Night: the panel's message is 3.81:1 (needs 4.5:1); Night: the target warning is 3.28:1 (needs 4.5:1); (system-dark the same as Night); Contrast: the panel's message is 3.64:1 (needs 4.5:1)
+  ```
+
+  The 160-character bookmark case (393, 320, 320 at 200% text, and 1280 px,
+  with Delete inside the panel) passes on main since #96. The main flow no
+  longer asserts "Voices come from iOS": that wording changed on purpose,
+  and the new cases pin each platform's copy.
+- `audit:a11y` gains a `STATES` pass (the mechanism #98 describes; #98 adds
+  its dialog states to it): narration speaking with a body paragraph tinted,
+  a failed sentence with Retry, the Listen panel over an interrupted player
+  with the Selection warning showing, and Teaching Mode, in Paper, Night and
+  Contrast at 393px and 1280px (81 axe runs, empty allowlist). Against main
+  it reports the Night target warning at 3.28:1 on the Listen panel at both
+  widths, and the failed-sentence state cannot open in any theme.
+- Unit tests fail against main in 11 places: `themeContrast.test.mjs` pairs
+  `--ink` on `--narration-block-bg`, `--audio-bar-ink` and
+  `--audio-bar-ink-soft` on `--audio-bar-bg`, and `--audio-bar-border`
+  against `--paper-2` in all four palettes ("token --narration-block-bg is not
+  defined"); `speech.test.mjs` adds `speechPlatform`, the copy tables and
+  `formatSpeechRate` ("speech.js has no speechPlatform").
+
+In Linux Chrome 154 (the puppeteer Docker image, DejaVu fonts, emulated
+amd64) `audit:audio`, `audit:responsive` and `audit:a11y` passed. The first
+`audit:a11y` run there passed every narration state but flagged Settings in
+Night at 1280px, where axe read Paper's text colours on the Night surface
+mid theme transition (a screen this change does not touch); a second run
+passed in full.
+VoiceOver's reading of each message, Safari's real voice list, and a real
+synthesis failure need a device: they are steps in
+[DEVICE_TESTING.md](DEVICE_TESTING.md) and two new `#/device-evidence` rows.
+
+Gate: `npm run check` passed (`audit:ai` 567/567, `audit:ai-eval` 27 cases,
+hit@1 0.913). The startup entry is 719,977 bytes (main 716,654; the copy
+table) and the route screens 897,784 bytes (main 895,621). Main has since
+merged #142 (899,632 bytes); this branch on top of it measures 901,791, over
+the 900,000 budget until #95 frees room. The full `npm run check:browser`
+passed all 13 suites on the first attempt with no retries (`a11y` 81 axe
+runs with the empty allowlist) at a load average of about 11–14.
