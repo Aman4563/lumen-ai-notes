@@ -112,16 +112,16 @@ const BOTTOM_VIEW_ITEMS = VIEW_ITEMS.filter(({ id }) => ["home", "library", "rea
 const MAX_LECTURE_EDIT_BYTES = 5 * 1024 * 1024;
 
 const initialDocumentId = "notes/00-roadmap.md";
-const Reader = lazy(() => recoverableImport(() => import("./components/Reader")));
-const Whiteboard = lazy(() => recoverableImport(() => import("./components/Whiteboard")));
-const AiLearningStudio = lazy(() => recoverableImport(() => import("./components/AiLearningStudio")));
-const StorageHealth = lazy(() => recoverableImport(() => import("./components/StorageHealth")));
-const DeviceEvidence = lazy(() => recoverableImport(() => import("./components/DeviceEvidence")));
+const Reader = lazy(() => recoverableImport(() => import("./components/Reader"), "Reader"));
+const Whiteboard = lazy(() => recoverableImport(() => import("./components/Whiteboard"), "Whiteboard"));
+const AiLearningStudio = lazy(() => recoverableImport(() => import("./components/AiLearningStudio"), "AiLearningStudio"));
+const StorageHealth = lazy(() => recoverableImport(() => import("./components/StorageHealth"), "StorageHealth"));
+const DeviceEvidence = lazy(() => recoverableImport(() => import("./components/DeviceEvidence"), "DeviceEvidence"));
 // The review center, its card editor, and the readiness check load on first
 // use; keeping them out of the startup bundle holds it under its 750 KB budget.
-const ReviewCenter = lazy(() => recoverableImport(() => import("./components/ReviewCenter")));
-const ReviewCardDialog = lazy(() => recoverableImport(() => import("./components/ReviewCenter").then((module) => ({ default: module.ReviewCardDialog }))));
-const AssessmentDialog = lazy(() => recoverableImport(() => import("./components/AssessmentDialog.jsx")));
+const ReviewCenter = lazy(() => recoverableImport(() => import("./components/ReviewCenter"), "ReviewCenter"));
+const ReviewCardDialog = lazy(() => recoverableImport(() => import("./components/ReviewCenter").then((module) => ({ default: module.ReviewCardDialog })), "ReviewCenter"));
+const AssessmentDialog = lazy(() => recoverableImport(() => import("./components/AssessmentDialog.jsx"), "AssessmentDialog"));
 
 const parseRoute = () => {
   const hash = window.location.hash || "#/home";
@@ -1708,7 +1708,6 @@ export default function App() {
     rate: profile.settings.speechRate,
     pitch: profile.settings.speechPitch,
     volume: profile.settings.speechVolume,
-    onSettingsChange: updateSettings,
     onQueueComplete: ({ label }) => {
       if (label !== "Full lecture") return;
       if (profileRef.current.settings.narrationAutoAdvance !== true) return;
@@ -1729,9 +1728,9 @@ export default function App() {
       notify("Narration finished — that was the last chapter of this Part.", "success", 5000);
       return;
     }
+    // The Reader announces "Continuing narration" once the chapter plays.
     setAutoNarrateDocId(next.id);
     openDocument(next.id, { focus: false });
-    notify(`Continuing narration: ${next.title}`, "success", 4000);
   };
   const currentOriginalSource = currentDocument.source === "custom" ? currentDocument.raw : (builtInSources[currentDocument.id] || "");
   const reviewDueCount = actionableReviewCount(profile);

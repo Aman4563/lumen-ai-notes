@@ -63,3 +63,32 @@ WebLLM performance (the simulator borrows the Mac's GPU stack), real
 audio route changes (no Bluetooth path), thermal/energy behavior, and
 storage-quota pressure on device flash. A simulator report closes the
 iOS-behavior rows; the performance rows stay open until a phone run.
+
+## Narration checks that need a device (issue #96)
+
+The browser audits cover these with a mocked speech engine and injected
+storage errors. Only a real iPhone shows whether Safari behaves the same.
+The `#/device-evidence` checklist records them as "Narration transport"
+(`voice-cancel-speak`) and "Narration storage" (`voice-storage-failure`);
+note the iOS version with each verdict.
+
+1. **Next, Previous, Resume and a re-read on iOS before 27 (AM10).** WebKit
+   before 27.0 removed an utterance that `speak()` queued in the same task as
+   a `cancel()` of live speech. Lumen now waits one task after such a cancel.
+   On an iPhone running iOS 26 or earlier: start Full lecture, then tap Next
+   three times, Previous once, Pause and Resume, and play an audio bookmark
+   while narration is playing. Each tap must speak the sentence the player
+   shows, with no silent step. The first Read after opening the lecture must
+   start audio at once, because iOS unlocks audio only inside that tap. On
+   iOS 27 or later, run the same steps as a control.
+2. **Narration when storage fails (ND9/AM9).** Open Lumen in a Private
+   Browsing tab, and separately on a phone whose storage is nearly full.
+   Start Full lecture, let it advance several sentences, bookmark one and
+   stop. The Reader must never show "Lumen could not render this screen".
+   Narration keeps playing, and a bookmark that could not be saved says so
+   instead of claiming it was saved. Record whether resume and bookmarks
+   persisted in each mode. This step covers storage that fails on write. Do
+   not use Settings → Safari → Block All Cookies for it: with storage blocked
+   outright, reading `localStorage` itself throws, and Lumen currently fails
+   at startup, before narration runs, on main as well. That is a separate
+   app-shell issue.

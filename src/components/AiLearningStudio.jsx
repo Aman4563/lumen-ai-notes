@@ -3,8 +3,8 @@ import { Cpu, Info, Laptop } from "lucide-react";
 import { recoverableImport } from "../lib/chunkRecovery.js";
 import "../ai-learning-studio.css";
 
-const AiTutor = lazy(() => recoverableImport(() => import("./AiTutor")));
-const PhoneLocalAiTutor = lazy(() => recoverableImport(() => import("./PhoneLocalAiTutor")));
+const AiTutor = lazy(() => recoverableImport(() => import("./AiTutor"), "AiTutor"));
+const PhoneLocalAiTutor = lazy(() => recoverableImport(() => import("./PhoneLocalAiTutor"), "PhoneLocalAiTutor"));
 
 export const AI_ENGINE_OPTIONS = Object.freeze([
   {
