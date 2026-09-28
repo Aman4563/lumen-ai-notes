@@ -614,7 +614,7 @@ const auditChatFit = async () => {
   const geometry = async (page) => { await settle(page); return page.evaluate(chatFitGeometry); };
   const inView = (g, rect) => Boolean(rect) && rect.top >= g.topbar - 1 && rect.bottom <= Math.min(g.navTop, g.viewport[1]) + 1;
   const minConversation = (g) => Math.min(260, g.viewport[1] * 0.4) - 2;
-  const open = async (label, viewport, { pairs = 0, acknowledged = true, largeText = false, keyboard = false } = {}) => {
+  const open = async (label, viewport, { pairs = 0, acknowledged = true, largeText = false, keyboard = false, config = secureConfig } = {}) => {
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
     await page.setViewport({ deviceScaleFactor: 1, ...viewport });
@@ -646,13 +646,14 @@ const auditChatFit = async () => {
       }
     }, acknowledged, largeText, keyboard);
     await installSlowStream(page);
-    await installAiMocks(page, () => secureConfig);
+    await installAiMocks(page, () => config);
+    const settled = config === secureConfig ? ".ai-tutor__connection--ready" : ".ai-tutor__connection:not(.ai-tutor__connection--checking)";
     await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
-    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.waitForSelector(settled, { timeout: 10_000 });
     if (pairs) {
       await patchStoredProfile(page, { aiTutorHistory: chatFitHistory(pairs) });
       await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
-      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+      await page.waitForSelector(settled, { timeout: 10_000 });
       await page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
     }
     return { context, page };
@@ -858,6 +859,20 @@ const auditChatFit = async () => {
       } finally {
         await context.close();
       }
+    }
+  }
+
+  // A server that asks for pairing keeps its form in view: the saved
+  // conversation does not open at its latest turn over it.
+  {
+    const pairingConfig = { ...secureConfig, auth: { mode: "pairing", pairEndpoint: "/api/auth/pair", required: true, sessionActive: false } };
+    const { context, page } = await open("pairing", { width: 393, height: 852, isMobile: true, hasTouch: true }, { pairs: 5, config: pairingConfig });
+    try {
+      await settle(page);
+      const pairing = await page.evaluate(() => ({ scrollY: Math.round(scrollY), input: Math.round(document.querySelector(".ai-tutor__pairing input")?.getBoundingClientRect().top ?? -1) }));
+      expect(pairing.input >= 0 && pairing.input < 852 - 100, "a saved conversation opened over the pairing form", pairing);
+    } finally {
+      await context.close();
     }
   }
 

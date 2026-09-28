@@ -1536,12 +1536,17 @@ export default function AiTutor({
   // has opened the page at its top, and keeps the end in view while math
   // and diagrams finish rendering, until the learner scrolls.
   const openedAtLatestRef = useRef(false);
+  const openingRef = useRef(null);
   useLayoutEffect(() => {
     if (openedAtLatestRef.current || !history.length) return undefined;
     openedAtLatestRef.current = true;
     if (pendingFocusRef.current || (insertPrompt?.nonce && consumedInsertRef.current !== insertPrompt.nonce)) return undefined;
     let active = true;
-    const stop = () => { active = false; };
+    const stop = () => {
+      active = false;
+      if (openingRef.current === stop) openingRef.current = null;
+    };
+    openingRef.current = stop;
     const keep = () => { if (active) scrollConversationToEnd(); };
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(keep) : null;
     const events = ["wheel", "touchstart", "keydown", "pointerdown"];
@@ -1560,6 +1565,15 @@ export default function AiTutor({
       for (const name of events) window.removeEventListener(name, stop);
     };
   }, [history.length, insertPrompt, scrollConversationToEnd]);
+  // A server that asks for pairing puts its form first: when its check
+  // answers while the conversation is being opened, the page returns to the
+  // tutor's top, where the form is. (With AI off the conversation is still
+  // there to read, so it stays at its latest turn.)
+  useLayoutEffect(() => {
+    if (!openingRef.current || configState.status !== "pairing") return;
+    openingRef.current();
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [configState.status]);
 
   // The question box grows with its text (up to about six lines, then it
   // scrolls), including text placed there by a mode, Ask AI or a restore.
