@@ -2071,8 +2071,11 @@ Deliberate limits, not bugs:
   shipped it, and `resizes-content` would resize every screen on Android
   while typing.
 - The keyboard handling is checked with a stand-in visual viewport only; it
-  still needs a physical iPhone. The note above about On-device Lite's
-  docked composer is left for #94.
+  still needs a physical iPhone. So does the one-line placeholder: Chrome
+  keeps it on one line and clips it without an ellipsis; if Safari wraps
+  it, the empty box still stays one line tall (its height ignores the
+  placeholder) and shows the top of the second line. The note above about
+  On-device Lite's docked composer is left for #94.
 
 Evidence:
 
@@ -2100,10 +2103,10 @@ Evidence:
   1024×768 and 675 at 1920×1080.
 - Gate on the final tip: `npm run check` passed (`audit:ai` 542/542, AI
   eval 27 cases, hit@1 0.913). The startup entry is unchanged at 715,643
-  bytes. Route screens are 896,763 bytes of the 900,000 budget, 4,935 more
+  bytes. Route screens are 896,782 bytes of the 900,000 budget, 4,954 more
   than main's 891,828 (the hook, the fit rules and the suggestion), which
-  leaves 3,237 bytes for #94. `npm run check:browser` passed all 13 suites
-  on the first attempt with no retries (`audit:ai-ui` 170 s,
+  leaves 3,218 bytes for #94. `npm run check:browser` passed all 13 suites
+  on the first attempt with no retries (`audit:ai-ui` 165 s,
   `audit:responsive` 434 layout and 367 control checks, `audit:a11y` 57 axe
   runs). Earlier runs on this branch, with other agents' gates on the same
   machine, needed one retry of `audit:phone-ai-ui` (Lite's Jump to latest

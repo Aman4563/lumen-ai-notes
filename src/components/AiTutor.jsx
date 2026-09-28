@@ -1582,6 +1582,8 @@ export default function AiTutor({
     if (!field) return undefined;
     const fit = () => {
       field.style.height = "auto";
+      // An empty box stays one line, however its placeholder wraps.
+      if (!field.value) return;
       const borders = field.offsetHeight - field.clientHeight;
       field.style.height = `${field.scrollHeight + borders}px`;
     };
