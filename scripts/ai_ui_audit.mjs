@@ -1267,7 +1267,7 @@ try {
   const originalDiagramTheme = await page.evaluate(() => document.documentElement.dataset.theme);
   const nextDiagramTheme = await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme === "dark" ? "paper" : "dark");
   await page.click('[aria-label="Open settings"]');
-  await page.waitForSelector(".settings-drawer");
+  await page.waitForSelector(".settings-drawer .settings-page");
   assert.equal(await page.$eval(".ai-tutor__message--assistant .mermaid svg", (node) => node.id), originalDiagramId, "opening a dialog unnecessarily cleared the AI diagram");
   await clickByText(page, ".theme-choices button", nextDiagramTheme === "dark" ? "Night" : "Paper");
   await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, {}, nextDiagramTheme);
@@ -1442,7 +1442,7 @@ try {
   }
 
   await page.click('button[aria-label="Open settings"]');
-  await page.waitForSelector(".settings-drawer");
+  await page.waitForSelector(".settings-drawer .settings-page");
   await clickByText(page, ".settings-drawer button", "Clear AI history");
   await page.waitForSelector(".ai-tutor__welcome");
   await waitForStoredHistory(page, "empty");

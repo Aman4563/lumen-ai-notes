@@ -75,8 +75,8 @@ assert(typeof routeList.build === "string" && routeList.build.length > 0, "the o
 assert(routeList.entry === entryScript, `the offline route list entry (${routeList.entry}) must match the HTML entry (${entryScript})`);
 for (const file of routeFiles) assert(exists(file), `the offline route list references a missing file: ${file}`);
 // The reader's TeX renderer (markdownMath) moved to the warm tier with KaTeX
-// (issue #95).
-for (const screen of ["Reader", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "ReviewCenter", "AssessmentDialog", "StorageHealth", "DeviceEvidence"]) {
+// (issue #95); Settings and the Notebook left the startup bundle for this tier.
+for (const screen of ["Reader", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "ReviewCenter", "AssessmentDialog", "StorageHealth", "DeviceEvidence", "Settings", "Notebook"]) {
   assert(routeFiles.some((file) => file.startsWith(`assets/${screen}-`) && file.endsWith(".js")), `the offline route list omits the ${screen} screen`);
 }
 for (const screen of ["AiLearningStudio", "AiTutor", "PhoneLocalAiTutor"]) {

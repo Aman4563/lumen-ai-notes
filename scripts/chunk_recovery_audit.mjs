@@ -586,6 +586,39 @@ try {
   assert.ok(await lecturePage.$(".markdown-body h1"), "the lecture did not stay readable with its diagram unavailable");
   await lecturePage.close();
 
+  // The Notebook and Settings are lazy now (issue #95). Opened while their
+  // chunks are still downloading, route focus still ends on the Notebook's
+  // heading and Settings still focuses its close button, as when both were
+  // in the startup bundle.
+  const slowPage = await browser.newPage();
+  await slowPage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  await slowPage.setBypassServiceWorker(true);
+  await slowPage.setCacheEnabled(false);
+  await slowPage.setRequestInterception(true);
+  let heldScreens = 0;
+  slowPage.on("request", (request) => {
+    if (/\/assets\/(?:Notebook|Settings)-[^/]+\.js$/.test(new URL(request.url()).pathname)) {
+      heldScreens += 1;
+      setTimeout(() => void request.continue(), 1_500);
+      return;
+    }
+    void request.continue();
+  });
+  await slowPage.goto(baseUrl.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await slowPage.waitForSelector(".welcome-block", { timeout: 30_000 });
+  await slowPage.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Notebook").click());
+  const notebookLoading = await slowPage.evaluate(() => Boolean(document.querySelector("#main-content .view-loading")) && !document.querySelector(".notebook-page"));
+  await slowPage.waitForSelector(".notebook-page h1", { timeout: 15_000 });
+  await slowPage.waitForFunction(() => document.activeElement?.matches?.(".notebook-page h1"), { timeout: 5_000 }).catch(() => {});
+  const notebookFocus = await slowPage.evaluate(() => ({ tag: document.activeElement?.tagName, text: document.activeElement?.textContent?.trim() }));
+  assert.equal(notebookLoading, true, "the Notebook was already loaded, so its lazy route focus was not tested");
+  assert.deepEqual(notebookFocus, { tag: "H1", text: "Study notebook" }, "route focus stayed on the main landmark after the lazy Notebook rendered");
+  await slowPage.$eval('[aria-label="Open settings"]', (button) => button.click());
+  await slowPage.waitForSelector(".settings-drawer .settings-page", { timeout: 15_000 });
+  assert.equal(await slowPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close settings", "Settings did not focus its close button while its content loaded");
+  assert.ok(heldScreens >= 2, `the Notebook and Settings chunks were not both requested (${heldScreens})`);
+  await slowPage.close();
+
   // Warm tools: warmed then offline, and with warming blocked.
   const downloads = join(profileDirectory, "downloads");
   await mkdir(downloads, { recursive: true });
@@ -596,7 +629,7 @@ try {
   await mkdir(blockedDownloads, { recursive: true });
   await warmingBlockedDrill(blockedDownloads, fixtures);
 
-  console.log(`Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, Settings kept backup export without Storage health, and a lecture with a missing Mermaid chunk reloaded ${mermaidReloads} time(s), then showed the diagram failure in the Reader. Warm tools: after one idle, with the server stopped, backup export and import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor answer with math, an edited lecture with TeX, and every warm module worked; with warming blocked each action said it needs a connection once, with no error screen or reload, and math stayed readable TeX source.`);
+  console.log(`Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, Settings kept backup export without Storage health, and a lecture with a missing Mermaid chunk reloaded ${mermaidReloads} time(s), then showed the diagram failure in the Reader. The lazy Notebook and Settings kept their route and dialog focus while their chunks loaded. Warm tools: after one idle, with the server stopped, backup export and import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor answer with math, an edited lecture with TeX, and every warm module worked; with warming blocked each action said it needs a connection once, with no error screen or reload, and math stayed readable TeX source.`);
 } finally {
   await browser?.close().catch(() => {});
   await rm(profileDirectory, { recursive: true, force: true });

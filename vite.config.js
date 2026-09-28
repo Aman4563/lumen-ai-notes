@@ -8,9 +8,9 @@ const buildId = process.env.LUMEN_BUILD_ID?.trim() || `local-${Date.now().toStri
 // worker precaches these chunks, their static imports, and their CSS at install
 // from the list below. Lecture bodies, the search corpus, Mermaid, the WebLLM
 // runtime, and fonts stay on-demand because they are dynamic imports or assets.
-// The review center (with its card editor) and the readiness check left the
-// startup bundle for its budget; both are still app code every screen needs
-// offline.
+// The review center (with its card editor), the readiness check, Settings and
+// the Notebook left the startup bundle for its budget; they are still app code
+// every screen needs offline.
 const OFFLINE_ROUTE_MODULES = [
   "src/components/Reader.jsx",
   "src/components/Whiteboard.jsx",
@@ -21,6 +21,8 @@ const OFFLINE_ROUTE_MODULES = [
   "src/components/AssessmentDialog.jsx",
   "src/components/StorageHealth.jsx",
   "src/components/DeviceEvidence.jsx",
+  "src/components/Settings.jsx",
+  "src/components/Notebook.jsx",
 ];
 
 // Warm tools are app code a learner reaches only through an action: the TeX

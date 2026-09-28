@@ -524,7 +524,7 @@ const auditThemedSelects = async () => {
     await closeWithEscape(".mistake-dialog");
 
     await page.$eval('button[aria-label="Open settings"]', (button) => button.click());
-    await page.waitForSelector(".settings-drawer");
+    await page.waitForSelector(".settings-drawer .settings-page");
     await check("settings", 1);
     await closeWithEscape(".settings-drawer");
 
@@ -795,8 +795,13 @@ try {
   inspected += await inspectControls(page, "review grading");
 
   // Pass 1: complete focus-cycle contract for the settings drawer on its own.
+  // Settings loads lazily (issue #95), and this pass follows a fresh page
+  // load: cycle focus through its controls, not its loading placeholder.
   await auditDialog(page, "settings drawer", {
-    open: () => openBySelector(page, 'button[aria-label="Open settings"]'),
+    open: async () => {
+      await openBySelector(page, 'button[aria-label="Open settings"]');
+      await page.waitForSelector(".settings-drawer .settings-page .theme-choices", { timeout: 15_000 });
+    },
     containerSelector: ".settings-drawer",
     // Opener restore is deferred a frame past inert cleanup in the app
     // (useModalKeyboard/ReviewCardDialog), fixing the 2026-09-01 BUG-003
@@ -806,7 +811,7 @@ try {
   // Pass 2: reopen for the static control inspection, then audit the nested
   // install sheet, whose close must hand back a functional settings drawer.
   await openBySelector(page, 'button[aria-label="Open settings"]');
-  await page.waitForSelector(".settings-drawer");
+  await page.waitForSelector(".settings-drawer .settings-page");
   inspected += await inspectControls(page, "settings");
   await auditDialog(page, "install sheet (nested)", {
     open: () => openBySelector(page, ".install-card button"),

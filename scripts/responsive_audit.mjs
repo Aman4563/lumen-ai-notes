@@ -403,6 +403,7 @@ try {
     await click(page, ".tutor-sheet__done");
     await page.waitForSelector(".tutor-sheet", { hidden: true });
     await click(page, '[aria-label="Open settings"]');
+    await page.waitForSelector(".settings-drawer .settings-page");
     await inspect("settings", ".settings-drawer", { dialog: true });
     // The close control stays reachable after scrolling the long drawer (SHELL-3).
     await page.$eval(".settings-drawer", (drawer) => { drawer.scrollTop = drawer.scrollHeight; });

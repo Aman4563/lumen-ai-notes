@@ -19,7 +19,7 @@ const APP_SHELL = [
 
 // The build emits the lazy route screens (Reader, Whiteboard, the AI studio and
 // both tutors, the review center, the readiness check, storage health, device
-// evidence) with their static imports and CSS. They are
+// evidence, Settings, the Notebook) with their static imports and CSS. They are
 // application code, so every screen must open offline after one online visit.
 // Fetch the list uncached: hosts may cache non-asset files.
 const ROUTE_LIST_URL = new URL("./offline-routes.json", self.location.href).href;
