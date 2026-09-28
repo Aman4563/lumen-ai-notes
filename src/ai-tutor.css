@@ -2676,9 +2676,11 @@
 @media (min-width: 981px) {
   .ai-tutor__welcome {
     min-height: 0;
-    padding-top: 22px;
+    padding: 12px 16px 14px;
     place-content: start center;
   }
+
+  .ai-tutor__starters { margin-top: 12px; }
 }
 
 /* A short landscape phone cannot spare the height for a docked composer
@@ -2861,8 +2863,16 @@
   .ai-tutor__composer .ai-tutor__jump { position: fixed; bottom: var(--ai-nav-space, 16px); }
 }
 
+/* Large text: "Use suggestion" keeps to the Options row as its icon (the
+   row's width in em shrinks as the text grows). */
+.ai-tutor__composer-meta { container-type: inline-size; }
+@container (max-width: 12.5em) {
+  .ai-tutor__suggest { min-width: 44px; justify-content: center; }
+  .ai-tutor__suggest > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
 /* The mode's suggested question fits the empty box's one line. */
-.ai-tutor__composer textarea::placeholder { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ai-tutor__composer textarea::placeholder { overflow: hidden; white-space: nowrap; }
 
 /* The first-run local-model permission keeps its words, in less room. */
 .ai-tutor__consent-card { margin-bottom: 6px; padding: 4px 9px; }
@@ -2899,6 +2909,13 @@
   .ai-tutor__composer { margin-block: 6px 8px; padding-block: 10px 8px; }
   .ai-tutor__composer .ai-tutor__options-toggle { min-height: 34px; padding-block: 4px; }
   .ai-tutor__composer-meta { margin-top: 4px; }
+}
+
+/* Touch tablets keep full-size targets in the compact chrome. */
+@media (min-width: 981px) and (pointer: coarse) {
+  .ai-tutor__mode-tabs button,
+  .ai-tutor__connection .ai-tutor__text-button,
+  .ai-tutor__composer :is(.ai-tutor__options-toggle, .ai-tutor__text-button) { min-height: 44px; }
 }
 
 /* 981-1079px: Grounding sits above the conversation, in a capped panel. */

@@ -577,9 +577,11 @@ const chatFitGeometry = () => {
     topbar: Math.round(Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0)),
     navTop: Math.round(navShown ? nav.getBoundingClientRect().top : innerHeight),
     navHidden: navShown && getComputedStyle(nav).visibility === "hidden",
-    conversation: { ...box(conversation), scroller: getComputedStyle(conversation).overflowY !== "visible" && conversation.scrollHeight > conversation.clientHeight + 1, clientHeight: conversation.clientHeight, fromEnd: Math.round(conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight) },
+    conversation: { ...box(conversation), scroller: getComputedStyle(conversation).overflowY !== "visible" && conversation.scrollHeight > conversation.clientHeight + 1, clientHeight: conversation.clientHeight, scrollHeight: conversation.scrollHeight, fromEnd: Math.round(conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight) },
     workspace: box(document.querySelector(".ai-tutor__workspace")),
-    context: context ? { ...box(context), scrolls: getComputedStyle(context).overflowY !== "visible" } : null,
+    context: context ? { ...box(context), scrolls: getComputedStyle(context).overflowY !== "visible", scroller: getComputedStyle(context).overflowY !== "visible" && context.scrollHeight > context.clientHeight + 1 } : null,
+    // The chrome's controls, for touch-size checks.
+    targets: [...document.querySelectorAll(".ai-engine-picker__options > button, .ai-tutor__mode-tabs button, .ai-tutor__connection .ai-tutor__text-button, .ai-tutor__options-toggle, .ai-tutor__suggest")].filter((node) => node.checkVisibility()).map((node) => [node.textContent.trim().slice(0, 16), Math.round(node.getBoundingClientRect().height)]),
     composer: { ...box(composer), position: getComputedStyle(composer).position },
     field: box(field),
     send: box(document.querySelector(".ai-tutor__send")),
@@ -694,66 +696,175 @@ const auditChatFit = async () => {
   // bar. With five saved answers the page does not scroll, the
   // conversation is the one scroller, opens at its latest turn and is not
   // covered by the composer, the evidence column leaves no dead band, and
-  // the mode tabs stay on screen. 1225x671 and 1024x768 fit with a few
-  // pixels to spare, so wider fonts elsewhere may tip them into the
-  // fallback instead: the page scrolls, the conversation keeps its minimum
-  // and is uncovered at the page end.
+  // the mode tabs stay on screen. Where the chrome would leave the
+  // conversation less than its minimum (1280x600; 1225x671 and 1024x768
+  // have a few pixels to spare, so wider fonts elsewhere may tip them), the
+  // page scrolls instead and is then the only scroller, as on phones: the
+  // conversation grows with its answers, opens at its latest turn above
+  // the sticky composer and is uncovered at the page end. (Changed on
+  // purpose after the review of 2026-09-28: this fallback used to keep the
+  // conversation a scroller inside the scrolling page.)
+  const wideLayout = (name, g, { opened = false, empty = false } = {}) => {
+    expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen`, { field: g.field, send: g.send });
+    if (g.maxScroll > 1) {
+      expect(!g.conversation.scroller && !g.context?.scroller, `${name}: the page scrolls and so does the conversation or the evidence column`, { maxScroll: g.maxScroll, conversation: g.conversation, context: g.context });
+      expect(g.composer.position === "sticky", `${name}: the composer does not stay on screen while the page scrolls`, g.composer);
+      if (opened) expect(g.scrollY > 0 && g.end.bottom <= g.composer.top + 1 && g.end.bottom >= g.composer.top - 120, `${name}: the saved conversation did not open at its latest turn above the composer`, { scrollY: g.scrollY, end: g.end, composer: g.composer });
+      return;
+    }
+    expect(g.conversation.clientHeight >= minConversation(g), `${name}: the conversation is a slit`, g.conversation);
+    expect(g.workspace.bottom - g.conversation.bottom <= 2, `${name}: a dead band sits under the conversation`, { workspace: g.workspace, conversation: g.conversation });
+    expect(!g.context || (g.context.scrolls && g.context.bottom <= g.workspace.bottom + 1), `${name}: the evidence column does not scroll on its own inside the workspace`, g.context);
+    expect(g.conversation.bottom <= g.composer.top + 1, `${name}: the composer covers the conversation`, { conversation: g.conversation, composer: g.composer });
+    if (opened) expect(g.conversation.scroller && g.conversation.fromEnd <= 2, `${name}: the saved conversation is not its own scroller opened at its latest turn`, g.conversation);
+    // An empty conversation's welcome and suggested starts fit its box.
+    if (empty) expect(g.conversation.scrollHeight <= g.conversation.clientHeight + 1, `${name}: the welcome or the suggested starts are cut off inside the conversation`, g.conversation);
+  };
+  const wideEnd = async (name, page) => {
+    await toEnd(page);
+    const end = await geometry(page);
+    if (end.maxScroll > 1) expect(end.end.bottom <= end.composer.top + 1, `${name}: at the page end the conversation is still under the composer`, { end: end.end, composer: end.composer });
+    else expect(end.conversation.bottom <= end.composer.top + 1 && end.conversation.top >= end.topbar - 1, `${name}: the conversation is still covered`, { conversation: end.conversation, composer: end.composer, topbar: end.topbar });
+  };
+  // A long question typed over the latest answer shrinks the conversation
+  // (or, where the page scrolls, lifts the page) and never covers its end;
+  // the page does not start scrolling as well as the conversation.
+  const typeDraft = async (name, page) => {
+    const before = await geometry(page);
+    await page.$eval(".ai-tutor__composer textarea", (field) => field.focus({ preventScroll: true }));
+    await setComposerPrompt(page, Array.from({ length: 10 }, (_, line) => `Line ${line + 1} of a long question about ridge and lasso penalties.`).join("\n"));
+    const g = await geometry(page);
+    if (before.maxScroll <= 1) expect(g.maxScroll <= 1 && g.conversation.fromEnd <= 2 && g.conversation.bottom <= g.composer.top + 1, `${name} with a long question: the conversation no longer shows its end, or the page scrolls as well`, { maxScroll: g.maxScroll, conversation: g.conversation, composer: g.composer });
+    else expect(!g.conversation.scroller && g.end.bottom <= g.composer.top + 1, `${name} with a long question: the composer covers the end of the conversation`, { conversation: g.conversation, end: g.end, composer: g.composer });
+    await setComposerPrompt(page, "");
+    await page.$eval(".ai-tutor__composer textarea", (field) => field.blur());
+  };
   const wide = [
     ["1280x720", { width: 1280, height: 720 }, true],
+    ["1440x900", { width: 1440, height: 900 }, true],
     ["1366x768", { width: 1366, height: 768 }, true],
     ["1180x820", { width: 1180, height: 820, isMobile: true, hasTouch: true }, true],
     ["1225x671", { width: 1225, height: 671 }, false],
     ["1024x768", { width: 1024, height: 768, isMobile: true, hasTouch: true }, false],
+    ["1280x600", { width: 1280, height: 600 }, false],
   ];
   for (const [name, viewport, fits] of wide) {
     const { context, page } = await open(name, viewport, { pairs: 5 });
     try {
       const g = await geometry(page);
-      if (fits || g.maxScroll > 1) expect(g.maxScroll <= 1 || (!fits && g.conversation.clientHeight >= minConversation(g) && g.conversation.clientHeight <= minConversation(g) + 4), `${name}: the page scrolls as well as the conversation`, { maxScroll: g.maxScroll, conversation: g.conversation });
-      expect(g.conversation.scroller, `${name}: the conversation is not its own scroller`, g.conversation);
-      expect(g.conversation.clientHeight >= minConversation(g), `${name}: the conversation is a slit`, g.conversation);
-      expect(g.workspace.bottom - g.conversation.bottom <= 2, `${name}: a dead band sits under the conversation`, { workspace: g.workspace, conversation: g.conversation });
-      expect(!g.context || (g.context.scrolls && g.context.bottom <= g.workspace.bottom + 1), `${name}: the evidence column does not scroll on its own inside the workspace`, g.context);
-      expect(g.conversation.bottom <= g.composer.top + 1, `${name}: the composer covers the conversation`, { conversation: g.conversation, composer: g.composer });
-      expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen`, { field: g.field, send: g.send });
-      expect(g.conversation.fromEnd <= 2, `${name}: the saved conversation did not open at its latest turn`, g.conversation);
-      if (g.maxScroll > 1) {
-        await toEnd(page);
-        const fallback = await geometry(page);
-        expect(fallback.conversation.bottom <= fallback.composer.top + 1 && fallback.conversation.top >= fallback.topbar - 1, `${name}: at the page end the conversation is still covered`, { conversation: fallback.conversation, composer: fallback.composer, topbar: fallback.topbar });
-        await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
-      }
+      if (fits) expect(g.maxScroll <= 1, `${name}: the page scrolls instead of the conversation`, { maxScroll: g.maxScroll, conversation: g.conversation });
+      wideLayout(name, g, { opened: true });
+      await wideEnd(name, page);
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
       expect(g.tabs && g.tabs.outside === 0, `${name}: a mode tab is cut off`, g.tabs);
       expect(!g.sideways && g.heading === "AI learning studio", `${name}: the page scrolls sideways or lost its heading`, { sideways: g.sideways, heading: g.heading });
+      // Touch tablets keep full-size targets in the compact chrome.
+      if (viewport.hasTouch) expect(g.targets.length >= 6 && g.targets.every(([, height]) => height >= 44), `${name}: a chrome control is smaller than 44px on a touch screen`, g.targets);
+      if (["1280x720", "1440x900", "1024x768"].includes(name)) await typeDraft(name, page);
+      // A suggested question reads as a placeholder in the Contrast theme,
+      // where its grey is close to the text's black.
+      if (name === "1280x720") {
+        const placeholder = await page.evaluate(() => {
+          const previous = document.documentElement.dataset.theme;
+          document.documentElement.dataset.theme = "contrast";
+          const style = getComputedStyle(document.querySelector(".ai-tutor__composer textarea"), "::placeholder").fontStyle;
+          if (previous === undefined) delete document.documentElement.dataset.theme;
+          else document.documentElement.dataset.theme = previous;
+          return style;
+        });
+        expect(placeholder === "italic", "1280x720 Contrast theme: the suggested question looks like typed text", placeholder);
+      }
       // Taller chrome falls back to scrolling the page rather than
       // squeezing the conversation: Grounding open in the 981-1079px band,
       // the engine notes open.
       if (name === "1024x768") await page.click(".ai-tutor__source-panel-toggle");
       if (name === "1280x720") await page.click(".ai-engine-picker__note summary");
       if (["1024x768", "1280x720"].includes(name)) {
-        const tall = await geometry(page);
-        const state = name === "1024x768" ? "Grounding open" : "engine notes open";
-        expect(tall.conversation.clientHeight >= minConversation(tall), `${name} ${state}: the conversation is a slit`, tall.conversation);
-        expect(inView(tall, tall.field) && inView(tall, tall.send), `${name} ${state}: the question box or Send is off screen`, { field: tall.field, send: tall.send });
-        await toEnd(page);
-        const end = await geometry(page);
-        expect(end.conversation.bottom <= end.composer.top + 1 && end.conversation.top >= end.topbar - 1, `${name} ${state}: at the page end the conversation is still covered`, { conversation: end.conversation, composer: end.composer, topbar: end.topbar });
+        const state = `${name} ${name === "1024x768" ? "Grounding open" : "engine notes open"}`;
+        wideLayout(state, await geometry(page));
+        await wideEnd(state, page);
       }
     } finally {
       await context.close();
     }
   }
-  // 200% text and a first visit (the local-model permission in the dock).
-  for (const [name, options] of [["1280x720 at 200% text", { pairs: 5, largeText: true }], ["1280x720 first visit", { acknowledged: false }]]) {
-    const { context, page } = await open(name, { width: 1280, height: 720 }, options);
+  // 200% text, a first visit (the local-model permission in the dock) and
+  // empty conversations, whose welcome and starts must not be cut off.
+  for (const [name, viewport, options] of [
+    ["1280x720 at 200% text", { width: 1280, height: 720 }, { pairs: 5, largeText: true }],
+    ["1280x720 first visit", { width: 1280, height: 720 }, { acknowledged: false }],
+    ["1225x671 empty", { width: 1225, height: 671 }, {}],
+    ["1024x768 empty", { width: 1024, height: 768, isMobile: true, hasTouch: true }, {}],
+    ["1280x600 empty", { width: 1280, height: 600 }, {}],
+  ]) {
+    const { context, page } = await open(name, viewport, options);
     try {
-      const g = await geometry(page);
-      expect(g.conversation.clientHeight >= minConversation(g), `${name}: the conversation is a slit`, g.conversation);
-      expect(g.workspace.bottom - g.conversation.bottom <= 2, `${name}: a dead band sits under the conversation`, { workspace: g.workspace, conversation: g.conversation });
-      expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen`, { field: g.field, send: g.send });
+      wideLayout(name, await geometry(page), { opened: Boolean(options.pairs), empty: !options.pairs });
+      if (options.largeText) await typeDraft(name, page);
+      await wideEnd(name, page);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Reading back mid-answer from outside the conversation (a key while
+  // Options has focus) stops following, even when the tutor's own follow
+  // scroll lands just after the key: that scroll is not the learner coming
+  // back to the end. The race is made certain by pressing the key right
+  // after the tutor has scrolled to follow, before its scroll event.
+  {
+    const { context, page } = await open("read-back race", { width: 1280, height: 720 }, { pairs: 5 });
+    try {
       await toEnd(page);
-      const end = await geometry(page);
-      expect(end.conversation.bottom <= end.composer.top + 1 && end.conversation.top >= end.topbar - 1, `${name}: at the page end the conversation is still covered`, { conversation: end.conversation, composer: end.composer, topbar: end.topbar });
+      await settle(page);
+      await send(page, "Read-back check: stream a long answer.", 200);
+      await pause(page, 600);
+      const raced = await page.evaluate(() => new Promise((resolve) => {
+        const surface = document.querySelector(".ai-tutor__conversation");
+        const top = surface.scrollTop;
+        const observer = new MutationObserver(() => {
+          if (Math.abs(surface.scrollTop - top) < 1) return;
+          observer.disconnect();
+          document.querySelector(".ai-tutor__options-toggle").focus();
+          document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+          resolve(true);
+        });
+        observer.observe(surface, { childList: true, subtree: true, characterData: true });
+        setTimeout(() => { observer.disconnect(); resolve(false); }, 5_000);
+      }));
+      await pause(page, 900);
+      const g = await page.evaluate(chatFitGeometry);
+      expect(raced && g.jump && g.conversation.fromEnd > 60, "1280x720: a key pressed to read back just before the tutor's own follow scroll did not stop following", { raced, jump: g.jump, conversation: g.conversation });
+      await stop(page);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Ask AI from the Reader with a saved conversation: the excerpt goes into
+  // the docked box, and the conversation still opens at its latest turn (on
+  // wide screens, inside its own scroller; on phones, above the dock).
+  for (const [name, viewport] of [["1280x720", { width: 1280, height: 720 }], ["393x852", { width: 393, height: 852, isMobile: true, hasTouch: true }]]) {
+    const { context, page } = await open(`ask-ai-${name}`, viewport, { pairs: 5 });
+    try {
+      await page.evaluate(() => { window.location.hash = `#/read/${encodeURIComponent("notes/part-05-supervised-learning/01-linear-regression.md")}`; });
+      await page.waitForSelector(".markdown-body p", { timeout: 15_000 });
+      await page.$eval(".markdown-body", (article) => {
+        const range = document.createRange();
+        range.selectNodeContents([...article.querySelectorAll("p")].find((node) => node.textContent.trim().length > 80));
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      await page.waitForFunction(() => [...document.querySelectorAll(".document-tools button")].some((button) => button.classList.contains("selection-ready") && button.textContent.includes("Ask AI")), { timeout: 5_000 });
+      await clickByText(page, ".document-tools button", "Ask AI");
+      await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea")?.value.includes("Explain this excerpt") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 15_000 });
+      await pause(page, 600);
+      const g = await geometry(page);
+      const focused = await page.evaluate(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"));
+      expect(focused && inView(g, g.field), `Ask AI ${name}: the box with the excerpt is not focused in view`, { focused, field: g.field });
+      if (viewport.width >= 981) expect(g.conversation.fromEnd <= 2, `Ask AI ${name}: the saved conversation opened at its oldest turn`, g.conversation);
+      else expect(g.end.bottom <= g.composer.top + 1 && g.end.bottom >= g.composer.top - 120, `Ask AI ${name}: the saved conversation did not open at its latest turn above the dock`, { scrollY: g.scrollY, end: g.end, composer: g.composer });
     } finally {
       await context.close();
     }
@@ -788,6 +899,9 @@ const auditChatFit = async () => {
         expect(g.lastStarter && g.lastStarter.bottom <= g.composer.top + 40, `${name}: the suggested starts sit behind the dock`, { lastStarter: g.lastStarter, composer: g.composer });
       }
       if (name === "393x852 first visit") expect(g.composer.height <= 190, `${name}: the first-visit dock is too tall`, g.composer);
+      // At 200% text "Use suggestion" shrinks to its icon beside Options
+      // rather than taking a row of its own (main's dock was 115px here).
+      if (options.largeText) expect(g.composer.height <= 124, `${name}: the empty dock is taller than one row of controls`, g.composer);
       await patchStoredProfile(page, { aiTutorHistory: chatFitHistory(5) });
       await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
       await page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
@@ -854,6 +968,13 @@ const auditChatFit = async () => {
         if (!(await stillFollowing(page))) {
           const g = await page.evaluate(chatFitGeometry);
           expect(false, `${name} run ${run}: the answer was not followed after Send`, { conversation: g.conversation, end: g.end, composer: g.composer, jump: g.jump, scrollY: g.scrollY });
+        } else if (viewport.width >= 981) {
+          // Home, pressed while Options has focus, reads back: following stops.
+          await page.focus(".ai-tutor__options-toggle");
+          await page.keyboard.press("Home");
+          await pause(page, 700);
+          const g = await page.evaluate(chatFitGeometry);
+          expect(g.jump && g.conversation.fromEnd > 60, `${name} run ${run}: Home pressed from Options did not stop following`, { jump: g.jump, conversation: g.conversation });
         }
         await stop(page);
       } finally {

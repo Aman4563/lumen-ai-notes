@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
@@ -7,6 +8,8 @@ import { createServer } from "vite";
 import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
 
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+// axe-core, for the contrast of a Lite conversation in every theme.
+const axeSource = await readFile(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-phone-ai-ui-profile-"));
 const runtimeErrors = [];
 let browser;
@@ -49,10 +52,15 @@ const withOptions = async (page, action) => {
 };
 const toggleWebFallback = (page) => withOptions(page, () => page.click(".phone-tutor__search-toggle input"));
 
-// The box starts empty (#94); "Use suggestion" puts the mode's question in it.
+// The box starts empty (#94); "Use suggestion" puts the mode's question,
+// shown as the box's placeholder, in it and then goes.
 const useSuggestion = async (page) => {
+  const placeholder = await page.$eval(".phone-tutor__composer textarea", (field) => field.placeholder);
   await clickByText(page, ".phone-tutor__composer-meta button", "Use suggestion");
   await page.waitForFunction(() => document.querySelector(".phone-tutor__composer textarea")?.value.length > 0);
+  const value = await page.$eval(".phone-tutor__composer textarea", (field) => field.value);
+  assert.ok(placeholder.length > 20 && value === placeholder, `Use suggestion did not put the mode's suggested question in the box: ${JSON.stringify({ placeholder, value })}`);
+  assert.equal(await page.$$eval(".phone-tutor__composer-meta button", (nodes) => nodes.some((node) => node.textContent.includes("Use suggestion"))), false, "Use suggestion stayed after filling the box");
 };
 
 const touchSize = (page, selector) => page.$$eval(selector, (nodes) => nodes.filter((node) => {
@@ -94,12 +102,15 @@ const liteGeometry = () => {
     send: box(composer.querySelector("button[type='submit']")),
     options: box(document.querySelector(".phone-tutor__options")),
     welcome: box(document.querySelector(".phone-tutor__welcome")),
+    welcomeText: box(document.querySelector(".phone-tutor__welcome")?.lastElementChild),
     question: box([...document.querySelectorAll(".phone-tutor__message.is-user")].at(-1)),
     end: box(document.querySelector(".phone-tutor__conversation-end")),
     jump: box(document.querySelector(".phone-tutor__jump")),
     card: box(document.querySelector(".phone-local-ai")),
     manage: box(document.querySelector(".phone-local-ai-more > summary")),
     cardDetailsShown: [...document.querySelectorAll(".phone-local-ai-facts, .phone-local-ai-privacy")].some((node) => node.checkVisibility()),
+    // The engine card's controls in Tab order, by where they are drawn.
+    cardOrder: [...document.querySelectorAll(".phone-local-ai :is(summary, input, button, select, a[href])")].filter((node) => !node.disabled && node.checkVisibility()).map((node) => Math.round(node.getBoundingClientRect().top)),
     page: page ? { overflow: page.scrollHeight - page.clientHeight, anchor: getComputedStyle(page).overflowAnchor } : null,
   };
 };
@@ -127,9 +138,14 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
   // above it (the dock keeps an 8px gap) rather than risen off it.
   const docked = (g, { rests = true } = {}) => g.composer.position === "sticky" && g.composer.bottom <= g.navTop && (!rests || g.navTop - g.composer.bottom <= 10);
   const toEnd = (page) => page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }));
-  const open = async (label, url, viewport, { largeText = false, keyboard = false } = {}) => {
+  const open = async (label, url, viewport, { largeText = false, keyboard = false, blockResults = false } = {}) => {
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
+    if (blockResults) {
+      // The quiz, flashcard and plan views fail to download.
+      await page.setRequestInterception(true);
+      page.on("request", (request) => { if (request.url().includes("PhoneTutorResults")) void request.abort(); else void request.continue(); });
+    }
     const phone = viewport.width < 981;
     await page.setViewport({ deviceScaleFactor: 1, isMobile: phone, hasTouch: phone, ...viewport });
     page.on("pageerror", (error) => runtimeErrors.push(`${label}: ${error.message}`));
@@ -191,6 +207,7 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       expect(phone ? docked(g, { rests: g.maxScroll > 1 }) : g.composer.position === "sticky", `${name}: the question box is not docked${phone ? " just above the navigation" : ""}`, { composer: g.composer, navTop: g.navTop });
       if (phone && !options.largeText) expect(g.composer.height <= 124, `${name}: the docked composer is taller than about 120px`, g.composer);
       expect(!g.cardDetailsShown, `${name}: the engine card shows its model facts and privacy notes at first open`, g.card);
+      expect(g.cardOrder.every((top, index) => index === 0 || top >= g.cardOrder[index - 1] - 4), `${name}: Tab moves back up the engine card`, g.cardOrder);
       expect(!g.sideways, `${name}: the page scrolls sideways`, g.viewport);
       if (!phone) expect(g.page && g.page.overflow <= 1, `${name}: the tutor overflows a fixed-height page`, g.page);
       expect(inView(g, g.options), `${name}: Options is off screen`, g.options);
@@ -287,12 +304,118 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       const edge = g.composer.position === "sticky" ? Math.min(g.composer.top, g.navTop) : g.navTop;
       expect(g.scrollY > 0 && g.end.bottom <= edge + 1 && g.end.bottom >= edge - 120, `${name}: the conversation did not open at its latest turn above the dock`, { scrollY: g.scrollY, end: g.end, composer: g.composer, navTop: g.navTop });
       expect(g.page?.anchor === "none", `${name}: scroll anchoring can still move the page`, g.page);
+      // An answer's actions wrap rather than widen the page into a zoom-out.
+      expect(g.viewport[0] === viewport.width, `${name}: an answer's actions widen the page`, g.viewport);
       await toEnd(page);
       const end = await geometry(page);
       expect(end.end.bottom <= end.composer.top + 1 && inView(end, end.field) && inView(end, end.send), `${name}: at the page end the conversation is under the dock or the question box is off screen`, { end: end.end, composer: end.composer, field: end.field, navTop: end.navTop });
       if (viewport.width < 981 && viewport.height > 480) expect(docked(end), `${name}: at the page end the dock rose off the navigation or sank under it`, { composer: end.composer, navTop: end.navTop });
     } catch (error) {
       failures.push(`${name} latest turn: ${error.message.split("\n")[0]}`);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Sending with Enter keeps focus in the box while the answer runs and
+  // after it lands, and the answered question leaves the dock, which is one
+  // line again.
+  {
+    const { context, page } = await open("lite-send", `${fixtureUrl}/__phone-ai-audit?shell&loaded`, { width: 393, height: 852 });
+    try {
+      await useSuggestion(page);
+      await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 20; });
+      // Enter sends through the form (only with a fine pointer; the same path).
+      await page.$eval(".phone-tutor__composer textarea", (field) => { field.focus(); field.form.requestSubmit(); });
+      await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
+      const running = await page.evaluate(() => document.activeElement?.tagName.toLowerCase() || "");
+      await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming") && document.querySelector(".phone-tutor__message.is-assistant"), { timeout: 15_000 });
+      const g = await geometry(page);
+      const done = await page.evaluate(() => ({ focus: document.activeElement?.tagName.toLowerCase() || "", value: document.querySelector(".phone-tutor__composer textarea").value }));
+      expect(running === "textarea" && done.focus === "textarea", "393x852: sending from the box dropped keyboard focus", { running, done: done.focus });
+      expect(done.value === "" && g.composer.height <= 124, "393x852: the answered question stayed in the dock", { value: done.value, composer: g.composer });
+    } catch (error) {
+      failures.push(`393x852 send: ${error.message.split("\n")[0]}`);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // A long question typed at the top of the page at 200% text on a small
+  // phone, where the tutor's top holds the dock: the dock stays off the
+  // navigation.
+  {
+    const { context, page } = await open("lite-draft", `${fixtureUrl}/__phone-ai-audit?shell&loaded`, { width: 320, height: 568 }, { largeText: true });
+    try {
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+      await page.$eval(".phone-tutor__composer textarea", (field, text) => {
+        field.focus({ preventScroll: true });
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      }, Array.from({ length: 10 }, (_, line) => `Line ${line + 1} of a long question.`).join("\n"));
+      const g = await geometry(page);
+      expect(g.composer.position !== "sticky" || g.composer.bottom <= g.navTop, "320x568 at 200% text: a long question pushed the dock behind the navigation", { composer: g.composer, navTop: g.navTop });
+    } catch (error) {
+      failures.push(`320x568 at 200% text draft: ${error.message.split("\n")[0]}`);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Wide screens, model loaded, nothing asked yet: the welcome is above the
+  // dock at the top of the page.
+  for (const [name, viewport] of [["1280x720", { width: 1280, height: 720 }], ["1366x768", { width: 1366, height: 768 }], ["1440x900", { width: 1440, height: 900 }]]) {
+    const { context, page } = await open(`lite-wide-${name}`, `${fixtureUrl}/__phone-ai-audit?shell&loaded`, viewport);
+    try {
+      const g = await geometry(page);
+      expect(g.welcomeText && g.welcomeText.bottom <= g.composer.top + 1, `${name} loaded: the dock covers the welcome at the top of the page`, { welcome: g.welcomeText, composer: g.composer });
+    } catch (error) {
+      failures.push(`${name} loaded: ${error.message.split("\n")[0]}`);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // A conversation's text meets WCAG AA contrast in every theme, including
+  // the mode label in the navy question bubbles.
+  {
+    const { context, page } = await open("lite-contrast", `${fixtureUrl}/__phone-ai-audit?shell&loaded&history=2`, { width: 393, height: 852 });
+    try {
+      await page.waitForSelector(".phone-tutor__message.is-user", { timeout: 10_000 });
+      await page.evaluate(axeSource);
+      for (const theme of ["paper", "dark", "contrast"]) {
+        const violations = await page.evaluate(async (value) => {
+          document.documentElement.dataset.theme = value;
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          await Promise.race([Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+          const result = await window.axe.run(document.querySelector(".phone-tutor__conversation"), { runOnly: { type: "rule", values: ["color-contrast"] }, resultTypes: ["violations"] });
+          return result.violations.flatMap((violation) => violation.nodes.map((node) => `${node.target.join(" ")}: ${(node.failureSummary || "").replace(/\s+/g, " ").slice(0, 160)}`));
+        }, theme);
+        expect(!violations.length, `${theme} theme: text in a Lite conversation is below AA contrast`, violations);
+      }
+    } catch (error) {
+      failures.push(`conversation contrast: ${error.message.split("\n")[0]}`);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // A browser keeps a failed module download for the life of the page, so a
+  // quiz, flashcard or plan view that could not load offers a reload that
+  // works, not a retry that cannot.
+  {
+    const { context, page } = await open("lite-views", `${fixtureUrl}/__phone-ai-audit?shell&loaded`, { width: 393, height: 852 }, { blockResults: true });
+    try {
+      await chooseMode(page, "Flashcards");
+      await useSuggestion(page);
+      await page.click(".phone-tutor__composer button[type='submit']");
+      await page.waitForFunction(() => /could not load/.test(document.querySelector(".phone-tutor__message.is-assistant .phone-tutor__empty")?.textContent || ""), { timeout: 10_000 });
+      await page.evaluate(() => { window.__beforeReload = true; });
+      const action = await page.$(".phone-tutor__message.is-assistant .phone-tutor__empty button");
+      const [reloaded] = await Promise.all([page.waitForNavigation({ timeout: 5_000 }).then(() => true, () => false), action.click()]);
+      expect(reloaded && !(await page.evaluate(() => window.__beforeReload === true)), "a view that could not load offers an action that cannot load it", { reloaded, label: await action.evaluate((node) => node.textContent).catch(() => "(page reloaded)") });
+    } catch (error) {
+      failures.push(`views: ${error.message.split("\n")[0]}`);
     } finally {
       await context.close();
     }
@@ -495,6 +618,12 @@ try {
   assert.equal(await page.$(".phone-local-ai-consent"), null, "remembered model-download consent was requested again after loading");
 
   const sendButtonSelector = ".phone-tutor__send";
+  // An answered question leaves the box (#94 review), so a step that asks
+  // the same question again puts it back first.
+  const askAgain = (text) => page.$eval(".phone-tutor__composer textarea", (field, value) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }, text);
   // The box starts empty with the mode's suggestion one tap away (#94), so
   // Send is not armed with a default question until it is used.
   assert.equal(await page.$eval(sendButtonSelector, (button) => button.disabled), true, "an empty question box armed Send");
@@ -630,7 +759,8 @@ try {
   await page.click(sendButtonSelector);
   await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.prepareCalls.length >= 2
     && document.querySelectorAll(".phone-tutor__message.is-assistant:not(.is-streaming)").length >= 2
-    && document.querySelector(".phone-tutor__send")?.disabled === false);
+    && document.querySelector(".phone-tutor__composer textarea")?.readOnly === false
+    && document.querySelector(".phone-tutor__composer textarea").value === "");
   const sufficientEvidenceCall = await page.evaluate(() => window.__PHONE_AI_AUDIT__.prepareCalls[1]);
   assert.equal(sufficientEvidenceCall.allowSearchPlanning, false, "learner opt-in bypassed the strong-library-evidence gate");
   assert.equal(await page.$(".phone-tutor__search-consent"), null, "strong library evidence produced an unnecessary web consent card");
@@ -681,6 +811,7 @@ try {
   // the model through Retry behind the learner's back.
   await toggleWebFallback(page);
   await page.evaluate(() => { window.__PHONE_AI_AUDIT__.hangNextGeneration = true; });
+  await askAgain("What is the latest Safari 26 WebGPU support?");
   await page.click(sendButtonSelector);
   await page.waitForFunction(() => /Library evidence ready|Generating locally/.test(document.querySelector(".phone-tutor__working")?.textContent || ""));
   await clickByText(page, ".phone-tutor__working button", "Cancel");
@@ -700,7 +831,14 @@ try {
   // its error must remain visible after status refreshes.
   await page.evaluate(() => { window.__PHONE_AI_AUDIT__.failNextDelete = true; });
   page.once("dialog", (dialog) => void dialog.accept());
-  await clickByText(page, ".phone-local-ai-actions button", "Clear model files");
+  // Clear model files sits behind Manage (#94): opened and tapped as a
+  // learner would, not clicked inside a closed disclosure.
+  if (!(await page.$eval(".phone-local-ai-more", (details) => details.open))) await page.click(".phone-local-ai-more > summary");
+  const clearFiles = (await page.evaluateHandle(() => [...document.querySelectorAll(".phone-local-ai-more .phone-local-ai-actions button")].find((node) => node.textContent.includes("Clear model files")) || null)).asElement();
+  assert.ok(clearFiles && await clearFiles.evaluate((node) => node.checkVisibility()), "Clear model files is not shown after opening Manage");
+  // Scrolled clear of the dock first, as a learner would before tapping it.
+  await clearFiles.evaluate((node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  await clearFiles.click();
   await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Deleting"));
   assert.equal(await page.$$eval(".phone-local-ai-actions button", (buttons) => buttons.every((button) => button.disabled)), true, "lifecycle controls became active before deletion verification finished");
   await page.evaluate(() => window.__PHONE_AI_AUDIT__.finishDeleteVerification());
@@ -815,6 +953,7 @@ try {
   await toggleWebFallback(page);
   await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
   await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 60; });
+  await askAgain("What is the latest Safari 26 WebGPU support?");
   await page.click(sendButtonSelector);
   await page.waitForFunction(() => document.querySelector(".phone-tutor__message.is-streaming")?.getBoundingClientRect().height > 700, { timeout: 8_000 });
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
@@ -828,6 +967,7 @@ try {
   }), true, "Jump to latest did not bring the streaming answer's end into view and focus it");
   await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming"), { timeout: 10_000 });
   await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 30; });
+  await askAgain("What is the latest Safari 26 WebGPU support?");
   await page.click(sendButtonSelector);
   await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
