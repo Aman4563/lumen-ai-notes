@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
+import { installSpeechMock } from "./speech_mock.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -25,79 +26,6 @@ const setRange = async (page, label, value) => page.$eval(`input[aria-label="${l
   setter.call(input, String(nextValue));
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }, value);
-
-// The iOS speech engine, mocked. `pending` mirrors speechSynthesis.pending.
-// `webkitLegacy` reproduces WebKit before 27, where cancel() of live speech
-// also removes an utterance queued by speak() in the same task ("cancel()
-// removed utterances queued by subsequent speak() calls", fixed in 27.0).
-// Date.now() runs `__lumenClockOffset` ms ahead so sleep-timer cases can move
-// the clock without waiting.
-const installSpeechMock = ({ webkitLegacy = false } = {}) => {
-  class TestUtterance {
-    constructor(text) {
-      this.text = text;
-      this.rate = 1;
-      this.pitch = 1;
-      this.volume = 1;
-      this.lang = "";
-      this.voice = null;
-    }
-  }
-  const realNow = Date.now.bind(Date);
-  window.__lumenClockOffset = 0;
-  Date.now = () => realNow() + window.__lumenClockOffset;
-  window.__lumenSpoken = [];
-  const listeners = new Map();
-  window.__lumenTestVoices = [
-    { name: "Samantha", lang: "en-US", voiceURI: "samantha-en-us", default: true, localService: true },
-    { name: "Rishi", lang: "en-IN", voiceURI: "rishi-en-in", default: false, localService: true },
-    { name: "Lekha", lang: "hi-IN", voiceURI: "lekha-hi-in", default: false, localService: true },
-    { name: "Example cloud voice", lang: "en-US", voiceURI: "cloud-en-us", default: false, localService: false },
-  ];
-  let dropInThisTask = false;
-  const synthesis = {
-    current: null,
-    paused: false,
-    speaking: false,
-    pending: false,
-    getVoices: () => window.__lumenTestVoices,
-    speak(utterance) {
-      if (dropInThisTask) {
-        window.__lumenSpoken.push({ text: utterance.text, dropped: true });
-        return;
-      }
-      this.current = utterance;
-      this.paused = false;
-      this.speaking = true;
-      this.pending = false;
-      window.__lumenSpoken.push({ text: utterance.text, voice: utterance.voice?.voiceURI || null });
-      utterance.onstart?.();
-    },
-    cancel() {
-      if (webkitLegacy && (this.speaking || this.pending)) {
-        dropInThisTask = true;
-        setTimeout(() => { dropInThisTask = false; }, 0);
-      }
-      this.current = null;
-      this.paused = false;
-      this.speaking = false;
-      this.pending = false;
-    },
-    pause() {
-      this.paused = true;
-      this.current?.onpause?.();
-    },
-    resume() {
-      this.paused = false;
-      this.current?.onresume?.();
-    },
-    addEventListener(type, listener) { listeners.set(type, listener); },
-    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type); },
-    dispatch(type) { listeners.get(type)?.(); },
-  };
-  Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: TestUtterance });
-  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: synthesis });
-};
 
 const readStoredProfile = (page) => page.evaluate(() => new Promise((resolve, reject) => {
   const request = indexedDB.open("lumen-ai-notes", 1);
@@ -159,7 +87,10 @@ try {
 
   assert.equal(await page.$$eval('select[aria-label="Narration voice"] option', (options) => options.length), 4, "all reported voices must be selectable");
   assert.equal(await page.$$eval('select[aria-label="Narration language"] option', (options) => options.length), 4, "all reported languages plus automatic mode must be selectable");
-  assert.match(await page.$eval(".speech-popover .microcopy", (node) => node.textContent), /Voices come from iOS/u);
+  // Issue #97 changed this on purpose: the microcopy names the platform the
+  // browser runs on (this headless Chrome is not iOS), so it no longer says
+  // "Voices come from iOS" everywhere. The #97 cases below pin each platform.
+  assert.doesNotMatch(await page.$eval(".speech-popover .microcopy", (node) => node.textContent), /\biOS\b|iPhone/u);
   // Issue #92 renamed the network voice label to "Network"; the microcopy
   // must name the label the voice list actually shows.
   assert.match(await page.$eval(".speech-popover .microcopy", (node) => node.textContent), /voices marked “Network”/u);
@@ -389,13 +320,16 @@ try {
   // Issue #96: narration state, queue and storage. Every case runs in its own
   // browser context (fresh settings and storage), and failures are collected
   // so one broken case cannot hide the others.
+  // Issue #97 reuses the runner with its own failure list and viewports.
   const issue96Failures = [];
-  const issue96Case = async (name, { webkitLegacy = false, prepare } = {}, run) => {
+  const issue97Failures = [];
+  const phoneViewport = { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true };
+  const narrationCase = (failures) => async (name, { webkitLegacy = false, prepare, viewport = phoneViewport } = {}, run) => {
     const context = await browser.createBrowserContext();
     const casePage = await context.newPage();
     const caseErrors = [];
     try {
-      await casePage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+      await casePage.setViewport(viewport);
       await casePage.evaluateOnNewDocument(installSpeechMock, { webkitLegacy });
       casePage.on("pageerror", (error) => caseErrors.push(error.message));
       casePage.on("console", (message) => {
@@ -405,11 +339,13 @@ try {
       await run(casePage);
       assert.deepEqual(caseErrors, [], `runtime errors: ${caseErrors.join(" | ")}`);
     } catch (error) {
-      issue96Failures.push(`${name}: ${String(error.message).split("\n")[0]}`);
+      failures.push(`${name}: ${String(error.message).split("\n")[0]}`);
     } finally {
       await context.close().catch(() => {});
     }
   };
+  const issue96Case = narrationCase(issue96Failures);
+  const issue97Case = narrationCase(issue97Failures);
   const openLecture = async (casePage, id = documentId) => {
     await casePage.goto(`${baseUrl}#/read/${encodeURIComponent(id)}`, { waitUntil: "networkidle2", timeout: 30_000 });
     await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
@@ -963,8 +899,539 @@ try {
     }
   });
 
-  assert.deepEqual(issue96Failures, [], `issue #96 narration cases failed:\n- ${issue96Failures.join("\n- ")}`);
-  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone.");
+  // Issue #97: the Listen panel, the mini player and Teaching Mode.
+  const desktopViewport = { width: 1280, height: 800, deviceScaleFactor: 1, isMobile: false, hasTouch: false };
+  // Outermost live regions whose text holds `needle`, and how many times.
+  const announcements = (casePage, needle) => casePage.evaluate((text) => {
+    const live = "[aria-live]:not([aria-live='off']), [role='status'], [role='alert'], [role='log']";
+    return [...document.querySelectorAll(live)]
+      .filter((node) => !node.parentElement?.closest(live) && node.textContent.includes(text))
+      .map((node) => ({ region: node.className, role: node.getAttribute("role"), count: node.textContent.split(text).length - 1 }));
+  }, needle);
+  const narratorRegion = (role) => [{ region: "narration-live visually-hidden", role, count: 1 }];
+  const barMessage = (casePage) => casePage.$eval(".audio-bar .audio-label", (node) => node.textContent).catch(() => "");
+  const startFullLecture = async (casePage) => {
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "full-lecture narration did not start");
+    assert.equal(await casePage.$(".speech-popover"), null, "Read left the narration panel open");
+  };
+  const failSentence = (casePage, code) => casePage.evaluate((error) => {
+    const utterance = window.speechSynthesis.current;
+    utterance.onerror({ error });
+    return utterance.text;
+  }, code);
+  const setTextScale = (casePage, scale) => casePage.evaluate((factor) => new Promise((resolve) => {
+    document.documentElement.style.fontSize = factor === 1 ? "" : `${16 * factor}px`;
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }), scale);
+  const storeBookmark = (casePage, snippet) => casePage.evaluate((id, text) => localStorage.setItem("lumen-audio-bookmarks-v1", JSON.stringify([{
+    id: "ab-97", documentId: id, v: 2, index: 6, total: 0, snippet: text, section: "", savedAt: new Date().toISOString(),
+  }])), documentId, snippet);
+
+  // ND4, NM9: with the panel closed, a failed sentence, an interruption and
+  // leaving the foreground keep the player, show the message there, and are
+  // announced once each by the Reader's own live region.
+  const startAtSentenceTwo = async (casePage) => {
+    await openLecture(casePage);
+    await startFullLecture(casePage);
+    await casePage.$eval('button[aria-label="Next narration sentence"]', (node) => node.click());
+    await waitForPosition(casePage, 2, "Next did not reach sentence 2");
+  };
+  await issue97Case("synthesis-failed with the panel closed", {}, async (casePage) => {
+    await startAtSentenceTwo(casePage);
+    const failure = "Narration stopped (synthesis failed).";
+    const failed = await failSentence(casePage, "synthesis-failed");
+    await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 })
+      .catch(async () => assert.fail(`after synthesis-failed the player ${await casePage.$(".audio-bar") ? "offers no Retry" : "disappeared"}`));
+    assert.ok((await barMessage(casePage)).includes(failure), `the player does not show “${failure}”: “${await barMessage(casePage)}”`);
+    assert.equal(await casePage.$eval('.audio-bar button[aria-label="Retry narration"]', (node) => node.nextElementSibling?.getAttribute("aria-label")), "Stop narration", "Retry is not next to Stop");
+    const failureRegions = await announcements(casePage, failure);
+    assert.deepEqual(failureRegions, narratorRegion("alert"), `synthesis-failed was announced as ${JSON.stringify(failureRegions)}`);
+    await casePage.$eval('button[aria-label="Retry narration"]', (node) => node.click());
+    await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 })
+      .catch(() => assert.fail("Retry did not resume narration"));
+    assert.equal(await casePage.evaluate(() => window.speechSynthesis.current?.text), failed, "Retry did not replay the sentence that failed");
+    assert.equal((await barPosition(casePage)).current, 2, "Retry moved away from the sentence that failed");
+    assert.deepEqual(await announcements(casePage, failure), [], "the failure stayed announced after Retry");
+  });
+
+  await issue97Case("interrupted with the panel closed", {}, async (casePage) => {
+    await startAtSentenceTwo(casePage);
+    const interruption = "Narration was interrupted.";
+    await failSentence(casePage, "interrupted");
+    await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 })
+      .catch(() => assert.fail("an interruption did not leave the player paused"));
+    assert.ok((await barMessage(casePage)).includes(interruption), `the player does not show “${interruption}”`);
+    const interruptionRegions = await announcements(casePage, interruption);
+    assert.deepEqual(interruptionRegions, narratorRegion("status"), `an interruption was announced as ${JSON.stringify(interruptionRegions)}`);
+    await casePage.$eval('button[aria-label="Resume narration"]', (node) => node.click());
+    await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 });
+    assert.deepEqual(await announcements(casePage, interruption), [], "the interruption stayed announced after Resume");
+  });
+
+  await issue97Case("pagehide with the panel closed", {}, async (casePage) => {
+    await startAtSentenceTwo(casePage);
+    const background = "Playback paused when Lumen left the foreground.";
+    await casePage.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 })
+      .catch(() => assert.fail("pagehide did not leave the player paused"));
+    assert.ok((await barMessage(casePage)).includes(background), `the player does not show “${background}”`);
+    const backgroundRegions = await announcements(casePage, background);
+    assert.deepEqual(backgroundRegions, narratorRegion("status"), `pagehide was announced as ${JSON.stringify(backgroundRegions)}`);
+    // Leaving the foreground also reports visibilitychange: still one
+    // announcement, not a second copy of the same message.
+    await casePage.evaluate(() => {
+      document.querySelector(".narration-live[role='status'] span")?.setAttribute("data-first", "");
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await delay(150);
+    const repeated = await casePage.evaluate(() => {
+      delete document.visibilityState;
+      const spans = [...document.querySelectorAll(".narration-live[role='status'] span")];
+      return { spans: spans.length, same: spans[0]?.hasAttribute("data-first") === true };
+    });
+    assert.deepEqual(repeated, { spans: 1, same: true }, `visibilitychange after pagehide announced the pause again: ${JSON.stringify(repeated)}`);
+  });
+
+  // Sleep expiry ends the session and the player with it: one toast, read
+  // by the app's toast announcer and not by the Reader's region.
+  await issue97Case("sleep expiry with the panel closed", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-sleep-row button", "10 min");
+    await startFullLecture(casePage);
+    await shiftClock(casePage, 11);
+    await casePage.evaluate(() => window.speechSynthesis.current.onend());
+    await casePage.waitForFunction(() => !document.querySelector(".audio-bar"), { timeout: 5_000 })
+      .catch(() => assert.fail("the sleep timer did not end narration"));
+    const message = "The sleep timer ended narration at a sentence boundary.";
+    await casePage.waitForFunction((text) => [...document.querySelectorAll(".toast")].some((node) => node.textContent.includes(text)), { timeout: 5_000 }, message)
+      .catch(() => assert.fail("the sleep timer ended narration without a toast"));
+    const regions = await announcements(casePage, message);
+    assert.deepEqual(regions, [{ region: "visually-hidden toast-live toast-live--polite", role: "status", count: 1 }], `sleep expiry was announced as ${JSON.stringify(regions)}`);
+  });
+
+  // The open panel shows the sentence being read but never announces it.
+  await issue97Case("the open panel while speaking", {}, async (casePage) => {
+    await openLecture(casePage);
+    await startFullLecture(casePage);
+    await openPanel(casePage);
+    await casePage.$eval('.speech-controls button[aria-label="Next narration sentence"]', (node) => node.click());
+    await waitForPosition(casePage, 2, "Next in the panel did not reach sentence 2");
+    const spoken = (await casePage.evaluate(() => window.speechSynthesis.current.text)).slice(0, 50);
+    const panel = await casePage.$eval(".speech-popover .speech-live", (node) => ({
+      role: node.getAttribute("role"),
+      live: node.getAttribute("aria-live"),
+      insideLive: Boolean(node.parentElement.closest("[aria-live], [role='status'], [role='alert'], [role='log']")),
+      shows: node.textContent,
+    }));
+    assert.ok(panel.shows.includes(spoken), `the panel no longer shows the sentence being read: “${panel.shows.slice(0, 80)}”`);
+    assert.deepEqual({ role: panel.role, live: panel.live, insideLive: panel.insideLive }, { role: null, live: null, insideLive: false }, "the panel's sentence display is a live region");
+    const regions = await announcements(casePage, spoken);
+    assert.deepEqual(regions, [], `the spoken sentence is in a live region: ${JSON.stringify(regions)}`);
+  });
+
+  // ND7: a 160-character bookmark ellipsizes; the panel never scrolls
+  // sideways and Delete stays inside it (#96 fixed the grid track).
+  await issue97Case("a 160-character bookmark", {}, async (casePage) => {
+    await openLecture(casePage);
+    const snippet = "An intelligent product observes some context, chooses an action, and is judged by the consequences of that action, so every design choice starts from its data too.".slice(0, 160);
+    assert.equal(snippet.length, 160);
+    await storeBookmark(casePage, snippet);
+    await casePage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+    for (const [label, viewport, scale] of [["393 px", phoneViewport, 1], ["320 px", { ...phoneViewport, width: 320, height: 568 }, 1], ["320 px at 200% text", { ...phoneViewport, width: 320, height: 568 }, 2], ["1280 px", desktopViewport, 1]]) {
+      // Leaving phone emulation reloads the page.
+      await casePage.setViewport(viewport);
+      await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+      await setTextScale(casePage, scale);
+      await openPanel(casePage);
+      await casePage.waitForSelector(".speech-bookmarks .speech-bookmark-play", { timeout: 5_000 });
+      const layout = await casePage.evaluate(() => {
+        const panel = document.querySelector(".speech-popover");
+        const frame = panel.getBoundingClientRect();
+        const remove = panel.querySelector('button[aria-label="Delete this audio bookmark"]').getBoundingClientRect();
+        return { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, panel: [Math.round(frame.left), Math.round(frame.right)], remove: [Math.round(remove.left), Math.round(remove.right)] };
+      });
+      assert.ok(layout.scrollWidth <= layout.clientWidth, `at ${label} the panel scrolls sideways: ${JSON.stringify(layout)}`);
+      assert.ok(layout.remove[0] >= layout.panel[0] && layout.remove[1] <= layout.panel[1], `at ${label} Delete is outside the panel: ${JSON.stringify(layout)}`);
+      await casePage.$eval('button[aria-label="Close narration"]', (node) => node.click());
+    }
+  });
+
+  // ND8: at the end of the lecture the Next card scrolls clear of the
+  // player, including when a message makes the player taller.
+  await issue97Case("the Next card with the player visible", {}, async (casePage) => {
+    await openLecture(casePage);
+    await startFullLecture(casePage);
+    const nextCardHit = () => casePage.evaluate(async () => {
+      const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const scroller = document.querySelector(".reader-scroll");
+      for (let pass = 0; pass < 3; pass += 1) {
+        scroller.scrollTop = scroller.scrollHeight;
+        await frame();
+      }
+      const card = document.querySelector(".document-pagination .next");
+      const box = card.getBoundingClientRect();
+      const bar = document.querySelector(".audio-bar").getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return { onCard: Boolean(hit && card.contains(hit)), hit: hit?.className || hit?.tagName || null, card: [Math.round(box.top), Math.round(box.bottom)], bar: [Math.round(bar.top), Math.round(bar.bottom)] };
+    });
+    for (const [label, viewport, scale] of [["393×852", phoneViewport, 1], ["320×568", { ...phoneViewport, width: 320, height: 568 }, 1], ["393×852 at 200% text", phoneViewport, 2]]) {
+      await casePage.setViewport(viewport);
+      await setTextScale(casePage, scale);
+      const speaking = await nextCardHit();
+      assert.ok(speaking.onCard, `at ${label} the player covers the Next card's centre: ${JSON.stringify(speaking)}`);
+      await failSentence(casePage, "synthesis-failed");
+      await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 });
+      const failed = await nextCardHit();
+      assert.ok(failed.onCard, `at ${label} the player with a message covers the Next card's centre: ${JSON.stringify(failed)}`);
+      await casePage.$eval('button[aria-label="Retry narration"]', (node) => node.click());
+      await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 });
+    }
+  });
+
+  // NU4, NM5, NU17: 44px controls and readable text on phones, one row of
+  // player controls down to 320px, no sideways scroll at 200% text.
+  await issue97Case("narration control sizes on phones", {}, async (casePage) => {
+    const problems = [];
+    await openLecture(casePage);
+    await storeBookmark(casePage, "A saved sentence.");
+    await casePage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+    for (const [label, viewport] of [["393 px", phoneViewport], ["320 px", { ...phoneViewport, width: 320, height: 568 }]]) {
+      await casePage.setViewport(viewport);
+      await setTextScale(casePage, 1);
+      // A selection shows the Selection tile's "Ready" badge.
+      await casePage.$eval(".markdown-body", (article) => {
+        const paragraph = [...article.querySelectorAll("p")].find((node) => node.textContent.trim().length > 100);
+        const range = document.createRange();
+        range.selectNodeContents(paragraph);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      await delay(150);
+      await openPanel(casePage);
+      await casePage.waitForSelector(".speech-scope-grid button span", { timeout: 5_000 });
+      const panel = await casePage.evaluate(() => {
+        const panelNode = document.querySelector(".speech-popover");
+        const height = (node) => Math.round(node.getBoundingClientRect().height * 10) / 10;
+        const size = (node) => Number.parseFloat(getComputedStyle(node).fontSize);
+        const controls = {
+          Close: panelNode.querySelector('button[aria-label="Close narration"]'),
+          "sleep chip": panelNode.querySelector(".speech-sleep-row[role='radiogroup'] button"),
+          "playlist switch row": panelNode.querySelector(".speech-autoadvance-row .setting-toggle"),
+          "bookmark row": panelNode.querySelector(".speech-bookmark-play"),
+          "bookmark Delete": panelNode.querySelector('button[aria-label="Delete this audio bookmark"]'),
+          "speed preset": panelNode.querySelector(".speech-preset-row button"),
+        };
+        const texts = {
+          "target status": [panelNode.querySelector(".speech-target-status"), 12],
+          "preset label": [panelNode.querySelector(".speech-preset-row button"), 12],
+          "sleep chip": [panelNode.querySelector(".speech-sleep-row[role='radiogroup'] button"), 12],
+          "playlist label": [panelNode.querySelector(".speech-autoadvance-row .setting-toggle span"), 12],
+          "preset multiplier": [panelNode.querySelector(".speech-preset-row button span"), 11],
+          "Ready badge": [panelNode.querySelector(".speech-scope-grid button span"), 11],
+        };
+        return {
+          short: Object.entries(controls).filter(([, node]) => !node || height(node) < 44).map(([name, node]) => `${name} ${node ? height(node) : "missing"}px`),
+          small: Object.entries(texts).filter(([, [node, minimum]]) => !node || size(node) < minimum).map(([name, [node, minimum]]) => `${name} ${node ? size(node) : "missing"}px (needs ${minimum})`),
+          playlistBorder: getComputedStyle(controls["playlist switch row"]).borderTopWidth,
+        };
+      });
+      if (panel.short.length) problems.push(`at ${label} panel controls under 44px tall: ${panel.short.join(", ")}`);
+      if (panel.small.length) problems.push(`at ${label} panel text too small: ${panel.small.join(", ")}`);
+      if (panel.playlistBorder !== "0px") problems.push(`at ${label} the Playlist row draws the settings divider (${panel.playlistBorder})`);
+      await casePage.$eval('button[aria-label="Close narration"]', (node) => node.click());
+      await casePage.evaluate(() => getSelection().removeAllRanges());
+      await startFullLecture(casePage);
+      for (const state of ["speaking", "error"]) {
+        if (state === "error") {
+          await failSentence(casePage, "synthesis-failed");
+          if (!await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 }).catch(() => null)) {
+            problems.push(`at ${label} a failed sentence leaves no player to measure`);
+            break;
+          }
+        }
+        const bar = await casePage.$eval(".audio-bar", (node) => {
+          const frame = node.getBoundingClientRect();
+          const buttons = [...node.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+          return {
+            count: buttons.length,
+            sizes: buttons.map((box) => [Math.round(box.width), Math.round(box.height)]),
+            rows: new Set(buttons.map((box) => Math.round(box.top))).size,
+            inside: frame.left >= 0 && frame.right <= document.documentElement.clientWidth,
+            label: Number.parseFloat(getComputedStyle(node.querySelector(".audio-label strong")).fontSize),
+          };
+        });
+        if (bar.count !== 7) problems.push(`at ${label} the ${state} player has ${bar.count} controls, not 7`);
+        if (!bar.sizes.every(([width, height]) => width >= 40 && height >= 44)) problems.push(`at ${label} ${state} player controls under 44px tall or 40px wide: ${bar.sizes.map((size) => size.join("×")).join(", ")}`);
+        if (bar.rows !== 1) problems.push(`at ${label} the ${state} player's controls wrap onto ${bar.rows} rows`);
+        if (!bar.inside) problems.push(`at ${label} the ${state} player runs off screen`);
+        if (bar.label < 12) problems.push(`at ${label} the ${state} player's label is ${bar.label}px`);
+      }
+      await casePage.evaluate(() => document.querySelector('button[aria-label="Stop narration"]')?.click());
+    }
+    // 200% text: no sideways page scroll with the player or the panel open.
+    for (const width of [393, 320]) {
+      await casePage.setViewport({ ...phoneViewport, width, height: width === 320 ? 568 : 852 });
+      await setTextScale(casePage, 2);
+      await startFullLecture(casePage);
+      await openPanel(casePage);
+      const overflow = await casePage.evaluate(() => ({
+        page: document.scrollingElement.scrollWidth - document.documentElement.clientWidth,
+        panel: document.querySelector(".speech-popover").scrollWidth - document.querySelector(".speech-popover").clientWidth,
+      }));
+      if (overflow.page > 0 || overflow.panel > 0) problems.push(`at ${width} px with 200% text narration scrolls sideways: ${JSON.stringify(overflow)}`);
+      await casePage.$eval('button[aria-label="Close narration"]', (node) => node.click());
+      await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+    }
+    assert.deepEqual(problems, [], problems.join("; "));
+  });
+
+  // NM4: Review reads 1.25×, and the slider can hold 1.25.
+  await issue97Case("the Review speed", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-preset-row button", "Review");
+    await casePage.waitForFunction(() => document.querySelector(".speech-preset-row button.active")?.textContent.includes("Review"), { timeout: 5_000 });
+    const speed = await casePage.evaluate(() => ({
+      output: document.querySelector(".speech-range-grid label output")?.textContent,
+      slider: document.querySelector('input[aria-label="Narration speed"]').value,
+      preset: document.querySelector(".speech-preset-row button.active span")?.textContent,
+    }));
+    assert.deepEqual(speed, { output: "1.25×", slider: "1.25", preset: "1.25×" }, `Review showed ${JSON.stringify(speed)}`);
+  });
+
+  // A target over the 500,000-character limit (a bookmark plays the full
+  // lecture, even mid-reading) replaces the reading in progress: the old
+  // queue stops, so the player never offers Retry for it, and the panel
+  // keeps the message, announced once.
+  await issue97Case("an over-long target while reading", {}, async (casePage) => {
+    await casePage.goto(`${baseUrl}#/notebook`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForSelector('.notebook-actions input[type="file"]', { timeout: 15_000 });
+    await casePage.$eval('.notebook-actions input[type="file"]', (input) => {
+      const paragraph = "This sentence keeps the lecture long enough to pass the read-aloud limit. ".repeat(40);
+      const body = Array.from({ length: 180 }, (_, index) => `## Part ${index + 1}\n\n${paragraph}\n`).join("\n");
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([`# Very Long Lecture\n\n${body}`], "very-long-lecture.md", { type: "text/markdown" }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await casePage.waitForFunction(() => [...document.querySelectorAll(".notebook-document-row .document-card")].some((card) => card.textContent.includes("Very Long Lecture")), { timeout: 15_000 });
+    await casePage.$$eval(".notebook-document-row .document-card", (cards) => cards.find((card) => card.textContent.includes("Very Long Lecture")).click());
+    await casePage.waitForFunction(() => document.querySelector(".markdown-body h1")?.textContent.includes("Very Long Lecture"), { timeout: 20_000 });
+    const longId = await casePage.evaluate(() => decodeURIComponent(window.location.hash.replace(/^#\/read\//u, "")));
+    await casePage.evaluate((id) => localStorage.setItem("lumen-audio-bookmarks-v1", JSON.stringify([{ id: "ab-long-97", documentId: id, v: 2, index: 3, total: 0, snippet: "This sentence keeps the lecture long", section: "", savedAt: new Date().toISOString() }])), longId);
+    // Reload (to list the bookmark) only once the upload is saved.
+    for (let attempt = 0; attempt < 50 && !(await readStoredProfile(casePage))?.customDocuments?.some((doc) => doc.id === longId); attempt += 1) await delay(200);
+    await casePage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForFunction(() => document.querySelector(".markdown-body h1")?.textContent.includes("Very Long Lecture"), { timeout: 20_000 });
+    await openPanel(casePage);
+    await chooseScope(casePage, "Section", "current section");
+    await clickByText(casePage, ".speech-controls button", "Read current section");
+    await waitForBar(casePage, "section narration did not start");
+    await openPanel(casePage);
+    await casePage.$eval(".speech-bookmarks .speech-bookmark-play", (node) => node.click());
+    const message = "This reading target exceeds 500,000 characters.";
+    await casePage.waitForFunction((text) => document.querySelector(".speech-popover .speech-live")?.textContent.includes(text), { timeout: 5_000 }, message)
+      .catch(() => assert.fail("an over-long target left no message in the panel"));
+    await delay(150);
+    const after = await casePage.evaluate(() => ({ player: Boolean(document.querySelector(".audio-bar")), speaking: Boolean(window.speechSynthesis.current) }));
+    assert.deepEqual(after, { player: false, speaking: false }, `an over-long target left the previous reading behind: ${JSON.stringify(after)}`);
+    const regions = await announcements(casePage, message);
+    assert.deepEqual(regions, narratorRegion("alert"), `the over-long target was announced as ${JSON.stringify(regions)}`);
+  });
+
+  // NM3: Teaching Mode opens on its narration control, so Space narrates
+  // and pauses; Tab order and Escape stay as they were.
+  await issue97Case("Teaching Mode and Space", { viewport: desktopViewport }, async (casePage) => {
+    await openLecture(casePage);
+    // Opened from the keyboard, so Escape has a focused opener to return to.
+    await casePage.$$eval(".document-tools button", (buttons) => buttons.find((button) => button.textContent.trim() === "Teach").focus());
+    await casePage.keyboard.press("Enter");
+    await casePage.waitForSelector(".teach-mode", { timeout: 10_000 });
+    const narrateLabel = () => casePage.evaluate(() => (document.activeElement?.hasAttribute("data-teach-narrate") ? document.activeElement.getAttribute("aria-label") : `focus on ${document.activeElement?.getAttribute("aria-label") || document.activeElement?.tagName}`));
+    assert.equal(await narrateLabel(), "Narrate this section", "Teaching Mode did not open with focus on its narration control");
+    await casePage.keyboard.press("Space");
+    await casePage.waitForFunction(() => window.speechSynthesis.current?.text && !window.speechSynthesis.paused, { timeout: 5_000 })
+      .catch(async () => assert.fail(`Space did not start narration (teaching ${await casePage.$(".teach-mode") ? "open" : "closed"})`));
+    assert.equal(await narrateLabel(), "Pause narration", "after Space the narration control lost focus or its name");
+    await casePage.keyboard.press("Space");
+    await casePage.waitForFunction(() => window.speechSynthesis.paused === true, { timeout: 5_000 })
+      .catch(() => assert.fail("a second Space did not pause narration"));
+    assert.equal(await narrateLabel(), "Resume narration", "after the second Space the narration control lost focus or its name");
+    // Tab order: the footer still reads the presenter tools, Previous
+    // section (disabled on the first section), the narration control, Stop
+    // and Next section, and Tab walks it in that order both ways.
+    const footer = await casePage.$$eval(".teach-footer button:not(:disabled)", (buttons) => buttons.map((button) => button.getAttribute("aria-label")));
+    const at = footer.indexOf("Pause narration") === -1 ? footer.indexOf("Resume narration") : footer.indexOf("Pause narration");
+    assert.deepEqual(footer.slice(at - 1), ["Reset teaching timer", "Resume narration", "Stop narration", "Next section"], `Teaching Mode's footer order changed: ${footer.join(", ")}`);
+    const order = [];
+    for (let step = 0; step < 2; step += 1) {
+      await casePage.keyboard.press("Tab");
+      order.push(await casePage.evaluate(() => document.activeElement?.getAttribute("aria-label")));
+    }
+    await casePage.keyboard.down("Shift");
+    for (let step = 0; step < 3; step += 1) await casePage.keyboard.press("Tab");
+    await casePage.keyboard.up("Shift");
+    order.push(await casePage.evaluate(() => document.activeElement?.getAttribute("aria-label")));
+    assert.deepEqual(order, ["Stop narration", "Next section", "Reset teaching timer"], `Tab from the narration control reached ${order.join(", ")}`);
+    await casePage.keyboard.press("Escape");
+    await casePage.waitForSelector(".teach-mode", { hidden: true, timeout: 5_000 })
+      .catch(() => assert.fail("Escape did not close Teaching Mode"));
+    await delay(150);
+    assert.equal(await casePage.evaluate(() => document.activeElement?.textContent.trim()), "Teach", "focus did not return to Teach after Escape");
+  });
+
+  // NU13, NM8: the copy names the learner's platform. A Mac never reads
+  // "iOS"; iOS gets Safari's built-in voices, not advice to install one.
+  const asPlatform = (userAgent, platform, touchPoints = 0) => async (casePage) => {
+    const cdp = await casePage.createCDPSession();
+    await cdp.send("Emulation.setUserAgentOverride", { userAgent, platform });
+    if (touchPoints) await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: touchPoints });
+  };
+  const narrationWording = async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    // A network voice shows the platform's privacy note.
+    await casePage.select('select[aria-label="Narration voice"]', "cloud-en-us");
+    await casePage.waitForFunction(() => /cloud voice/u.test(document.querySelector(".speech-voice-detail")?.textContent || ""), { timeout: 5_000 });
+    const panel = await casePage.$eval(".speech-popover", (node) => ({ text: node.innerText, microcopy: node.querySelector(".microcopy")?.textContent || "" }));
+    await casePage.evaluate(() => {
+      window.__lumenTestVoices = [];
+      window.speechSynthesis.dispatch("voiceschanged");
+    });
+    await clickByText(casePage, ".speech-availability button", "Refresh");
+    await casePage.waitForFunction(() => /reported any voices/u.test(document.querySelector(".speech-availability")?.textContent || ""), { timeout: 5_000 });
+    const empty = await casePage.$eval(".speech-availability", (node) => node.textContent);
+    // A blocked sentence's message, from the player or else the panel.
+    await startFullLecture(casePage);
+    await failSentence(casePage, "not-allowed");
+    await delay(150);
+    const blocked = await barMessage(casePage) || await (async () => {
+      await openPanel(casePage);
+      return casePage.$eval(".speech-popover .speech-live", (node) => node.textContent);
+    })();
+    assert.match(blocked, /blocked/u, "a blocked sentence left no message");
+    return Object.fromEntries(Object.entries({ ...panel, empty, blocked }).map(([where, text]) => [where, text.replace(/\s+/gu, " ").trim()]));
+  };
+  await issue97Case("Mac Chrome wording", {
+    viewport: desktopViewport,
+    prepare: asPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36", "MacIntel"),
+  }, async (casePage) => {
+    const wording = await narrationWording(casePage);
+    const problems = Object.entries(wording).filter(([, text]) => /\biOS\b|iPhone|iPad/u.test(text)).map(([where, text]) => `${where} names iOS: “…${text.match(/[^.]*\b(?:iOS|iPhone|iPad)\b[^.]*/u)?.[0].trim().slice(-90)}”`);
+    if (!/^Voices come from macOS and this browser\./u.test(wording.microcopy)) problems.push(`the microcopy reads “${wording.microcopy}”`);
+    assert.deepEqual(problems, [], `Mac Chrome narration wording: ${problems.join(" | ")}`);
+  });
+  await issue97Case("iPhone wording", {
+    prepare: asPlatform("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", "iPhone", 5),
+  }, async (casePage) => {
+    const wording = await narrationWording(casePage);
+    const problems = Object.entries(wording).filter(([, text]) => /install|Spoken Content/iu.test(text)).map(([where, text]) => `${where} advises installing a voice: “${text.match(/[^.]*(?:install|Spoken Content)[^.]*/iu)?.[0].trim()}”`);
+    if (!/^Safari offers the voices built into iOS; voices downloaded in Settings may not appear here\./u.test(wording.microcopy)) problems.push(`the microcopy reads “${wording.microcopy}”`);
+    assert.deepEqual(problems, [], `iPhone narration wording: ${problems.join(" | ")}`);
+  });
+
+  // ND13, NM6, NU17: measured on screen in Paper, Night, system-dark and
+  // Contrast: text on the spoken block's tint and the panel's warnings keep
+  // 4.5:1, and the player's edge keeps 3:1 against the page. (axe cannot
+  // read colours mixed with color-mix(), such as the panel's message box.)
+  await issue97Case("narration colours in every theme", {}, async (casePage) => {
+    const problems = [];
+    await openLecture(casePage);
+    const measure = (selector, { backdrop, edge = false } = {}) => casePage.$eval(selector, (node, options) => {
+      const parse = (value) => {
+        const rgb = value.match(/^rgba?\(([^)]+)\)$/u);
+        if (rgb) {
+          const [red, green, blue, alpha = 1] = rgb[1].split(/[\s,/]+/u).filter(Boolean).map(Number);
+          return [red, green, blue, alpha];
+        }
+        const srgb = value.match(/^color\(srgb ([^)]+)\)$/u);
+        if (srgb) {
+          const [red, green, blue, alpha = 1] = srgb[1].split(/[\s/]+/u).filter(Boolean).map(Number);
+          return [red * 255, green * 255, blue * 255, alpha];
+        }
+        return null;
+      };
+      const over = (top, bottom) => [0, 1, 2].map((channel) => top[channel] * top[3] + bottom[channel] * (1 - top[3])).concat(1);
+      const fill = (element) => {
+        const layers = [];
+        for (let current = element; current; current = current.parentElement) {
+          const colour = parse(getComputedStyle(current).backgroundColor);
+          if (colour && colour[3] > 0) {
+            layers.push(colour);
+            if (colour[3] >= 1) break;
+          }
+        }
+        return layers.reduceRight((below, layer) => over(layer, below), [255, 255, 255, 1]);
+      };
+      const luminance = (colour) => {
+        const [red, green, blue] = colour.slice(0, 3).map((channel) => {
+          const value = channel / 255;
+          return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      };
+      const ratio = (first, second) => {
+        const [light, dark] = [luminance(first), luminance(second)].sort((left, right) => right - left);
+        return Math.round(((light + 0.05) / (dark + 0.05)) * 100) / 100;
+      };
+      const style = getComputedStyle(node);
+      if (options.edge) {
+        // The border is drawn over the element's own fill.
+        const border = over(parse(style.borderTopColor), fill(node));
+        return ratio(border, fill(document.querySelector(options.backdrop)));
+      }
+      const ground = fill(node);
+      return ratio(over(parse(style.color), ground), ground);
+    }, { backdrop, edge });
+    const chooseTheme = async (label) => {
+      await casePage.$eval('button[aria-label="Open settings"]', (node) => node.click());
+      await casePage.waitForSelector(".settings-drawer .theme-choices", { timeout: 10_000 });
+      await clickByText(casePage, ".theme-choices button", label);
+      await casePage.$eval(".settings-close", (node) => node.click());
+      await casePage.waitForSelector(".settings-drawer", { hidden: true, timeout: 5_000 });
+      await delay(450);
+    };
+    for (const [label, choice, scheme] of [["Paper", "Paper", "light"], ["Night", "Night", "light"], ["system-dark", "System", "dark"], ["Contrast", "Contrast", "light"]]) {
+      await casePage.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
+      await chooseTheme(choice);
+      await startFullLecture(casePage);
+      for (let step = 0; step < 12 && !await casePage.$(".markdown-body p.narration-active"); step += 1) {
+        await casePage.$eval('.audio-bar button[aria-label="Next narration sentence"]', (node) => node.click());
+        await delay(120);
+      }
+      await delay(400);
+      const readings = {
+        "text on the spoken block": [await measure(".markdown-body p.narration-active"), 4.5],
+        "the player's edge on the page": [await measure(".audio-bar", { edge: true, backdrop: ".reader-scroll" }), 3],
+      };
+      await failSentence(casePage, "interrupted");
+      await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 });
+      await openPanel(casePage);
+      await casePage.waitForSelector(".speech-popover .inline-warning", { timeout: 5_000 });
+      await delay(400);
+      readings["the panel's message"] = [await measure(".speech-popover .inline-warning"), 4.5];
+      await clickByText(casePage, ".speech-scope-grid button", "Selection");
+      await casePage.waitForSelector(".speech-target-status.warning", { timeout: 5_000 });
+      await delay(400);
+      readings["the target warning"] = [await measure(".speech-target-status.warning"), 4.5];
+      await clickByText(casePage, ".speech-scope-grid button", "Full");
+      await casePage.$eval('button[aria-label="Close narration"]', (node) => node.click());
+      await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+      for (const [what, [value, minimum]] of Object.entries(readings)) if (!(value >= minimum)) problems.push(`${label}: ${what} is ${value}:1 (needs ${minimum}:1)`);
+    }
+    assert.deepEqual(problems, [], problems.join("; "));
+  });
+
+  const narrationFailures = [["#96", issue96Failures], ["#97", issue97Failures]].filter(([, list]) => list.length);
+  assert.deepEqual(narrationFailures, [], narrationFailures.map(([issue, list]) => `issue ${issue} narration cases failed:\n- ${list.join("\n- ")}`).join("\n"));
+  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone; issue #97: failed, interrupted and backgrounded sentences in the player with Retry and one announcement each, sleep expiry as one toast, no announced sentences from the open panel, a 160-character bookmark at 393, 320 and 1280 px, the Next card clear of the player, 44px controls and readable text on phones, the Review speed, Space in Teaching Mode, and Mac and iPhone wording.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
