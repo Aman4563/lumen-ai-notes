@@ -173,7 +173,7 @@ export const InterviewPractice = ({ kit, practice, updatePractice, mistakes = []
     <section className="ai-tutor__practice" aria-labelledby={titleId}>
       <div className="ai-tutor__practice-head">
         <h3 id={titleId} ref={headingRef} tabIndex={-1}>{card ? "Practice question" : "Practice an authored question"}</h3>
-        <label className="ai-tutor__practice-track"><span>Track</span><select value={trackId} disabled={busy} onChange={(event) => updatePractice((current) => ({ ...current, trackId: event.target.value }))}>{tracks.map((track) => <option value={track.id} key={track.id}>{track.label}</option>)}</select></label>
+        <label className="ai-tutor__practice-track"><span>Track</span><select className="ui-select" value={trackId} disabled={busy} onChange={(event) => updatePractice((current) => ({ ...current, trackId: event.target.value }))}>{tracks.map((track) => <option value={track.id} key={track.id}>{track.label}</option>)}</select></label>
       </div>
       {!card ? (
         <>

@@ -3266,7 +3266,7 @@ export default function AiTutor({
         {compactModes ? (
           <label className="ai-tutor__mode-select">
             <span>Mode</span>
-            <select value={modeId} disabled={requestState.status === "loading"} aria-describedby={modeDescriptionId} onChange={(event) => selectMode(event.target.value)}>
+            <select className="ui-select ui-select--block" value={modeId} disabled={requestState.status === "loading"} aria-describedby={modeDescriptionId} onChange={(event) => selectMode(event.target.value)}>
               {MODE_OPTIONS.map((mode) => <option value={mode.id} key={mode.id}>{mode.label}</option>)}
             </select>
           </label>
@@ -3547,7 +3547,7 @@ export default function AiTutor({
         onClose={() => setOptionsOpen(false)}
       >
         <div className="ai-tutor__composer-row">
-          <label className="ai-tutor__difficulty"><span>Depth</span><select value={difficulty} disabled={requestState.status === "loading"} onChange={(event) => { setDifficulty(event.target.value); outboundChanged(); }}>{DIFFICULTIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+          <label className="ai-tutor__difficulty"><span>Depth</span><select className="ui-select" value={difficulty} disabled={requestState.status === "loading"} onChange={(event) => { setDifficulty(event.target.value); outboundChanged(); }}>{DIFFICULTIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
           <span className="ai-tutor__model">{configState.config?.model ? `Local model: ${configState.config.model}` : "Local model is host-managed"}</span>
         </div>
         <fieldset className="ai-tutor__response-profiles" disabled={requestState.status === "loading"}>

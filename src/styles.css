@@ -54,6 +54,18 @@
   --sidebar-ink: #f7f5ef;
   --sidebar-ink-muted: #b7bfd0;
   --sidebar-accent: #efc16e;
+  /* Form controls (issue #92): an edge that reaches 3:1 on every paper
+     surface, and the select palette that the Teaching island overrides. */
+  --control-border: #7e8595;
+  --select-ink: var(--ink);
+  --select-bg: var(--paper);
+  --select-bg-hover: var(--paper-3);
+  --select-border-hover: var(--ink-soft);
+  --select-icon: var(--ink-soft);
+  --select-menu-bg: var(--paper);
+  --select-menu-edge: var(--line-strong);
+  --select-checked-ink: var(--accent-strong);
+  --select-checked-bg: var(--accent-soft);
 }
 
 [data-theme="dark"] {
@@ -92,6 +104,7 @@
   --blue-soft: #24304a;
   --sage: #5fb89f;
   --sage-deep: #7fd3bd;
+  --control-border: #737a88;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -131,6 +144,7 @@
     --blue-soft: #24304a;
     --sage: #5fb89f;
     --sage-deep: #7fd3bd;
+    --control-border: #737a88;
   }
 }
 
@@ -169,6 +183,7 @@
   --sidebar-ink: #ffffff;
   --sidebar-ink-muted: #ffffff;
   --sidebar-accent: #ffd24d;
+  --control-border: #000000;
 }
 
 /* Navy islands keep light text in every theme, so they carry their own
@@ -1236,7 +1251,6 @@ input::placeholder {
   font-weight: 700;
 }
 
-.select,
 .text-input,
 .title-input,
 .note-area,
@@ -1248,15 +1262,235 @@ input::placeholder {
   background: var(--paper-2);
 }
 
-.select,
 .text-input,
 .title-input {
   min-height: 40px;
   padding: 8px 11px;
 }
 
-.select {
-  max-width: 220px;
+/* The one select control (issue #92). Every <select> carries .ui-select
+   (--sm for toolbars, --block to fill its field): a native select with a
+   token-coloured chevron, 44px and 16px text on phones and touch screens so
+   iOS never zooms, and the native picker. Screens keep only layout rules
+   (width, flex) for their selects, never a skin. */
+.ui-select {
+  /* Two gradient strokes draw the chevron, so it follows --select-icon in
+     every theme without a per-theme image. */
+  --ui-chevron-start: linear-gradient(45deg, transparent calc(50% - 1.1px), var(--select-icon) calc(50% - 0.7px) calc(50% + 0.7px), transparent calc(50% + 1.1px));
+  --ui-chevron-end: linear-gradient(-45deg, transparent calc(50% - 1.1px), var(--select-icon) calc(50% - 0.7px) calc(50% + 0.7px), transparent calc(50% + 1.1px));
+  --ui-fill: var(--select-bg);
+  -webkit-appearance: none;
+  appearance: none;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 40px;
+  padding: 6px 34px 6px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: 12px;
+  color: var(--select-ink);
+  background-color: var(--ui-fill);
+  background-image: var(--ui-chevron-start), var(--ui-chevron-end);
+  background-position: right 18px center, right 13px center;
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+
+.ui-select--sm {
+  min-block-size: 34px;
+  padding-inline: 10px 30px;
+  border-radius: 10px;
+  background-position: right 16px center, right 11px center;
+  font-size: 0.8125rem;
+}
+
+.ui-select--block {
+  inline-size: 100%;
+}
+
+/* iOS Safari zooms into any focused field under 16px (REV-10). */
+@media (max-width: 740px), (pointer: coarse) {
+  .ui-select {
+    min-block-size: 44px;
+    font-size: max(16px, 1rem);
+  }
+}
+
+@media (hover: hover) {
+  .ui-select:hover:not(:disabled) {
+    --ui-fill: var(--select-bg-hover);
+    border-color: var(--select-border-hover);
+  }
+}
+
+/* The global two-tone ring (:root :focus-visible) stays; the edge joins it. */
+.ui-select:focus-visible {
+  border-color: var(--focus-ring);
+}
+
+/* Explicit, because the customizable select below has no UA dimming. */
+.ui-select:disabled {
+  --ui-fill: var(--paper-3);
+  opacity: 1;
+  color: var(--ink-soft);
+  border-style: dashed;
+  border-color: var(--line-strong);
+  cursor: not-allowed;
+}
+
+.ui-select:is(:user-invalid, [aria-invalid="true"]) {
+  border-color: var(--danger);
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
+.ui-select:is(:user-invalid, [aria-invalid="true"]):focus-visible {
+  box-shadow: inset 0 0 0 1px var(--danger), 0 0 0 7px var(--focus-halo);
+}
+
+/* Fields on dialog and sheet surfaces match their sibling text fields. */
+:is(.modal-layer, .reader-popover, .tutor-sheet) {
+  --select-bg: var(--paper-2);
+}
+
+/* Progressive enhancement: where the customizable select exists (Chrome and
+   Edge 135+, Safari 27 on macOS) a mouse gets a themed picker. Touch screens,
+   iPhone included, keep the native picker on purpose, and forced colours hand
+   the control back to the system. */
+@supports (appearance: base-select) {
+  @media (hover: hover) and (pointer: fine) and (forced-colors: none) {
+    .ui-select,
+    .ui-select::picker(select) {
+      appearance: base-select;
+    }
+
+    /* This select sizes to its value and never ellipsizes it, so the chevron
+       moves to the picker icon laid over the end padding: a value too long
+       for the field fades out under the arrow instead of running into it. */
+    .ui-select {
+      position: relative;
+      overflow: hidden;
+      align-items: center;
+      background-image: none;
+    }
+
+    .ui-select::picker-icon {
+      content: "";
+      position: absolute;
+      inset-block: 0;
+      inset-inline-end: 0;
+      inline-size: 34px;
+      background: var(--ui-chevron-start), var(--ui-chevron-end), linear-gradient(to right, transparent, var(--ui-fill) 10px);
+      background-position: right 18px center, right 13px center, 0 0;
+      background-repeat: no-repeat;
+      background-size: 5px 5px, 5px 5px, auto;
+    }
+
+    .ui-select--sm::picker-icon {
+      inline-size: 30px;
+      background-position: right 16px center, right 11px center, 0 0;
+    }
+
+    /* Open: the edge darkens and the chevron flips (its strokes swap places). */
+    .ui-select:open {
+      border-color: var(--select-border-hover);
+    }
+
+    .ui-select:open::picker-icon {
+      background-position: right 13px center, right 18px center, 0 0;
+    }
+
+    .ui-select--sm:open::picker-icon {
+      background-position: right 11px center, right 16px center, 0 0;
+    }
+
+    .ui-select::picker(select) {
+      margin-block: 6px;
+      padding: 6px;
+      border: 1px solid var(--select-menu-edge);
+      border-radius: 14px;
+      color: var(--select-ink);
+      background: var(--select-menu-bg);
+      box-shadow: var(--shadow-md);
+      /* Open below when it fits (the UA prefers the larger side), and cap the
+         width so long options wrap and the picker can still flip. */
+      position-try-order: normal;
+      position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+      max-block-size: min(22rem, 60dvh);
+      max-inline-size: min(28rem, calc(100vw - 16px));
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      transition: opacity 120ms ease, translate 120ms ease;
+    }
+
+    @starting-style {
+      .ui-select:open::picker(select) {
+        opacity: 0;
+        translate: 0 -4px;
+      }
+    }
+
+    .ui-select option {
+      min-block-size: 40px;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      cursor: pointer;
+    }
+
+    .ui-select option:hover {
+      background: var(--select-bg-hover);
+    }
+
+    .ui-select option:checked {
+      color: var(--select-checked-ink);
+      background: var(--select-checked-bg);
+    }
+
+    .ui-select option::checkmark {
+      order: 1;
+      margin-inline-start: auto;
+      font-weight: 800;
+    }
+
+    .ui-select option:focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: -2px;
+      box-shadow: none;
+    }
+
+    .ui-select option:disabled {
+      color: var(--ink-faint);
+      background: none;
+      cursor: not-allowed;
+    }
+
+    /* An optgroup's label takes the optgroup's own text styles. */
+    .ui-select optgroup {
+      padding-block-start: 6px;
+      color: var(--select-icon);
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .ui-select optgroup option {
+      color: var(--select-ink);
+      letter-spacing: normal;
+      text-transform: none;
+    }
+  }
 }
 
 .settings-actions {
@@ -1619,8 +1853,7 @@ input::placeholder {
 .note-area:focus,
 .markdown-editor:focus,
 .title-input:focus,
-.text-input:focus,
-.select:focus {
+.text-input:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--teal) 14%, transparent);
 }
@@ -1704,10 +1937,6 @@ input::placeholder {
 .control-row {
   justify-content: space-between;
   gap: 15px;
-}
-
-.control-row .select {
-  min-width: 170px;
 }
 
 .range-wrap {
@@ -1826,6 +2055,21 @@ input[type="range"] {
     radial-gradient(circle at 90% 4%, rgba(232, 181, 91, 0.18), transparent 25rem),
     radial-gradient(circle at 8% 100%, rgba(47, 142, 134, 0.17), transparent 24rem),
     #111a2c;
+  /* A navy island in every theme: native pickers, the select and its picker
+     follow it, with the navy islands' focus colours. */
+  color-scheme: dark;
+  --focus-ring: #efc16e;
+  --focus-halo: #0b1222;
+  --control-border: #7d879c;
+  --select-ink: #ffffff;
+  --select-bg: #1d2a42;
+  --select-bg-hover: #2a3a5a;
+  --select-border-hover: #c3cad8;
+  --select-icon: #e6e9f0;
+  --select-menu-bg: #1d2a42;
+  --select-menu-edge: #7d879c;
+  --select-checked-ink: #ffffff;
+  --select-checked-bg: #2f4270;
 }
 
 .teach-toolbar {
@@ -2683,7 +2927,6 @@ input[type="range"] {
 .review-settings-strip > div strong { color: var(--ink); font-size: 0.8rem; }
 .review-settings-strip > div span { margin-top: 2px; color: var(--ink-faint); font-size: 0.68rem; }
 .review-settings-strip label { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 0.69rem; font-weight: 750; white-space: nowrap; }
-.review-settings-strip select { min-height: 38px; padding: 6px 28px 6px 9px; border: 1px solid var(--line-strong); border-radius: 9px; color: var(--ink); background: var(--paper); font: inherit; font-size: 0.72rem; }
 
 .review-deck-list { display: grid; gap: 10px; }
 .review-deck-heading { align-items: end; gap: 16px; }
@@ -2741,7 +2984,6 @@ input[type="range"] {
 .review-card-dialog textarea { width: 100%; min-height: 105px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--paper-2); font: inherit; line-height: 1.55; resize: vertical; }
 .review-dialog-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
 .review-dialog-toolbar label { flex: 1; }
-.review-dialog-toolbar select { width: 100%; min-height: 41px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 11px; color: var(--ink); background: var(--paper-2); }
 .review-markdown-preview { display: grid; gap: 7px; margin-top: 15px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper-2); }
 .review-markdown-preview > span { margin-top: 5px; color: var(--teal-text); font-size: 0.64rem; font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
 .review-source-note { display: flex; align-items: center; gap: 7px; }
@@ -2907,7 +3149,6 @@ input[type="range"] {
     padding: 11px 0;
   }
 
-  .setting-row .select,
   .setting-row .segmented {
     width: 100%;
     max-width: none;
@@ -2923,7 +3164,6 @@ input[type="range"] {
     gap: 7px;
   }
 
-  .control-row .select,
   .range-wrap {
     width: 100%;
     max-width: none;
@@ -5437,16 +5677,6 @@ input[type="range"] {
   font-weight: 750;
 }
 
-.reader-popover select {
-  width: 100%;
-  min-height: 41px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  color: var(--ink);
-  background: var(--paper-2);
-}
-
 .speech-scope-fieldset {
   min-width: 0;
   margin: 0;
@@ -5531,7 +5761,7 @@ input[type="range"] {
   gap: 6px;
 }
 
-.speech-choice-grid select { min-width: 0; font-size: 0.69rem; }
+.speech-choice-grid select { min-width: 0; }
 
 .speech-voice-detail,
 .speech-availability {
@@ -6292,16 +6522,6 @@ input[type="range"] {
   border: 0;
 }
 
-.settings-retention select {
-  min-height: 40px;
-  padding: 7px 11px;
-  color: var(--ink, #172035);
-  background: var(--paper-2, #f9f7f1);
-  border: 1px solid var(--line, rgba(23, 32, 53, 0.14));
-  border-radius: 10px;
-  font-size: 0.82rem;
-}
-
 .ai-disabled-state {
   margin-top: 26px;
 }
@@ -6506,14 +6726,6 @@ input[type="range"] {
   color: var(--ink-soft, #566078);
   font-size: 0.78rem;
   font-weight: 700;
-}
-
-.review-mistakes .mistake-controls select {
-  min-height: 40px;
-  padding: 6px 10px;
-  border: 1px solid var(--line, rgba(23, 32, 53, 0.14));
-  border-radius: 10px;
-  background: var(--paper, #fff);
 }
 
 .mistake-corrected-toggle input {
@@ -7095,13 +7307,6 @@ input[type="range"] {
 
 .teach-header-actions select {
   max-width: 260px;
-  min-height: 36px;
-  padding: 6px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 10px;
-  color: white;
-  background: #1d2a42;
-  font-size: 0.7rem;
 }
 
 .teach-section-progress {
@@ -7263,15 +7468,6 @@ input[type="range"] {
 .board-page-controls select {
   min-width: 130px;
   max-width: 230px;
-  min-height: 36px;
-  padding: 5px 29px 5px 9px;
-  border: 1px solid var(--line-strong);
-  border-radius: 9px;
-  color: var(--ink);
-  background: var(--paper);
-  font: inherit;
-  font-size: 0.74rem;
-  font-weight: 750;
 }
 
 .board-page-controls > span {
@@ -7375,18 +7571,6 @@ input[type="range"] {
   color: var(--ink-faint);
   font-size: 0.66rem;
   font-weight: 800;
-}
-
-.library-view-controls select {
-  min-height: 37px;
-  padding: 6px 30px 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  color: var(--ink);
-  background: var(--paper);
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 750;
 }
 
 .library-view-controls > div {
@@ -7506,7 +7690,7 @@ input[type="range"] {
   .board-pagebar { min-height: 52px; padding: 4px 8px; }
   .board-page-controls > svg,
   .board-page-controls > span { display: none; }
-  .board-page-controls select { min-width: 112px; max-width: 145px; min-height: 44px; }
+  .board-page-controls select { min-width: 112px; max-width: 145px; }
   .board-page-controls button,
   .board-backgrounds button { width: 44px; height: 44px; }
   .board-toolbar-scroll { padding-right: 9px; padding-left: 9px; }
@@ -7773,7 +7957,6 @@ input[type="range"] {
 .annotation-dialog blockquote { max-height: 150px; overflow-y: auto; margin: 0; padding: 13px 15px; border-left: 4px solid var(--gold); border-radius: 0 10px 10px 0; color: var(--ink-soft); background: var(--gold-soft); font: 0.82rem/1.6 Georgia, serif; }
 .annotation-dialog label { display: grid; gap: 7px; margin-top: 14px; color: var(--ink-soft); font-size: 0.71rem; font-weight: 750; }
 .annotation-dialog label small { color: var(--ink-faint); font-weight: 500; }
-.annotation-dialog select,
 .annotation-dialog textarea { width: 100%; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 11px; color: var(--ink); background: var(--paper-2); font: inherit; }
 .annotation-dialog textarea { min-height: 100px; line-height: 1.5; resize: vertical; }
 .annotation-dialog fieldset { margin: 16px 0 0; padding: 0; border: 0; }
@@ -7811,7 +7994,6 @@ input[type="range"] {
 
 .annotation-section-heading { align-items: flex-end; }
 .annotation-section-heading label { display: flex; align-items: center; gap: 7px; color: var(--ink-faint); font-size: 0.67rem; font-weight: 750; }
-.annotation-section-heading select { min-height: 39px; padding: 7px 28px 7px 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: var(--paper); font: inherit; font-size: 0.7rem; }
 .notebook-annotation-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .notebook-annotation-card { display: flex; min-height: 220px; flex-direction: column; padding: 16px; border: 1px solid var(--line); border-top: 5px solid var(--gold); border-radius: 15px; background: var(--paper); box-shadow: var(--shadow-sm); }
 .notebook-annotation-card.coral { border-top-color: var(--coral); }
@@ -7861,7 +8043,6 @@ input[type="range"] {
 .collection-chips .archived-chip { border-style: dashed; }
 .notebook-document-row { position: relative; }
 .pinned-marker { position: absolute; z-index: 1; top: -5px; left: -5px; color: var(--coral-text); }
-.manage-doc-dialog select { min-height: 41px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 11px; color: var(--ink); background: var(--paper-2); }
 .manage-doc-dialog .setting-toggle { margin-top: 13px; }
 
 /* Wave 7: revision history */
@@ -7906,7 +8087,6 @@ input[type="range"] {
   .library-facets button { flex: 0 0 auto; }
   .search-chip button + button { min-width: 44px; justify-content: center; }
   .empty-state-actions .button { min-height: 44px; }
-  .library-view-controls select { min-height: 44px; }
   .library-view-controls > div button { width: 44px; height: 44px; }
   .document-card::after { top: -40px; right: -40px; width: 92px; height: 92px; }
 }
@@ -7952,7 +8132,7 @@ input[type="range"] {
 .teach-print-document { display: none; }
 @media print {
   .teach-mode > *:not(.teach-print-document) { display: none !important; }
-  .teach-mode { position: static !important; overflow: visible !important; background: #ffffff !important; }
+  .teach-mode { position: static !important; overflow: visible !important; background: #ffffff !important; color-scheme: light; }
   .teach-print-document { display: block; color: #111827; }
   .teach-print-document h1 { margin: 0 0 18px; font-size: 26px; }
   .teach-print-document section { margin-bottom: 22px; break-inside: avoid-page; }
@@ -8074,7 +8254,6 @@ input[type="range"] {
 .interview-track-strip strong { display: block; color: var(--ink); font-size: 0.8rem; }
 .interview-track-strip span { color: var(--ink-faint); font-size: 0.66rem; }
 .interview-track-strip label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 0.64rem; font-weight: 800; text-transform: uppercase; }
-.interview-track-strip select { min-height: 38px; padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--ink); background: var(--paper-2); }
 .lab-strip { margin-bottom: 12px; padding: 13px 16px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
 .lab-strip strong { display: block; color: var(--ink); font-size: 0.8rem; }
 .lab-strip > div > span { color: var(--ink-faint); font-size: 0.66rem; }
@@ -8098,7 +8277,6 @@ input[type="range"] {
 .batch-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--paper-2); }
 .batch-toolbar strong { color: var(--ink); font-size: 0.76rem; }
 .batch-toolbar label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-faint); font-size: 0.68rem; font-weight: 750; }
-.batch-toolbar select { min-height: 34px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--paper); color: var(--ink); }
 .batch-check { display: flex; align-items: center; padding-right: 4px; }
 .batch-check input { width: 18px; height: 18px; }
 .notebook-document-row.is-selected { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 14px; }
@@ -8227,8 +8405,7 @@ input[type="range"] {
 }
 /* iOS Safari zooms into any focused field under 16px (REV-10). */
 @media (max-width: 740px), (pointer: coarse) {
-  :is(.review-center-page, .review-session-page, .notebook-page, .review-card-dialog, .assessment-dialog) :is(input, select, textarea),
-  .review-mistakes .mistake-controls select { font-size: max(16px, 1rem); }
+  :is(.review-center-page, .review-session-page, .notebook-page, .review-card-dialog, .assessment-dialog) :is(input, textarea) { font-size: max(16px, 1rem); }
 }
 
 /* Assisted evidence checks (issue #7): machine-verified, one tap to run. */
@@ -8353,5 +8530,7 @@ input[type="range"] {
   }
   :root :focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
   .library-search:has(input:focus-visible) { outline: 3px solid Highlight; }
+  /* The system draws the select and its arrow in forced colours. */
+  .ui-select { appearance: auto; background-image: none; border-color: ButtonText; }
   .skip-link, .offline-status:not(:empty) { border: 2px solid CanvasText; }
 }

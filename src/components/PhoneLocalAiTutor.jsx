@@ -1138,7 +1138,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
       {compactModes ? (
         <label className="phone-tutor__mode-select">
           <span>Mode</span>
-          <select value={modeId} disabled={interactionLocked} aria-describedby={modeDescriptionId} onChange={(event) => selectMode(event.target.value)}>
+          <select className="ui-select ui-select--block" value={modeId} disabled={interactionLocked} aria-describedby={modeDescriptionId} onChange={(event) => selectMode(event.target.value)}>
             {PHONE_TUTOR_MODES.map((mode) => <option value={mode.id} key={mode.id}>{mode.label}</option>)}
           </select>
         </label>
@@ -1201,7 +1201,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
       </div>
 
       <form className="phone-tutor__composer" onSubmit={submit}>
-        <div className="phone-tutor__composer-head"><div><label><span>Depth</span><select value={depth} disabled={interactionLocked} onChange={(event) => setDepth(event.target.value)}>{DEPTHS.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label><span>Answer length</span><select value={responseLength} disabled={interactionLocked || currentMode.structured} onChange={(event) => setResponseLength(event.target.value)}>{RESPONSE_LENGTHS.map((item) => <option value={item.id} key={item.id}>{item.label} · {item.tokens} tokens</option>)}</select></label></div><span>{PHONE_LOCAL_MODEL.label}</span></div>
+        <div className="phone-tutor__composer-head"><div><label><span>Depth</span><select className="ui-select" value={depth} disabled={interactionLocked} onChange={(event) => setDepth(event.target.value)}>{DEPTHS.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><label><span>Answer length</span><select className="ui-select" value={responseLength} disabled={interactionLocked || currentMode.structured} onChange={(event) => setResponseLength(event.target.value)}>{RESPONSE_LENGTHS.map((item) => <option value={item.id} key={item.id}>{item.label} ({item.tokens})</option>)}</select></label></div><span>{PHONE_LOCAL_MODEL.label}</span></div>
         <label className={`phone-tutor__search-toggle ${allowSearch ? "is-enabled" : ""}`}><input type="checkbox" checked={allowSearch} disabled={interactionLocked || sourceMode !== "library-first" || typeof retrieveLibrary !== "function"} onChange={(event) => setAllowSearch(event.target.checked)} /><span><strong>Allow current-web fallback</strong><small>{sourceMode === "library-first" && typeof retrieveLibrary === "function" ? "You approve the exact query before it is sent." : "Select Library first to use web fallback."}</small></span></label>
         <label className="phone-tutor__prompt-label" htmlFor={promptId}>What should the on-device tutor help you learn?</label>
         <textarea ref={promptFieldRef} id={promptId} rows={4} maxLength={MAX_PROMPT_CHARS} value={prompt} disabled={interactionLocked} placeholder={`Ask for ${currentMode.label.toLowerCase()} help…`} onChange={(event) => { setPrompt(event.target.value); if (["error", "cancelled", "declined"].includes(requestState.status)) setRequestState({ status: "idle", message: "" }); }} aria-describedby={keyHint ? keyHintId : undefined} onKeyDown={onPromptKeyDown} />
