@@ -9,7 +9,6 @@
   .note-card, .clipping-card, .notebook-annotation-card, .notebook-document-row, .notebook-mistake-row, .trash-row { overflow-wrap: anywhere; }
   /* Rows of short controls wrap under their heading instead of squeezing. */
   .section-heading, .notebook-heading-actions, .review-settings-strip label, .review-mistakes .mistake-controls label { flex-wrap: wrap; }
-  .review-settings-strip select, .review-mistakes .mistake-controls select { min-width: 0; max-width: 100%; }
   .page > *, .note-card, .continue-card > *, .board-header > div { min-width: 0; }
   .reader-view, .board-view, .teach-mode { grid-template-columns: minmax(0, 1fr); }
   .reader-view > *, .board-view > *, .teach-mode > * { min-width: 0; }

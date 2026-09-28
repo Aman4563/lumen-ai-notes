@@ -12,6 +12,16 @@ const announcePwaIssue = (message) => window.dispatchEvent(new CustomEvent("lume
 // the listener before React renders a route that can request either file.
 chunkRecovery.listen(window);
 
+// The themed select's picker (appearance: base-select, issue #92) is part of
+// the page, so its Escape would also reach the dialog and sheet handlers on
+// window and close them too. The picker closes itself; nothing else hears it.
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  try {
+    if (document.querySelector("select:open")) event.stopImmediatePropagation();
+  } catch { /* A browser without :open has no in-page picker. */ }
+}, true);
+
 if (import.meta.env.PROD) {
   window.addEventListener("load", () => {
     if (!window.isSecureContext || !("serviceWorker" in navigator)) {

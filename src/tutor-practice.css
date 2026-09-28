@@ -65,18 +65,6 @@
   font-weight: 720;
 }
 
-.ai-tutor__practice-track select {
-  min-height: 42px;
-  max-width: 100%;
-  padding: 7px 31px 7px 10px;
-  color: var(--ink, #172035);
-  background: var(--paper, #fffdf8);
-  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
-  border-radius: 10px;
-  font-size: 0.86rem;
-  font-weight: 650;
-}
-
 .ai-tutor__practice-intro,
 .ai-tutor__practice-reason {
   margin: 0;
@@ -234,7 +222,7 @@
 @media (max-width: 719px) {
   .ai-tutor__practice { padding: 12px; }
   .ai-tutor__practice-head { align-items: stretch; flex-direction: column; }
-  .ai-tutor__practice-track select { min-height: 44px; width: 100%; }
+  .ai-tutor__practice-track select { width: 100%; }
   .ai-tutor__practice textarea { font-size: 16px; }
   .ai-tutor__practice-actions .ai-tutor__button,
   .ai-tutor__rubric-outcome .ai-tutor__button { flex: 1 1 auto; min-height: 44px; }

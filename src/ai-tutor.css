@@ -41,7 +41,7 @@
   }
 }
 
-:is(.ai-tutor, .ai-tutor-sheet) :is(button, select, textarea, input) {
+:is(.ai-tutor, .ai-tutor-sheet) :is(button, textarea, input) {
   font: inherit;
 }
 
@@ -1114,15 +1114,6 @@
 .ai-tutor__difficulty > span {
   flex: 0 0 auto;
   white-space: nowrap;
-}
-
-.ai-tutor__difficulty select {
-  min-height: 42px;
-  padding: 7px 31px 7px 10px;
-  color: var(--ink, #172035);
-  background: var(--paper-2, #f9f7f1);
-  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
-  border-radius: 10px;
 }
 
 .ai-tutor__model {
@@ -2444,7 +2435,6 @@
   .ai-tutor__message-actions button,
   .ai-tutor__text-button,
   .ai-tutor__consent--acknowledged .ai-tutor__text-button,
-  .ai-tutor__difficulty select,
   .ai-tutor__source-tools > label,
   .ai-tutor__response-text .code-copy { min-height: 44px; }
   .ai-tutor__session-stats { padding-inline: 14px; }
@@ -2647,15 +2637,6 @@
 
 .ai-tutor__mode-select select {
   flex: 1 1 auto;
-  min-width: 0;
-  min-height: 44px;
-  padding: 8px 34px 8px 12px;
-  color: var(--ink, #172035);
-  background: var(--paper-2, #f9f7f1);
-  border: 1px solid var(--line-strong, rgba(23, 32, 53, 0.18));
-  border-radius: 12px;
-  font-size: 1rem;
-  font-weight: 700;
 }
 
 /* Below 981px the bottom navigation is fixed, the page is the only scroller

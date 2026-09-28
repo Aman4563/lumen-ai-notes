@@ -6,6 +6,7 @@ import puppeteer from "puppeteer-core";
 import { initialProfile, normalizeProfile } from "../src/lib/db.js";
 import { createReviewItem } from "../src/lib/review.js";
 import { auditViewportScrolling } from "./viewport_scrolling_audit.mjs";
+import { clippedValueProblems, selectValueFit } from "./select_contract.mjs";
 
 const baseUrl = (process.env.LUMEN_URL || "http://127.0.0.1:4187/").replace(/\/$/, "");
 const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-responsive-"));
@@ -141,6 +142,19 @@ try {
           }).slice(-8));
         }
         if (overflow.length) problems.push("Content extends beyond the viewport");
+        // Issue #92: a select stays inside its page's content box (at 200%
+        // text on a 360px phone Library Sort once ran 10px into the gutter).
+        const gutterCrossings = [...root.querySelectorAll("select")].filter(visible).flatMap((node) => {
+          const page = node.closest(".page");
+          if (!page || hasScrollOwner(node)) return [];
+          const pageBox = page.getBoundingClientRect();
+          const pageStyle = getComputedStyle(page);
+          const left = pageBox.left + Number.parseFloat(pageStyle.paddingLeft);
+          const right = pageBox.right - Number.parseFloat(pageStyle.paddingRight);
+          const box = node.getBoundingClientRect();
+          return box.left < left - 1 || box.right > right + 1 ? [`${node.getAttribute("aria-label") || "select"} at ${Math.round(box.left)}–${Math.round(box.right)}px, page content ${Math.round(left)}–${Math.round(right)}px`] : [];
+        });
+        if (gutterCrossings.length) problems.push(`Select crosses the page gutter: ${gutterCrossings.join("; ")}`);
         if (dialog && (rect.top < -2 || rect.bottom > innerHeight + 2 || rect.left < -2 || rect.right > innerWidth + 2)) problems.push("Dialog extends beyond the viewport");
         if (canvas) {
           const drawing = root.querySelector(".board-canvas")?.getBoundingClientRect();
@@ -202,6 +216,17 @@ try {
       if (!result.ok) await page.screenshot({ path: join(artifactDirectory, `${device}-${surface}.png`), fullPage: true });
       console.log(JSON.stringify(result));
     };
+    // Issue #92: short toolbar values read in full at every size, 200% text
+    // included. At 360px with 200% text the Daily limits Scheduler once read
+    // “Adaptiv…” beside its name, Library Sort “Curriculum or…” and the Listen
+    // language “All languages (1…”, although all three fitted on main.
+    const inspectValueFit = async (surface, selector, options) => {
+      const clipped = clippedValueProblems(await selectValueFit(page, selector, options));
+      const result = { device, width, height, textScale, surface, ok: clipped.length === 0, problems: clipped.length ? [`Select values cut short: ${clipped.join("; ")}`] : [] };
+      results.push(result);
+      if (!result.ok) await page.screenshot({ path: join(artifactDirectory, `${device}-${surface}.png`) });
+      console.log(JSON.stringify(result));
+    };
     const navigate = async (route, selector) => {
       await page.evaluate((hash) => { location.hash = hash; window.scrollTo(0, 0); }, `#/${route}`);
       await page.waitForSelector(selector);
@@ -246,6 +271,7 @@ try {
     await navigate("library", ".library-page");
     await inspect("library", ".library-page");
     await inspectWords("library-words", ".library-page");
+    await inspectValueFit("library-values", ".library-view-controls select", { everyOption: true });
     await navigate(`read/${encodeURIComponent(documentId)}`, ".reader-view");
     await page.waitForSelector(".markdown-body h1");
     await inspect("reader", ".reader-view");
@@ -293,6 +319,7 @@ try {
     ]) {
       await reach(opener, true);
       await inspect(surface, panel, { dialog: width <= 980 || surface === "reader-actions" });
+      if (surface === "narration") await inspectValueFit("narration-values", 'select[aria-label="Narration language"]');
       // The desktop notes panel stays in the reader layout; its close header is mobile-only.
       await reach(surface === "reader-notes" && width > 980 ? opener : closer, true);
       await page.waitForSelector(panel, { hidden: true }).catch(() => {});
@@ -355,6 +382,7 @@ try {
     await page.keyboard.press("Escape");
     await navigate("review", ".review-center-page");
     await inspect("review", ".review-center-page");
+    await inspectValueFit("review-values", ".review-settings-strip select", { everyOption: true });
     await clickText(page, ".review-center-page button", "New card");
     await inspect("review-dialog", ".review-card-dialog", { dialog: true });
     await reach(".review-card-dialog .button.primary");

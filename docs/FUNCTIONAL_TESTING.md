@@ -1370,3 +1370,375 @@ Evidence:
   715,643 bytes and route screens 891,828 bytes, unchanged by this
   server-only fix. `npm run check:browser` passed all 13 suites on the first
   attempt.
+
+## Bugs reproduced on 2026-09-28: default dropdowns (#92)
+
+Every dropdown was a browser-drawn `<select>` with its own per-screen skin.
+Against main (e2f7997), served the way `check:browser` serves a build:
+
+- At 393px touch, 12 of the 25 selects rendered under 16px, so iOS zooms on
+  focus: the Listen sheet's Language and Voice at 11.04px, the highlight
+  dialog's Purpose at 11.36px, the Teaching section picker at 11.2px, the
+  Organize dialog's Collection, the whiteboard page and both On-device
+  composer selects at 11.84px, Library Sort at 11.52px, the Mac tutor's Depth
+  at 12.8px, the tutor history setting at 13.12px and the practice Track at
+  13.76px. 17 were under 44px (the batch Collection 34px, the Teaching picker
+  36px, the Daily limits and interview strips 38px).
+- At 1280px the selects had nine heights (34–44px), four radii and
+  10.24–13.76px text. None set `appearance: none`, nine rules reserved room
+  for a chevron that was never drawn, and the Teaching picker hard-coded
+  white on navy under a light `color-scheme`.
+- On-device Answer length read "Standard · 640 t", and Library Sort listed
+  "Curriculum order" twice when there was no query.
+
+All 25 now use one control, `.ui-select` with `--sm` and `--block`, on the
+unchanged native element, so every audit's `page.select()` still works. It
+has `appearance: none`, a chevron drawn by two gradient strokes in
+`--select-icon`, a `--control-border` edge that reaches 3:1 on every paper
+surface, 44px and 16px text at 740px and below or on a coarse pointer, 40px
+and 14px on a desktop (34px and 13px compact), hover, the global focus ring,
+a dashed `--paper-3` disabled look, an invalid state, and the system control
+in forced colours. The Teaching island sets its own select tokens,
+`color-scheme: dark` and the navy islands' gold focus ring (the default blue
+ring measured 1.9:1 on the picker's navy). With a mouse in Chrome and Edge
+135+ or Safari 27, the customizable select (`appearance: base-select`) opens
+a themed picker; phones keep the native picker. Per-screen skins and the unused `.select` rules are
+gone. The verified plan's two traps are closed: `select` left `ai-tutor.css`'s
+`:is(.ai-tutor, .ai-tutor-sheet) … { font: inherit }` rule, which outranks the
+class and held the Mac tutor's Mode at 13.12px and Depth at 12.8px, and the
+picker's entry animation is written as `.ui-select:open::picker(select)`,
+which the production Lightning CSS minifier accepts.
+
+Found while building it:
+
+- The customizable select sizes to its value and never ellipsizes it, so a
+  long value in a narrow field ran over the chevron (the Listen sheet's
+  Language at 1280px). There the chevron moves to the picker icon, laid over
+  the end padding, and an overlong value fades out under it. That select also
+  sizes to its current value, so on a desktop an auto-width select changes
+  width when its value changes; this is how the customizable select works
+  (`field-sizing` does not change it). This was left as is here and fixed in
+  the review follow-up below.
+- Its picker is part of the page, so Escape in the open picker also reached
+  the dialog and sheet handlers on `window` and closed the Listen sheet with
+  it. A capture-phase listener in `src/main.jsx` leaves that Escape to the
+  picker.
+- At 16px, "Standard (640)" still clipped by 4px in the On-device composer's
+  half-width column. Depth and Answer length now share the row only when both
+  fit. "Session only (do not save)" became "Session only" (the setting's text
+  already says it stops saving), and network voices read "Network" (the
+  sheet's microcopy explains it).
+
+How it is checked:
+
+- `scripts/select_contract.mjs` measures every visible select: the shared
+  class, `appearance` none or base-select, the two-stroke chevron in
+  `--select-icon`, text, fill and edge on the theme tokens (or the dashed
+  `--paper-3` disabled look), and either 44px with 16px text on a phone or
+  one height, radius and text size per variant on a desktop (40px, 12px,
+  14px; compact 34px, 10px, 13px).
+- `audit:controls` seeds a profile so every select renders and measures 12
+  screens and dialogs (Library, Listen, the highlight dialog, Teaching,
+  Whiteboard, Notebook highlights and batch toolbar, Organize, the Review
+  strips and mistake filter, New card, Log mistake, Settings, On-device Lite)
+  in Paper, Night and Contrast at 393px touch and 1280px. Against main it
+  reports all 22 phone and 21 desktop selects, for example `selects/phone/
+  reader listen: select “Narration language”: not the shared .ui-select
+  control; browser-drawn (appearance auto); no themed chevron in
+  --select-icon; colours off the theme tokens (text --select-ink, fill
+  --select-bg, edge --control-border); 41px tall (needs 44px on a phone);
+  11.04px text, so iOS zooms on focus (needs 16px) [paper, dark, contrast]`.
+  The same measurement fails a select that lists a label twice (Library
+  Sort's "Curriculum order" against main; the Listen sheet's lists come from
+  the device's voices and are exempt) and, on the phone, an On-device
+  composer select whose value does not fit. With a mouse it also opens the
+  Language picker and presses Escape; that check fails against a build
+  without the guard ("Escape in the select picker also closed the Listen
+  sheet").
+- `audit:ai-ui` holds the Mac tutor's Mode select, the Options sheet's Depth
+  and the practice Track to the phone contract. It fails against main and
+  against this change with `select` put back in the font rule ("select
+  “Depth”: 12.8px text, so iOS zooms on focus").
+- `themeContrast.test.mjs` keeps `--control-border` and `--select-icon` at
+  3:1 on every paper surface in all four palettes, the select text and
+  checked-option pairs at 4.5:1, and the Teaching island's select tokens
+  readable on its navy.
+
+Not covered: headless Chrome does not paint native pickers, so Safari 27's
+picker on macOS and the native picker on an iPhone (no focus zoom) need a
+manual pass on devices.
+
+Gate: `npm run check` passed (`audit:ai` 547/547, `audit:ai-eval` 27 cases,
+hit@1 0.913). The startup entry is 715,972 bytes (main 715,643) and the route
+screens 891,667 bytes (main 891,828): the main stylesheet grew 2,701 bytes
+minified (853 gzip) and the lazy tutor stylesheets shrank 993 bytes.
+`npm run check:browser` passed all 13 suites on the first attempt, and
+`controls` and `ai-ui` passed again alone with retries off after the
+repeated-label check was scoped away from the device voice lists.
+
+## Bugs reproduced on 2026-09-28: themed select review (#92)
+
+A review of the themed select above found these on the branch build before
+this fix (ba70d3e), served the way `check:browser` serves a build. Except for
+the batch toolbar, each comes from the customizable select, which main never
+used, so main passes those checks. The failures below come from the branch
+build before the fix.
+
+- Keys typed in an open picker reached the page. With a mouse the open
+  picker focuses an `<option>`. The whiteboard, "?" shortcut and review
+  session handlers only skipped an `HTMLSelectElement` target, so they did
+  not treat the option as a form control. On the whiteboard with an object
+  selected, ArrowDown in the page picker moved the object and saved it
+  (points 0.400 → 0.410 and 0.400 → 0.420) and left the picker on page 1,
+  and "e" switched to the Eraser. "?" in the open Library Sort picker opened
+  the keyboard shortcuts over it. The handlers now skip any target inside a
+  select (`target.closest("select")`). Escape keeps its capture guard.
+- The picker ran off short windows. The author rules `position-try-order:
+  normal` and `max-block-size: min(22rem, 60dvh)` replaced the UA's
+  `most-block-size` and `stretch`. At 1280×560 the Interview track list
+  opened downward, its last option sat at 593–633px, and the list could not
+  scroll. The UA's placement is back and only the width is capped. At
+  1366×650 the list now opens upward, and at 1280×560 it scrolls inside the
+  window.
+- The picker's entry transition ran with reduced motion (`0.12s, 0.12s`),
+  because the global rule cannot match `::picker(select)`. It is now `none`
+  there.
+- At 1280px the Listen sheet's Language read "All languages (18", with the
+  last digit fading into the chevron (131px needed, 113px of room). An
+  overlong value stayed visible 2px from the arrow: the fade became solid
+  24px from the edge, and the chevron starts 23px in. Language and Voice now
+  share one column at every width. In the customizable select, the end
+  padding and the picker icon are now 44px (42px compact). An overlong value
+  is fully covered from 32px from the edge, 9px before the arrow, and a value
+  that fits never fades.
+- With a mouse a select took the width of its current value, so a pick moved
+  the select and the controls beside it. Library Sort ranged 99–150px, the
+  interview track 142–231px, the round 88–183px, Scheduler 87–145px, the
+  mistake Category 58–135px, the highlights Purpose 58–110px and the Teaching
+  picker 133–260px. These toolbar selects now have a fixed width (the
+  Teaching picker, 260px) or a minimum width that fits every option.
+- Phone layouts. At 320px the Teaching picker showed "1. Int…" (110px needed,
+  54px of room); at 360px and below it now takes a row of its own. At 393px
+  the Scheduler picker dropped under its label while Retention sat inline
+  beside it. Each Daily limits label now keeps its label and select on one
+  row: a picker that cannot share a row takes its own, and at large text its
+  select shrinks (REV-22 still holds). At 360px with 200% text Library Sort
+  ran 11px into the page gutter; its label may now shrink.
+- Pre-existing on main: a long collection name pushed the batch toolbar's
+  select 157px past a 393px toolbar (163px on main). The label is now capped,
+  so the select ellipsizes and keeps its chevron.
+- Also fixed: the Listen microcopy named "May use network", a label that no
+  longer exists; it now says "Network". The mistake filter, the highlights
+  Purpose and the Teaching picker now use the default 40px size, to match the
+  40–42px buttons beside them. Empty or duplicate layout rules left over from
+  the skins are gone. Hover now ranks below focus, invalid and open
+  (`:where()`), so a hovered select with keyboard focus shows the focus edge.
+
+How it is checked:
+
+- `audit:controls`, desktop pass with a mouse (customizable select):
+  - "?" in the open Library Sort picker must not open the shortcuts.
+  - The picker must report no transition with reduced motion.
+  - With a rectangle selected on a two-page board, ArrowDown in the open page
+    picker must leave the saved board unchanged and move focus to page 2, and
+    "e" must leave the tool as it was.
+  - At 1280×560 the Interview track picker's last option (after End) must lie
+    inside the window.
+  - Each toolbar select (Library, Daily limits, interview strip, mistake
+    filter, highlights, Teaching) is tried with every option and must keep
+    one width.
+  - A section title longer than the Teaching picker must leave at least 8
+    clear pixels before the chevron. This is measured from a screenshot of
+    the control's middle band.
+  - The Listen sheet's default values must fit (a canvas measurement, the
+    same one the On-device composer check uses).
+- `audit:controls`, phone pass: the Teaching picker at 320px shows
+  "1. Introduction" whole; the Daily limits pickers all sit the same way
+  beside or under their labels; the batch toolbar does not overflow with a
+  51-character collection selected.
+- `audit:controls`, both passes: after choosing Quiz, the On-device Answer
+  length is disabled and is measured in every theme. Before this, no check
+  ever measured a disabled select. Against main it reports "no themed
+  disabled look (opacity 0.7, solid edge)". The select measurement now moves
+  the pointer away first: a pointer left over the highlight dialog's Purpose
+  had marked it `:hover`, which skips its colour check.
+- `audit:responsive`: on every surface and viewport, a select inside a page
+  stays inside the page's content box.
+- `audit:audio`: the microcopy must name “Network”, and a network voice must
+  carry that label. The old assertion pinned “May use network”. It was
+  changed on purpose, because the label was renamed.
+
+Against the branch build before the fix, `audit:controls` fails with 20
+findings, for example:
+
+```
+- selects/desktop/whiteboard: ArrowDown in the open page picker moved and saved the selected object
+- selects/desktop/whiteboard: ArrowDown in the open page picker did not reach the next page (focused option 0)
+- selects/desktop/whiteboard: “e” in the open page picker switched the tool from Select and move objects to Eraser
+- selects/desktop/library: “?” in the open Sort picker opened the keyboard shortcuts
+- selects/desktop/library: the select picker still animates (0.12s, 0.12s) with reduced motion
+- selects/desktop/review: at 1280×560 the Interview track picker drew its last option off screen (OPTION “Computer Vision” at 593–633px of 560px)
+- selects/desktop/reader listen: a Listen select clips its value: “All languages (180)” needs 131px of 113px
+- selects/desktop/teaching mode: an overlong value shows 2px from the chevron (needs 8px clear; chevron 13–22px from the end)
+- selects/desktop/library: the width follows the value, so a pick moves the toolbar: select “Sort library results” is 150px on “Curriculum order”, 148px on “Recently opened”, 133px on “Most progress”, 126px on “Shortest first”, 99px on “Title A–Z”
+- selects/phone 320/teaching mode: the section picker clips its value: “1. Introduction” needs 110px of 54px
+- selects/phone/review: the Daily limits pickers are laid out two ways: New beside its label, Reviews beside its label, Scheduler under its label, Retention beside its label
+- selects/phone/notebook batch toolbar: a long collection name runs 157px past the toolbar
+```
+
+`audit:responsive` (phone-large-text) fails there with "Select crosses the
+page gutter: Sort library results at 67–355px, page content 16–344px". Main
+passes both of these new checks, except the batch toolbar ("runs 163px past
+the toolbar").
+
+Not changed:
+
+- The select's `--control-border` edge is darker than the `--line-strong`
+  edges of the text fields beside it in dialogs. That is deliberate (3:1),
+  and §18 now records it. Moving every text field to the same edge is a
+  change across the whole app, not part of #92.
+- The Teaching Mode eyebrow's contrast on the navy island (about 3.1:1) is
+  pre-existing and unrelated to selects.
+- At 320px the Mac tutor's practice Track already spans its row, and the
+  track names come from the shared interview-track data, so a long track name
+  still ellipsizes. Main shows the same.
+
+Gate: `npm run check` passed (`audit:ai` 547/547, `audit:ai-eval` 27 cases,
+hit@1 0.913). The startup entry is 715,950 bytes and the route screens
+891,561 bytes (main 715,643 and 891,828). Against main, the main stylesheet
+grew 3,289 bytes minified (995 gzip) and the lazy tutor stylesheets shrank
+1,095 bytes. `npm run check:browser` passed all 13 suites on the first
+attempt, with no retries, in the fixer's run. An independent re-verifier's
+full run with retries off, under heavy load (load average about 20), saw
+`ai-ui` fail once on an assertion this change does not touch ("a stale
+conversation did not end with the break divider", `ai_ui_audit.mjs:2701`);
+run alone with `LUMEN_BROWSER_RETRIES=0` it passed.
+
+## Bugs reproduced on 2026-09-28: themed select at large text and in narrow windows (#92)
+
+A re-verification of the review follow-up above (72d5eba) found two
+regressions it introduced, and select values that still shortened at 200%
+text although they fitted on main. The failures below come from 72d5eba,
+built into a scratch directory and served the way `check:browser` serves a
+build; "main" is e2f7997.
+
+- The Daily limits strip squeezed its Scheduler at large text. 72d5eba held
+  each label and select on one row at 740px and below, so at 360px with 200%
+  text the Scheduler read "Adaptiv…" (240px needed, 137px of room; 97px at
+  320px, 207px at 430px). Main fitted it at 360px and 430px. Each Daily limits
+  picker now has a row of its own, name at the start and select at the end; a
+  select too wide for its row drops under its one-word name at full width.
+  At 393px with default text all four still sit beside their names.
+- With a mouse, a narrow window with large text scrolled sideways. The
+  toolbar selects' rem minimum widths beat `max-inline-size: 100%`: Review
+  scrolled 11px at 400px with 150% text, 137px at 400px with 200%, 91px at
+  320px with 150% and 217px at 320px with 200%; Library 83px and the
+  highlights Purpose 76px at 320px with 200%. The suggested
+  `min-inline-size: min(width, 100%)` was tried and rejected: the percentage
+  resolves against a label that is itself sized by the select, so at 1280px
+  the widths followed the value again (Interview track 152–241px, Library Sort
+  142–168px) and at 400px with 150% text Review still scrolled 14px. The widths
+  are now `inline-size` in em of the select's own text, within a pixel of
+  before at 1280px (Sort 169px, was 168px; Interview track 252px), and a
+  width, unlike a minimum, shrinks with its row. The interview labels' grid
+  column, the mistake filter label and the highlights heading can now shrink,
+  Library Sort and the highlights Purpose drop under their names when the row
+  is too narrow, and
+  the mistake and highlights headings are single-line columns: as wrapping
+  columns they stretched their controls to the widest control, past the page.
+  In em the widths also hold every option at 16px in a narrow window, where
+  the rem minimums cut "Rapid fundamentals" and "Misconception" at 600px.
+- At 200% text a select's value was 32px (`max(16px, 1rem)`), against 22–26px
+  skins on main. At 360px Library Sort read "Curriculum or…" (246px needed,
+  235px of room) and the Listen language "All languages (1…" (283px, 262px),
+  although both fitted on main. Select text on phones and touch screens is
+  now `max(16px, 0.875rem)`: 16px at default size as before, so iOS still
+  never zooms, and 28px at 200%, in proportion with the 0.82rem buttons
+  beside it. At 360px with 200% text both values now fit.
+- The Teaching picker shared its row with the timer and presenter buttons at
+  393–430px with 200% text: at 430px "1. Introduction" needed 207px and had
+  135px (main fitted it). The switch to a row of its own was a 360px media
+  query; it is now a container query on the header actions at 23em, so it
+  follows the text size. With default text it now also takes its own row at
+  393–402px: beside the timer and buttons its value had about 7em of room, and
+  at 393px 72d5eba fitted "1. Introduction" (110px) only by squashing the
+  timer's clock icon to a few pixels. Without the squash it has 107px there.
+  The cost is a header row: 105px to 151px tall at 393px.
+- Found on the way, also on main: at 320px with 200% text the "Calibrate from
+  my history" link ran 36px past the page (it now wraps at phone widths), and
+  the notebook title ran 13px past the page in Linux Chrome (1px on macOS),
+  because "notebook" at 2.35rem is wider than the page. The phone title is now
+  `min(2.35rem, 21vw)`, which changes nothing at 360px and wider or at default
+  text.
+- Found on the way in the checks: in an emulated Linux Chrome, measuring a
+  dialog's select two frames after a theme change read the previous theme's
+  edge, because the reduced-motion colour transition had not finished. The
+  theme measurement now waits for running transitions. 72d5eba shows the same
+  failure there. And on Linux a viewport change drops Chrome's emulated mouse
+  until the next load, so the fine-pointer pass reloads after each size.
+
+Decided per select, at 360px with 200% text:
+
+- Must fit, and now fit: Library Sort, the Listen language, every Daily limits
+  picker, the Teaching picker ("1. Introduction"), the whiteboard page picker,
+  the On-device Depth and Answer length, and the dialog selects.
+- Allowed to shorten: the Listen voice ("Samantha · Default · On device" needs
+  388px of 262px), whose full name, language and on-device status are
+  repeated on the line below it; Settings "Up to 50 messages" (246px of 212px),
+  which main showed only by running the select past the settings drawer's
+  edge with its chevron off screen; and Card type and Interview track, which
+  main cut as well. They keep their chevron and an ellipsis, and the picker
+  lists every option in full. At 320px with 200% text the Listen language
+  also shortens (249px of 222px); main fitted it there with 22px text.
+
+How it is checked:
+
+- `audit:responsive`, at every viewport (phone-large-text is 360px with 200%
+  text): every option of each Daily limits select and of Library Sort, and the
+  Listen language's value, must fit inside its select's padding (a canvas
+  measurement in the select's font). The Daily limits and Sort selects are
+  checked by their widest option, so a short current value cannot hide one a
+  learner could pick.
+- `audit:controls`, phone pass: the Teaching picker shows "1. Introduction"
+  whole at 320px and 393px, and at 360px and 430px with 200% text.
+- `audit:controls`, a narrow fine-pointer pass in its own browser with a mouse
+  (`--blink-settings`, so headless Linux Chrome gets the customizable select
+  too): Library, Review and the notebook at 400px and 320px with 150% and 200%
+  text must not scroll sideways (2px tolerance) and must keep every select
+  inside the page's content box. Where Chrome supports the customizable
+  select, the pass also fails if the page did not use it, so it cannot pass
+  by testing the touch path.
+
+Against 72d5eba, `audit:responsive` (phone-large-text) fails with:
+
+```
+{"surface":"library-values","problems":["Select values cut short: Sort library results: “Curriculum order” needs 246px of 235px"]}
+{"surface":"narration-values","problems":["Select values cut short: Narration language: “All languages (180)” needs 283px of 262px"]}
+{"surface":"review-values","problems":["Select values cut short: Scheduling algorithm: “Adaptive (FSRS)” needs 240px of 137px"]}
+```
+
+and `audit:controls` with 17 findings, for example:
+
+```
+- selects/phone 430 at 200% text/teaching mode: the section picker clips its value: Jump to teaching section: “1. Introduction” needs 207px of 135px
+- narrow fine pointer/review at 400px with 150% text: the page scrolls sideways by 11px (select “Interview track”)
+- narrow fine pointer/library at 320px with 200% text: the page scrolls sideways by 83px (select “Sort library results”)
+- narrow fine pointer/review at 320px with 200% text: the page scrolls sideways by 217px (div “CategoryAllMisconceptionFormulaC”, label “CategoryAllMisconceptionFormulaC”, select “Category”)
+- narrow fine pointer/notebook at 320px with 200% text: the page scrolls sideways by 76px (div “PurposeAllImportantDefinitionsQu”, label “PurposeAllImportantDefinitionsQu”, select “Purpose”)
+```
+
+The new checks also pass on the committed build in Linux Chrome 154 (the
+puppeteer Docker image, through a loopback proxy so the page is a secure
+context): `audit:controls` in full, with the customizable select on all 12
+narrow screens, and `audit:responsive` at small-phone, phone and
+phone-large-text.
+
+Gate: `npm run check` passed (`audit:ai` 547/547, `audit:ai-eval` 27 cases,
+hit@1 0.913). The startup entry is 715,950 bytes and the route screens
+891,561 bytes (budgets 750,000 and 900,000). Against main the main stylesheet
+grew 3,491 bytes minified (1,071 gzip), 202 (76) more than 72d5eba, and the
+lazy tutor stylesheets still shrink 1,095 bytes. `npm run check:browser`
+passed all 13 suites on the first attempt with no retries (`responsive` 467
+checks, `a11y` 57 axe runs with the empty allowlist), at a load average of
+about 10–13 from other work on the machine. Only the docs and one CSS comment
+changed after that run; the built stylesheet is byte-identical.

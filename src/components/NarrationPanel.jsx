@@ -21,7 +21,7 @@ const voiceValue = (voice) => voice?.voiceURI || "";
 const voiceLabel = (voice) => {
   const qualities = [];
   if (voice.default) qualities.push("Default");
-  qualities.push(voice.localService ? "On device" : "May use network");
+  qualities.push(voice.localService ? "On device" : "Network");
   return `${voice.name || "System voice"} · ${qualities.join(" · ")}`;
 };
 
@@ -104,6 +104,7 @@ export default function NarrationPanel({
         <label>
           <span>Language</span>
           <select
+            className="ui-select ui-select--block"
             value={settings.speechLanguage}
             onChange={(event) => changeLanguage(event.target.value)}
             disabled={!speech.supported}
@@ -118,6 +119,7 @@ export default function NarrationPanel({
         <label>
           <span>Voice</span>
           <select
+            className="ui-select ui-select--block"
             value={selectedValue}
             onChange={(event) => onSettingsChange({ voiceURI: event.target.value })}
             disabled={!speech.supported || !speech.matchingVoiceCount}
@@ -217,7 +219,7 @@ export default function NarrationPanel({
         {speech.currentText && <p className="speech-current"><strong>{speech.activeLabel}</strong>{speech.currentText}</p>}
         {speech.error && <p className="inline-warning">{speech.error}</p>}
       </div>
-      <p className="microcopy">Voices come from iOS. “On device” voices can work offline; voices marked “May use network” can depend on Apple services. Pitch support varies by voice.</p>
+      <p className="microcopy">Voices come from iOS. “On device” voices can work offline; voices marked “Network” can depend on Apple services. Pitch support varies by voice.</p>
     </div>
   );
 }

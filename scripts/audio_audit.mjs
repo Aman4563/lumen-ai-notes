@@ -135,7 +135,10 @@ try {
   assert.equal(await page.$$eval('select[aria-label="Narration voice"] option', (options) => options.length), 4, "all reported voices must be selectable");
   assert.equal(await page.$$eval('select[aria-label="Narration language"] option', (options) => options.length), 4, "all reported languages plus automatic mode must be selectable");
   assert.match(await page.$eval(".speech-popover .microcopy", (node) => node.textContent), /Voices come from iOS/u);
-  assert.match(await page.$eval(".speech-popover .microcopy", (node) => node.textContent), /May use network/u);
+  // Issue #92 renamed the network voice label to "Network"; the microcopy
+  // must name the label the voice list actually shows.
+  assert.match(await page.$eval(".speech-popover .microcopy", (node) => node.textContent), /voices marked “Network”/u);
+  assert.ok(await page.$$eval('select[aria-label="Narration voice"] option', (options) => options.some((option) => /· Network$/u.test(option.textContent))), "no network voice carries the “Network” label the microcopy names");
 
   await page.select('select[aria-label="Narration language"]', "hi-IN");
   await page.waitForFunction(() => document.querySelector('select[aria-label="Narration voice"]')?.value === "lekha-hi-in");

@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
+import { initialProfile, normalizeProfile } from "../src/lib/db.js";
+import { createMistake } from "../src/lib/mistakes.js";
+import { createReviewItem } from "../src/lib/review.js";
+import { chevronClearance, clippedValueProblems, measureSelectsInThemes, selectContractProblems, selectValueFit, valueDependentWidths } from "./select_contract.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -220,6 +224,411 @@ const auditDialog = async (page, label, {
   if (afterClose) await afterClose();
 };
 
+// Issue #92: every select is the one themed control. A seeded profile makes
+// each select-hosting screen render its selects (highlights, collections, an
+// FSRS scheduler, a mistake); each screen is measured in Paper, Night and
+// Contrast on a 393px touch phone and on a 1280px desktop. The second section
+// title and one collection name are longer than any field that shows them.
+const selectDocumentId = "custom/select-contract";
+const longCollectionName = "Interview preparation and system design reading list";
+const selectProfile = normalizeProfile({
+  ...initialProfile,
+  settings: { ...initialProfile.settings, theme: "paper" },
+  customDocuments: [{
+    id: selectDocumentId,
+    title: "Select contract lecture",
+    raw: "# Select contract lecture\n\nA held-out split estimates how a model generalizes to data it has not seen.\n\nThe validation split chooses hyperparameters, and the test split stays untouched until the end.\n\n## Second section: how a held-out validation split keeps every hyperparameter choice honest\n\nKeep every control on the theme.",
+    tags: ["audit"],
+    collectionId: "select-audit",
+  }],
+  collections: [{ id: "select-audit", name: "Audit collection" }, { id: "select-long", name: longCollectionName }],
+  annotations: [{ documentId: selectDocumentId, quote: "A held-out split estimates how a model generalizes", purpose: "definition" }],
+  reviewItems: [createReviewItem({ front: "What does the validation split choose?", back: "Hyperparameters, before the final test.", documentId: selectDocumentId })],
+  reviewSettings: { ...initialProfile.reviewSettings, scheduler: "fsrs" },
+  mistakes: [createMistake({ prompt: "What may the test split influence?", expected: "Nothing until choices are frozen.", category: "misconception", documentId: selectDocumentId })],
+});
+const seedSelectProfile = async (page) => {
+  await page.goto(`${baseUrl}#/home`, { waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".welcome-block");
+  await page.evaluate((profile) => new Promise((resolve, reject) => {
+    const open = indexedDB.open("lumen-ai-notes", 1);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const transaction = db.transaction("study-data", "readwrite");
+      transaction.objectStore("study-data").put(profile, "profile");
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  }), selectProfile);
+  await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".welcome-block");
+};
+const SELECT_VIEWPORTS = [
+  ["phone", { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true }],
+  ["desktop", { width: 1280, height: 800, deviceScaleFactor: 1 }],
+];
+
+const auditThemedSelects = async () => {
+  let measured = 0;
+  for (const [viewportName, viewport] of SELECT_VIEWPORTS) {
+    const context = await browser.createBrowserContext();
+    const page = await context.newPage();
+    page.on("pageerror", (error) => runtimeErrors.push(`selects/${viewportName}: ${error.message}`));
+    page.on("dialog", (dialog) => dialog.dismiss());
+    await page.setViewport(viewport);
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+    await seedSelectProfile(page);
+
+    const phone = viewportName === "phone";
+    const check = async (surface, expected) => {
+      // Wait for the screen's selects (some load lazily), then measure.
+      await page.waitForFunction((count) => [...document.querySelectorAll("select")].filter((node) => node.getClientRects().length && !node.closest("[inert]")).length >= count, { timeout: 10_000 }, expected)
+        .catch(() => findings.push(`selects/${viewportName}/${surface}: expected at least ${expected} visible select(s)`));
+      const byTheme = await measureSelectsInThemes(page);
+      const grouped = new Map();
+      for (const [theme, records] of Object.entries(byTheme)) {
+        measured += records.length;
+        for (const problem of selectContractProblems(records, { surface: `selects/${viewportName}/${surface}`, phone })) grouped.set(problem, [...(grouped.get(problem) || []), theme]);
+      }
+      for (const [problem, themes] of grouped) findings.push(`${problem} [${themes.join(", ")}]`);
+    };
+    const navigate = async (hash, ready) => {
+      await page.evaluate((value) => { location.hash = value; }, hash);
+      await page.waitForSelector(ready, { timeout: 20_000 });
+    };
+    const closeWithEscape = async (selector) => {
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(selector, { hidden: true, timeout: 5_000 });
+    };
+
+    await navigate("#/library", ".library-page");
+    await check("library", 1);
+    const sort = 'select[aria-label="Sort library results"]';
+    // The in-page picker (customizable select) exists only with a mouse.
+    const inPagePicker = await page.$eval(sort, (select) => getComputedStyle(select).appearance === "base-select");
+    const selectsKeepTheirWidth = async (surface, selector) => {
+      if (phone) return;
+      for (const problem of await valueDependentWidths(page, selector)) findings.push(`selects/${viewportName}/${surface}: the width follows the value, so a pick moves the toolbar: ${problem}`);
+    };
+    await selectsKeepTheirWidth("library", ".library-view-controls select");
+    if (inPagePicker) {
+      // The picker honours reduced motion (the global rule cannot reach
+      // ::picker), and keys typed in it stay there: "?" once opened the
+      // shortcut sheet over the open picker.
+      const duration = await page.$eval(sort, (select) => getComputedStyle(select, "::picker(select)").transitionDuration);
+      if (duration.split(",").some((value) => Number.parseFloat(value) > 0)) findings.push(`selects/${viewportName}/library: the select picker still animates (${duration}) with reduced motion`);
+      await page.click(sort);
+      await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, sort)
+        .catch(() => findings.push(`selects/${viewportName}/library: clicking Sort did not open its picker`));
+      await page.keyboard.press("?");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (await page.$('[aria-label="Close keyboard shortcuts"]')) {
+        findings.push(`selects/${viewportName}/library: “?” in the open Sort picker opened the keyboard shortcuts`);
+        await page.keyboard.press("Escape");
+      }
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector).matches(":open"), { timeout: 2_000 }, sort).catch(() => {});
+    }
+
+    await navigate(`#/read/${encodeURIComponent(selectDocumentId)}`, ".reader-view .markdown-body h1");
+    await openBySelector(page, '[aria-label="Listen"]');
+    await page.waitForSelector(".speech-popover");
+    await check("reader listen", 2);
+    // The default language and voice read in full (at 1280px the language
+    // once read “All languages (18” faded under the chevron).
+    for (const problem of clippedValueProblems(await selectValueFit(page, ".speech-popover select"))) findings.push(`selects/${viewportName}/reader listen: a Listen select clips its value: ${problem}`);
+    const language = 'select[aria-label="Narration language"]';
+    if (await page.$eval(language, (select) => !select.disabled && getComputedStyle(select).appearance === "base-select")) {
+      // A mouse gets the in-page picker (customizable select); its Escape must
+      // close only the picker, never the Listen sheet around it.
+      await page.click(language);
+      const opened = await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, language).then(() => true, () => false);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector)?.matches(":open"), { timeout: 2_000 }, language).catch(() => {});
+      const after = await page.evaluate((selector) => ({ sheetOpen: Boolean(document.querySelector(".speech-popover")), pickerOpen: Boolean(document.querySelector(selector)?.matches(":open")) }), language);
+      if (!opened) findings.push(`selects/${viewportName}/reader listen: clicking the language select did not open its picker`);
+      else if (!after.sheetOpen || after.pickerOpen) findings.push(`selects/${viewportName}/reader listen: Escape in the select picker ${after.sheetOpen ? "left the picker open" : "also closed the Listen sheet"}`);
+      if (!after.sheetOpen) await openBySelector(page, '[aria-label="Listen"]');
+    }
+    await page.waitForSelector(".speech-popover");
+    await page.$eval('.speech-popover button[aria-label^="Close"]', (button) => button.click());
+    await page.waitForSelector(".speech-popover", { hidden: true, timeout: 5_000 });
+    await page.$$eval(".markdown-body p", (paragraphs) => {
+      const range = document.createRange();
+      range.selectNodeContents(paragraphs.at(-2));
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll(".document-tools button")].some((node) => node.textContent.includes("Highlight selection")), { timeout: 5_000 });
+    await clickByText(page, ".document-tools button", "Highlight selection");
+    await page.waitForSelector(".annotation-dialog");
+    await check("highlight dialog", 1);
+    await closeWithEscape(".annotation-dialog");
+    await page.evaluate(() => getSelection().removeAllRanges());
+    await clickByText(page, ".document-tools button", "Teach");
+    await page.waitForSelector(".teach-mode");
+    await check("teaching mode", 1);
+    const section = 'select[aria-label="Jump to teaching section"]';
+    if (phone) {
+      // Where the header row is narrow for its text the section picker takes
+      // its own row and shows a short section name whole: it once showed
+      // “1. Int…” at 320px, and with 200% text “1. Introd…” up to 430px.
+      for (const [width, textScale] of [[320, 1], [393, 1], [360, 2], [430, 2]]) {
+        await page.setViewport({ ...viewport, width });
+        await page.evaluate((scale) => new Promise((resolve) => {
+          document.documentElement.style.fontSize = scale === 1 ? "" : `${16 * scale}px`;
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        }), textScale);
+        for (const problem of clippedValueProblems(await selectValueFit(page, section))) findings.push(`selects/phone ${width}${textScale === 1 ? "" : ` at ${textScale * 100}% text`}/teaching mode: the section picker clips its value: ${problem}`);
+      }
+      await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
+      await page.setViewport(viewport);
+    } else {
+      await selectsKeepTheirWidth("teaching mode", section);
+      if (inPagePicker) {
+        // An overlong section title fades out fully at least 8px before the
+        // chevron instead of running into it.
+        await page.select(section, "1");
+        await page.waitForFunction((selector) => document.querySelector(selector).value === "1", {}, section);
+        const [fit] = await selectValueFit(page, section);
+        const clearance = await chevronClearance(page, section);
+        if (fit.fits) findings.push(`selects/${viewportName}/teaching mode: the long section title fits, so the fade is not exercised (“${fit.text}”)`);
+        else if (clearance.clear < 8) findings.push(`selects/${viewportName}/teaching mode: an overlong value shows ${clearance.clear}px from the chevron (needs 8px clear; chevron ${clearance.chevron.join("–")}px from the end)`);
+      }
+    }
+    await page.$eval('[aria-label="Exit teaching mode"]', (button) => button.click());
+    await page.waitForSelector(".teach-mode", { hidden: true, timeout: 5_000 });
+
+    await navigate(`#/board/${encodeURIComponent(selectDocumentId)}`, ".board-canvas");
+    await check("whiteboard", 1);
+    if (inPagePicker) {
+      // The open picker focuses an <option>, not the <select>. Board keys
+      // once moved and saved the selected object (ArrowDown), switched tools
+      // (a letter) and kept the page picker from moving.
+      const pagePicker = 'select[aria-label="Current whiteboard page"]';
+      const boardKey = `board:${selectDocumentId}`;
+      const readBoard = () => page.evaluate((key) => new Promise((resolve, reject) => {
+        const open = indexedDB.open("lumen-ai-notes", 1);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const request = open.result.transaction("study-data", "readonly").objectStore("study-data").get(key);
+          request.onsuccess = () => { open.result.close(); resolve(JSON.stringify(request.result?.pages || null)); };
+          request.onerror = () => { open.result.close(); reject(request.error); };
+        };
+      }), boardKey);
+      const saved = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await page.waitForFunction(() => document.querySelector(".board-hint [role='status']")?.textContent === "Saved", { timeout: 5_000 });
+      };
+      await page.click('button[aria-label="Add whiteboard page"]');
+      await page.waitForFunction((selector) => document.querySelector(selector)?.options.length === 2, { timeout: 5_000 }, pagePicker);
+      await page.select(pagePicker, await page.$eval(pagePicker, (select) => select.options[0].value));
+      await page.click('.board-toolbar button[aria-label="Rectangle"]');
+      const canvas = await page.$eval(".board-canvas", (node) => { const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; });
+      await page.mouse.move(canvas.x + canvas.width * 0.4, canvas.y + canvas.height * 0.4);
+      await page.mouse.down();
+      await page.mouse.move(canvas.x + canvas.width * 0.55, canvas.y + canvas.height * 0.55, { steps: 8 });
+      await page.mouse.up();
+      await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"), { timeout: 5_000 });
+      await page.click('.board-toolbar button[aria-label="Select and move objects"]');
+      await page.focus(".board-canvas");
+      await page.keyboard.press("Tab");
+      await page.waitForSelector(".board-selection-actions", { timeout: 5_000 });
+      await saved();
+      const before = await readBoard();
+      const tool = () => page.$eval('.board-toolbar button[aria-pressed="true"]', (button) => button.getAttribute("aria-label"));
+      const toolBefore = await tool();
+      await page.click(pagePicker);
+      await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, pagePicker);
+      await page.keyboard.press("ArrowDown");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const focused = await page.evaluate(() => document.activeElement?.tagName === "OPTION" ? document.activeElement.index : null);
+      await page.keyboard.press("e");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const toolAfter = await tool();
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector).matches(":open"), { timeout: 2_000 }, pagePicker).catch(() => {});
+      await saved();
+      if (await readBoard() !== before) findings.push(`selects/${viewportName}/whiteboard: ArrowDown in the open page picker moved and saved the selected object`);
+      if (focused !== 1) findings.push(`selects/${viewportName}/whiteboard: ArrowDown in the open page picker did not reach the next page (focused option ${focused})`);
+      if (toolAfter !== toolBefore) findings.push(`selects/${viewportName}/whiteboard: “e” in the open page picker switched the tool from ${toolBefore} to ${toolAfter}`);
+    }
+
+    await navigate("#/notebook", ".notebook-page");
+    await clickByText(page, ".notebook-heading-actions button", "Select");
+    await page.waitForSelector(".batch-check input");
+    await page.$eval(".batch-check input", (input) => input.click());
+    await page.waitForSelector(".batch-toolbar select");
+    await check("notebook (highlights, batch)", 2);
+    await selectsKeepTheirWidth("notebook highlights", ".annotation-section-heading select");
+    // A long collection name shrinks the batch select inside its toolbar
+    // (it once ran 157px past a 393px phone's toolbar, chevron and all).
+    const batchOverflow = await page.$eval(".batch-toolbar", async (bar, name) => {
+      const select = bar.querySelector("select");
+      select.value = [...select.options].find((option) => option.textContent === name).value;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const overflow = bar.scrollWidth - bar.clientWidth;
+      select.value = "";
+      return overflow;
+    }, longCollectionName);
+    if (batchOverflow > 1) findings.push(`selects/${viewportName}/notebook batch toolbar: a long collection name runs ${batchOverflow}px past the toolbar`);
+    await clickByText(page, ".notebook-heading-actions button", "Done selecting");
+    await page.$eval('.notebook-row-actions [aria-label^="Organize "]', (button) => button.click());
+    await page.waitForSelector(".manage-doc-dialog");
+    await check("organize dialog", 1);
+    await closeWithEscape(".manage-doc-dialog");
+
+    await navigate("#/review", ".review-center-page");
+    await page.waitForSelector(".interview-track-strip select", { timeout: 15_000 });
+    await check("review (limits, tracks, mistakes)", 7);
+    await selectsKeepTheirWidth("review", ".review-settings-strip select, .interview-track-strip select, .mistake-controls select");
+    if (phone) {
+      // Every Daily limits picker sits the same way: once Scheduler alone
+      // dropped under its label beside an inline Retention.
+      const placements = await page.$$eval(".review-settings-strip label", (labels) => labels.map((label) => {
+        const name = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+        const range = document.createRange();
+        range.selectNodeContents(name);
+        const text = range.getBoundingClientRect();
+        return `${name.textContent.trim()} ${label.querySelector("select").getBoundingClientRect().top >= text.bottom - 1 ? "under" : "beside"} its label`;
+      }));
+      if (new Set(placements.map((placement) => placement.split(" ").slice(1).join(" "))).size > 1) findings.push(`selects/${viewportName}/review: the Daily limits pickers are laid out two ways: ${placements.join(", ")}`);
+    } else if (inPagePicker) {
+      // On a short desktop the picker opens where there is room and scrolls;
+      // the last interview track was once drawn 73px below a 560px window.
+      const track = 'select[aria-label="Interview track"]';
+      await page.setViewport({ ...viewport, height: 560 });
+      await page.$eval(track, (select) => select.scrollIntoView({ block: "center" }));
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.click(track);
+      await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, track)
+        .catch(() => findings.push(`selects/${viewportName}/review: clicking Interview track did not open its picker`));
+      await page.keyboard.press("End");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const last = await page.evaluate(() => { const node = document.activeElement; const box = node.getBoundingClientRect(); return { tag: node.tagName, text: node.textContent.trim(), top: Math.round(box.top), bottom: Math.round(box.bottom), height: innerHeight }; });
+      if (last.tag !== "OPTION" || last.top < 0 || last.bottom > last.height) findings.push(`selects/${viewportName}/review: at 1280×560 the Interview track picker drew its last option off screen (${last.tag} “${last.text}” at ${last.top}–${last.bottom}px of ${last.height}px)`);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector).matches(":open"), { timeout: 2_000 }, track).catch(() => {});
+      await page.setViewport(viewport);
+    }
+    await clickByText(page, ".review-center-page button", "New card");
+    await page.waitForSelector(".review-card-dialog");
+    await check("new card dialog", 1);
+    await closeWithEscape(".review-card-dialog");
+    await clickByText(page, ".mistake-controls button", "Log mistake");
+    await page.waitForSelector(".mistake-dialog");
+    await check("log mistake dialog", 1);
+    await closeWithEscape(".mistake-dialog");
+
+    await page.$eval('button[aria-label="Open settings"]', (button) => button.click());
+    await page.waitForSelector(".settings-drawer");
+    await check("settings", 1);
+    await closeWithEscape(".settings-drawer");
+
+    await navigate("#/ai", ".ai-learning-studio");
+    await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
+    await page.waitForSelector(".phone-tutor__composer select");
+    await check("on-device tutor", phone ? 3 : 2);
+    // The composer's Depth and Answer length show their whole value at 16px
+    // (Answer length once read “Standard · 640 t”).
+    const clipped = clippedValueProblems(await selectValueFit(page, ".phone-tutor__composer-head select"));
+    clipped.forEach((problem) => findings.push(`selects/${viewportName}/on-device tutor: the composer select clips its value: ${problem}`));
+    // A structured mode (Quiz) disables Answer length: the disabled look is
+    // measured in every theme too.
+    if (phone) await page.select(".phone-tutor__mode-select select", "quiz");
+    else await clickByText(page, ".phone-tutor__mode-tabs button", "Quiz");
+    const answerLength = await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__composer-head select")].some((select) => select.disabled), { timeout: 5_000 }).then(() => true, () => false);
+    if (answerLength) await check("on-device tutor (Quiz, Answer length disabled)", phone ? 3 : 2);
+    else findings.push(`selects/${viewportName}/on-device tutor: choosing Quiz did not disable Answer length, so the disabled select was not measured`);
+    await context.close();
+  }
+  return measured;
+};
+
+// Issue #92: a desktop browser can be narrow and use large text too (a split
+// window, Chrome's “Very large” font). With a mouse the toolbar selects once
+// kept rem minimum widths that beat max-inline-size, so the Review page
+// scrolled sideways (11px at 400px with 150% text, 217px at 320px with 200%)
+// and Library and the highlights Purpose ran past the page. This pass has its
+// own browser with a fine, hovering pointer, because headless Linux Chrome
+// reports none and would otherwise never draw the customizable select.
+const FINE_POINTER_ARGS = ["--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"];
+const auditNarrowFinePointer = async () => {
+  const fineProfileDirectory = await mkdtemp(join(tmpdir(), "lumen-controls-fine-"));
+  const fineBrowser = await puppeteer.launch({
+    executablePath: chromePath,
+    headless: true,
+    userDataDir: fineProfileDirectory,
+    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check", ...FINE_POINTER_ARGS],
+  });
+  const summary = { cases: 0, customizable: 0 };
+  try {
+    const page = await (await fineBrowser.createBrowserContext()).newPage();
+    page.on("pageerror", (error) => runtimeErrors.push(`narrow fine pointer: ${error.message}`));
+    await page.setViewport({ width: 400, height: 800, deviceScaleFactor: 1 });
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+    await seedSelectProfile(page);
+    for (const [width, textScale] of [[400, 1.5], [400, 2], [320, 1.5], [320, 2]]) {
+      // On Linux a viewport change drops the fine pointer until the next
+      // load, so each size starts with a reload.
+      await page.setViewport({ width, height: 800, deviceScaleFactor: 1 });
+      await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+      await page.waitForSelector(".app-main");
+      await page.evaluate((scale) => { document.documentElement.style.fontSize = `${16 * scale}px`; }, textScale);
+      for (const [surface, hash, ready] of [["library", "#/library", ".library-view-controls select"], ["review", "#/review", ".interview-track-strip select"], ["notebook", "#/notebook", ".annotation-section-heading select"]]) {
+        await page.evaluate((value) => { location.hash = value; }, hash);
+        await page.waitForSelector(ready, { timeout: 20_000 });
+        const state = await page.evaluate(async () => {
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const overflow = document.documentElement.scrollWidth - innerWidth;
+          const describe = (node) => `${node.tagName.toLowerCase()} “${(node.getAttribute("aria-label") || (node.tagName === "SELECT" && node.closest("label")?.firstChild?.textContent) || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 32)}”`;
+          // Chip rows that scroll sideways on purpose are not page overflow.
+          const scrolls = (node) => {
+            for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+              if (["auto", "scroll"].includes(getComputedStyle(parent).overflowX) && parent.scrollWidth > parent.clientWidth + 2) return true;
+            }
+            return false;
+          };
+          const culprits = overflow > 2 ? [...document.querySelectorAll(".page *")].filter((node) => node.getBoundingClientRect().right > innerWidth + 2 && !scrolls(node)).slice(-3).map(describe) : [];
+          const selects = [...document.querySelectorAll(".page select")].filter((node) => node.getClientRects().length);
+          const crossings = selects.flatMap((node) => {
+            const page = node.closest(".page");
+            const pageBox = page.getBoundingClientRect();
+            const pageStyle = getComputedStyle(page);
+            const left = pageBox.left + Number.parseFloat(pageStyle.paddingLeft);
+            const right = pageBox.right - Number.parseFloat(pageStyle.paddingRight);
+            const box = node.getBoundingClientRect();
+            return box.left < left - 1 || box.right > right + 1 ? [`${describe(node)} at ${Math.round(box.left)}–${Math.round(box.right)}px, page content ${Math.round(left)}–${Math.round(right)}px`] : [];
+          });
+          return {
+            overflow,
+            culprits,
+            crossings,
+            customizable: selects.some((node) => getComputedStyle(node).appearance === "base-select"),
+            // This browser has a mouse, so where Chrome has the customizable
+            // select the page must use it, or this pass tests the wrong path.
+            expected: CSS.supports("appearance", "base-select"),
+            pointer: matchMedia("(hover: hover) and (pointer: fine)").matches ? "fine" : "not fine",
+          };
+        });
+        summary.cases += 1;
+        if (state.customizable) summary.customizable += 1;
+        const where = `narrow fine pointer/${surface} at ${width}px with ${textScale * 100}% text`;
+        if (state.expected && !state.customizable) findings.push(`${where}: the selects are not the customizable select (pointer ${state.pointer}), so the mouse path went untested`);
+        if (state.overflow > 2) findings.push(`${where}: the page scrolls sideways by ${state.overflow}px (${state.culprits.join(", ")})`);
+        if (state.crossings.length) findings.push(`${where}: a select runs past the page content: ${state.crossings.join("; ")}`);
+      }
+    }
+  } finally {
+    await fineBrowser.close();
+    await rm(fineProfileDirectory, { recursive: true, force: true });
+  }
+  return summary;
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -377,9 +786,12 @@ try {
     { timeout: 2_000 },
   ).catch(() => findings.push("settings drawer: background regions remained inert after the final close"));
 
+  const selectsMeasured = await auditThemedSelects();
+  const narrow = await auditNarrowFinePointer();
+
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
   assert.equal(findings.length, 0, `control quality failures:\n${findings.map((finding) => `- ${finding}`).join("\n")}`);
-  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; and opener focus-restore verified for all seven dialogs.`);
+  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; opener focus-restore verified for all seven dialogs; ${selectsMeasured} select measurements (Paper, Night and Contrast at 393px touch and 1280px) kept the themed select contract on every screen that hosts one; and ${narrow.cases} narrow fine-pointer screens (library, review and notebook at 400px and 320px with 150% and 200% text, ${narrow.customizable} with the customizable select) kept every select inside the page with no sideways scroll.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
