@@ -254,8 +254,10 @@ Before the model is loaded, the On-device Lite card shows the download approval
 and **Download & load** (or **Load model**), with the model facts and privacy notes
 under **Details**. Once the model is loaded, the card is one line (the model and its
 size) and **Manage** holds the details with **Release memory** and **Clear model
-files**. Its question box docks like the Mac tutor's, starts empty with the mode's
-suggested question as its placeholder (**Use suggestion** puts it in the box), and
+files**. Its question box docks like the Mac tutor's (on a wider screen it waits in the
+page under the welcome until your first question, so it covers none of the card or the
+mode tabs), starts empty with the mode's suggested question as its placeholder
+(**Use suggestion** puts it in the box), and
 **Options** holds depth, answer length and the web fallback (the button reads "web
 on" while the fallback is allowed). A conversation from earlier in the session opens
 at its latest turn.
@@ -266,7 +268,8 @@ cover the conversation, it stays at the end of the page instead). On a wider scr
 tutor fits the window: the conversation and the evidence column scroll on their own
 above the question box (in a window too short for that, the page scrolls instead, as on
 a phone). In the fitted window a long question grows the box only as far as the
-conversation can spare, and then the box scrolls. A saved conversation opens at its
+conversation can spare, and then the box scrolls (in a short window, such as 1024×768
+or 1225×671, it stays one line). A saved conversation opens at its
 latest turn, also when **Ask AI** brings an excerpt from the Reader. The question box starts empty, with the mode's suggested
 question as its placeholder; **Use suggestion** (just its sparkle icon with very large
 text) puts it in the box. **Options** holds depth, answer length, web fallback and the
