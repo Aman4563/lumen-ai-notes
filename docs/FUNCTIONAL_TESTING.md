@@ -3034,7 +3034,9 @@ How each is now checked:
   count the live regions holding each message (outermost `aria-live`,
   `status`, `alert` and `log` regions), hit-test the Next card, measure
   controls and text (at 320px in Contrast too, whose 2px edge is the
-  tightest fit), drive Teaching Mode from the keyboard, override the user
+  tightest fit), drive Teaching Mode from the keyboard, check that keyboard
+  focus follows the play control (Pause to Retry and back) and returns from
+  Teaching Mode's Stop to its narration control, override the user
   agent and platform through CDP (so the Mac case also runs on Linux), and
   compute on-screen contrast from computed colours in Paper, Night,
   system-dark (emulated) and Contrast. axe cannot read `color-mix()`

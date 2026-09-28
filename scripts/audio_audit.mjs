@@ -949,16 +949,21 @@ try {
   await issue97Case("synthesis-failed with the panel closed", {}, async (casePage) => {
     await startAtSentenceTwo(casePage);
     const failure = "Narration stopped (synthesis failed).";
+    const focusedLabel = () => casePage.evaluate(() => document.activeElement?.getAttribute("aria-label") || document.activeElement?.tagName);
+    // A keyboard user on Pause: focus follows the play control to Retry.
+    await casePage.$eval('.audio-bar button[aria-label="Pause narration"]', (node) => node.focus());
     const failed = await failSentence(casePage, "synthesis-failed");
     await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 })
       .catch(async () => assert.fail(`after synthesis-failed the player ${await casePage.$(".audio-bar") ? "offers no Retry" : "disappeared"}`));
+    assert.equal(await focusedLabel(), "Retry narration", "focus on Pause did not move to Retry when the sentence failed");
     assert.ok((await barMessage(casePage)).includes(failure), `the player does not show “${failure}”: “${await barMessage(casePage)}”`);
     assert.equal(await casePage.$eval('.audio-bar button[aria-label="Retry narration"]', (node) => node.nextElementSibling?.getAttribute("aria-label")), "Stop narration", "Retry is not next to Stop");
     const failureRegions = await announcements(casePage, failure);
     assert.deepEqual(failureRegions, narratorRegion("alert"), `synthesis-failed was announced as ${JSON.stringify(failureRegions)}`);
-    await casePage.$eval('button[aria-label="Retry narration"]', (node) => node.click());
+    await casePage.keyboard.press("Enter");
     await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 })
       .catch(() => assert.fail("Retry did not resume narration"));
+    assert.equal(await focusedLabel(), "Pause narration", "focus on Retry did not move back to Pause when narration resumed");
     assert.equal(await casePage.evaluate(() => window.speechSynthesis.current?.text), failed, "Retry did not replay the sentence that failed");
     assert.equal((await barPosition(casePage)).current, 2, "Retry moved away from the sentence that failed");
     assert.deepEqual(await announcements(casePage, failure), [], "the failure stayed announced after Retry");
@@ -1290,6 +1295,13 @@ try {
     await casePage.keyboard.up("Shift");
     order.push(await casePage.evaluate(() => document.activeElement?.getAttribute("aria-label")));
     assert.deepEqual(order, ["Stop narration", "Next section", "Reset teaching timer"], `Tab from the narration control reached ${order.join(", ")}`);
+    // Stop leaves once narration ends; focus on it returns to the control.
+    await casePage.keyboard.press("Tab");
+    await casePage.keyboard.press("Tab");
+    await casePage.keyboard.press("Enter");
+    await casePage.waitForFunction(() => !document.querySelector('.teach-mode button[aria-label="Stop narration"]'), { timeout: 5_000 });
+    await delay(50);
+    assert.equal(await narrateLabel(), "Narrate this section", "after Stop, focus did not return to the narration control");
     await casePage.keyboard.press("Escape");
     await casePage.waitForSelector(".teach-mode", { hidden: true, timeout: 5_000 })
       .catch(() => assert.fail("Escape did not close Teaching Mode"));
