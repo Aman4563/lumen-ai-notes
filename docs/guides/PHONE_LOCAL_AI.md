@@ -11,7 +11,7 @@ Why this model:
 - It is a current WebLLM prebuilt model, is marked `low_resource_required`, uses a 4,096-token context window, and WebLLM reports about 879 MB of required GPU memory.
 - Its Hugging Face repository currently contains roughly 705 MB of model files. The UI rounds this to “about 710 MB”; this is the download, not the GPU-memory figure.
 - It is large enough to be more useful for tutoring than the 135M–600M alternatives while remaining plausible on an iPhone 16 Pro. Physical-device thermal, memory-pressure, and generation-speed testing is still required.
-- The model is free to download and run locally, subject to Meta's Llama 3.2 Community License. Lumen prominently displays **Built with Llama** and distributes the agreement and required attribution in [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md) and `public/licenses/`. WebLLM itself is Apache-2.0. “Free” does not mean public-domain or unlicensed.
+- The model is free to download and run locally, subject to Meta's Llama 3.2 Community License. Lumen prominently displays **Built with Llama** and distributes the agreement and required attribution in [`THIRD_PARTY_NOTICES.md`](../../LICENSES/THIRD_PARTY_NOTICES.md) and `public/licenses/`. WebLLM itself is Apache-2.0. “Free” does not mean public-domain or unlicensed.
 
 The current prebuilt catalogue also contains Gemma 3 1B, Qwen 2.5 0.5B, Qwen 3 0.6B, SmolLM2, and TinyLlama variants. They are reasonable future fallbacks, but changing the default without a repeatable mobile quality/latency evaluation would be guesswork. The app therefore starts with one explicit, testable model rather than a confusing model picker.
 

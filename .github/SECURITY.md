@@ -39,7 +39,7 @@ welcome for:
   and LAN exposure checks, request limits, web-search tooling;
 - rendering of model output: sanitization, citation integrity, links, images
   and diagrams (see
-  [docs/internal/ENGINEERING_HANDOFF.md](docs/internal/ENGINEERING_HANDOFF.md)
+  [docs/internal/ENGINEERING_HANDOFF.md](../docs/internal/ENGINEERING_HANDOFF.md)
   section 18);
 - encrypted backups and cross-device sync;
 - the service worker and offline caches;
@@ -48,15 +48,15 @@ welcome for:
 
 Out of scope: attacks that require an already compromised device or browser
 profile; the behaviour or licences of third-party models (see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); findings from automated
+[the third-party notices](../LICENSES/THIRD_PARTY_NOTICES.md)); findings from automated
 scanners without a demonstrated impact; and social engineering.
 
 ## Design references
 
-- [docs/guides/AI_SERVER.md](docs/guides/AI_SERVER.md): local AI server
+- [docs/guides/AI_SERVER.md](../docs/guides/AI_SERVER.md): local AI server
   configuration, pairing and LAN deployment.
-- [docs/guides/LOCAL_HTTPS.md](docs/guides/LOCAL_HTTPS.md): the local
+- [docs/guides/LOCAL_HTTPS.md](../docs/guides/LOCAL_HTTPS.md): the local
   certificate authority and HTTPS setup. Keep the CA private key offline and
   never commit keys or `.env`.
-- [docs/ENCRYPTED_BACKUP_DESIGN.md](docs/ENCRYPTED_BACKUP_DESIGN.md) and
-  [docs/SYNC_DESIGN.md](docs/SYNC_DESIGN.md): backup encryption and sync.
+- [docs/ENCRYPTED_BACKUP_DESIGN.md](../docs/ENCRYPTED_BACKUP_DESIGN.md) and
+  [docs/SYNC_DESIGN.md](../docs/SYNC_DESIGN.md): backup encryption and sync.

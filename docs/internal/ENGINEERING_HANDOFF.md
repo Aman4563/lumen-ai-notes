@@ -6,7 +6,7 @@
 **Purpose:** make the present implementation, evidence, limitations, operational state,
 and next decisions understandable to an engineer who did not participate in the work.
 
-This is the overall handoff document. [PRODUCT_REQUIREMENTS.md](./PRODUCT_REQUIREMENTS.md)
+This is the overall handoff document. [PRODUCT_REQUIREMENTS.md](PRODUCT_REQUIREMENTS.md)
 remains the requirement/status source of truth; this document explains how the pieces fit
 together, what the status labels actually mean, and what should happen next.
 
@@ -141,7 +141,7 @@ These are exact package pins, not ranges. Do not upgrade the AI/model/rendering 
 routine cleanup. Each upgrade needs a focused security, compatibility, bundle, cache,
 Mobile Safari, and output-quality re-audit. In particular, WebLLM `0.2.82` was selected
 after an upstream regression report concerning later versions; see
-[LOCAL_AI_MODEL_RESEARCH.md](./LOCAL_AI_MODEL_RESEARCH.md).
+[LOCAL_AI_MODEL_RESEARCH.md](LOCAL_AI_MODEL_RESEARCH.md).
 
 ### 2.2 Main routes and surfaces
 
@@ -1128,7 +1128,7 @@ four scopes, presets, persistence, transport controls, and interruption handling
 ## 13. Requirement reconciliation performed for this handoff
 
 The requirements were re-read against current source and tests, not merely copied from the
-old narrative. [PRODUCT_REQUIREMENTS.md](./PRODUCT_REQUIREMENTS.md) was corrected as follows:
+old narrative. [PRODUCT_REQUIREMENTS.md](PRODUCT_REQUIREMENTS.md) was corrected as follows:
 
 - the verification-through date now includes 2026-09-01;
 - the 2026-08-24 matrix is explicitly a baseline rechecked on 2026-09-01;
