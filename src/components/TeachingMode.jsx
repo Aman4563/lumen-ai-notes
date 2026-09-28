@@ -6,7 +6,7 @@ import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import { renderReaderMarkdown, useRenderedMarkdown } from "../lib/useRenderedMarkdown.js";
 import { useModalDialog } from "../hooks/useModalDialog.js";
 
-const TEACHING_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-view > :not(.teach-mode):not(.narration-live)"];
+const TEACHING_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-view > :not(.teach-mode)"];
 
 export default function TeachingMode({ title, source, onClose, speech }) {
   const sections = useMemo(() => splitTeachingSections(source), [source]);
@@ -64,10 +64,11 @@ export default function TeachingMode({ title, source, onClose, speech }) {
 
   // One persistent control narrates, pauses and resumes (issue #97, NM3):
   // swapping elements dropped focus, and Space on a focused button then did
-  // nothing, or on Exit left Teaching Mode. A failed sentence resumes by
-  // replaying it.
+  // nothing, or on Exit left Teaching Mode. On a failed sentence it is Retry,
+  // which replays that sentence.
   const narrateRef = useRef(null);
   const narrating = speech.status === "speaking" || speech.status === "paused" || speech.canRetry;
+  const message = speech.notice && speech.notice.code !== "sleep-ended" ? speech.notice : null;
   const narrate = () => {
     if (narrating) speech.togglePause();
     else speech.speak(plainTextFromMarkdown(current.markdown), { label: `Teaching section ${index + 1}` });
@@ -121,14 +122,17 @@ export default function TeachingMode({ title, source, onClose, speech }) {
         <button className="round-control" onClick={() => move(-1)} disabled={index === 0} aria-label="Previous section" type="button">
           <ChevronLeft size={24} />
         </button>
-        <button ref={narrateRef} className="round-control primary" onClick={narrate} aria-label={speech.status === "speaking" ? "Pause narration" : narrating ? "Resume narration" : "Narrate this section"} data-teach-narrate="" type="button">
-          {speech.status === "speaking" ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
+        <button ref={narrateRef} className="round-control primary" onClick={narrate} aria-label={speech.status === "speaking" ? "Pause narration" : speech.canRetry ? "Retry narration" : narrating ? "Resume narration" : "Narrate this section"} data-teach-narrate="" type="button">
+          {speech.status === "speaking" ? <Pause size={24} fill="currentColor" /> : speech.canRetry ? <RotateCcw size={22} /> : <Play size={24} fill="currentColor" />}
         </button>
         {narrating && <button ref={trackStopButton} className="round-control" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={20} fill="currentColor" /></button>}
         <button className="round-control" onClick={() => move(1)} disabled={index === sections.length - 1} aria-label="Next section" type="button">
           <ChevronRight size={24} />
         </button>
         </div>
+        {/* The player is under the slide, so a narration message shows here;
+            NarrationAnnouncer (App) reads it (issue #97). */}
+        {message && <p className="teach-narration-message">{message.message}</p>}
         <div className="teach-section-progress" role="progressbar" aria-label="Teaching progress" aria-valuemin={1} aria-valuemax={sections.length} aria-valuenow={index + 1} aria-valuetext={`Section ${index + 1} of ${sections.length}`}><span style={{ width: `${((index + 1) / sections.length) * 100}%` }} /></div>
       </footer>
       {printReady && (

@@ -1592,7 +1592,10 @@ input::placeholder {
   justify-content: center;
   gap: clamp(34px, 6vw, 84px);
   margin: 0 auto;
-  padding: 48px 42px 100px;
+  /* The space after the lecture's last card; the mini player widens it
+     while it shows (.has-player, issue #97). */
+  --reader-end-space: 100px;
+  padding: 48px 42px var(--reader-end-space);
 }
 
 .reader-main {
@@ -2122,6 +2125,8 @@ input[type="range"] {
   --select-menu-edge: #7d879c;
   --select-checked-ink: #ffffff;
   --select-checked-bg: #2f4270;
+  /* A narration message in the footer (issue #97). */
+  --teach-message-ink: #efc16e;
 }
 
 .teach-toolbar {
@@ -6448,7 +6453,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .reader-actions .icon-button { width: 37px; height: 37px; }
   .desktop-action { display: none; }
 
-  .reader-layout { --reader-text: calc(1.0625rem * var(--font-scale, 1)); padding: 32px 17px calc(115px + env(safe-area-inset-bottom)); }
+  .reader-layout { --reader-text: calc(1.0625rem * var(--font-scale, 1)); --reader-end-space: calc(115px + env(safe-area-inset-bottom)); padding: 32px 17px var(--reader-end-space); }
   /* Every tool stays visible: the row wraps instead of scrolling Whiteboard
      and Actions off-screen with no cue. */
   .document-tools { flex-wrap: wrap; gap: 4px 2px; }
@@ -6584,11 +6589,11 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 
 .selection-toolbar button > svg { color: var(--coral); }
 .selection-toolbar button:hover { background: var(--paper-3); }
-.selection-toolbar.with-player { bottom: calc(100px + env(safe-area-inset-bottom)); }
+.selection-toolbar.with-player { bottom: max(calc(100px + env(safe-area-inset-bottom)), calc(var(--audio-bar-space, 0px) + 12px)); }
 
 @media (max-width: 980px) {
   .selection-toolbar { bottom: calc(86px + env(safe-area-inset-bottom)); }
-  .selection-toolbar.with-player { bottom: calc(172px + env(safe-area-inset-bottom)); }
+  .selection-toolbar.with-player { bottom: max(calc(172px + env(safe-area-inset-bottom)), calc(var(--audio-bar-space, 0px) + 12px)); }
 }
 
 @media (max-width: 430px) {
@@ -7436,8 +7441,11 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 
 .audio-bar .audio-label strong { font-size: 0.61rem; }
 .audio-bar .audio-label span { color: var(--audio-bar-ink-soft); font-size: 0.67rem; font-weight: 600; }
-/* A narration message is read whole, not cut to one line (issue #97). */
-.audio-bar .audio-label .audio-message { overflow: visible; color: var(--audio-bar-ink); line-height: 1.35; text-overflow: clip; white-space: normal; }
+/* A narration message wraps instead of ending at one line (issue #97), up to
+   three lines (two on phones), so a long message at large text never pushes
+   the player over the lecture or off the screen. The Listen panel shows the
+   whole message and NarrationAnnouncer reads it whole. */
+.audio-bar .audio-label .audio-message { display: -webkit-box; overflow: hidden; color: var(--audio-bar-ink); line-height: 1.35; text-overflow: clip; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 
 .text-button.selection-ready {
   color: var(--ink);
@@ -7503,6 +7511,19 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   grid-column: 2;
   padding: 0;
   border: 0;
+}
+
+/* A narration message under the controls (issue #97): the player is hidden
+   behind the slide while Teaching Mode is open. */
+.teach-footer .teach-narration-message {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+  color: var(--teach-message-ink);
+  font-size: 0.8rem;
+  font-weight: 650;
+  line-height: 1.35;
+  text-align: center;
 }
 
 .teach-presenter-tools {
@@ -7876,6 +7897,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .teach-footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; padding: 7px 9px calc(8px + env(safe-area-inset-bottom)); }
   .teach-footer .teach-controls { order: 1; }
   .teach-presenter-tools { order: 2; }
+  .teach-footer .teach-narration-message { flex: 1 0 100%; order: 3; }
   .teach-presenter-tools button { width: 42px; height: 42px; }
 }
 
@@ -8514,7 +8536,8 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .fab { display: none !important; }
   body, .app-shell { background: #fff !important; color: #000 !important; }
   .app-main, .main-area { margin-left: 0 !important; }
-  .reader-scroll { overflow: visible !important; height: auto !important; max-height: none !important; padding-bottom: 0 !important; }
+  .reader-scroll { overflow: visible !important; height: auto !important; max-height: none !important; }
+  .reader-view.has-player .reader-layout { padding-bottom: 0 !important; }
   .reader-view { display: block !important; height: auto !important; }
   .reader-layout { max-width: 100% !important; }
   .reader-main a { color: #000 !important; text-decoration: underline; }
@@ -8527,8 +8550,17 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 .speech-autoadvance-row .setting-toggle span { color: var(--ink-soft); font-size: 0.68rem; font-weight: 750; }
 
 /* The mini player makes room for itself at the end of the lecture (issue
-   #97): Reader.jsx measures the part of the reading area it covers. */
-.reader-view.has-player .reader-scroll { padding-bottom: calc(var(--audio-bar-space, 0px) + 16px); }
+   #97): the lecture ends with its usual space or, when the player needs more,
+   the part of the reading area the player covers (measured by Reader.jsx)
+   plus 16px, never both. */
+.reader-view.has-player .reader-layout { padding-bottom: max(var(--reader-end-space), calc(var(--audio-bar-space, 0px) + 16px)); }
+
+/* The bottom navigation shows up to 980px wide, so the player sits 10px
+   above it there, however tall larger text makes it (Reader.jsx measures it
+   into --audio-bar-nav-space; 79px is its usual 69px plus the gap). */
+@media (max-width: 980px) {
+  .reader-view .audio-bar { bottom: max(calc(79px + env(safe-area-inset-bottom)), var(--audio-bar-nav-space, 0px)); }
+}
 
 /* Narration on phones and touch screens (issue #97): 44px hit areas (Apple's
    HIG and TC-21), primary labels at 12px or more and secondary metadata at
@@ -8559,6 +8591,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .speech-bookmarks-title,
   .speech-bookmark-play,
   .speech-current,
+  .speech-popover .inline-warning,
   .speech-popover .microcopy,
   .audio-bar .audio-label strong,
   .audio-bar .audio-label span { font-size: 0.75rem; }
@@ -8566,6 +8599,13 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .speech-scope-grid button span,
   .speech-current strong { font-size: 0.6875rem; }
   .reader-view .audio-bar .icon-button { width: 44px; height: 44px; }
+  .audio-bar .audio-label .audio-message { -webkit-line-clamp: 2; }
+}
+
+/* A phone 320px tall in landscape has no room for a second line at large
+   text: the player would reach the reader toolbar. */
+@media (max-height: 360px) {
+  .audio-bar .audio-label .audio-message { -webkit-line-clamp: 1; }
 }
 
 @media (max-width: 430px) {

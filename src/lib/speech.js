@@ -208,6 +208,11 @@ export const speechPreviewText = (language, selectedVoice) => {
   return PREVIEW_TEXT[candidate.split("-")[0]] || PREVIEW_TEXT.en;
 };
 
+// The app has one speech session. The tutors label theirs so they can tell
+// their own reading from a lecture's (TFEAT-09), and App leaves a tutor's
+// narration messages to the tutor's own controls (issue #97).
+export const TUTOR_SPEECH_LABEL = "Tutor answer";
+
 /**
  * Where narration voices come from (issue #97). Each browser speaks with the
  * voices its platform offers, so the wording names the platform the learner
@@ -231,7 +236,7 @@ const NEUTRAL_SPEECH_COPY = Object.freeze({
   empty: "This browser has not reported any voices. Refresh the list, or try another browser on this device.",
   noMatch: "No reported voice matches this language. Choose All languages.",
   unsupported: "Web Speech is unavailable in this browser. Open Lumen in a current version of Safari, Chrome, Edge or Firefox; no server audio fallback is used.",
-  notAllowed: "Narration was blocked. Tap Play again; the browser starts speech only after a tap.",
+  notAllowed: "Narration was blocked: the browser starts speech only after a tap.",
   languageUnavailable: "The selected language is unavailable in this browser. Choose All languages or another language.",
   resumeFailed: "This voice could not resume reliably. Tap Resume once more to replay the current sentence.",
   pauseFailed: "This voice could not be paused. Stop playback or move by sentence instead.",
@@ -249,7 +254,7 @@ export const SPEECH_COPY = Object.freeze({
     empty: "iOS has not reported any voices yet. Refresh the list; Safari offers the voices built into iOS, not voices downloaded in Settings.",
     noMatch: "No voice built into iOS matches this language. Choose All languages; voices downloaded in Settings may not appear here.",
     unsupported: "Web Speech is unavailable in this browser. Open Lumen in current Safari; no server audio fallback is used.",
-    notAllowed: "Narration was blocked. Tap Play again and check that this iPhone or iPad is not in a restricted audio state.",
+    notAllowed: "Narration was blocked. Check that this iPhone or iPad is not in a restricted audio state; Safari starts speech only after a tap.",
     languageUnavailable: "The selected language is unavailable. Safari offers only the voices built into iOS, so choose All languages or another language.",
     resumeFailed: "Resume is not supported reliably by this iOS voice. Tap Resume once more to replay the current sentence.",
     pauseFailed: "This iOS voice could not be paused. Stop playback or move by sentence instead.",
@@ -268,16 +273,23 @@ export const SPEECH_COPY = Object.freeze({
 
 export const speechCopy = (platform) => SPEECH_COPY[platform] || NEUTRAL_SPEECH_COPY;
 
-export const speechErrorMessage = (code, platform = "other") => {
+const RETRY_HINT = "Tap Retry to try it again.";
+
+// `retry`: the learner has a Retry control for this sentence (the Reader's
+// player and Listen panel keep a failed sentence's queue, issue #97). A
+// blocked or failed sentence then says to tap it; a tutor's reading, which
+// has no Retry, gets the message alone.
+export const speechErrorMessage = (code, platform = "other", { retry = false } = {}) => {
   const copy = speechCopy(platform);
+  const hint = retry ? ` ${RETRY_HINT}` : "";
   switch (String(code || "")) {
-    case "not-allowed": return copy.notAllowed;
+    case "not-allowed": return `${copy.notAllowed}${hint}`;
     case "voice-unavailable": return "That voice is no longer available. Choose another voice or refresh the list.";
     case "language-unavailable": return copy.languageUnavailable;
     case "network": return "This voice needs a network resource that is unavailable. Choose a voice marked On device for offline listening.";
     case "audio-busy": return "Another app or browser tab is using speech output. Stop it, then try again.";
     case "text-too-long": return `This reading target exceeds ${SPEECH_TEXT_LIMIT.toLocaleString()} characters. Use Sentence, Section, or Selection mode.`;
-    default: return `Narration stopped${code ? ` (${String(code).replaceAll("-", " ")})` : " because speech synthesis failed"}.`;
+    default: return `This sentence could not be spoken${code ? ` (${String(code).replaceAll("-", " ")})` : ""}.${hint}`;
   }
 };
 

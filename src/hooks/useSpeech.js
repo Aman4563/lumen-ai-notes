@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SPEECH_TEXT_LIMIT,
+  TUTOR_SPEECH_LABEL,
   applyPronunciations,
   chunkSpeechText,
   groupSpeechVoices,
@@ -48,7 +49,8 @@ export function useSpeech({
   // The latest message for the learner (issue #97): a fresh object per event,
   // so the same message twice is announced twice and a re-render never
   // announces it again. Codes: `background`, `interrupted`, `error` and
-  // `sleep-ended`. `error` keeps the same text for the panel.
+  // `sleep-ended`. `error` keeps the same text for the panel. `label` names
+  // the reading it is about (App routes a tutor's own notices differently).
   const [notice, setNotice] = useState(null);
   const noticeIdRef = useRef(0);
   const queueRef = useRef([]);
@@ -80,7 +82,7 @@ export function useSpeech({
 
   const report = useCallback((code, message) => {
     noticeIdRef.current += 1;
-    const next = { id: noticeIdRef.current, code, message, severity: code === "error" ? "error" : code === "sleep-ended" ? "info" : "warning" };
+    const next = { id: noticeIdRef.current, code, message, severity: code === "error" ? "error" : code === "sleep-ended" ? "info" : "warning", label: activeLabelRef.current };
     setError(message);
     setNotice(next);
     onNoticeRef.current?.(next);
@@ -227,9 +229,10 @@ export function useSpeech({
         report("interrupted", "Narration was interrupted. Tap Resume to replay the current sentence safely.");
         return;
       }
-      // The queue and index stay, so Retry can replay this sentence.
+      // The queue and index stay, so Retry can replay this sentence. A
+      // tutor's reading has no Retry control, so its message names none.
       updateStatus("error");
-      report("error", speechErrorMessage(event.error, platform));
+      report("error", speechErrorMessage(event.error, platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }));
     };
     try {
       window.speechSynthesis.speak(utterance);
@@ -237,7 +240,7 @@ export function useSpeech({
     } catch (speechError) {
       utteranceRef.current = null;
       updateStatus("error");
-      report("error", speechErrorMessage(speechError?.name || "synthesis-failed", platform));
+      report("error", speechErrorMessage(speechError?.name || "synthesis-failed", platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }));
       return false;
     }
   }, [clearMessages, clearResumeTimer, endIfSleepLapsed, finish, platform, report, supported, updateStatus]);

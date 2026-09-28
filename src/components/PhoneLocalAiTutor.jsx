@@ -45,6 +45,7 @@ import { tutorSpeechText } from "../lib/tutorMarkdown.js";
 import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { libraryUnavailableReason, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { ANSWER_FOLLOW_UPS, topicQuestionFor, withoutCitationLabels } from "../lib/tutorFollowUps.js";
+import { TUTOR_SPEECH_LABEL } from "../lib/speech.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import { useTutorMath, useTutorMathFor } from "../hooks/useTutorMath.js";
 import "../phone-local-ai-tutor.css";
@@ -85,8 +86,6 @@ const MAX_PROMPT_CHARS = 1_800;
 const MAX_SESSION_MESSAGES = 30;
 const MAX_HISTORY_MESSAGES = 2;
 // The small model gets three of the Mac tutor's follow-ups (TFEAT-02).
-// Shared with the Mac tutor: the app's one speech session reading an answer.
-const TUTOR_SPEECH_LABEL = "Tutor answer";
 const PHONE_FOLLOW_UPS = ANSWER_FOLLOW_UPS.filter((item) => ["simpler", "quiz", "flashcards"].includes(item.id));
 
 const cleanText = (value, maximum = 20_000) => String(value ?? "")

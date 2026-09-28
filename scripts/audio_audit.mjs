@@ -916,11 +916,26 @@ try {
     await waitForBar(casePage, "full-lecture narration did not start");
     assert.equal(await casePage.$(".speech-popover"), null, "Read left the narration panel open");
   };
-  const failSentence = (casePage, code) => casePage.evaluate((error) => {
-    const utterance = window.speechSynthesis.current;
-    utterance.onerror({ error });
-    return utterance.text;
-  }, code);
+  // Fails the sentence being read, once one is playing: after Retry or
+  // Resume, useSpeech replays it one task after cancelling live speech.
+  const failSentence = async (casePage, code) => {
+    await casePage.waitForFunction(() => Boolean(window.speechSynthesis.current), { timeout: 5_000 })
+      .catch(() => assert.fail(`no sentence was playing to fail with ${code}`));
+    return casePage.evaluate((error) => {
+      const utterance = window.speechSynthesis.current;
+      utterance.onerror({ error });
+      return utterance.text;
+    }, code);
+  };
+  // Waits for `text` to be the sentence being spoken (a replay starts one
+  // task after the Retry or Resume tap).
+  const waitForSpoken = (casePage, text, message) => casePage.waitForFunction((expected) => window.speechSynthesis.current?.text === expected, { timeout: 5_000 }, text)
+    .catch(async () => assert.fail(`${message} (speaking “${String(await casePage.evaluate(() => window.speechSynthesis.current?.text)).slice(0, 60)}”)`));
+  // Waits until no live region holds `needle` (messages clear as the
+  // replayed sentence starts).
+  const waitUnannounced = (casePage, needle, message) => casePage.waitForFunction((text) => ![...document.querySelectorAll("[aria-live]:not([aria-live='off']), [role='status'], [role='alert'], [role='log']")].some((node) => node.textContent.includes(text)), { timeout: 5_000 }, needle)
+    .catch(async () => assert.fail(`${message}: ${JSON.stringify(await announcements(casePage, needle))}`));
+  const tapBar = (casePage, label) => casePage.$eval(`.audio-bar button[aria-label="${label}"]`, (node) => node.click());
   const setTextScale = (casePage, scale) => casePage.evaluate((factor) => new Promise((resolve) => {
     document.documentElement.style.fontSize = factor === 1 ? "" : `${16 * factor}px`;
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -948,7 +963,7 @@ try {
   };
   await issue97Case("synthesis-failed with the panel closed", {}, async (casePage) => {
     await startAtSentenceTwo(casePage);
-    const failure = "Narration stopped (synthesis failed).";
+    const failure = "This sentence could not be spoken (synthesis failed). Tap Retry to try it again.";
     const focusedLabel = () => casePage.evaluate(() => document.activeElement?.getAttribute("aria-label") || document.activeElement?.tagName);
     // A keyboard user on Pause: focus follows the play control to Retry.
     await casePage.$eval('.audio-bar button[aria-label="Pause narration"]', (node) => node.focus());
@@ -960,19 +975,28 @@ try {
     assert.equal(await casePage.$eval('.audio-bar button[aria-label="Retry narration"]', (node) => node.nextElementSibling?.getAttribute("aria-label")), "Stop narration", "Retry is not next to Stop");
     const failureRegions = await announcements(casePage, failure);
     assert.deepEqual(failureRegions, narratorRegion("alert"), `synthesis-failed was announced as ${JSON.stringify(failureRegions)}`);
+    // A tooltip names the same action as the button's name.
+    const tooltips = await casePage.$$eval(".audio-bar button[title]", (buttons) => buttons.filter((button) => button.title !== button.getAttribute("aria-label")).map((button) => `${button.getAttribute("aria-label")} titled “${button.title}”`));
+    assert.deepEqual(tooltips, [], `player tooltips differ from their names: ${tooltips.join(", ")}`);
     await casePage.keyboard.press("Enter");
     await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 })
       .catch(() => assert.fail("Retry did not resume narration"));
     assert.equal(await focusedLabel(), "Pause narration", "focus on Retry did not move back to Pause when narration resumed");
-    assert.equal(await casePage.evaluate(() => window.speechSynthesis.current?.text), failed, "Retry did not replay the sentence that failed");
+    await waitForSpoken(casePage, failed, "Retry did not replay the sentence that failed");
     assert.equal((await barPosition(casePage)).current, 2, "Retry moved away from the sentence that failed");
-    assert.deepEqual(await announcements(casePage, failure), [], "the failure stayed announced after Retry");
+    await waitUnannounced(casePage, failure, "the failure stayed announced after Retry");
+    // Stop from the keyboard: the player leaves and focus goes to Listen.
+    await casePage.$eval('.audio-bar button[aria-label="Stop narration"]', (node) => node.focus());
+    await casePage.keyboard.press("Enter");
+    await casePage.waitForFunction(() => !document.querySelector(".audio-bar"), { timeout: 5_000 });
+    await delay(50);
+    assert.equal(await focusedLabel(), "Listen", "after Stop from the player, focus did not go to Listen");
   });
 
   await issue97Case("interrupted with the panel closed", {}, async (casePage) => {
     await startAtSentenceTwo(casePage);
     const interruption = "Narration was interrupted.";
-    await failSentence(casePage, "interrupted");
+    const interrupted = await failSentence(casePage, "interrupted");
     await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 })
       .catch(() => assert.fail("an interruption did not leave the player paused"));
     assert.ok((await barMessage(casePage)).includes(interruption), `the player does not show “${interruption}”`);
@@ -980,7 +1004,8 @@ try {
     assert.deepEqual(interruptionRegions, narratorRegion("status"), `an interruption was announced as ${JSON.stringify(interruptionRegions)}`);
     await casePage.$eval('button[aria-label="Resume narration"]', (node) => node.click());
     await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 });
-    assert.deepEqual(await announcements(casePage, interruption), [], "the interruption stayed announced after Resume");
+    await waitForSpoken(casePage, interrupted, "Resume did not replay the interrupted sentence");
+    await waitUnannounced(casePage, interruption, "the interruption stayed announced after Resume");
   });
 
   await issue97Case("pagehide with the panel closed", {}, async (casePage) => {
@@ -1075,7 +1100,9 @@ try {
   });
 
   // ND8: at the end of the lecture the Next card scrolls clear of the
-  // player, including when a message makes the player taller.
+  // player, including when a message makes the player taller, a long message
+  // at 200% text on a small phone, and in phone landscape, where the
+  // lecture's own end space and the player's must not add up.
   await issue97Case("the Next card with the player visible", {}, async (casePage) => {
     await openLecture(casePage);
     await startFullLecture(casePage);
@@ -1090,20 +1117,34 @@ try {
       const box = card.getBoundingClientRect();
       const bar = document.querySelector(".audio-bar").getBoundingClientRect();
       const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-      return { onCard: Boolean(hit && card.contains(hit)), hit: hit?.className || hit?.tagName || null, card: [Math.round(box.top), Math.round(box.bottom)], bar: [Math.round(bar.top), Math.round(bar.bottom)] };
+      return { onCard: Boolean(hit && card.contains(hit)), hit: hit?.className || hit?.tagName || null, card: [Math.round(box.top), Math.round(box.bottom)], bar: [Math.round(bar.top), Math.round(bar.bottom)], toolbar: Math.round(document.querySelector(".reader-toolbar").getBoundingClientRect().bottom) };
     });
-    for (const [label, viewport, scale] of [["393×852", phoneViewport, 1], ["320×568", { ...phoneViewport, width: 320, height: 568 }, 1], ["393×852 at 200% text", phoneViewport, 2]]) {
+    const problems = [];
+    for (const [label, viewport, scale, message] of [
+      ["393×852", phoneViewport, 1, "synthesis-failed"],
+      ["320×568", { ...phoneViewport, width: 320, height: 568 }, 1, "synthesis-failed"],
+      ["393×852 at 200% text", phoneViewport, 2, "synthesis-failed"],
+      ["320×568 at 200% text", { ...phoneViewport, width: 320, height: 568 }, 2, "pagehide"],
+      ["667×375", { ...phoneViewport, width: 667, height: 375 }, 1, "synthesis-failed"],
+      ["852×393", { ...phoneViewport, width: 852, height: 393 }, 1, "pagehide"],
+    ]) {
       await casePage.setViewport(viewport);
       await setTextScale(casePage, scale);
       const speaking = await nextCardHit();
-      assert.ok(speaking.onCard, `at ${label} the player covers the Next card's centre: ${JSON.stringify(speaking)}`);
-      await failSentence(casePage, "synthesis-failed");
-      await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 });
-      const failed = await nextCardHit();
-      assert.ok(failed.onCard, `at ${label} the player with a message covers the Next card's centre: ${JSON.stringify(failed)}`);
-      await casePage.$eval('button[aria-label="Retry narration"]', (node) => node.click());
+      if (!speaking.onCard) problems.push(`at ${label} the player covers the Next card's centre: ${JSON.stringify(speaking)}`);
+      if (message === "pagehide") {
+        await casePage.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+        await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 });
+      } else {
+        await failSentence(casePage, message);
+        await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 });
+      }
+      const withMessage = await nextCardHit();
+      if (!withMessage.onCard) problems.push(`at ${label} the player with the ${message} message covers the Next card's centre: ${JSON.stringify(withMessage)}`);
+      await tapBar(casePage, message === "pagehide" ? "Resume narration" : "Retry narration");
       await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 });
     }
+    assert.deepEqual(problems, [], problems.join("; "));
   });
 
   // NU4, NM5, NU17: 44px controls and readable text on phones, one row of
@@ -1205,6 +1246,186 @@ try {
       await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
     }
     assert.deepEqual(problems, [], problems.join("; "));
+  });
+
+  // The player's place (review of #97): its buttons stay clear of the bottom
+  // navigation, which shows up to 980px wide and grows with larger text; at
+  // 200% text a message keeps the player below the reader toolbar and on
+  // screen; and a toast rises above a player that holds a message.
+  await issue97Case("the player's place on small, landscape and tablet screens", {}, async (casePage) => {
+    const problems = [];
+    await openLecture(casePage);
+    const place = () => casePage.evaluate(() => {
+      const box = (node) => node.getBoundingClientRect();
+      const bar = document.querySelector(".audio-bar");
+      const frame = box(bar);
+      const label = box(bar.querySelector(".audio-label"));
+      // Each button is hit at its centre and just above its bottom edge.
+      const covered = [...bar.querySelectorAll("button")].filter((button) => {
+        const target = box(button);
+        const x = target.left + target.width / 2;
+        return ![target.top + target.height / 2, target.bottom - 2].every((y) => button.contains(document.elementFromPoint(x, y)));
+      }).map((button) => {
+        const target = box(button);
+        const cover = document.elementFromPoint(target.left + target.width / 2, target.bottom - 2);
+        return `${button.getAttribute("aria-label")} (under ${cover?.closest("nav")?.getAttribute("aria-label") || cover?.className || cover?.tagName})`;
+      });
+      return { top: Math.round(frame.top), bottom: Math.round(frame.bottom), toolbar: Math.round(box(document.querySelector(".reader-toolbar")).bottom), labelInside: label.top >= 0 && label.bottom <= innerHeight, covered };
+    });
+    for (const [label, viewport, scale] of [
+      ["852×393", { ...phoneViewport, width: 852, height: 393 }, 1],
+      ["820×1180", { ...phoneViewport, width: 820, height: 1180 }, 1],
+      ["393×852 at 200% text", phoneViewport, 2],
+      ["320×568 at 200% text", { ...phoneViewport, width: 320, height: 568 }, 2],
+      ["667×375 at 200% text", { ...phoneViewport, width: 667, height: 375 }, 2],
+      ["568×320 at 200% text", { ...phoneViewport, width: 568, height: 320 }, 2],
+    ]) {
+      await casePage.setViewport(viewport);
+      await setTextScale(casePage, scale);
+      await startFullLecture(casePage);
+      for (const state of ["speaking", "background"]) {
+        if (state === "background") {
+          await casePage.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+          await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 });
+        }
+        await casePage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const where = await place();
+        if (where.covered.length) problems.push(`at ${label} ${state}, the bottom navigation covers ${where.covered.join(", ")}`);
+        if (where.top < where.toolbar || !where.labelInside) problems.push(`at ${label} ${state}, the player reaches the reader toolbar or leaves the screen: ${JSON.stringify(where)}`);
+      }
+      await tapBar(casePage, "Stop narration");
+    }
+    // A bookmark toast over a player that holds the background message.
+    await casePage.setViewport({ ...phoneViewport, width: 320, height: 568 });
+    await setTextScale(casePage, 1);
+    await startFullLecture(casePage);
+    await casePage.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 });
+    await tapBar(casePage, "Bookmark this sentence");
+    await casePage.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("bookmarked"), { timeout: 5_000 });
+    await delay(300);
+    const stack = await casePage.evaluate(() => ({ toast: Math.round(document.querySelector(".toast").getBoundingClientRect().bottom), bar: Math.round(document.querySelector(".audio-bar").getBoundingClientRect().top) }));
+    if (stack.toast > stack.bar) problems.push(`at 320×568 a toast overlaps the player holding a message: ${JSON.stringify(stack)}`);
+    assert.deepEqual(problems, [], problems.join("; "));
+  });
+
+  // A message about narration that keeps playing is announced while Settings
+  // or the phone menu hides the page, once: the announcer sits outside the
+  // page, and closing Settings does not announce it again.
+  await issue97Case("messages while Settings or the menu covers the Reader", {}, async (casePage) => {
+    const exposure = (needle) => casePage.evaluate((text) => [...document.querySelectorAll(".narration-live")]
+      .filter((node) => node.textContent.includes(text))
+      .map((node) => ({ role: node.getAttribute("role"), hiddenBy: node.closest("[inert], [aria-hidden='true']")?.className || node.closest("[inert], [aria-hidden='true']")?.id || null })), needle);
+    const reached = (needle, message) => casePage.waitForFunction((text) => [...document.querySelectorAll(".narration-live")].some((node) => node.textContent.includes(text)), { timeout: 5_000 }, needle)
+      .catch(() => assert.fail(message));
+    await openLecture(casePage);
+    await startFullLecture(casePage);
+    await casePage.$eval('button[aria-label="Open settings"]', (node) => node.click());
+    await casePage.waitForSelector(".settings-drawer", { timeout: 10_000 });
+    const interruption = "Narration was interrupted.";
+    await failSentence(casePage, "interrupted");
+    await reached(interruption, "an interruption behind Settings reached no narration region");
+    assert.deepEqual(await exposure(interruption), [{ role: "status", hiddenBy: null }], "an interruption behind Settings is hidden from assistive technology");
+    assert.deepEqual(await announcements(casePage, interruption), narratorRegion("status"), "an interruption behind Settings was not announced exactly once");
+    await casePage.evaluate(() => {
+      window.__narrationChanges = 0;
+      new MutationObserver((records) => { window.__narrationChanges += records.length; }).observe(document.querySelector(".narration-live[role='status']"), { childList: true, subtree: true, characterData: true });
+    });
+    await casePage.$eval(".settings-close", (node) => node.click());
+    await casePage.waitForSelector(".settings-drawer", { hidden: true, timeout: 5_000 });
+    await delay(150);
+    assert.equal(await casePage.evaluate(() => window.__narrationChanges), 0, "closing Settings announced the interruption again");
+    // The phone menu makes the whole page inert.
+    await tapBar(casePage, "Resume narration");
+    await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 });
+    await casePage.$eval('button[aria-label="Open menu"]', (node) => node.click());
+    await casePage.waitForFunction(() => document.querySelector(".app-sidebar.open") && document.querySelector(".app-main")?.inert, { timeout: 5_000 });
+    const failure = "This sentence could not be spoken (synthesis failed).";
+    await failSentence(casePage, "synthesis-failed");
+    await reached(failure, "a failure behind the phone menu reached no narration region");
+    assert.deepEqual(await exposure(failure), [{ role: "alert", hiddenBy: null }], "a failure behind the phone menu is hidden from assistive technology");
+  });
+
+  // A lecture still playing after browser Back left the Reader has no player
+  // on the new screen: its message is a toast, announced once by the toast
+  // announcer.
+  await issue97Case("a message after leaving the Reader", {}, async (casePage) => {
+    await casePage.goto(`${baseUrl}#/library`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForSelector(".library-page", { timeout: 15_000 });
+    await casePage.evaluate((hash) => { window.location.hash = hash; }, `#/read/${encodeURIComponent(documentId)}`);
+    await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+    await startFullLecture(casePage);
+    await casePage.evaluate(() => history.back());
+    await casePage.waitForSelector(".library-page", { timeout: 10_000 });
+    const failure = "This sentence could not be spoken (synthesis failed).";
+    await failSentence(casePage, "synthesis-failed");
+    await casePage.waitForFunction((text) => [...document.querySelectorAll(".toast")].some((node) => node.textContent.includes(text)), { timeout: 5_000 }, failure)
+      .catch(() => assert.fail("a failure after leaving the Reader showed no toast"));
+    const regions = await announcements(casePage, failure);
+    assert.deepEqual(regions, [{ region: "visually-hidden toast-live toast-live--assertive", role: "alert", count: 1 }], `a failure after leaving the Reader was announced as ${JSON.stringify(regions)}`);
+  });
+
+  // After a failed sentence the Listen panel offers what the player offers:
+  // Retry in place of Pause, with Previous, Next and Stop; its message is at
+  // the panel's 12px phone text size.
+  await issue97Case("the Listen panel on a failed sentence", {}, async (casePage) => {
+    await startAtSentenceTwo(casePage);
+    const failed = await failSentence(casePage, "synthesis-failed");
+    await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 });
+    await openPanel(casePage);
+    await casePage.waitForSelector(".speech-popover .inline-warning", { timeout: 5_000 });
+    const panel = await casePage.$eval(".speech-popover", (node) => ({
+      controls: [...node.querySelectorAll(".speech-controls button")].map((button) => (button.getAttribute("aria-label") || button.textContent).trim()),
+      message: Number.parseFloat(getComputedStyle(node.querySelector(".inline-warning")).fontSize),
+    }));
+    assert.deepEqual(panel.controls, ["Previous narration sentence", "Retry", "Next narration sentence", "Stop"], `the panel on a failed sentence offers ${panel.controls.join(", ")}`);
+    assert.ok(panel.message >= 12, `the panel shows the message at ${panel.message}px`);
+    await clickByText(casePage, ".speech-controls button", "Retry");
+    await waitForSpoken(casePage, failed, "Retry in the panel did not replay the sentence that failed");
+    assert.equal((await barPosition(casePage)).current, 2, "Retry in the panel moved away from the sentence that failed");
+  });
+
+  // Retry and Next on a failed sentence are deliberate taps: past the sleep
+  // deadline they re-arm the timer, so narration continues past the next
+  // sentence boundary instead of ending there.
+  await issue97Case("Retry and Next past the sleep deadline", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-sleep-row button", "10 min");
+    await startFullLecture(casePage);
+    for (const action of ["Retry narration", "Next narration sentence"]) {
+      const { current } = await barPosition(casePage);
+      const failed = await failSentence(casePage, "synthesis-failed");
+      await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 });
+      await shiftClock(casePage, 11);
+      await tapBar(casePage, action);
+      const played = action === "Retry narration" ? current : current + 1;
+      await waitForPosition(casePage, played, `${action} past the sleep deadline did not play sentence ${played}`);
+      if (action === "Retry narration") await waitForSpoken(casePage, failed, "Retry past the sleep deadline did not replay the sentence that failed");
+      await casePage.evaluate(() => window.speechSynthesis.current.onend());
+      await waitForPosition(casePage, played + 1, `after ${action} past the sleep deadline, narration ended at the next sentence boundary`);
+    }
+    const toasts = await toastTexts(casePage);
+    assert.ok(!toasts.some((text) => text.includes("sleep timer ended")), `the sleep timer ended narration after a deliberate tap: “${toasts.join(" | ")}”`);
+  });
+
+  // Teaching Mode after a failed sentence: the player is under the slide, so
+  // the footer shows the message, and the narration control is Retry, which
+  // replays that sentence.
+  await issue97Case("Teaching Mode after a failed sentence", {}, async (casePage) => {
+    await openLecture(casePage);
+    await clickByText(casePage, ".document-tools button", "Teach");
+    await casePage.waitForSelector(".teach-mode [data-teach-narrate]", { timeout: 10_000 });
+    await casePage.$eval(".teach-mode [data-teach-narrate]", (node) => node.click());
+    const failed = await failSentence(casePage, "synthesis-failed");
+    await casePage.waitForFunction(() => document.querySelector(".teach-mode [data-teach-narrate]")?.getAttribute("aria-label") !== "Pause narration", { timeout: 5_000 });
+    const teaching = await casePage.$eval(".teach-mode", (node) => ({ control: node.querySelector("[data-teach-narrate]").getAttribute("aria-label"), footer: node.querySelector(".teach-footer").textContent }));
+    assert.equal(teaching.control, "Retry narration", "Teaching Mode's narration control does not offer Retry on a failed sentence");
+    assert.ok(teaching.footer.includes("This sentence could not be spoken"), `Teaching Mode shows no message for the failed sentence: “${teaching.footer.trim()}”`);
+    await casePage.$eval(".teach-mode [data-teach-narrate]", (node) => node.click());
+    await waitForSpoken(casePage, failed, "Retry in Teaching Mode did not replay the sentence that failed");
+    await casePage.waitForFunction(() => !document.querySelector(".teach-footer")?.textContent.includes("could not be spoken"), { timeout: 5_000 })
+      .catch(() => assert.fail("Teaching Mode kept the failure message after Retry"));
   });
 
   // NM4: Review reads 1.25×, and the slider can hold 1.25.
@@ -1445,7 +1666,7 @@ try {
 
   const narrationFailures = [["#96", issue96Failures], ["#97", issue97Failures]].filter(([, list]) => list.length);
   assert.deepEqual(narrationFailures, [], narrationFailures.map(([issue, list]) => `issue ${issue} narration cases failed:\n- ${list.join("\n- ")}`).join("\n"));
-  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone; issue #97: failed, interrupted and backgrounded sentences in the player with Retry and one announcement each, sleep expiry as one toast, no announced sentences from the open panel, a 160-character bookmark at 393, 320 and 1280 px, the Next card clear of the player, 44px controls and readable text on phones (Contrast included), the Review speed, an over-long target mid-reading, Space in Teaching Mode, Mac and iPhone wording, and measured colour contrast in Paper, Night, system-dark and Contrast.");
+  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone; issue #97: failed, interrupted and backgrounded sentences in the player with Retry and one announcement each, sleep expiry as one toast, no announced sentences from the open panel, a 160-character bookmark at 393, 320 and 1280 px, the Next card clear of the player, 44px controls and readable text on phones (Contrast included), the Review speed, an over-long target mid-reading, Space in Teaching Mode, Mac and iPhone wording, and measured colour contrast in Paper, Night, system-dark and Contrast; #97 review: Retry and Resume replaying the same sentence, matching tooltips, focus to Listen after Stop, the Next card in phone landscape and with a long message at 200% text, the player clear of the bottom navigation (landscape, tablet, 200% text) and of the reader toolbar, toasts above it, messages announced behind Settings and the phone menu, a toast after leaving the Reader, Retry in the Listen panel and in Teaching Mode, and Retry or Next past the sleep deadline.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

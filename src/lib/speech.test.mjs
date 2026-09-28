@@ -222,6 +222,24 @@ test("narration copy names iOS only on iOS and never sends learners to download 
   assert.match(speech.speechErrorMessage("not-allowed", "ios"), /iPhone or iPad/u);
 });
 
+// A failed sentence keeps the player with Retry beside Stop (issue #97), and
+// there is no Play control to tap: where Retry exists the messages name it, a
+// tutor's reading (no Retry) gets none, and the default says what failed in
+// words before the engine's code.
+test("narration errors name the Retry control only where it exists", () => {
+  for (const platform of ["ios", "mac", "windows", "android", "other"]) {
+    for (const code of ["not-allowed", "synthesis-failed", "audio-hardware", ""]) {
+      const withRetry = speech.speechErrorMessage(code, platform, { retry: true });
+      const withoutRetry = speech.speechErrorMessage(code, platform);
+      for (const message of [withRetry, withoutRetry]) assert.doesNotMatch(message, /\bPlay\b/u, `${platform}: “${message}” names a Play control`);
+      assert.match(withRetry, /\bTap Retry\b/u, `${platform}: “${withRetry}” does not name Retry`);
+      assert.doesNotMatch(withoutRetry, /\bRetry\b/u, `${platform}: “${withoutRetry}” names Retry where there is none`);
+    }
+  }
+  assert.equal(speech.speechErrorMessage("synthesis-failed", "other", { retry: true }), "This sentence could not be spoken (synthesis failed). Tap Retry to try it again.");
+  assert.equal(speech.speechErrorMessage(""), "This sentence could not be spoken.");
+});
+
 test("narration speed shows as chosen: 1.25×, not 1.3×", () => {
   assert.equal(typeof speech.formatSpeechRate, "function", "speech.js has no formatSpeechRate");
   assert.deepEqual([1.25, 1, 0.8, 0.6, 1.6, 1.05, "1.35", Number.NaN].map(speech.formatSpeechRate), ["1.25×", "1×", "0.8×", "0.6×", "1.6×", "1.05×", "1.35×", "1×"]);

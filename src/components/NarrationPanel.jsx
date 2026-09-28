@@ -39,7 +39,9 @@ export default function NarrationPanel({
   onDeleteBookmark,
   panelRef,
 }) {
-  const active = speech.status === "speaking" || speech.status === "paused";
+  // A failed sentence keeps its queue (issue #97): the panel offers the same
+  // transport as the player, with Retry in place of Pause.
+  const active = speech.status === "speaking" || speech.status === "paused" || speech.canRetry;
   const matchingVoiceValues = new Set(speech.voiceGroups.flatMap((group) => group.voices.map(voiceValue)));
   const selectedValue = matchingVoiceValues.has(voiceValue(speech.selectedVoice)) ? voiceValue(speech.selectedVoice) : "";
 
@@ -88,7 +90,9 @@ export default function NarrationPanel({
         {active ? (
           <>
             <button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button>
-            <button className="button primary" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} type="button">{speech.status === "paused" ? <Play size={18} /> : <Pause size={18} />} {speech.status === "paused" ? "Resume" : "Pause"}</button>
+            {speech.canRetry
+              ? <button className="button primary" onClick={speech.togglePause} type="button"><RotateCcw size={18} /> Retry</button>
+              : <button className="button primary" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} type="button">{speech.status === "paused" ? <Play size={18} /> : <Pause size={18} />} {speech.status === "paused" ? "Resume" : "Pause"}</button>}
             <button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>
             <button className="button secondary" onClick={speech.stop} type="button"><Square size={16} fill="currentColor" /> Stop</button>
             <span className="speech-count">{speech.progress.current + 1}/{speech.progress.total}</span>

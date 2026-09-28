@@ -28,7 +28,9 @@ const THEMES = [["paper", "Paper"], ["dark", "Night"], ["contrast", "Contrast"]]
 // Screen states the routes never show, scanned after the routes in every
 // theme and viewport: `setup` opens the state from `route`, `ready` names an
 // element it shows, and `close` returns the route to rest. An open dialog
-// must hold focus. Issue #98 adds its dialog states to this list.
+// must hold focus. A state with its own `viewport` is scanned once per theme,
+// in that viewport, during the phone pass. Issue #98 adds its dialog states
+// to this list.
 const clickText = (page, selector, text) => page.$$eval(selector, (nodes, expected) => {
   const node = nodes.find((item) => item.textContent.replace(/\s+/g, " ").trim().includes(expected));
   node?.click();
@@ -72,6 +74,42 @@ const STATES = [
     ready: '.audio-bar button[aria-label="Retry narration"]',
     close: stopNarration,
   },
+  // The same in phone landscape, where the bottom navigation still shows
+  // and the player must sit above it (axe target-size).
+  {
+    name: "narration-error-landscape",
+    route: ROUTES[2],
+    viewport: { width: 852, height: 393, deviceScaleFactor: 1, isMobile: true, hasTouch: true },
+    setup: async (page) => {
+      await startNarration(page);
+      await page.evaluate(() => window.speechSynthesis.current.onerror({ error: "synthesis-failed" }));
+    },
+    ready: '.audio-bar button[aria-label="Retry narration"]',
+    close: stopNarration,
+  },
+  // The sleep timer's toast after it ends narration.
+  {
+    name: "narration-sleep-toast",
+    route: ROUTES[2],
+    setup: async (page) => {
+      await page.evaluate(installSpeechMock, {});
+      await page.$eval('button[aria-label="Listen"]', (button) => button.click());
+      await page.waitForSelector(".speech-popover");
+      await clickText(page, ".speech-sleep-row button", "10 min");
+      await clickText(page, ".speech-scope-grid button", "Full");
+      await clickText(page, ".speech-controls button", "Read full lecture");
+      await page.waitForSelector(".audio-bar");
+      await page.evaluate(() => {
+        window.__lumenClockOffset += 11 * 60_000;
+        window.speechSynthesis.current.onend();
+      });
+    },
+    ready: ".toast",
+    close: async (page) => {
+      await page.$eval('.toast button[aria-label="Dismiss notification"]', (button) => button.click());
+      await page.waitForSelector(".toast", { hidden: true });
+    },
+  },
   // The Listen panel over an interrupted player: its message, its
   // transport, and the Selection target's warning (no text is selected).
   {
@@ -103,6 +141,25 @@ const STATES = [
     setup: (page) => clickText(page, ".document-tools button", "Teach"),
     ready: ".teach-mode",
     close: async (page) => {
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(".teach-mode", { hidden: true });
+    },
+  },
+  // Teaching Mode after a failed sentence: Retry and the footer's message.
+  {
+    name: "teaching-mode-error",
+    route: ROUTES[2],
+    setup: async (page) => {
+      await page.evaluate(installSpeechMock, {});
+      await clickText(page, ".document-tools button", "Teach");
+      await page.waitForSelector(".teach-mode [data-teach-narrate]");
+      await page.$eval(".teach-mode [data-teach-narrate]", (button) => button.click());
+      await page.waitForFunction(() => Boolean(window.speechSynthesis.current));
+      await page.evaluate(() => window.speechSynthesis.current.onerror({ error: "synthesis-failed" }));
+    },
+    ready: ".teach-footer .teach-narration-message",
+    close: async (page) => {
+      await page.evaluate(() => document.querySelector('.teach-mode button[aria-label="Stop narration"]')?.click());
       await page.keyboard.press("Escape");
       await page.waitForSelector(".teach-mode", { hidden: true });
     },
@@ -281,8 +338,10 @@ try {
       check(titles.get("home") === "Lumen AI Notes" && titles.get("library") === "Library · Lumen", `${viewportName}/${theme}: unexpected page titles (${JSON.stringify([...titles])})`);
 
       for (const state of STATES) {
+        if (state.viewport && viewportName !== "phone") continue;
         const label = `${viewportName}/${theme}/${state.name}`;
         try {
+          if (state.viewport) await page.setViewport(state.viewport);
           await navigate(page, state.route);
           await state.setup(page);
           await page.waitForSelector(state.ready, { timeout: 10_000 });
@@ -299,6 +358,7 @@ try {
           await page.keyboard.press("Escape").catch(() => {});
           await page.evaluate(() => ['button[aria-label="Close narration"]', 'button[aria-label="Stop narration"]'].forEach((selector) => document.querySelector(selector)?.click())).catch(() => {});
         }
+        if (state.viewport) await page.setViewport(viewport);
       }
 
       if (viewportName === "phone") {

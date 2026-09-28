@@ -51,14 +51,15 @@
   .toast > svg { flex: 0 0 auto; }
   .toast > span { overflow-wrap: anywhere; }
   .toast > button { pointer-events: auto; }
-  .app-shell:has(.audio-bar) > .toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
+  /* Above the mini player, however tall a message makes it (issue #97). */
+  .app-shell:has(.audio-bar) > .toast { bottom: max(calc(100px + env(safe-area-inset-bottom)), calc(var(--audio-bar-space, 0px) + 12px)); }
   .app-shell:has(> .update-banner) > .toast { bottom: calc(100px + env(safe-area-inset-bottom)); }
 }
 
 @media screen and (max-width: 980px) {
   .board-view.advanced-board { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   .bottom-nav { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
-  .app-shell:has(.audio-bar) > .toast { bottom: calc(165px + env(safe-area-inset-bottom)); }
+  .app-shell:has(.audio-bar) > .toast { bottom: max(calc(165px + env(safe-area-inset-bottom)), calc(var(--audio-bar-space, 0px) + 12px)); }
   .app-shell:has(> .update-banner) > .toast { bottom: calc(160px + env(safe-area-inset-bottom)); }
 }
 

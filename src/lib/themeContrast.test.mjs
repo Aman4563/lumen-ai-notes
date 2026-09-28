@@ -136,6 +136,7 @@ test("the Teaching island's select, picker and focus ring stay visible on its na
     ["--select-checked-ink", "--select-checked-bg", 4.5], ["--select-icon", "--select-bg", 3], ["--select-icon", "--select-bg-hover", 3],
     ["--control-border", "--select-bg", 3], ["--control-border", ground, 3], ["--select-menu-edge", ground, 3],
     ["--focus-ring", "--select-bg", 3], ["--focus-ring", "--select-checked-bg", 3], ["--focus-ring", "--focus-halo", 3], ["--focus-ring", ground, 3],
+    ["--teach-message-ink", ground, 4.5],
   ]) {
     const value = ratio(island[text], island[surface] || surface);
     assert.ok(value >= minimum, `teaching island: ${text} on ${surface} is ${value.toFixed(2)}:1`);
@@ -154,8 +155,9 @@ test("every custom property referenced by the app stylesheets is defined", () =>
   // Mermaid diagram's readable width (mermaidDiagrams.js), the tutor's
   // dock measurements: its height, the top bar, the bottom navigation, the
   // keyboard offset and the wide column's question box cap (useTutorDock.js),
-  // and the reading area the narration mini player covers (Reader.jsx).
-  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space", "--ai-top", "--ai-nav-space", "--ai-dock-bottom", "--ai-field-max", "--audio-bar-space"]);
+  // and the reading area the narration mini player covers and the room the
+  // bottom navigation leaves it (Reader.jsx).
+  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space", "--ai-top", "--ai-nav-space", "--ai-dock-bottom", "--ai-field-max", "--audio-bar-space", "--audio-bar-nav-space"]);
   const missing = [...new Set(sheets.flatMap((sheet) => [...sheet.matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name)))].filter((name) => !defined.has(name) && !runtime.has(name));
   assert.deepEqual(missing, [], `undefined custom properties: ${missing.join(", ")}`);
 });
