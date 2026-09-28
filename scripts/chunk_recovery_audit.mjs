@@ -34,19 +34,36 @@ const startIsolatedServer = async (distDirectory = dist) => {
   };
 };
 
-// The build with its warm files missing: every other file is a link into dist.
-const distWithoutWarmTools = async (directory) => {
-  const warm = new Set(JSON.parse(readFileSync(join(dist, "offline-routes.json"), "utf8")).warm || []);
+const readRouteListFile = () => JSON.parse(readFileSync(join(dist, "offline-routes.json"), "utf8"));
+
+// A copy of the build made of links into dist, leaving out the named files.
+const linkedDist = async (directory, skip) => {
   const linkTree = async (from, to, prefix) => {
     await mkdir(to, { recursive: true });
     for (const entry of await readdir(from, { withFileTypes: true })) {
       const relative = `${prefix}${entry.name}`;
       if (entry.isDirectory()) await linkTree(join(from, entry.name), join(to, entry.name), `${relative}/`);
-      else if (!warm.has(relative)) await symlink(join(from, entry.name), join(to, entry.name));
+      else if (!skip.has(relative)) await symlink(join(from, entry.name), join(to, entry.name));
     }
   };
   await linkTree(dist, directory, "");
+};
+
+// The build with its warm files missing: every other file is a link into dist.
+const distWithoutWarmTools = async (directory) => {
+  const warm = new Set(readRouteListFile().warm || []);
+  await linkedDist(directory, warm);
   return { directory, blocked: warm.size };
+};
+
+// The build with a copy of its route list, so a drill can publish the same
+// files as another release by rewriting only the list's build: a worker
+// registered with that build installs from it as an update would.
+const distForUpdate = async (directory) => {
+  await linkedDist(directory, new Set(["offline-routes.json"]));
+  const publish = (build) => writeFile(join(directory, "offline-routes.json"), `${JSON.stringify({ ...readRouteListFile(), build }, null, 2)}\n`);
+  await publish(readRouteListFile().build);
+  return { directory, publish };
 };
 
 // A stored (uncompressed) zip: enough for a one-chapter EPUB.
@@ -390,6 +407,84 @@ const warmingBlockedDrill = async (downloads, fixtures) => {
   }
 };
 
+// The warm files a cache holds, by the route list stored in that cache.
+const warmFilesIn = (page, cacheName) => page.evaluate(async (name) => {
+  if (!(await caches.has(name))) return { warm: 0, cached: 0 };
+  const cache = await caches.open(name);
+  const list = await (await cache.match(new URL("./offline-routes.json", location.href).href))?.json();
+  const warm = Array.isArray(list?.warm) ? list.warm : [];
+  let cached = 0;
+  for (const file of warm) if (await cache.match(new URL(file, location.href).href)) cached += 1;
+  return { warm: warm.length, cached };
+}, cacheName);
+
+// An update found online can take over later, when Lumen opens offline, and
+// activation deletes the cache that held the previous release's warm tools.
+// The waiting release must have saved its own by then.
+const updateDrill = async (downloads) => {
+  const release = await distForUpdate(join(profileDirectory, "dist-update"));
+  const server = await startIsolatedServer(release.directory);
+  let page;
+  try {
+    page = await openWorkerPage(server.url, downloads);
+    const nextBuild = `update-drill-${Date.now().toString(36)}`;
+    const nextCache = `lumen-ai-notes-v${nextBuild}`;
+    await release.publish(nextBuild);
+    // The app's own registration, now with the next release's worker, as when
+    // a new release's page registers its build.
+    const waiting = await page.evaluate(async (build) => {
+      const registration = await navigator.serviceWorker.register(`./service-worker.js?build=${encodeURIComponent(build)}`);
+      for (let attempt = 0; attempt < 120 && !registration.waiting?.scriptURL.includes(build); attempt += 1) {
+        await new Promise((done) => setTimeout(done, 250));
+      }
+      return registration.waiting?.scriptURL.includes(build) === true;
+    }, nextBuild);
+    assert.ok(waiting, "the update's worker did not install and wait");
+    step("an update is waiting; checking that it saved its warm tools");
+    const saved = await page.waitForFunction(async (name) => {
+      if (!(await caches.has(name))) return false;
+      const cache = await caches.open(name);
+      const list = await (await cache.match(new URL("./offline-routes.json", location.href).href))?.json();
+      if (!Array.isArray(list?.warm) || !list.warm.length) return false;
+      for (const file of list.warm) if (!(await cache.match(new URL(file, location.href).href))) return false;
+      return true;
+    }, { timeout: 30_000, polling: 250 }, nextCache).then(() => true, () => false);
+    const counts = await warmFilesIn(page, nextCache);
+    assert.ok(saved, `the waiting update did not save the warm tools in its own cache (${counts.cached} of ${counts.warm})`);
+
+    // Apply it with the server stopped, as the app's Update button does.
+    await goOffline(page, server);
+    // The page changes controller as activation starts; the old cache goes
+    // when the worker's activate handler has finished.
+    const activated = await page.evaluate((build) => new Promise((resolveActivation) => {
+      const timer = setTimeout(() => resolveActivation(false), 15_000);
+      navigator.serviceWorker.getRegistration().then((registration) => {
+        const worker = registration.waiting;
+        worker.addEventListener("statechange", () => {
+          if (worker.state !== "activated") return;
+          clearTimeout(timer);
+          resolveActivation(navigator.serviceWorker.controller?.scriptURL.includes(build) === true);
+        });
+        worker.postMessage({ type: "SKIP_WAITING" });
+      });
+    }), nextBuild);
+    assert.ok(activated, "the update did not take over with the server stopped");
+    const appCaches = await page.evaluate(() => caches.keys().then((keys) => keys.filter((key) => key.startsWith("lumen-ai-notes-v"))));
+    assert.deepEqual(appCaches, [nextCache], "activation did not retire the previous release's cache, so the drill proves nothing");
+
+    step("the update took over offline; exporting a backup");
+    await openSettings(page);
+    assert.ok(await clickButton(page, ".settings-drawer", /^\s*Export backup/), "after the update: no Export backup button");
+    await waitForToast(page, /Backup verified with SHA-256/, "backup export after an update applied offline");
+    await dismissToast(page);
+    await closeSettings(page);
+    await shellIntact(page, "after an update applied offline");
+  } finally {
+    await page?.close().catch(() => {});
+    await server.stop();
+  }
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -628,8 +723,11 @@ try {
   const blockedDownloads = join(profileDirectory, "downloads-blocked");
   await mkdir(blockedDownloads, { recursive: true });
   await warmingBlockedDrill(blockedDownloads, fixtures);
+  const updateDownloads = join(profileDirectory, "downloads-update");
+  await mkdir(updateDownloads, { recursive: true });
+  await updateDrill(updateDownloads);
 
-  console.log(`Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, Settings kept backup export without Storage health, and a lecture with a missing Mermaid chunk reloaded ${mermaidReloads} time(s), then showed the diagram failure in the Reader. The lazy Notebook and Settings kept their route and dialog focus while their chunks loaded. Warm tools: after one idle, with the server stopped, backup export and import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor answer with math, an edited lecture with TeX, and every warm module worked; with warming blocked each action said it needs a connection once, with no error screen or reload, and math stayed readable TeX source.`);
+  console.log(`Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, Settings kept backup export without Storage health, and a lecture with a missing Mermaid chunk reloaded ${mermaidReloads} time(s), then showed the diagram failure in the Reader. The lazy Notebook and Settings kept their route and dialog focus while their chunks loaded. Warm tools: after one idle, with the server stopped, backup export and import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor answer with math, an edited lecture with TeX, and every warm module worked; with warming blocked each action said it needs a connection once, with no error screen or reload, and math stayed readable TeX source; and a waiting update saved its own warm tools, so backup export still worked after it took over with the server stopped.`);
 } finally {
   await browser?.close().catch(() => {});
   await rm(profileDirectory, { recursive: true, force: true });

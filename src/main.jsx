@@ -34,13 +34,19 @@ if (import.meta.env.PROD) {
     // idle, on every launch, ask the active worker to fetch whichever of them
     // it lacks. iOS Safari has no requestIdleCallback, so wait three seconds
     // there. Failure only means a tool says it needs a connection.
-    const warmWhenIdle = () => navigator.serviceWorker.ready
-      .then((registration) => registration.active?.postMessage({ type: "WARM" }))
-      .catch(() => {});
-    if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(warmWhenIdle, { timeout: 10_000 });
-    else window.setTimeout(warmWhenIdle, 3_000);
+    const whenIdle = (callback) => (typeof window.requestIdleCallback === "function"
+      ? window.requestIdleCallback(callback, { timeout: 10_000 })
+      : window.setTimeout(callback, 3_000));
+    const warm = (worker) => worker?.postMessage({ type: "WARM" });
+    whenIdle(() => navigator.serviceWorker.ready.then((registration) => warm(registration.active)).catch(() => {}));
     navigator.serviceWorker.register(workerUrl).then((registration) => {
-      const announce = () => window.dispatchEvent(new CustomEvent("lumen:pwa-update", { detail: registration }));
+      // An update waiting to take over warms its own cache as well. It
+      // activates when Lumen next opens, perhaps offline, and activation
+      // deletes the cache holding the previous release's tools.
+      const announce = () => {
+        whenIdle(() => warm(registration.waiting));
+        window.dispatchEvent(new CustomEvent("lumen:pwa-update", { detail: registration }));
+      };
       if (registration.waiting && navigator.serviceWorker.controller) announce();
       registration.addEventListener("updatefound", () => {
         const worker = registration.installing;
