@@ -928,6 +928,14 @@ try {
   const storeBookmark = (casePage, snippet) => casePage.evaluate((id, text) => localStorage.setItem("lumen-audio-bookmarks-v1", JSON.stringify([{
     id: "ab-97", documentId: id, v: 2, index: 6, total: 0, snippet: text, section: "", savedAt: new Date().toISOString(),
   }])), documentId, snippet);
+  const chooseTheme = async (casePage, label) => {
+    await casePage.$eval('button[aria-label="Open settings"]', (node) => node.click());
+    await casePage.waitForSelector(".settings-drawer .theme-choices", { timeout: 10_000 });
+    await clickByText(casePage, ".theme-choices button", label);
+    await casePage.$eval(".settings-close", (node) => node.click());
+    await casePage.waitForSelector(".settings-drawer", { hidden: true, timeout: 5_000 });
+    await delay(450);
+  };
 
   // ND4, NM9: with the panel closed, a failed sentence, an interruption and
   // leaving the foreground keep the player, show the message there, and are
@@ -1101,9 +1109,11 @@ try {
     await storeBookmark(casePage, "A saved sentence.");
     await casePage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
     await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
-    for (const [label, viewport] of [["393 px", phoneViewport], ["320 px", { ...phoneViewport, width: 320, height: 568 }]]) {
+    // Contrast draws a 2px edge, the tightest fit for the player at 320px.
+    for (const [label, viewport, theme] of [["393 px", phoneViewport], ["320 px", { ...phoneViewport, width: 320, height: 568 }], ["320 px in Contrast", { ...phoneViewport, width: 320, height: 568 }, "Contrast"]]) {
       await casePage.setViewport(viewport);
       await setTextScale(casePage, 1);
+      if (theme) await chooseTheme(casePage, theme);
       // A selection shows the Selection tile's "Ready" badge.
       await casePage.$eval(".markdown-body", (article) => {
         const paragraph = [...article.querySelectorAll("p")].find((node) => node.textContent.trim().length > 100);
@@ -1390,17 +1400,9 @@ try {
       const ground = fill(node);
       return ratio(over(parse(style.color), ground), ground);
     }, { backdrop, edge });
-    const chooseTheme = async (label) => {
-      await casePage.$eval('button[aria-label="Open settings"]', (node) => node.click());
-      await casePage.waitForSelector(".settings-drawer .theme-choices", { timeout: 10_000 });
-      await clickByText(casePage, ".theme-choices button", label);
-      await casePage.$eval(".settings-close", (node) => node.click());
-      await casePage.waitForSelector(".settings-drawer", { hidden: true, timeout: 5_000 });
-      await delay(450);
-    };
     for (const [label, choice, scheme] of [["Paper", "Paper", "light"], ["Night", "Night", "light"], ["system-dark", "System", "dark"], ["Contrast", "Contrast", "light"]]) {
       await casePage.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
-      await chooseTheme(choice);
+      await chooseTheme(casePage, choice);
       await startFullLecture(casePage);
       for (let step = 0; step < 12 && !await casePage.$(".markdown-body p.narration-active"); step += 1) {
         await casePage.$eval('.audio-bar button[aria-label="Next narration sentence"]', (node) => node.click());
@@ -1431,7 +1433,7 @@ try {
 
   const narrationFailures = [["#96", issue96Failures], ["#97", issue97Failures]].filter(([, list]) => list.length);
   assert.deepEqual(narrationFailures, [], narrationFailures.map(([issue, list]) => `issue ${issue} narration cases failed:\n- ${list.join("\n- ")}`).join("\n"));
-  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone; issue #97: failed, interrupted and backgrounded sentences in the player with Retry and one announcement each, sleep expiry as one toast, no announced sentences from the open panel, a 160-character bookmark at 393, 320 and 1280 px, the Next card clear of the player, 44px controls and readable text on phones, the Review speed, Space in Teaching Mode, and Mac and iPhone wording.");
+  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone; issue #97: failed, interrupted and backgrounded sentences in the player with Retry and one announcement each, sleep expiry as one toast, no announced sentences from the open panel, a 160-character bookmark at 393, 320 and 1280 px, the Next card clear of the player, 44px controls and readable text on phones (Contrast included), the Review speed, an over-long target mid-reading, Space in Teaching Mode, Mac and iPhone wording, and measured colour contrast in Paper, Night, system-dark and Contrast.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
