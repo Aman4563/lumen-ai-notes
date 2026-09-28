@@ -2265,3 +2265,12 @@ Evidence:
   dock (the navigation in landscape), scroll anchoring off, and the page
   end.
 - The stand-in keyboard runs at 393×852.
+- The dock must rest on the navigation only where the page is taller than
+  the screen. Without WebGPU (as on Linux CI) the first-run card has no
+  download approval and the page can be shorter.
+- Gate on the branch tip: `npm run check` passed (`audit:ai` 542/542, AI
+  eval 27 cases, hit@1 0.913). The startup entry is 715,605 bytes and the
+  route screens 892,595 bytes. `npm run check:browser` passed all 13
+  suites on the first attempt with no retries (`audit:phone-ai-ui` 47 s,
+  `audit:ai-ui` 164 s, `audit:responsive` 434 layout and 367 control
+  checks, `audit:a11y` 75 axe runs).

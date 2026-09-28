@@ -84,6 +84,7 @@ const liteGeometry = () => {
   return {
     viewport: [innerWidth, innerHeight],
     scrollY: Math.round(scrollY),
+    maxScroll: document.documentElement.scrollHeight - innerHeight,
     sideways: document.documentElement.scrollWidth > innerWidth + 1,
     topbar: Math.round(Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0)),
     navTop: Math.round(navShown ? nav.getBoundingClientRect().top : innerHeight),
@@ -185,7 +186,9 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
     try {
       const g = await geometry(page);
       expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen at first open`, { field: g.field, send: g.send, topbar: g.topbar, navTop: g.navTop });
-      expect(phone ? docked(g) : g.composer.position === "sticky", `${name}: the question box is not docked${phone ? " just above the navigation" : ""}`, { composer: g.composer, navTop: g.navTop });
+      // A first-run card without the download approval (no WebGPU, as on
+      // Linux CI) can leave a page no taller than the screen.
+      expect(phone ? docked(g, { rests: g.maxScroll > 1 }) : g.composer.position === "sticky", `${name}: the question box is not docked${phone ? " just above the navigation" : ""}`, { composer: g.composer, navTop: g.navTop });
       if (phone && !options.largeText) expect(g.composer.height <= 124, `${name}: the docked composer is taller than about 120px`, g.composer);
       expect(!g.cardDetailsShown, `${name}: the engine card shows its model facts and privacy notes at first open`, g.card);
       expect(!g.sideways, `${name}: the page scrolls sideways`, g.viewport);
@@ -217,7 +220,7 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       await toEnd(page);
       const end = await geometry(page);
       expect(end.end.bottom <= end.composer.top + 1, `${name}: at the page end the conversation is under the dock`, { end: end.end, composer: end.composer });
-      if (phone) expect(docked(end), `${name}: at the page end the dock rose off the navigation or sank under it`, { composer: end.composer, navTop: end.navTop });
+      if (phone) expect(docked(end, { rests: end.maxScroll > 1 }), `${name}: at the page end the dock rose off the navigation or sank under it`, { composer: end.composer, navTop: end.navTop });
     } catch (error) {
       failures.push(`${name}: ${error.message.split("\n")[0]}`);
     } finally {
