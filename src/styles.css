@@ -7351,7 +7351,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 
 /* A screen that failed to load stays inside the shell (ErrorBoundary inline). */
 .route-error-panel { max-width: 680px; margin: 0 auto; gap: 4px; }
-.route-error-panel h1 { margin: 0 0 8px; color: var(--ink); font-size: clamp(1.35rem, 3vw, 1.75rem); line-height: 1.2; }
+.route-error-panel :is(h1, h2) { margin: 0 0 8px; color: var(--ink); font-size: clamp(1.35rem, 3vw, 1.75rem); line-height: 1.2; }
 .route-error-panel .fatal-error-actions { margin-top: 18px; }
 .route-error-panel .fatal-error-actions svg { margin: 0; color: currentColor; }
 .route-error-panel .fatal-error-status { margin-top: 12px; color: var(--coral-text); font-weight: 700; }

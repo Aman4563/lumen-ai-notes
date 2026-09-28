@@ -1,55 +1,38 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  Archive,
   ArrowRight,
   BookMarked,
   BookOpen,
-  Bookmark,
   Brain,
   BrainCircuit,
   Check,
   CheckCircle2,
-  ChevronRight,
   CircleUserRound,
   CircleX,
   Clock3,
-  Contrast,
   Keyboard,
-  Copy,
-  Download,
   FileEdit,
   Flame,
-  Pin,
   FilePlus2,
   GraduationCap,
-  Highlighter,
   Home,
   Import,
   LibraryBig,
   LayoutGrid,
   List,
   Menu,
-  Moon,
   MoreVertical,
   NotebookPen,
   Palette,
   RefreshCw,
-  RotateCcw,
   History,
   Info,
   Search,
   Star,
   Settings,
-  Share,
   ShieldCheck,
   Sparkles,
-  Smartphone,
-  Sun,
-  Trash2,
-  Upload,
-  Volume2,
-  Wifi,
   WifiOff,
   X,
 } from "lucide-react";
@@ -60,15 +43,17 @@ import { useSpeech } from "./hooks/useSpeech";
 import { useWakeLock } from "./hooks/useWakeLock";
 import { pruneRecentSearches, pushRecentSearch, searchDocuments, SEARCH_RESULT_LIMIT } from "./lib/search";
 import { createId } from "./lib/id.js";
-import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
+import { customDocumentBytes, isEpubFileName, isHtmlFileName, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
-import { htmlToMarkdown, isHtmlFileName } from "./lib/htmlImport.js";
-import { describeEpubReport, importEpub, isEpubFileName } from "./lib/epubImport.js";
-import { auditLearnerLinks } from "./lib/linkAudit.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
-import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile, readEncryptedHeader } from "./lib/backupCrypto.js";
 import { mergeBoardVersions } from "./lib/boardSync.js";
-import { adoptVaultConfig, checkSyncHeader, clearSyncBaseline, clearVaultConfig, createVaultConfig, foldPeerSnapshots, getDeviceId, loadSyncBaseline, readVaultConfig, recordVaultSync, saveSyncBaseline, syncFileNameFor } from "./lib/syncVault.js";
+import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
+// Actions load these tools on use; the service worker warms them (issue #95).
+import { isWarmToolUnavailable, loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
+// The lecture renderer (marked and DOMPurify, about 85 KB) stays in the
+// startup bundle, where the link check used to hold it: every lecture needs
+// it first, and as a shared route chunk it would spend the install budget.
+import "./lib/markdown.js";
 import { buildConceptMap } from "./lib/conceptMap.js";
 import { migrateItemsToFsrs } from "./lib/fsrs.js";
 import { MAX_ASSESSMENTS, MIN_ASSESSMENT_POOL, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
@@ -77,17 +62,13 @@ import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, reinsertRecord, updateMistake } from "./lib/mistakes.js";
 import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
 import { actionableDueCount, buildDailySession, planPace, resumeTarget, SESSION_LENGTHS } from "./lib/plan.js";
-import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { aiClippingIds, isAiAuthoredClipping, isAiAuthoredReviewItem, materializeAiCardProvenance, materializeAiFlashcard, withAiDraftTag } from "./lib/aiProvenance.js";
 import { lectureLoadMessage, recoverableImport } from "./lib/chunkRecovery.js";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { retrieveLibrary } from "./lib/libraryRetrieval.js";
 import { downloadBlob } from "./lib/download.js";
-// Small and shared with the review center; kept separate so the notebook does
-// not pull the lazily loaded review center into the startup bundle.
-import { UndoStrip, withUndoSlot } from "./components/UndoStrip.jsx";
-import { useCommitOnHide } from "./hooks/useCommitOnHide.js";
+// Shared by Home, the Library and the lazily loaded Notebook.
+import { DocumentCard } from "./components/DocumentCard.jsx";
 import {
   actionableReviewCount,
   createReviewItem,
@@ -115,13 +96,43 @@ const initialDocumentId = "notes/00-roadmap.md";
 const Reader = lazy(() => recoverableImport(() => import("./components/Reader"), "Reader"));
 const Whiteboard = lazy(() => recoverableImport(() => import("./components/Whiteboard"), "Whiteboard"));
 const AiLearningStudio = lazy(() => recoverableImport(() => import("./components/AiLearningStudio"), "AiLearningStudio"));
-const StorageHealth = lazy(() => recoverableImport(() => import("./components/StorageHealth"), "StorageHealth"));
 const DeviceEvidence = lazy(() => recoverableImport(() => import("./components/DeviceEvidence"), "DeviceEvidence"));
 // The review center, its card editor, and the readiness check load on first
 // use; keeping them out of the startup bundle holds it under its 750 KB budget.
 const ReviewCenter = lazy(() => recoverableImport(() => import("./components/ReviewCenter"), "ReviewCenter"));
 const ReviewCardDialog = lazy(() => recoverableImport(() => import("./components/ReviewCenter").then((module) => ({ default: module.ReviewCardDialog })), "ReviewCenter"));
 const AssessmentDialog = lazy(() => recoverableImport(() => import("./components/AssessmentDialog.jsx"), "AssessmentDialog"));
+/**
+ * A lazy screen that the app also preloads once the first render is idle. A
+ * screen whose module is already loaded renders at once, without its Suspense
+ * fallback; one opened before that loads through the boundary. The component
+ * type is fixed for each mount, so a preload that lands while the fallback
+ * shows never remounts the screen.
+ */
+const preloadedLazy = (loader, name) => {
+  let loaded = null;
+  let pending = null;
+  const load = () => {
+    pending ||= recoverableImport(loader, name).then((module) => {
+      loaded = module.default;
+      return module;
+    }, (error) => {
+      pending = null;
+      throw error;
+    });
+    return pending;
+  };
+  const LazyScreen = lazy(load);
+  function PreloadedScreen(props) {
+    const [Screen] = useState(() => loaded || LazyScreen);
+    return <Screen {...props} />;
+  }
+  return [PreloadedScreen, () => { load().catch(() => {}); }];
+};
+// Settings and the Notebook left the startup bundle for its budget too; both
+// are install-tier route screens, so they still open offline (issue #95).
+const [SettingsView, preloadSettings] = preloadedLazy(() => import("./components/Settings.jsx"), "Settings");
+const [NotebookView, preloadNotebook] = preloadedLazy(() => import("./components/Notebook.jsx"), "Notebook");
 
 const parseRoute = () => {
   const hash = window.location.hash || "#/home";
@@ -232,6 +243,24 @@ const focusMainContent = (options) => {
 const releaseMainContent = (event) => {
   if (event.type === "pointerdown" || event.target === event.currentTarget) event.currentTarget.removeAttribute("tabindex");
 };
+
+/**
+ * Rendered after a lazy screen inside its Suspense boundary. Route focus runs
+ * when the view changes; while the screen's chunk loads there is no heading
+ * yet, so focus falls back to the main landmark. When the screen commits, move
+ * that focus on to its heading, as it would have landed with the screen in the
+ * startup bundle. Focus the learner moved elsewhere in the meantime stays.
+ */
+function LazyRouteHeading() {
+  useLayoutEffect(() => {
+    const main = document.getElementById("main-content");
+    const heading = main?.querySelector("h1");
+    if (!heading || document.activeElement !== main) return;
+    if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+    heading.focus({ preventScroll: true });
+  }, []);
+  return null;
+}
 
 function useModalKeyboard(active, dialogRef, onClose) {
   const closeRef = useRef(onClose);
@@ -404,48 +433,6 @@ function ProgressRing({ value, size = 92 }) {
       </svg>
       <strong>{Math.round(value * 100)}%</strong>
     </div>
-  );
-}
-
-/**
- * Wraps matched search terms in <mark> for highlighted snippets (SEARCH-001).
- * Short terms only mark at a word start, mirroring the search rule, so "rag"
- * never lights up inside "storage".
- */
-function HighlightedText({ text, terms }) {
-  const value = String(text || "");
-  const cleaned = [...new Set((terms || []).filter((term) => term && term.length > 1))].sort((left, right) => right.length - left.length).slice(0, 12);
-  if (!cleaned.length) return value;
-  const pattern = new RegExp(cleaned.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "giu");
-  const parts = [];
-  let last = 0;
-  for (const match of value.matchAll(pattern)) {
-    if (match[0].length <= 4 && /[\p{L}\p{N}]/u.test(value[match.index - 1] || "")) continue;
-    if (match.index > last) parts.push(value.slice(last, match.index));
-    parts.push(<mark key={match.index}>{match[0]}</mark>);
-    last = match.index + match[0].length;
-  }
-  if (!parts.length) return value;
-  if (last < value.length) parts.push(value.slice(last));
-  return parts;
-}
-
-function DocumentCard({ doc, profile, onOpen, compact = false }) {
-  const progress = documentProgress(profile, doc.id);
-  const percent = Math.round(progress * 100);
-  const done = progress >= 0.96;
-  const highlight = doc.matchedTerms?.length ? doc.matchedTerms : null;
-  return (
-    <button className={compact ? "document-card compact" : "document-card"} onClick={() => onOpen(doc.id)} type="button">
-      <div className="document-card-icon" aria-hidden="true">{done ? <Check size={19} /> : doc.isIndex ? <LibraryBig size={19} /> : <BookOpen size={19} />}</div>
-      <div className="document-card-copy">
-        <span>{doc.source === "custom" ? "My note" : doc.partNumber > 0 ? `Part ${doc.partNumber}` : "Guide"} · {doc.minutes} min{done ? <b className="document-card-state is-done"> · Done</b> : percent > 0 ? <b className="document-card-state"> · {percent}% read</b> : null}</span>
-        <strong>{highlight ? <HighlightedText text={doc.title} terms={highlight} /> : doc.title}</strong>
-        {!compact && <p>{highlight ? <HighlightedText text={doc.description} terms={highlight} /> : doc.description}</p>}
-        {progress > 0 && <div className="mini-progress" aria-hidden="true"><span style={{ width: `${percent}%` }} /></div>}
-      </div>
-      <ChevronRight size={19} aria-hidden="true" />
-    </button>
   );
 }
 
@@ -923,232 +910,6 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
         {visible.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={openResult} compact={layout === "list"} />)}
       </div>
       {!visible.length && <div className="empty-state"><Search size={30} aria-hidden="true" /><h2>{empty.title}</h2><p>{empty.body}</p><div className="empty-state-actions">{empty.actions.map(([label, action], index) => <button className={index ? "button ghost" : "button secondary"} key={label} onClick={action} type="button">{label}</button>)}</div></div>}
-    </div>
-  );
-}
-
-/**
- * Clipping comments keep keystrokes local and commit after a short pause, on
- * blur, on unmount, and before the page hides (REV-19): a profile write per
- * keystroke re-rendered the whole app and could drop keys or hit React's
- * update-depth limit.
- */
-function ClippingNoteField({ clip, onCommit }) {
-  const [value, setValue] = useState(clip.note || "");
-  const focusedRef = useRef(false);
-  const draftRef = useRef(null);
-  const timerRef = useRef(0);
-  const commitRef = useRef(null);
-  commitRef.current = () => {
-    window.clearTimeout(timerRef.current);
-    if (draftRef.current === null) return;
-    const next = draftRef.current;
-    draftRef.current = null;
-    if (next !== (clip.note || "")) onCommit(clip.id, next);
-  };
-  useCommitOnHide(commitRef);
-  useEffect(() => {
-    if (!focusedRef.current && draftRef.current === null) setValue(clip.note || "");
-  }, [clip.note]);
-  useEffect(() => () => commitRef.current(), []);
-  return <textarea value={value} maxLength={4_000} onFocus={() => { focusedRef.current = true; }} onChange={(event) => { setValue(event.target.value); draftRef.current = event.target.value; window.clearTimeout(timerRef.current); timerRef.current = window.setTimeout(() => commitRef.current(), 600); }} onBlur={() => { focusedRef.current = false; commitRef.current(); }} placeholder="Add why this matters, a question, or an interview connection…" aria-label="Comment on this clipping" />;
-}
-
-function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload, onCreate, onDeleteCustom, onDuplicateCustom, onDeleteClipping, onRestoreClipping, onUpdateClipping, onCopyClipping, onCreateReview, onCopyAnnotation, onExportAnnotations, onDeleteAnnotation, onRestoreTrash, onDeleteTrash, onManageCustom, onOpenReview, onBatchOrganize, onBatchDelete, onRunLinkAudit, collections: appCollections }) {
-  const [notebookQuery, setNotebookQuery] = useState("");
-  const [annotationPurpose, setAnnotationPurpose] = useState("all");
-  const annotated = Object.entries(profile.personalNotes).filter(([, note]) => note.trim()).map(([id, note]) => ({ doc: allDocuments.find((item) => item.id === id), note })).filter((item) => item.doc);
-  const edited = Object.keys(profile.edits).map((id) => allDocuments.find((item) => item.id === id)).filter(Boolean);
-  const bookmarked = profile.bookmarks.map((id) => allDocuments.find((item) => item.id === id)).filter(Boolean);
-  const normalizedQuery = notebookQuery.trim().toLocaleLowerCase();
-  const matches = (...values) => !normalizedQuery || values.some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery));
-  const [collectionFilter, setCollectionFilter] = useState("all");
-  const [selectMode, setSelectMode] = useState(false);
-  const [selectedDocIds, setSelectedDocIds] = useState([]);
-  const [linkReport, setLinkReport] = useState(null);
-  const [removedClipping, setRemovedClipping] = useState(null);
-  const clippingSectionRef = useRef(null);
-  const removeClipping = (clip) => {
-    const index = profile.clippings.findIndex((entry) => entry.id === clip.id);
-    onDeleteClipping(clip.id);
-    setRemovedClipping(onRestoreClipping ? { clip, index } : null);
-  };
-  const undoRemoveClipping = () => {
-    if (!removedClipping) return;
-    const { clip, index } = removedClipping;
-    onRestoreClipping(clip, index);
-    setRemovedClipping(null);
-    // Focus the restored card, or the notebook search when a changed search
-    // now hides it, so focus never drops to the page body.
-    requestAnimationFrame(() => ([...(clippingSectionRef.current?.querySelectorAll(".clipping-card") || [])].find((card) => card.dataset.clippingId === clip.id)?.querySelector('button[aria-label="Delete clipping"]') || document.querySelector(".notebook-search input"))?.focus());
-  };
-  const toggleDocSelection = (id) => setSelectedDocIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
-  const collections = profile.collections || [];
-  const countFor = (filterId) => customDocuments.filter((doc) => (filterId === "archived" ? doc.archived : !doc.archived && (filterId === "all" || (doc.collectionId || "") === filterId))).length;
-  const visibleCustom = customDocuments
-    .filter((doc) => (collectionFilter === "archived" ? doc.archived : !doc.archived && (collectionFilter === "all" || (doc.collectionId || "") === collectionFilter)))
-    .filter((doc) => matches(doc.title, doc.tags?.join(" "), doc.raw))
-    .sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)));
-  const visibleAnnotated = annotated.filter(({ doc, note }) => matches(doc.title, doc.partTitle, note));
-  const visibleClippings = profile.clippings.filter((clip) => { const doc = allDocuments.find((item) => item.id === clip.documentId); return matches(doc?.title, clip.text, clip.note); });
-  const visibleAnnotations = profile.annotations.filter((annotation) => { const doc = allDocuments.find((item) => item.id === annotation.documentId); return (annotationPurpose === "all" || annotation.purpose === annotationPurpose) && matches(doc?.title, annotation.quote, annotation.comment, annotation.tags?.join(" "), annotation.purpose); });
-  const visibleBookmarked = bookmarked.filter((doc) => matches(doc.title, doc.partTitle, doc.description));
-  const visibleMistakes = normalizedQuery ? (profile.mistakes || []).filter((mistake) => matches(mistake.prompt, mistake.expected, mistake.correction, (mistake.tags || []).join(" "))) : [];
-  const visibleCount = visibleCustom.length + visibleAnnotated.length + visibleClippings.length + visibleAnnotations.length + visibleBookmarked.length + visibleMistakes.length;
-  const uploadRef = useRef(null);
-  return (
-    <div className="page notebook-page">
-      <header className="page-title">
-        <div><span className="eyebrow">Your work</span><h1>Study notebook</h1><p>Private notes, edits, uploads, and saved lectures live on this device.</p></div>
-        <div className="notebook-actions">
-          <input ref={uploadRef} type="file" accept=".md,.markdown,.txt,.html,.htm,.epub,text/markdown,text/plain,text/html,application/epub+zip" multiple hidden onChange={onUpload} />
-          <button className="button secondary" onClick={() => uploadRef.current?.click()} type="button"><Upload size={17} /> Upload</button>
-          <button className="button primary" onClick={onCreate} type="button"><FilePlus2 size={17} /> New note</button>
-        </div>
-      </header>
-
-      <div className="notebook-summary">
-        <div><Bookmark size={20} /><strong>{bookmarked.length}</strong><span>Bookmarks</span></div>
-        <div><NotebookPen size={20} /><strong>{annotated.length}</strong><span>Personal notes</span></div>
-        <div><FileEdit size={20} /><strong>{edited.length}</strong><span>Edited copies</span></div>
-        <div><Upload size={20} /><strong>{customDocuments.length}</strong><span>Uploads</span></div>
-        <div><Highlighter size={20} /><strong>{profile.clippings.length}</strong><span>Clippings</span></div>
-        <div><Highlighter size={20} /><strong>{profile.annotations.length}</strong><span>Highlights</span></div>
-      </div>
-
-      <div className="notebook-search"><Search size={18} /><input value={notebookQuery} onChange={(event) => setNotebookQuery(event.target.value)} placeholder="Search notes, clippings, bookmarks, uploads, and mistakes…" aria-label="Search notebook" />{notebookQuery && <button onClick={() => setNotebookQuery("")} aria-label="Clear notebook search" type="button"><X size={16} /></button>}</div>
-
-      {(customDocuments.length > 0) && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Created and uploaded</span><h2>My lectures</h2></div><div className="notebook-heading-actions"><button className="button ghost" onClick={() => setLinkReport(onRunLinkAudit())} type="button"><Search size={15} /> Check links</button><button className={selectMode ? "button secondary" : "button ghost"} onClick={() => { setSelectMode((value) => !value); setSelectedDocIds([]); }} aria-pressed={selectMode} type="button"><CheckCircle2 size={15} /> {selectMode ? "Done selecting" : "Select"}</button></div></div>
-      {linkReport && <div className={linkReport.findings.length ? "link-report has-findings" : "link-report"} role="status">{linkReport.findings.length === 0 ? `Checked ${linkReport.scanned} document${linkReport.scanned === 1 ? "" : "s"} — every internal link opens.` : <>
-        <strong>{linkReport.findings.length} broken link{linkReport.findings.length === 1 ? "" : "s"} across {linkReport.scanned} scanned document{linkReport.scanned === 1 ? "" : "s"}:</strong>
-        <ul>{linkReport.findings.slice(0, 12).map((finding, index) => <li key={index}><button className="text-button" onClick={() => onOpen(finding.documentId)} type="button">{allDocuments.find((item) => item.id === finding.documentId)?.title || finding.documentId.split("/").at(-1)}</button> → <code>{finding.href}</code> <small>({finding.kind.replace(/-/g, " ")})</small></li>)}</ul>
-      </>}<button className="icon-button small" onClick={() => setLinkReport(null)} aria-label="Dismiss link report" type="button"><X size={14} /></button></div>}
-      {selectMode && selectedDocIds.length > 0 && <div className="batch-toolbar" role="toolbar" aria-label="Batch actions"><strong>{selectedDocIds.length} selected</strong><label>Collection<select className="ui-select ui-select--sm" defaultValue="" onChange={(event) => { if (event.target.value !== "") { onBatchOrganize(selectedDocIds, { collectionId: event.target.value === "__none__" ? "" : event.target.value }); setSelectedDocIds([]); setSelectMode(false); event.target.value = ""; } }} aria-label="Assign selection to a collection"><option value="" disabled>Assign…</option><option value="__none__">No collection</option>{(appCollections || []).map((collection) => <option value={collection.id} key={collection.id}>{collection.name}</option>)}</select></label><button className="button ghost" onClick={() => { onBatchOrganize(selectedDocIds, { archived: collectionFilter !== "archived" }); setSelectedDocIds([]); setSelectMode(false); }} type="button"><Archive size={15} /> {collectionFilter === "archived" ? "Unarchive" : "Archive"}</button><button className="button ghost danger-text" onClick={() => { onBatchDelete(selectedDocIds); setSelectedDocIds([]); setSelectMode(false); }} type="button"><Trash2 size={15} /> Trash</button></div>}{(collections.length > 0 || customDocuments.some((doc) => doc.archived)) && <div className="collection-chips" role="radiogroup" aria-label="Filter by collection"><button role="radio" aria-checked={collectionFilter === "all"} className={collectionFilter === "all" ? "active" : ""} onClick={() => setCollectionFilter("all")} type="button">All ({countFor("all")})</button>{collections.map((collection) => <button role="radio" aria-checked={collectionFilter === collection.id} className={collectionFilter === collection.id ? "active" : ""} onClick={() => setCollectionFilter(collection.id)} key={collection.id} type="button">{collection.name} ({countFor(collection.id)})</button>)}{customDocuments.some((doc) => doc.archived) && <button role="radio" aria-checked={collectionFilter === "archived"} className={collectionFilter === "archived" ? "active archived-chip" : "archived-chip"} onClick={() => setCollectionFilter("archived")} type="button">Archived ({countFor("archived")})</button>}</div>}{visibleCustom.length ? <div className="document-list">{visibleCustom.map((doc) => <div className={selectMode && selectedDocIds.includes(doc.id) ? "notebook-document-row is-selected" : "notebook-document-row"} key={doc.id}>{selectMode && <label className="batch-check"><input type="checkbox" checked={selectedDocIds.includes(doc.id)} onChange={() => toggleDocSelection(doc.id)} aria-label={`Select ${doc.title}`} /></label>}{doc.pinned && <Pin size={13} className="pinned-marker" aria-label="Pinned" />}<DocumentCard doc={doc} profile={profile} onOpen={onOpen} compact /><div className="notebook-row-actions"><button className="icon-button" onClick={() => onManageCustom(doc.id)} aria-label={`Organize ${doc.title}`} title="Organize (rename, tags, collection, pin, archive)" type="button"><FileEdit size={17} /></button><button className="icon-button" onClick={() => onDuplicateCustom(doc.id)} aria-label={`Duplicate ${doc.title}`} title="Duplicate" type="button"><Copy size={17} /></button><button className="icon-button danger" onClick={() => onDeleteCustom(doc.id)} aria-label={`Delete ${doc.title}`} title="Delete" type="button"><Trash2 size={17} /></button></div></div>)}</div> : <div className="empty-state compact"><Search size={22} /><h2>Nothing in this view</h2><p>Choose another collection or clear the notebook search.</p></div>}</section>}
-      {visibleAnnotated.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Captured ideas</span><h2>Personal notes</h2></div></div><div className="note-grid">{visibleAnnotated.map(({ doc, note }) => <button className="note-card" onClick={() => onOpen(doc.id)} key={doc.id} type="button"><span>{doc.partTitle}</span><strong>{doc.title}</strong><p>{note}</p><ChevronRight size={18} /></button>)}</div></section>}
-      {(visibleClippings.length > 0 || removedClipping) && <section ref={clippingSectionRef} className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved excerpts</span><h2>Clippings</h2></div></div><div className="clipping-grid">{withUndoSlot(visibleClippings.map((clip) => { const doc = allDocuments.find((item) => item.id === clip.documentId); const linked = profile.reviewItems.some((item) => item.sourceClippingId === clip.id); const aiOrigin = clip.origin === "ai-tutor"; return <article className={`clipping-card${aiOrigin ? " clipping-card--ai" : ""}`} data-clipping-id={clip.id} key={clip.id}>{aiOrigin ? <BrainCircuit size={18} /> : <Highlighter size={18} />}{aiOrigin && <span className="clipping-origin" title="Generated by the AI tutor and saved by you; verify before relying on it">{clip.title || "AI tutor answer"} · AI draft</span>}<blockquote>{clip.text}</blockquote><ClippingNoteField clip={clip} onCommit={onUpdateClipping} /><div>{doc || !aiOrigin ? <button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button> : <span className="clipping-no-source">No linked lecture</span>}<span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(clip)} aria-label={linked ? "Create another review card from clipping" : "Create review card from clipping"} title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyClipping(clip)} aria-label="Copy clipping" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => removeClipping(clip)} aria-label="Delete clipping" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; }), removedClipping ? (() => { const position = new Map(profile.clippings.map((clip, index) => [clip.id, index])); return visibleClippings.map((clip) => position.get(clip.id)); })() : [], removedClipping?.index ?? 0, removedClipping && <UndoStrip key={`undo-${removedClipping.clip.id}`} message={`Clipping deleted: “${removedClipping.clip.text.slice(0, 60)}${removedClipping.clip.text.length > 60 ? "…" : ""}”`} onUndo={undoRemoveClipping} onExpire={() => setRemovedClipping(null)} />)}</div></section>}
-      {profile.annotations.length > 0 && <section className="notebook-section"><div className="section-heading annotation-section-heading"><div><span className="eyebrow">Source anchored</span><h2>Highlights</h2></div><div className="annotation-heading-actions"><label>Purpose<select className="ui-select" value={annotationPurpose} onChange={(event) => setAnnotationPurpose(event.target.value)}><option value="all">All</option><option value="important">Important</option><option value="definition">Definitions</option><option value="question">Questions</option><option value="interview">Interview</option></select></label><button className="button ghost" onClick={() => onExportAnnotations(visibleAnnotations)} aria-label="Export the listed highlights as Markdown" type="button"><Download size={15} /> Export</button></div></div>{visibleAnnotations.length ? <div className="notebook-annotation-grid">{visibleAnnotations.map((annotation) => { const doc = allDocuments.find((item) => item.id === annotation.documentId); return <article className={`notebook-annotation-card ${annotation.color}`} key={annotation.id}><span className="annotation-purpose">{annotation.purpose}</span><blockquote>{annotation.quote}</blockquote>{annotation.comment && <p>{annotation.comment}</p>}{annotation.tags?.length > 0 && <div className="annotation-tags">{annotation.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}<div><button className="text-button" onClick={() => doc && onOpen(doc.id)} disabled={!doc} type="button">{doc?.title || "Missing document"}</button><span className="clipping-actions"><button className="icon-button small" onClick={() => onCreateReview(annotation)} aria-label="Create review card from highlight" title="Create review card" type="button"><Brain size={15} /></button><button className="icon-button small" onClick={() => onCopyAnnotation(annotation)} aria-label="Copy highlight" title="Copy" type="button"><Copy size={15} /></button><button className="icon-button small danger" onClick={() => onDeleteAnnotation(annotation.id)} aria-label="Delete highlight" title="Delete" type="button"><Trash2 size={15} /></button></span></div></article>; })}</div> : <div className="empty-state compact"><Search size={24} /><h2>No matching highlights</h2><p>Choose another purpose or clear the notebook search.</p></div>}</section>}
-      {normalizedQuery && visibleMistakes.length > 0 && <section className="notebook-section notebook-mistakes" aria-label="Matching mistakes"><div className="section-heading"><div><span className="eyebrow">From your error log</span><h2>Mistakes</h2></div><button className="text-button" onClick={onOpenReview} type="button">Review center <ChevronRight size={16} /></button></div><div className="notebook-mistake-list">{visibleMistakes.slice(0, 6).map((mistake) => <button className="notebook-mistake-row" onClick={onOpenReview} key={mistake.id} type="button"><Flame size={15} /><span className="notebook-mistake-copy"><strong>{mistake.prompt}</strong><small>{mistake.correctedAt ? "Corrected" : `Open · ×${mistake.occurrences || 1}`}{mistake.correction ? ` — ${mistake.correction}` : ""}</small></span></button>)}</div></section>}
-      {visibleBookmarked.length > 0 && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Saved</span><h2>Bookmarks</h2></div></div><div className="document-list">{visibleBookmarked.map((doc) => <DocumentCard key={doc.id} doc={doc} profile={profile} onOpen={onOpen} compact />)}</div></section>}
-      {(profile.trash || []).length > 0 && <section className="notebook-section notebook-trash" aria-label="Trash"><div className="section-heading"><div><span className="eyebrow">Recoverable for 30 days</span><h2>Trash</h2></div></div><div className="trash-list">{profile.trash.map((entry) => {
-        const deletedAt = Date.parse(entry.deletedAt);
-        const daysLeft = Number.isFinite(deletedAt) ? Math.max(0, 30 - Math.floor((Date.now() - deletedAt) / 86_400_000)) : 0;
-        return <article className="trash-row" key={entry.id}><Trash2 size={16} /><div className="trash-copy"><strong>{entry.title}</strong><span>Deleted {new Date(entry.deletedAt).toLocaleDateString()} · {daysLeft} day{daysLeft === 1 ? "" : "s"} left{entry.tags?.length ? ` · ${entry.tags.join(", ")}` : ""}</span></div><div className="trash-actions"><button className="button ghost" onClick={() => onRestoreTrash(entry.id)} type="button"><RotateCcw size={15} /> Restore</button><button className="icon-button danger" onClick={() => onDeleteTrash(entry.id)} aria-label={`Delete ${entry.title} forever`} title="Delete forever" type="button"><X size={16} /></button></div></article>;
-      })}</div></section>}
-      {normalizedQuery && !visibleCount && <div className="empty-state"><Search size={30} /><h2>No notebook match</h2><p>Try a document title, a phrase from a clipping, a tag, or words from your own annotation.</p><button className="button secondary" onClick={() => setNotebookQuery("")} type="button">Clear search</button></div>}
-      {!customDocuments.length && !annotated.length && !bookmarked.length && !profile.clippings.length && !profile.annotations.length && <div className="empty-state notebook-empty"><NotebookPen size={34} /><h2>Your notebook is ready</h2><p>Bookmark a lecture, highlight or clip an excerpt, write a personal note, edit a local copy, or upload your own Markdown.</p><button className="button primary" onClick={onCreate} type="button">Create first note</button></div>}
-    </div>
-  );
-}
-
-const THEME_CHOICES = [{ id: "system", label: "System", icon: CircleUserRound }, { id: "paper", label: "Paper", icon: Sun }, { id: "dark", label: "Night", icon: Moon }, { id: "contrast", label: "Contrast", icon: Contrast }];
-const THEME_KEY_STEPS = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
-
-function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onShowShortcuts, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage, syncVault, syncDeviceId, onCreateSyncVault, onLeaveSyncVault, onSyncExport, onSyncImport }) {
-  const importRef = useRef(null);
-  const syncImportRef = useRef(null);
-  const themeButtonsRef = useRef([]);
-  const [backupPassword, setBackupPassword] = useState("");
-  const [syncPassphrase, setSyncPassphrase] = useState("");
-  const cryptoAvailable = secureContext && Boolean(globalThis.crypto?.subtle);
-  const checkedTheme = Math.max(0, THEME_CHOICES.findIndex(({ id }) => id === settings.theme));
-  // Radio-group keyboard contract: arrows move and select, Home/End jump.
-  const handleThemeKey = (event, index) => {
-    const target = event.key in THEME_KEY_STEPS ? (index + THEME_KEY_STEPS[event.key] + THEME_CHOICES.length) % THEME_CHOICES.length : event.key === "Home" ? 0 : event.key === "End" ? THEME_CHOICES.length - 1 : -1;
-    if (target < 0) return;
-    event.preventDefault();
-    onSettingsChange({ theme: THEME_CHOICES[target].id });
-    themeButtonsRef.current[target]?.focus();
-  };
-  const fontScaleLabel = `${Math.round(settings.fontScale * 100)}%`;
-  const lineHeightLabel = String(settings.lineHeight);
-  return (
-    <div className="page settings-page">
-      <p className="settings-intro">Appearance, reading comfort, narration, AI, backups, storage, and iPhone installation.</p>
-      <section className="settings-card" aria-labelledby="settings-appearance-title">
-        <div className="settings-card-heading"><Palette size={21} aria-hidden="true" /><div><h2 id="settings-appearance-title">Appearance and reading</h2><span>Choose a reading atmosphere and comfortable text.</span></div></div>
-        <div className="theme-choices" role="radiogroup" aria-label="Theme">
-          {THEME_CHOICES.map(({ id, label, icon: Icon }, index) => <button ref={(node) => { themeButtonsRef.current[index] = node; }} className={settings.theme === id ? "active" : ""} role="radio" aria-checked={settings.theme === id} tabIndex={index === checkedTheme ? 0 : -1} onClick={() => onSettingsChange({ theme: id })} onKeyDown={(event) => handleThemeKey(event, index)} key={id} type="button"><Icon size={21} aria-hidden="true" /><span>{label}</span>{settings.theme === id && <Check size={16} aria-hidden="true" />}</button>)}
-        </div>
-        <label className="setting-range"><span><strong>Default text size</strong><small>{fontScaleLabel}</small></span><input type="range" min="0.85" max="1.35" step="0.05" value={settings.fontScale} onChange={(event) => onSettingsChange({ fontScale: Number(event.target.value) })} aria-label="Default reading text size" aria-valuetext={fontScaleLabel} /></label>
-        <label className="setting-range"><span><strong>Default line spacing</strong><small>{lineHeightLabel}</small></span><input type="range" min="1.45" max="2" step="0.05" value={settings.lineHeight} onChange={(event) => onSettingsChange({ lineHeight: Number(event.target.value) })} aria-label="Default reading line spacing" aria-valuetext={lineHeightLabel} /></label>
-        <label className="setting-toggle"><span><strong>Keep screen awake while studying</strong><small>{wakeLock.supported ? (wakeLock.active ? "Active now" : "Activates in reader and whiteboard") : "Not supported by this browser"}</small></span><input type="checkbox" role="switch" checked={settings.keepScreenAwake} disabled={!wakeLock.supported} onChange={(event) => onSettingsChange({ keepScreenAwake: event.target.checked })} aria-label="Keep screen awake while studying" /></label>
-        {wakeLock.error && <p className="inline-warning">{wakeLock.error}</p>}
-        <button className="button ghost settings-reset-button" onClick={onResetSettings} type="button"><RotateCcw size={16} /> Restore reading defaults</button>
-      </section>
-
-      <section className="settings-card" aria-labelledby="settings-narration-title">
-        <div className="settings-card-heading"><Volume2 size={21} aria-hidden="true" /><div><h2 id="settings-narration-title">Narration pronunciation</h2><span>Teach the voice how to say project-specific terms.</span></div></div>
-        <label className="pronunciation-editor"><span>One override per line, as <code>term = spoken form</code></span>
-          <textarea
-            defaultValue={(settings.pronunciations || []).map((entry) => `${entry.term} = ${entry.spoken}`).join("\n")}
-            onBlur={(event) => {
-              const pronunciations = event.target.value.split("\n")
-                .map((line) => line.split("="))
-                .filter((parts) => parts.length >= 2 && parts[0].trim() && parts.slice(1).join("=").trim())
-                .map((parts) => ({ term: parts[0].trim().slice(0, 60), spoken: parts.slice(1).join("=").trim().slice(0, 120) }))
-                .slice(0, 50);
-              onSettingsChange({ pronunciations });
-              if (pronunciations.length) onNotify?.(`${pronunciations.length} pronunciation override${pronunciations.length === 1 ? "" : "s"} saved.`);
-            }}
-            placeholder={"SQL = sequel\nReLU = ray loo\nscikit-learn = sy kit learn"}
-            rows={4}
-            aria-label="Pronunciation overrides, one per line as term equals spoken form"
-          />
-        </label>
-        <p className="microcopy">Overrides apply to narration only, match whole words case-insensitively, and are limited to 50 terms. They sync with your profile.</p>
-      </section>
-
-      <section className="settings-card" aria-labelledby="settings-ai-title">
-        <div className="settings-card-heading"><BrainCircuit size={21} aria-hidden="true" /><div><h2 id="settings-ai-title">AI tutor</h2><span>Decide whether AI is available and what conversation history stays on this device.</span></div></div>
-        <div className="settings-local-data"><div><strong>AI features</strong><span>{settings.aiFeaturesEnabled !== false ? "The AI learning studio is available. Turning it off hides AI surfaces without touching your notes or reviews." : "The AI learning studio is hidden. Reading, notes, reviews, narration, and whiteboards are unaffected."}</span></div><button className="button ghost" onClick={() => { const next = settings.aiFeaturesEnabled === false; onSettingsChange({ aiFeaturesEnabled: next }); onNotify(next ? "AI features are enabled again." : "AI features are now off. You can re-enable them here at any time."); }} type="button"><BrainCircuit size={16} /> {settings.aiFeaturesEnabled !== false ? "Turn AI off" : "Turn AI on"}</button></div>
-        <div className="settings-local-data"><div><strong>Mac tutor history retention</strong><span>Choose how many tutor messages stay saved in this browser and in backups. “Session only” stops saving and removes the stored conversation.</span></div><label className="settings-retention"><span className="visually-hidden">Mac tutor history retention</span><select className="ui-select" value={[0, 10, 25, 50].includes(settings.aiHistoryRetention) ? settings.aiHistoryRetention : 50} onChange={(event) => { const retention = Number(event.target.value); onSettingsChange({ aiHistoryRetention: retention }); onNotify(retention === 0 ? "Tutor history is now session-only; the saved conversation was removed." : `Up to ${retention} tutor messages will be kept locally.`); }}><option value={50}>Up to 50 messages</option><option value={25}>Up to 25 messages</option><option value={10}>Up to 10 messages</option><option value={0}>Session only</option></select></label></div>
-        <div className="settings-local-data"><div><strong>AI tutor history</strong><span>{aiHistoryCount ? `${aiHistoryCount} locally saved message${aiHistoryCount === 1 ? "" : "s"}; included in backups.` : "No locally saved AI conversation messages."}</span></div><button className="button ghost" onClick={onClearAiHistory} disabled={!aiHistoryCount} type="button"><Trash2 size={16} /> Clear AI history</button></div>
-      </section>
-
-      <section className="settings-card" aria-labelledby="settings-reminders-title">
-        <div className="settings-card-heading"><Brain size={21} aria-hidden="true" /><div><h2 id="settings-reminders-title">Study reminders</h2><span>Quiet, opt-in signals. Lumen never sends notifications.</span></div></div>
-        <div className="settings-local-data"><div><strong>App badge for due reviews</strong><span>{typeof navigator !== "undefined" && "setAppBadge" in navigator ? "Shows today’s due-card count on the app icon. Opt-in, silent, no notifications; it clears the moment the queue drains." : "This browser does not support app badges; nothing will be shown either way."}</span></div><label className="setting-toggle settings-badge-toggle"><span className="visually-hidden">App badge for due reviews</span><input type="checkbox" role="switch" checked={Boolean(settings.dueBadgeEnabled)} onChange={(event) => onSettingsChange({ dueBadgeEnabled: event.target.checked })} aria-label="Show due-review count on the app icon" /></label></div>
-      </section>
-
-      <section className="settings-card" aria-labelledby="settings-backup-title">
-        <div className="settings-card-heading"><Share size={21} aria-hidden="true" /><div><h2 id="settings-backup-title">Backup and transfer</h2><span>Move your private study data between devices.</span></div></div>
-        <input ref={importRef} type="file" accept="application/json,.json,.lumenc" hidden onChange={onImport} />
-        <label className="backup-password-field"><span>Backup password <small>optional — encrypts the export with AES-256-GCM</small></span><input className="text-input" type="password" value={backupPassword} minLength={8} maxLength={128} onChange={(event) => setBackupPassword(event.target.value)} placeholder={cryptoAvailable ? "Leave empty for a plain backup" : "Needs a secure (HTTPS) context"} disabled={!cryptoAvailable} autoComplete="new-password" aria-label="Optional backup encryption password" /></label>
-        {backupPassword && <p className="inline-warning">A forgotten password means permanent loss of this file — there is no recovery or escrow. The pre-restore recovery download stays unencrypted so a restore can always be undone.</p>}
-        <div className="settings-action-row"><button className="button secondary" onClick={() => onExport(backupPassword.trim() || undefined)} disabled={Boolean(backupPassword.trim()) && backupPassword.trim().length < 8} type="button"><Download size={17} /> Export {backupPassword.trim() ? "encrypted " : ""}backup</button><button className="button secondary" onClick={() => importRef.current?.click()} type="button"><Import size={17} /> Import backup</button>{!storagePersisted && <button className="button ghost" onClick={onRequestStorage} type="button">Protect local storage</button>}</div>
-        <p className="microcopy">Backups include progress, positions, bookmarks, highlights, clippings, review history, locally saved AI conversations, personal notes, edited copies, uploads, preferences, and whiteboards. Every new backup is checksummed and every restore is preflighted. Storage: {storagePersisted ? "persistent" : "best effort"} · Save status: {saveStatus} · Last export: {backupMeta?.lastExportAt ? new Date(backupMeta.lastExportAt).toLocaleString() : "never"}.</p>
-      </section>
-      <section className="settings-card sync-card" aria-labelledby="settings-sync-title">
-        <div className="settings-card-heading"><RefreshCw size={21} aria-hidden="true" /><div><h2 id="settings-sync-title">Cross-device sync</h2><span>Encrypted, account-free vault sync through files you control.</span></div></div>
-        <input ref={syncImportRef} type="file" accept=".lumenc" multiple hidden onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; if (files.length) onSyncImport(files, syncPassphrase); }} />
-        {!cryptoAvailable && <p className="inline-warning">Sync needs WebCrypto in a secure (HTTPS) context. There is no weak-crypto fallback.</p>}
-        {!syncVault && <p className="microcopy">Each device in a vault writes one encrypted file into a folder you share however you like — iCloud Drive, Syncthing, a USB stick. One passphrase per vault, entered on each device and never stored. Create a vault here, or pick a peer's <code>.lumenc</code> sync file to join theirs.</p>}
-        {syncVault && <p className="microcopy sync-status-line">Vault <code>{syncVault.vaultId.slice(0, 8)}…</code> · this device <code>{syncDeviceId.slice(0, 8)}…</code> · last sync {syncVault.lastSyncAt ? new Date(syncVault.lastSyncAt).toLocaleString() : "never"}. Your file is <code>{syncFileNameFor(syncDeviceId)}</code>; each device only ever writes its own.</p>}
-        <label className="backup-password-field"><span>Vault passphrase <small>never stored — needed for every export and import</small></span><input className="text-input" type="password" value={syncPassphrase} minLength={8} maxLength={128} onChange={(event) => setSyncPassphrase(event.target.value)} placeholder={syncVault ? "Required for export and import" : "Required to create or join a vault"} disabled={!cryptoAvailable} autoComplete="off" aria-label="Sync vault passphrase" /></label>
-        {!syncVault && <div className="settings-action-row">
-          <button className="button secondary" onClick={onCreateSyncVault} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><RefreshCw size={16} /> Create sync vault</button>
-          <button className="button ghost" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Import size={16} /> Join via a peer's file</button>
-        </div>}
-        {syncVault && <div className="settings-action-row">
-          <button className="button secondary" onClick={() => onSyncExport(syncPassphrase)} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Download size={17} /> Export my sync file</button>
-          <button className="button secondary" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Import size={17} /> Import peer files</button>
-          <button className="button ghost" onClick={onLeaveSyncVault} type="button">Leave vault</button>
-        </div>}
-        <p className="microcopy">Import folds every selected peer file through the same conflict-safe merge that already reconciles your tabs, then asks you to re-export so peers see the result. Deletions travel as tombstones, concurrent edits become recovered copies, and a reset/restore on one device propagates instead of resurrecting. A forgotten passphrase cannot be recovered.</p>
-      </section>
-      <ErrorBoundary fallback={<section className="settings-card storage-health-unavailable"><div className="settings-card-heading"><AlertTriangle size={21} aria-hidden="true" /><div><h2>Storage health</h2><span>Storage details are unavailable right now. Backups and other settings still work.</span></div></div></section>}><Suspense fallback={<div className="settings-card"><p className="microcopy">Measuring storage health…</p></div>}><StorageHealth online={online} onNotify={onNotify} /></Suspense></ErrorBoundary>
-      <section className="settings-card install-card" aria-labelledby="settings-install-title">
-        <div className="settings-card-heading"><Sparkles size={21} aria-hidden="true" /><div><h2 id="settings-install-title">Install on iPhone</h2><span>Use Lumen like a native full-screen app.</span></div></div>
-        {!secureContext && <p className="inline-warning">This HTTP connection supports reading and local notes, but iPhone installation and offline caching require an HTTPS address.</p>}
-        <button className="button primary" onClick={onInstall} type="button">{secureContext ? "Show installation steps" : "See HTTPS requirement"}</button>
-        <div className={online ? "connection-state online" : "connection-state offline"}>{online ? <Wifi size={16} aria-hidden="true" /> : <WifiOff size={16} aria-hidden="true" />}{online ? "Online · content updates available" : "Offline · cached content remains available"}</div>
-      </section>
-      <section className="settings-card help-card" aria-labelledby="settings-help-title">
-        <div className="settings-card-heading"><Keyboard size={21} aria-hidden="true" /><div><h2 id="settings-help-title">Help and diagnostics</h2><span>Keyboard shortcuts and the guided release-evidence checks.</span></div></div>
-        <div className="settings-help-actions"><button className="button secondary" onClick={onShowShortcuts} type="button"><Keyboard size={16} /> Keyboard shortcuts</button><button className="button ghost" onClick={() => { window.location.hash = "#/device-evidence"; }} title="Guided physical-device evidence capture for the release tracker" type="button"><Smartphone size={16} /> Device evidence</button></div>
-      </section>
-      <section className="privacy-card"><div className="privacy-icon" aria-hidden="true">L</div><div><strong>Local-first by design</strong><p>No account is required. Notes, whiteboards, and AI conversation history remain in this browser’s storage unless you export or clear them. AI sends only the prompt and sources you explicitly approve for that request.</p></div></section>
-      <section className="settings-card danger-zone" aria-labelledby="settings-reset-title"><div className="settings-card-heading"><AlertTriangle size={21} aria-hidden="true" /><div><h2 id="settings-reset-title">Reset local app data</h2><span>Permanently removes progress, notes, uploads, clippings, edits, and every whiteboard from this browser.</span></div></div><p className="microcopy">Export a backup first if you may need this work again.</p><button className="button danger-button" onClick={onResetApp} type="button"><Trash2 size={17} /> Reset everything</button></section>
     </div>
   );
 }
@@ -2008,20 +1769,26 @@ export default function App() {
     setBuiltInSources((current) => current[id] ? current : { ...current, [id]: text });
     return text;
   }, [allDocumentMap]);
-  const retrieveLibrarySources = useCallback((query, options = {}) => retrieveLibrary(query, {
-    ...options,
-    documents: allDocuments,
-    edits: profileRef.current.edits,
-    personalNotes: profileRef.current.personalNotes,
-    selectedDocumentId: options.selectedDocumentId || currentDocument.id,
-    loadSearchIndex: loadDocumentSearchIndex,
-    loadSource: async (id) => {
-      const document = allDocumentMap.get(id);
-      if (!document) throw new Error("The requested library source is no longer available");
-      if (document.source === "custom") return document.raw || "";
-      return loadDocumentSource(id);
-    },
-  }), [allDocumentMap, allDocuments, currentDocument.id]);
+  const retrieveLibrarySources = useCallback(async (query, options = {}) => {
+    // Retrieval is a warm tool. The tutors only await this call and fall back
+    // without library evidence, so a module that is not on this device yet
+    // rejects here, carrying the typed offline message.
+    const { retrieveLibrary } = await loadLibraryRetrieval();
+    return retrieveLibrary(query, {
+      ...options,
+      documents: allDocuments,
+      edits: profileRef.current.edits,
+      personalNotes: profileRef.current.personalNotes,
+      selectedDocumentId: options.selectedDocumentId || currentDocument.id,
+      loadSearchIndex: loadDocumentSearchIndex,
+      loadSource: async (id) => {
+        const document = allDocumentMap.get(id);
+        if (!document) throw new Error("The requested library source is no longer available");
+        if (document.source === "custom") return document.raw || "";
+        return loadDocumentSource(id);
+      },
+    });
+  }, [allDocumentMap, allDocuments, currentDocument.id]);
   const setPersonalNote = (note) => setProfile((current) => ({ ...current, personalNotes: { ...current.personalNotes, [currentDocument.id]: note } }));
   const saveEdit = (raw) => {
     if (currentDocument.source === "custom") {
@@ -2163,8 +1930,30 @@ export default function App() {
     try {
       const uploaded = [];
       const bookSummaries = [];
+      const skipped = [];
+      // HTML and EPUB converters are a warm tool; Markdown and text never
+      // load them, so those uploads work offline from the first launch. When
+      // the converters are not on this device yet, the Markdown and text files
+      // in the same selection still import, and each HTML or EPUB file is
+      // reported with the reason.
+      const needsConverters = (file) => isEpubFileName(file.name) || isHtmlFileName(file.name);
+      let converters = null;
+      let converterFailure = null;
+      if (accepted.some(needsConverters)) {
+        try {
+          converters = await loadImportConverters();
+        } catch (error) {
+          if (!isWarmToolUnavailable(error)) throw error;
+          converterFailure = error;
+        }
+      }
+      const { describeEpubReport, htmlToMarkdown, importEpub } = converters || {};
       for (const file of accepted) {
         const now = new Date().toISOString();
+        if (converterFailure && needsConverters(file)) {
+          skipped.push(`${file.name} was not imported — ${converterFailure.message}`);
+          continue;
+        }
         if (isEpubFileName(file.name)) {
           // An EPUB fans out to one document per chapter, in spine order,
           // with the lossy-import report surfaced in the notification.
@@ -2205,10 +1994,14 @@ export default function App() {
         }
         fresh.push(doc);
       }
+      const duplicates = `${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped`;
+      const fileNotes = [...bookSummaries, ...skipped].join(" · ").replace(/\.$/u, "");
       if (!fresh.length) {
-        notify(bookSummaries.length && !duplicateCount
-          ? `Nothing was imported. ${bookSummaries.join(" · ")}`
-          : `Every selected file matches a document already in your notebook (${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped). Nothing was imported.`, "warning", 6000);
+        notify(duplicateCount && skipped.length
+          ? `Nothing was imported: ${duplicates}. ${skipped.join(" · ").replace(/\.$/u, "")}.`
+          : fileNotes && !duplicateCount
+            ? `Nothing was imported. ${fileNotes}.`
+            : `Every selected file matches a document already in your notebook (${duplicates}). Nothing was imported.`, "warning", 6000);
         return;
       }
       // Post-conversion byte budget: EPUB and HTML text can outgrow the
@@ -2239,10 +2032,10 @@ export default function App() {
           activity: recordActivityEntry(current.activity, { kind: "upload", label: admitted.length === 1 ? `Uploaded “${admitted[0].title}”` : `Uploaded ${admitted.length} documents`, refId: admitted[0]?.id || "" }),
         };
       });
-      const cautions = rejected || duplicateCount || droppedForBudget;
-      notify(`${budgeted.length} document${budgeted.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped` : ""}${droppedForBudget ? `; ${droppedForBudget} over the 16 MB budget` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. ${bookSummaries.length ? `${bookSummaries.join(" · ")}. ` : ""}No existing notes were replaced.`, cautions ? "warning" : "success", cautions ? 6000 : undefined);
+      const cautions = rejected || duplicateCount || droppedForBudget || skipped.length;
+      notify(`${budgeted.length} document${budgeted.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicates}` : ""}${droppedForBudget ? `; ${droppedForBudget} over the 16 MB budget` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. ${fileNotes ? `${fileNotes}. ` : ""}No existing notes were replaced.`, cautions ? "warning" : "success", cautions ? 6000 : undefined);
     } catch (error) {
-      notify(`Import failed: ${error.message}`, "error", 5000);
+      notify(warmToolFailureMessage(error, "Import failed: "), "error", 5000);
     }
   };
 
@@ -2365,6 +2158,19 @@ export default function App() {
     }
   }, [hydrated]);
 
+  useEffect(() => {
+    if (!hydrated) return undefined;
+    // Settings and the Notebook left the startup bundle. Load them once the
+    // first render is idle so that opening either shows it at once.
+    const preload = () => { preloadSettings(); preloadNotebook(); };
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(preload, { timeout: 5_000 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const timer = window.setTimeout(preload, 3_000);
+    return () => window.clearTimeout(timer);
+  }, [hydrated]);
+
   const restoreTrashEntry = (trashId) => {
     const entry = profileRef.current.trash.find((item) => item.id === trashId);
     if (!entry) { notify("That trash entry is no longer available.", "error"); return; }
@@ -2437,7 +2243,15 @@ export default function App() {
     notify(`${selectedIds.length} document${selectedIds.length === 1 ? "" : "s"} moved to the trash.`);
   };
 
-  const runLinkAudit = useCallback(() => {
+  // Resolves the report, or null when the link check could not load.
+  const runLinkAudit = useCallback(async () => {
+    let auditLearnerLinks;
+    try {
+      ({ auditLearnerLinks } = await loadLinkAudit());
+    } catch (error) {
+      notify(warmToolFailureMessage(error, "The link check could not start: "), "error", 6000);
+      return null;
+    }
     const current = profileRef.current;
     const knownIds = new Set([...documents.map((document) => document.id), ...current.customDocuments.map((document) => document.id)]);
     const { findings, scanned } = auditLearnerLinks({
@@ -2446,7 +2260,7 @@ export default function App() {
       knownIds,
     });
     return { findings, scanned };
-  }, []);
+  }, [notify]);
 
   const manageCustomDocument = (id, changes) => {
     const existing = profileRef.current.customDocuments.find((doc) => doc.id === id);
@@ -3017,6 +2831,7 @@ export default function App() {
 
   const exportBackup = async (password) => {
     try {
+      const { createBackup, encryptBackupJson } = await loadBackupTools();
       const exportedAt = new Date().toISOString();
       const data = await getAllData();
       // Export a read-only three-way snapshot so concurrent work already
@@ -3078,7 +2893,7 @@ export default function App() {
       }
       notify(`Backup verified with ${result.envelope.integrity.algorithm}${password ? ", encrypted with AES-256-GCM," : ""} and downloaded.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
     } catch (error) {
-      notify(`Backup failed: ${error.message}`, "error", 5000);
+      notify(warmToolFailureMessage(error, "Backup failed: "), "error", 5000);
     }
   };
 
@@ -3095,6 +2910,8 @@ export default function App() {
 
   const leaveSyncVaultAction = useCallback(async () => {
     if (!window.confirm("Leave this sync vault? Your local data stays; only the vault membership and sync baseline are removed.")) return;
+    // Both live in the startup bundle (syncIdentity.js), so leaving needs no
+    // warm tool and works offline from the first launch.
     clearVaultConfig();
     await clearSyncBaseline();
     setSyncVaultConfig(null);
@@ -3105,6 +2922,7 @@ export default function App() {
     const config = readVaultConfig();
     if (!config) return;
     try {
+      const { createBackup, encryptBackupJson } = await loadBackupTools();
       const exportedAt = new Date().toISOString();
       const deviceId = syncDeviceIdRef.current;
       const data = await getAllData();
@@ -3118,7 +2936,7 @@ export default function App() {
       downloadBlob(syncFileNameFor(deviceId), blobParts);
       notify(`Sync file exported as ${syncFileNameFor(deviceId)}. Keep every device's file together in one shared vault folder.`, "success", 7000);
     } catch (error) {
-      notify(`Sync export failed: ${error.message}`, "error", 6000);
+      notify(warmToolFailureMessage(error, "Sync export failed: "), "error", 6000);
     }
   };
 
@@ -3129,6 +2947,7 @@ export default function App() {
       return;
     }
     try {
+      const { checkSyncHeader, decryptBackupFile, foldPeerSnapshots, loadSyncBaseline, preflightBackup, readEncryptedHeader, saveSyncBaseline } = await loadBackupTools();
       const now = new Date().toISOString();
       const deviceId = syncDeviceIdRef.current;
       let config = readVaultConfig();
@@ -3208,7 +3027,7 @@ export default function App() {
       const conflictCount = folded.conflicts.length + commitConflicts.length;
       notify(`Merged ${peers.length} peer file${peers.length === 1 ? "" : "s"}${conflictCount ? `; ${conflictCount} conflict${conflictCount === 1 ? "" : "s"} recorded` : ""}${folded.replacementApplied ? "; a reset/restore from another device was applied" : ""}${skipped.length ? `; skipped — ${skipped.join(" · ")}` : ""}. Export your sync file now so peers see this state.`, skipped.length || conflictCount ? "warning" : "success", 9000);
     } catch (error) {
-      notify(`Sync import failed: ${error.message}`, "error", 8000);
+      notify(warmToolFailureMessage(error, "Sync import failed: "), "error", 8000);
     }
   };
 
@@ -3217,6 +3036,7 @@ export default function App() {
     event.target.value = "";
     if (!file) return;
     try {
+      const { isEncryptedBackupFile, preflightBackup } = await loadBackupTools();
       if (await isEncryptedBackupFile(file)) {
         setEncryptedImport({ file, fileName: file.name, error: "" });
         setSettingsOpen(false);
@@ -3226,7 +3046,7 @@ export default function App() {
       setBackupCandidate({ ...checked, fileName: file.name });
       setSettingsOpen(false);
     } catch (error) {
-      notify(`Could not import backup: ${error.message}`, "error", 6000);
+      notify(warmToolFailureMessage(error, "Could not import backup: "), "error", 6000);
     }
   };
 
@@ -3234,6 +3054,8 @@ export default function App() {
     const pending = encryptedImport;
     if (!pending) return;
     try {
+      // Loaded to reach this dialog; cached in memory for the decrypt.
+      const { decryptBackupFile, preflightBackup } = await loadBackupTools();
       const json = await decryptBackupFile(pending.file, password);
       const checked = await preflightBackup(json);
       setEncryptedImport(null);
@@ -3245,7 +3067,7 @@ export default function App() {
         return;
       }
       setEncryptedImport(null);
-      notify(`Could not import the encrypted backup: ${error.message}`, "error", 7000);
+      notify(warmToolFailureMessage(error, "Could not import the encrypted backup: "), "error", 7000);
     }
   };
 
@@ -3282,6 +3104,7 @@ export default function App() {
         return;
       }
 
+      const { createRecoverySnapshot } = await loadBackupTools();
       const recoveryAt = new Date().toISOString();
       // Finish any save that already crossed the debounce boundary, then fold
       // this tab's dirty profile into the latest durable revision before the
@@ -3336,7 +3159,7 @@ export default function App() {
       notify("Recovery file requested. Verify it is saved, then return to this dialog and confirm the restore. No local data has been replaced.", "warning", 9000);
     } catch (error) {
       setBackupBusy(false);
-      notify(`Restore failed before replacement completed: ${error.message}`, "error", 7000);
+      notify(warmToolFailureMessage(error, "Restore failed before replacement completed: "), "error", 7000);
     }
   };
 
@@ -3427,7 +3250,7 @@ export default function App() {
           {view === "library" && <LibraryView profile={profile} query={query} setQuery={setQuery} selectedPart={selectedPart} setSelectedPart={setSelectedPart} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onSettingsChange={updateSettings} />}
           {view === "reader" && (sourceLoadError ? <div className="empty-state"><AlertTriangle size={30} /><h2>Lecture could not be opened</h2><p>{sourceLoadError}</p><button className="button secondary" onClick={() => { setSourceLoadError(""); loadDocumentSource(currentDocument.id).then((source) => setBuiltInSources((current) => ({ ...current, [currentDocument.id]: source }))).catch((error) => setSourceLoadError(error.message)); }} type="button">Retry</button></div> : currentDocument.source === "builtin" && !currentOriginalSource ? <div className="view-loading" role="status">Loading lecture on demand…</div> : <Suspense fallback={<div className="view-loading" role="status">Opening lecture…</div>}><Reader document={currentDocument} source={currentSource} originalSource={currentOriginalSource} progress={documentProgress(profile, currentDocument.id)} position={profile.readingPositions[currentDocument.id] || 0} bookmarked={profile.bookmarks.includes(currentDocument.id)} personalNote={profile.personalNotes[currentDocument.id] || ""} annotations={profile.annotations.filter((annotation) => annotation.documentId === currentDocument.id)} isDark={isDark} settings={profile.settings} speech={speech} saveStatus={saveStatus} startEditing={editRequestId === currentDocument.id} navigationTarget={readerNavigationTarget} onNavigationHandled={() => setReaderNavigationTarget(null)} onEditingStarted={() => setEditRequestId("")} onDirtyChange={setEditorDirty} onOpenDocument={openDocument} onProgress={updateProgress} onSetProgress={setDocumentProgress} onToggleBookmark={toggleBookmark} onAddClipping={addClipping} onSaveAnnotation={saveAnnotation} onAnnotationsReconciled={reconcileAnnotationOffsets} onDeleteAnnotation={deleteAnnotation} onCreateReviewFromAnnotation={openReviewDraft} onPersonalNote={setPersonalNote} onSaveEdit={saveEdit} revisions={profile.revisions.filter((revision) => revision.documentId === currentDocument.id)} onResetEdit={resetEdit} onSettingsChange={updateSettings} previousDocument={allDocuments[currentIndex - 1]} nextDocument={allDocuments[currentIndex + 1]} autoNarrate={autoNarrateDocId === currentDocument.id} onAutoNarrateHandled={() => setAutoNarrateDocId("")} onOpenBoard={() => changeView("board")} onAskAi={profile.settings.aiFeaturesEnabled !== false ? askAiAboutSelection : undefined} onNotify={notify} /></Suspense>)}
           {view === "device-evidence" && <Suspense fallback={<div className="view-loading" role="status">Preparing device checks…</div>}><DeviceEvidence onNotify={notify} /></Suspense>}
-          {view === "notebook" && <NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onRestoreClipping={restoreClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} />}
+          {view === "notebook" && <Suspense fallback={<div className="view-loading" role="status">Opening your notebook…</div>}><NotebookView profile={profile} allDocuments={allDocuments} customDocuments={customDocuments} onOpen={openDocument} onUpload={uploadNotes} onCreate={() => setCreateOpen(true)} onDeleteCustom={deleteCustom} onDuplicateCustom={duplicateCustom} onDeleteClipping={deleteClipping} onRestoreClipping={restoreClipping} onUpdateClipping={updateClipping} onCopyClipping={copyClipping} onCreateReview={openReviewDraft} onCopyAnnotation={copyAnnotation} onExportAnnotations={exportAnnotations} onDeleteAnnotation={deleteAnnotation} onRestoreTrash={restoreTrashEntry} onDeleteTrash={deleteTrashEntry} onManageCustom={setManageDocumentId} onOpenReview={() => changeView("review")} onBatchOrganize={batchOrganizeDocuments} onBatchDelete={batchDeleteDocuments} onRunLinkAudit={runLinkAudit} collections={profile.collections} /><LazyRouteHeading /></Suspense>}
           {view === "ai" && (!aiFeaturesEnabled
             ? <div className="page ai-page"><div className="empty-state ai-disabled-state"><BrainCircuit size={32} /><h2>AI features are turned off</h2><p>You chose to study without AI assistance. Reading, notes, reviews, narration, and whiteboards are unaffected. You can re-enable the AI learning studio at any time in Settings.</p><button className="button primary" onClick={() => setSettingsOpen(true)} type="button">Open settings</button></div></div>
             : <div className="page ai-page"><header className="page-title"><h1>AI learning studio</h1></header><Suspense fallback={<div className="view-loading" role="status">Opening the AI learning studio…</div>}><AiLearningStudio sources={aiSources} sourceCatalog={aiSourceCatalog} studyContext={aiStudyContext} speech={speech} loadSource={loadAiSource} retrieveLibrary={retrieveLibrarySources} initialHistory={aiHistoryRetention > 0 ? profile.aiTutorHistory || [] : []} historyTombstones={profile.aiTutorHistoryTombstones || []} onHistoryChange={aiHistoryRetention > 0 ? saveAiTutorHistory : undefined} phoneSessionHistory={phoneAiSessionHistory} onPhoneSessionHistoryChange={setPhoneAiSessionHistory} onNavigateSource={(target, metadata) => openDocument(target.documentId || target.id, { anchor: metadata?.anchor || target.anchor, section: target.section })} onCreateFlashcardDrafts={addAiFlashcards} onSaveMistakes={saveTutorMistakes} onSaveAnswerNote={saveAiAnswerNote} insertPrompt={aiInsert} onInsertConsumed={consumeAiInsert} onNotify={notify} /></Suspense></div>)}
@@ -3441,7 +3264,7 @@ export default function App() {
         </nav>
       </div>
 
-      {settingsOpen && <div className="settings-overlay" inert={installOpen || shortcutsOpen} aria-hidden={installOpen || shortcutsOpen ? "true" : undefined}><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="settings-drawer-header"><h1 id="settings-title">Settings</h1><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button></div><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} syncVault={syncVaultConfig} syncDeviceId={syncDeviceIdRef.current} onCreateSyncVault={createSyncVaultAction} onLeaveSyncVault={leaveSyncVaultAction} onSyncExport={exportSyncFile} onSyncImport={importSyncFiles} /></div></div>}
+      {settingsOpen && <div className="settings-overlay" inert={installOpen || shortcutsOpen} aria-hidden={installOpen || shortcutsOpen ? "true" : undefined}><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="settings-drawer-header"><h1 id="settings-title">Settings</h1><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button></div><ErrorBoundary inline headingLevel={2} onHome={() => { setSettingsOpen(false); changeView("home"); }}><Suspense fallback={<div className="view-loading" role="status">Opening settings…</div>}><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} syncVault={syncVaultConfig} syncDeviceId={syncDeviceIdRef.current} onCreateSyncVault={createSyncVaultAction} onLeaveSyncVault={leaveSyncVaultAction} onSyncExport={exportSyncFile} onSyncImport={importSyncFiles} /></Suspense></ErrorBoundary></div></div>}
       {installOpen && <InstallSheet secureContext={window.isSecureContext} onClose={() => setInstallOpen(false)} />}
       <BackupImportDialog candidate={backupCandidate} busy={backupBusy} onClose={() => { if (!backupBusy) setBackupCandidate(null); }} onConfirm={confirmBackupImport} />
       <CreateNoteDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createNote} />

@@ -97,7 +97,11 @@ so in the pull request.
 - **Budgets.** The startup script must stay under 750 KB and the precached
   offline route screens under 900 KB (both enforced by `npm run check`). Load
   new screens and large features lazily, and never import from a lazily
-  loaded screen in `src/App.jsx`.
+  loaded screen in `src/App.jsx`. `npm run size` prints each budget's
+  headroom; record it in the pull request. Code that only an action needs
+  (an import, an export, a renderer) belongs in the warm tier
+  (`WARM_MODULES` in `vite.config.js`): the service worker fetches it after
+  the first idle, and the action loads it with `loadWarmTool`.
 - **The AI request contract.** `src/lib/aiContract.js` (the browser client)
   and `server/ai/contracts.mjs` (the server) must change together, and
   `npm run audit:ai` must pass.

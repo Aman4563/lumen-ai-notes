@@ -288,7 +288,7 @@ try {
   const client = await page.createCDPSession();
   await client.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDirectory, eventsEnabled: true });
   await page.$eval('button[aria-label="Open settings"]', (button) => button.click());
-  await page.waitForSelector(".settings-drawer");
+  await page.waitForSelector(".settings-drawer .settings-page");
   await clickByText(page, ".settings-drawer button", "Export backup");
   const backupPath = await waitForDownload((name) => name.startsWith("lumen-notes-backup-") && name.endsWith(".json"), "backup JSON was not downloaded");
   const backupEnvelope = JSON.parse(await readFile(backupPath, "utf8"));

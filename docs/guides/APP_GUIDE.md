@@ -138,8 +138,11 @@ subdirectory.
    or router-reserved address that is present in the trusted certificate and in
    the server's exact `AI_ALLOWED_ORIGINS`; do not copy an old machine IP from a
    previous test run.
-2. Wait for the first page to finish loading while online. The service worker
-   caches the app shell; lecture chunks are cached proportionally as you visit them.
+2. Wait for the first page to finish loading while online, then stay a few
+   seconds on Home. The service worker caches the app shell and every screen;
+   a moment later it also saves the offline tools (backup and sync, HTML and
+   EPUB upload, the link check, and the math renderer). Lecture chunks are
+   cached proportionally as you visit them.
 3. Tap Safari's **Share** button (square with an upward arrow).
 4. Choose **Add to Home Screen**. Scroll the action list if it is not visible.
 5. Keep the name `Lumen Notes`, tap **Add**, and launch it from the new icon.
@@ -157,6 +160,21 @@ also responsive on iPad and desktop.
   current lecture.
 - Select an important passage and choose **Clip selection** to collect it in the
   Notebook's Clippings section.
+
+Markdown and text uploads work offline from the first launch, and so does
+leaving a sync vault. HTML and EPUB uploads, backup, sync export and import,
+the link check, library search in the tutors, and math rendering use tools
+Lumen saves a few seconds after its first online launch. If you go offline
+before that, such an action names itself and says "This tool isn't saved on
+this device yet. Reconnect once, and it will work offline." (for example
+"Backup failed: This tool isn't saved…"). When you upload Markdown or text
+files together with HTML or EPUB files, the Markdown and text files still
+import, and the notification lists each HTML or EPUB file that was not
+imported. Math shows its TeX source until the renderer is saved; the page never
+reloads for it, and an answer that has keyboard focus switches to rendered math
+once focus leaves it. If Lumen's server is running but
+is missing one of these tools, the action says Lumen needs fresh app files
+instead: reload Lumen while connected to the server.
 
 Uploaded and created documents are stored on that device. They become searchable
 and receive the same reader, narration, teaching, editing, and whiteboard tools as
@@ -361,7 +379,9 @@ longer exists.
 
 Each build registers a build-specific service worker. It installs the new shell
 in the background and the app presents an **Update now** action once the shell
-is complete. Existing user notes, whiteboards, and progress remain in browser
+is complete. While the update waits, it also saves its own copy of the offline
+tools, so they keep working when the update takes over at a launch without a
+connection. Existing user notes, whiteboards, and progress remain in browser
 storage because deployments and app-file cache repair do not replace IndexedDB.
 
 ## Current boundary

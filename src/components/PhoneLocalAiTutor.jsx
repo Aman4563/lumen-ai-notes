@@ -16,7 +16,6 @@ import {
   RotateCcw,
   Search,
   Send,
-  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -44,9 +43,10 @@ import {
 import { renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
 import { tutorSpeechText } from "../lib/tutorMarkdown.js";
 import { tutorMessageMarkdown } from "../lib/tutorExport.js";
-import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
+import { libraryUnavailableReason, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { ANSWER_FOLLOW_UPS, topicQuestionFor, withoutCitationLabels } from "../lib/tutorFollowUps.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
+import { useTutorMath, useTutorMathFor } from "../hooks/useTutorMath.js";
 import "../phone-local-ai-tutor.css";
 
 export const PHONE_TUTOR_MODES = Object.freeze([
@@ -288,9 +288,10 @@ export const sanitizePhoneCitations = (citations) => (Array.isArray(citations) ?
 
 const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, onCopy, streaming = false }) => {
   const responseRef = useRef(null);
+  const math = useTutorMathFor(responseRef);
   const html = useMemo(
-    () => renderPhoneTutorMarkdown(text, sources, citations),
-    [citations, sources, text],
+    () => renderPhoneTutorMarkdown(text, sources, citations, { math }),
+    [citations, math, sources, text],
   );
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
@@ -394,6 +395,8 @@ const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HI
 
 export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, onInsertConsumed, retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange, speech = null }) {
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
+  // KaTeX loads while the learner reads or types, not when the first answer arrives.
+  useTutorMath();
   const promptId = useId();
   const modeDescriptionId = useId();
   const keyHintId = useId();
@@ -821,7 +824,14 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
             payload: { ...spec.payload, context: "", contextRanges: [], documentTitle: "General AI/ML question" },
           };
           setStreamingSources([]);
-          setRequestState({ status: "running", message: spec.allowSearch ? "Library search was unavailable; preparing an exact web query for your approval…" : "Library search was unavailable. Generating locally with no web egress…" });
+          // A retrieval tool that is not on this device says why (issue #95).
+          const unavailableReason = libraryUnavailableReason(retrievalError);
+          setRequestState({
+            status: "running",
+            message: unavailableReason
+              ? `Library search was unavailable. ${unavailableReason} ${spec.allowSearch ? "Preparing an exact web query for your approval…" : "Generating locally with no web egress…"}`
+              : spec.allowSearch ? "Library search was unavailable; preparing an exact web query for your approval…" : "Library search was unavailable. Generating locally with no web egress…",
+          });
         }
       } else {
         setStreamingSources(spec.sources);

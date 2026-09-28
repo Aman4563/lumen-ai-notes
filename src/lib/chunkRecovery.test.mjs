@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   CHUNK_RECOVERY_STORAGE_KEY,
   createChunkRecovery,
+  exemptFromChunkRecovery,
   isStaleChunkError,
   lectureLoadMessage,
   probeAppServer,
@@ -277,6 +278,44 @@ test("recovery skips the probe offline, during the cooldown, and for ordinary er
   const online = createChunkRecovery({ storage: makeStorage(), isOnline: () => true, reload: () => assert.fail("must not reload"), probe });
   assert.equal(await online.recover(new Error("Whiteboard record is malformed")), false);
   assert.equal(probes, 0);
+});
+
+// Review round 1: the tutor's KaTeX is an enhancement. Vite reports its
+// failed import through vite:preloadError before the import rejects; the
+// loader marks that error when it rejects, and the listener, one task later,
+// neither probes nor reloads for it. Any other failure still recovers.
+test("a failed optional enhancement never reloads, while other preload failures still recover", async () => {
+  const listeners = new Set();
+  const target = { addEventListener: (_type, listener) => listeners.add(listener), removeEventListener: (_type, listener) => listeners.delete(listener) };
+  const dispatch = (payload) => listeners.forEach((listener) => listener({ payload }));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+  let reloads = 0;
+  let probes = 0;
+  const recovery = createChunkRecovery({
+    storage: makeStorage(),
+    now: () => 50_000,
+    isOnline: () => true,
+    reload: () => { reloads += 1; },
+    probe: async () => { probes += 1; return true; },
+  });
+  const stop = recovery.listen(target);
+
+  // As Vite does: the event first, then the import's rejection reaches the
+  // enhancement's catch, which marks it. Safari names no file.
+  const mathFailure = new TypeError("Importing a module script failed.");
+  const mathImport = Promise.resolve().then(() => { dispatch(mathFailure); throw mathFailure; });
+  await mathImport.catch((error) => exemptFromChunkRecovery(error));
+  await settle();
+  assert.equal(probes, 0, "an exempt failure must not even probe the server");
+  assert.equal(reloads, 0, "a failed tutor-math download reloaded the page");
+
+  const screenFailure = new TypeError("Failed to fetch dynamically imported module: http://lumen.test/assets/Reader-new.js");
+  dispatch(screenFailure);
+  await settle();
+  assert.equal(probes, 1);
+  assert.equal(reloads, 1, "another chunk's failure lost its bounded reload");
+  stop();
+  assert.equal(listeners.size, 0);
 });
 
 test("the server probe bypasses caches and treats any HTTP answer as reachable", async () => {

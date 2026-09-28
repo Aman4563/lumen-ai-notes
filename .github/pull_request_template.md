@@ -6,6 +6,7 @@ Closes #
 
 - [ ] `npm run check` passes
 - [ ] `npm run check:browser` passes (note any suite that passed only on retry)
+- [ ] Budget headroom from `npm run size`: entry ______ B, install routes ______ B, warm ______ B
 - [ ] Each bug fixed has a regression check that fails without the fix
 - [ ] Checked at 320 px and 393 px wide, and in Paper, Night and Contrast (UI changes)
 - [ ] `npm run check:live` with a local model (AI tutor or server changes)

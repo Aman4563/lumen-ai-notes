@@ -1,6 +1,5 @@
-import katex from "katex";
 import { Marked, Renderer } from "marked";
-import markedKatex from "marked-katex-extension";
+import { exemptFromChunkRecovery } from "./chunkRecovery.js";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
 import { escapeAttribute, lineBreakExtension, untrustedRenderer, untrustedTokenizer } from "./untrustedMarkdown.js";
 import { tutorPlainText } from "./tutorExport.js";
@@ -49,89 +48,175 @@ const citationContext = (citationSources = [], webSources = []) => {
 
 const EMPTY_CITATIONS = Object.freeze(citationContext());
 
-const tutorMarked = new Marked();
-tutorMarked.use({
-  gfm: true,
-  breaks: false,
-  renderer: markdownRenderer,
-});
+const createTutorMarked = (mathExtensions) => {
+  const instance = new Marked();
+  instance.use({
+    gfm: true,
+    breaks: false,
+    renderer: markdownRenderer,
+  });
 
-// Model output is untrusted, and DOMPurify's default profile keeps <button>
-// and data-* attributes. The shared untrusted rules (untrustedMarkdown.js)
-// show raw HTML as text, keep only a bare <br>, open links only to absolute
-// web and mail addresses off the app's own host, drop a link whose label shows
-// a citation marker, and turn images into links that load nothing. A model
-// cannot author a citation control, a data-ai-* attribute or a form. Citation
-// controls come only from the tutorCitation extension below, for [S#]/[W#]
-// markers outside code. The Reader's renderer (markdown.js) is unchanged.
-//
-// Tutor answers sit under the page's h1, the tutor's h2 and a per-message h3,
-// so model headings start at h4. The class keeps their visual size.
-// Wide tables get a wrapper that the tutor makes keyboard-scrollable when it
-// actually overflows. Only this tutor-only instance changes; lessons do not.
-tutorMarked.use({
-  tokenizer: untrustedTokenizer,
-  renderer: {
-    ...untrustedRenderer,
-    heading(token) {
-      const level = Math.min(6, Math.max(4, token.depth + 2));
-      return `<h${level} class="ai-tutor__md-h${Math.min(token.depth, 4)}">${this.parser.parseInline(token.tokens)}</h${level}>\n`;
+  // Model output is untrusted, and DOMPurify's default profile keeps <button>
+  // and data-* attributes. The shared untrusted rules (untrustedMarkdown.js)
+  // show raw HTML as text, keep only a bare <br>, open links only to absolute
+  // web and mail addresses off the app's own host, drop a link whose label shows
+  // a citation marker, and turn images into links that load nothing. A model
+  // cannot author a citation control, a data-ai-* attribute or a form. Citation
+  // controls come only from the tutorCitation extension below, for [S#]/[W#]
+  // markers outside code. The Reader's renderer (markdown.js) is unchanged.
+  //
+  // Tutor answers sit under the page's h1, the tutor's h2 and a per-message h3,
+  // so model headings start at h4. The class keeps their visual size.
+  // Wide tables get a wrapper that the tutor makes keyboard-scrollable when it
+  // actually overflows. Only this tutor-only instance changes; lessons do not.
+  instance.use({
+    tokenizer: untrustedTokenizer,
+    renderer: {
+      ...untrustedRenderer,
+      heading(token) {
+        const level = Math.min(6, Math.max(4, token.depth + 2));
+        return `<h${level} class="ai-tutor__md-h${Math.min(token.depth, 4)}">${this.parser.parseInline(token.tokens)}</h${level}>\n`;
+      },
+      table(token) {
+        return `<div class="ai-tutor__scroll" data-scroll-label="Table">${Renderer.prototype.table.call(this, token)}</div>\n`;
+      },
     },
-    table(token) {
-      return `<div class="ai-tutor__scroll" data-scroll-label="Table">${Renderer.prototype.table.call(this, token)}</div>\n`;
-    },
-  },
+    extensions: [
+      {
+        name: "tutorCitation",
+        level: "inline",
+        start(src) {
+          const index = src.search(CITATION_START);
+          return index < 0 ? undefined : index;
+        },
+        tokenizer(src) {
+          const match = CITATION_PATTERN.exec(src);
+          if (match) return { type: "tutorCitation", raw: match[0], kind: match[1], number: match[2] };
+          return undefined;
+        },
+        // The evidence arrives as a per-parse option, so renders of different
+        // answers never share a source map.
+        renderer(token) {
+          const { library, web } = this.parser.options.tutorCitations || EMPTY_CITATIONS;
+          const number = Number(token.number);
+          return citationMarkup(token.kind, token.number, token.kind === "S" ? library.get(number) : web.get(number));
+        },
+      },
+      lineBreakExtension,
+    ],
+  });
+  mathExtensions.forEach((extension) => instance.use(extension));
+  return instance;
+};
+
+// KaTeX (about 259 KB) is a warm tool (issue #95): it is in neither the
+// startup bundle nor the install tier, and the service worker fetches it after
+// the first idle. Until it loads, math reads as its own TeX source in a code
+// span. The rules and start() below copy marked-katex-extension 5.1.12 with
+// `nonStandard` (tutorMath.js), so the same spans become KaTeX once it has
+// loaded. The source is escaped here and sanitized with everything else; it
+// never becomes live markup.
+const INLINE_MATH = /^(\${1,2})(?!\$)((?:\\.|[^\\\n])*?(?:\\.|[^\\\n$]))\1/;
+const BLOCK_MATH = /^(\${1,2})\n((?:\\[^]|[^\\])+?)\n\1(?:\n|$)/;
+const pendingMath = (token) => {
+  const delimiter = token.displayMode ? "$$" : "$";
+  return `<code class="ai-tutor__math-pending">${escapeAttribute(`${delimiter}${token.text}${delimiter}`)}</code>`;
+};
+const PENDING_MATH_EXTENSIONS = [{
   extensions: [
     {
-      name: "tutorCitation",
+      name: "inlineKatex",
       level: "inline",
+      // Upstream's start(), quirk included: after skipping an unmatched "$"
+      // it returns the index into the remaining text, not into `src`. With a
+      // stray "$$" in the prose ("price $$ then $x$") marked then tries the
+      // tokenizer at an earlier position than the math it found, and KaTeX
+      // draws that span; returning the true offset here would show a
+      // different span as pending than KaTeX draws once it loads.
       start(src) {
-        const index = src.search(CITATION_START);
-        return index < 0 ? undefined : index;
-      },
-      tokenizer(src) {
-        const match = CITATION_PATTERN.exec(src);
-        if (match) return { type: "tutorCitation", raw: match[0], kind: match[1], number: match[2] };
+        let rest = src;
+        while (rest) {
+          const index = rest.indexOf("$");
+          if (index < 0) return undefined;
+          if (INLINE_MATH.test(rest.slice(index))) return index;
+          rest = rest.slice(index + 1).replace(/^\$+/, "");
+        }
         return undefined;
       },
-      // The evidence arrives as a per-parse option, so renders of different
-      // answers never share a source map.
-      renderer(token) {
-        const { library, web } = this.parser.options.tutorCitations || EMPTY_CITATIONS;
-        const number = Number(token.number);
-        return citationMarkup(token.kind, token.number, token.kind === "S" ? library.get(number) : web.get(number));
+      tokenizer(src) {
+        const match = src.match(INLINE_MATH);
+        if (match) return { type: "inlineKatex", raw: match[0], text: match[2].trim(), displayMode: match[1].length === 2 };
+        return undefined;
       },
+      renderer: pendingMath,
     },
-    lineBreakExtension,
+    {
+      name: "blockKatex",
+      level: "block",
+      tokenizer(src) {
+        const match = src.match(BLOCK_MATH);
+        if (match) return { type: "blockKatex", raw: match[0], text: match[2].trim(), displayMode: match[1].length === 2 };
+        return undefined;
+      },
+      // Display equations get the same scroll wrapper as tables.
+      renderer: (token) => (token.displayMode
+        ? `<div class="ai-tutor__scroll ai-tutor__scroll--math" data-scroll-label="Equation">${pendingMath(token)}</div>\n`
+        : `<p>${pendingMath(token)}</p>\n`),
+    },
   ],
-});
+}];
 
-// Keep the comparatively large KaTeX runtime and fonts in the lazy tutor
-// route, not the mobile startup bundle. AI output is still rendered locally,
-// untrusted, and sanitized before it reaches the DOM.
-const KATEX_OPTIONS = Object.freeze({
-  throwOnError: false,
-  trust: false,
-  strict: "warn",
-  maxExpand: 1_000,
-  maxSize: 10,
-  output: "htmlAndMathml",
-  // Local models commonly put inline math immediately before punctuation
-  // (`$\\theta$)`). Paired non-standard delimiters parse that normal prose
-  // correctly without consuming the next expression.
-  nonStandard: true,
-});
-tutorMarked.use(markedKatex({ ...KATEX_OPTIONS }));
-// Display equations get the same scroll wrapper as tables.
-tutorMarked.use({
-  extensions: [{
-    name: "blockKatex",
-    renderer(token) {
-      if (!token.displayMode) return false;
-      return `<div class="ai-tutor__scroll ai-tutor__scroll--math" data-scroll-label="Equation">${katex.renderToString(token.text, { ...KATEX_OPTIONS, displayMode: true })}</div>\n`;
-    },
-  }],
-});
+const pendingTutorMarked = createTutorMarked(PENDING_MATH_EXTENSIONS);
+let mathTutorMarked = null;
+
+// The renderer for one render. `math` is the load state an answer was drawn
+// with (useTutorMathFor): an answer that holds focus keeps the TeX source it
+// was drawn with, also when its evidence or a new tutor turn renders it again
+// after KaTeX has loaded. Without `math`, the live state decides.
+const tutorMarkedFor = (math) => (mathTutorMarked && (math === undefined || math === "ready") ? mathTutorMarked : pendingTutorMarked);
+
+// A small store for the KaTeX load, read by the tutors through
+// useSyncExternalStore (src/hooks/useTutorMath.js) so rendered answers
+// re-render once math can be drawn. "idle" | "loading" | "ready" | "failed".
+let mathState = "idle";
+let mathLoad = null;
+const mathListeners = new Set();
+const setMathState = (next) => {
+  mathState = next;
+  mathListeners.forEach((listener) => listener());
+};
+export const getTutorMathState = () => mathState;
+export const subscribeTutorMath = (listener) => {
+  mathListeners.add(listener);
+  return () => mathListeners.delete(listener);
+};
+
+/**
+ * Loads KaTeX and marked-katex-extension (tutorMath.js) and switches the tutor
+ * renderer to them. Math is an enhancement, not an action, so this is a plain
+ * import, and its failure is exempt from chunk recovery: it leaves the TeX
+ * source showing and never reloads the page, also when the server answers
+ * without the file (a reload there could drop a question being typed, and
+ * the retry on `online` would repeat it). A failed load stays retryable.
+ */
+export const ensureTutorMath = () => {
+  if (mathState === "ready") return Promise.resolve();
+  if (!mathLoad) {
+    mathLoad = import("./tutorMath.js")
+      .then(({ tutorMathExtensions }) => {
+        mathTutorMarked = createTutorMarked(tutorMathExtensions);
+        setMathState("ready");
+      })
+      .catch((error) => {
+        exemptFromChunkRecovery(error);
+        mathLoad = null;
+        setMathState("failed");
+        throw error;
+      });
+    setMathState("loading");
+  }
+  return mathLoad;
+};
 
 /**
  * Small local models commonly emit a valid TeX expression as `$$x$$` on one
@@ -163,9 +248,10 @@ export const normalizeTutorMathDelimiters = (markdown) => {
  * Tutor Markdown before DOMPurify: model-authored HTML is already text and
  * the only citation controls are the renderer's own. Exported for unit tests,
  * because DOMPurify needs a DOM; the UI uses renderTutorMarkdown. `appOrigin`
- * (default: the page's origin) names the host whose links render as text.
+ * (default: the page's origin) names the host whose links render as text;
+ * `math` is the KaTeX load state to draw with (default: the live state).
  */
-export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], webSources = [], { appOrigin } = {}) => tutorMarked.parse(
+export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], webSources = [], { appOrigin, math } = {}) => tutorMarkedFor(math).parse(
   normalizeTutorMathDelimiters(markdown),
   { tutorCitations: citationContext(citationSources, webSources), untrustedAppOrigin: appOrigin },
 );
@@ -174,12 +260,12 @@ export const renderTutorMarkdownUnsanitized = (markdown, citationSources = [], w
  * Marked accepts an unfinished paragraph/list/fence, which lets the same
  * renderer safely handle both completed answers and in-flight stream chunks.
  */
-export const renderTutorMarkdown = (markdown, citationSources = [], webSources = []) => (
-  sanitizeMarkdownHtml(renderTutorMarkdownUnsanitized(markdown, citationSources, webSources))
+export const renderTutorMarkdown = (markdown, citationSources = [], webSources = [], { math } = {}) => (
+  sanitizeMarkdownHtml(renderTutorMarkdownUnsanitized(markdown, citationSources, webSources, { math }))
 );
 
 /** One structured field before DOMPurify; see renderTutorMarkdownUnsanitized. */
-export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [], webSources = [], { appOrigin } = {}) => tutorMarked.parseInline(
+export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [], webSources = [], { appOrigin, math } = {}) => tutorMarkedFor(math).parseInline(
   String(text || "").replace(/\r\n?/g, "\n").replace(/\n+/g, " "),
   { tutorCitations: citationContext(citationSources, webSources), untrustedAppOrigin: appOrigin },
 );
@@ -190,8 +276,8 @@ export const renderTutorInlineMarkdownUnsanitized = (text, citationSources = [],
  * citation controls as prose. Inline parsing cannot produce blocks, fences or
  * Mermaid diagrams.
  */
-export const renderTutorInlineMarkdown = (text, citationSources = [], webSources = []) => (
-  sanitizeMarkdownHtml(renderTutorInlineMarkdownUnsanitized(text, citationSources, webSources))
+export const renderTutorInlineMarkdown = (text, citationSources = [], webSources = [], { math } = {}) => (
+  sanitizeMarkdownHtml(renderTutorInlineMarkdownUnsanitized(text, citationSources, webSources, { math }))
 );
 
 // Plain text that keeps code, math and identifiers such as `for _ in` intact.

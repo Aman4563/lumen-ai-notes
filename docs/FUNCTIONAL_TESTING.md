@@ -2690,3 +2690,272 @@ select measurements and 16 narrow fine-pointer screens,
 `audit:responsive` 478 layout and 367 control checks, `audit:a11y` 75 axe
 runs with the empty allowlist). Only docs and one source comment changed
 after that run; a rebuild gives the same startup and route byte counts.
+
+## Budget headroom and warm tools on 2026-09-29 (#95)
+
+Reproduced on main (a79411c), measured with the new `npm run size` pointed
+at that build (`LUMEN_DIST`): the startup entry script was 716,654 of
+750,000 bytes (33,346 headroom) and the install-tier route screens 895,621
+of 900,000 (4,379 headroom), so almost any feature would fail `npm run
+check`. The largest install file was KaTeX's 259,052-byte script, which only
+TeX in edited copies, uploads and tutor answers needs.
+
+- The build now has three tiers. `offline-routes.json` (version 2) keeps the
+  install list in `files` and adds `warm`: the reader's and the tutor's TeX
+  renderers with KaTeX, HTML/EPUB import, backup/encrypted export/sync fold,
+  the link check and library retrieval. Settings and the Notebook left the
+  startup bundle for the install tier. Measured the same way, the entry is
+  617,722 bytes (132,278 headroom), install is 680,539 bytes in 42 files
+  (219,461 headroom, about 199 KB gzipped), and warm is 305,197 bytes in 8
+  files (about 95 KB gzipped). The HTML loads 645,997 bytes of JavaScript in
+  all, against 727,141 on main: the bundler now preloads `review` and `fsrs`
+  (17.8 KB) as chunks of their own, and counted against 750,000 bytes that
+  total still leaves 104,003. `audit:app` prints the same lines.
+- `audit:app` fails on main's build with 15 findings: no version 2, no warm
+  list, KaTeX and markdownMath installed instead of warmed, none of the seven
+  warm modules listed, Settings and the Notebook missing from the route list,
+  and no `WARM` handler in the worker. It passes now.
+- `audit:chunks` gained three drills that use a real worker and their own
+  servers, and stop them.
+  - Warmed, then offline: after one idle with the server stopped (HTTP cache
+    cleared), backup export and import (to its review), encrypted export,
+    sync export, HTML and EPUB upload, the link check, a saved tutor answer
+    with `$x^2$` (drawn as KaTeX), an edited lecture with TeX, and every warm
+    module, library retrieval included, work. Against main's build it fails
+    at once: "the worker did not warm the tools after the first idle (0 of 0
+    cached)".
+  - Warming blocked: with the warm files missing from the server, the worker
+    reports each as failed. With the server stopped, every warm action shows
+    "This tool isn't saved on this device yet. Reconnect once, and it will
+    work offline." with no error screen, no reload and no recovery marker; a
+    Markdown upload still imports, tutor math reads `$x^2$` in
+    `.ai-tutor__math-pending`, and the edited lecture shows its TeX source.
+    Main has no warm list to block, and its tools are in the startup bundle,
+    so it has no such state.
+  - An update: a worker for another build installs from the same files and
+    waits. Activation deletes the cache that held the previous release's
+    warm tools, and on an iPhone an update usually takes over at the next
+    launch, which may be offline, so the waiting worker must save its own.
+    With the server stopped, the update takes over and backup export still
+    works. Found while building the warm tier: `main.jsx` warmed only the
+    active worker, and the drill failed with "the waiting update did not save
+    the warm tools in its own cache (0 of 8)". It now also warms a waiting
+    update after the first idle; install is unchanged.
+  - A fourth check holds the Notebook and Settings chunks for 1.5 s: route
+    focus still ends on the Notebook's `h1`, and Settings on its close
+    button. Against main it fails with "the Notebook was already loaded, so
+    its lazy route focus was not tested"; a build without
+    `LazyRouteHeading` fails with "route focus stayed on the main landmark
+    after the lazy Notebook rendered".
+- `audit:visual` now waits for the worker to warm, runs optional cleanup and
+  asserts the warm files survive. It opens the Notebook and Settings after a
+  Home-only visit with the server stopped, and again in a launch taken
+  offline (a reload from the cache), and evaluates the Settings and Notebook
+  modules from the cache. Against main's build it reports "the service worker
+  did not warm the tools after the first idle: no warm list", "optional
+  offline file cleanup removed warm tools: no warm list" and "route screens
+  did not load from the offline cache: Settings: not in the route list |
+  Notebook: not in the route list".
+- `tutorMarkdown.test.mjs` first renders before KaTeX loads: math is escaped
+  TeX source in a code span, `$a<b>c$` and a display `<img onerror>` stay
+  text, and a citation beside it still renders. On main the file does not
+  load (`ensureTutorMath` does not exist), and main's renderer returns
+  `<span class="katex">` for `$x^2$` as soon as the module loads. The KaTeX
+  tests now await `ensureTutorMath()`, and a new test compares the loaded
+  output with `katex.renderToString` for inline, display, single-dollar block
+  and inline display math. Ad hoc, 408 inputs (every string literal in the
+  tutor, phone, untrusted and export tests plus 15 math-heavy answers)
+  rendered through the block, inline and phone renderers of main and of this
+  branch after `ensureTutorMath()`: 1,224 renders, 102 of them with KaTeX, and
+  no output differed. `warmTools.test.mjs` covers the typed error for Chrome,
+  Firefox and Safari download failures, other errors keeping their text, and
+  the chunk name reaching chunk recovery.
+- Found while building it and fixed: moving the link check out of the entry
+  also moved marked and DOMPurify into a shared install chunk: a build
+  without the pin measures 84,818 more install bytes and 134,643 bytes of
+  headroom, so `App.jsx` pins the lecture renderer in the entry. The route list named a `katex.min-*.js` placeholder
+  that Vite deletes after the plugin ran, so the plugin now runs `post`. With
+  Settings lazy, `audit:workflow`, `audit:annotations`, `audit:ai-ui` and
+  `audit:responsive` clicked Settings controls before the chunk arrived, so
+  Settings and the Notebook now preload once the first render is idle and
+  render without a fallback once loaded. Those audits, and the first
+  settings-drawer pass of `audit:controls`, which follows a fresh page load,
+  now wait for Settings' content before they use or Tab through it: a longer
+  wait, not a weaker assertion. `audit:ai-ui` saw a retry sent late because
+  each retrieval went through the module loader again, so a loaded tool is
+  reused.
+
+Gate: `npm run check` passed (`audit:ai` 565/565, `audit:ai-eval` 27 cases,
+hit@1 0.913), with the entry at 617,722 and the install tier at 680,539
+bytes (budgets 750,000 and 900,000). The full `npm run check:browser`
+passed all 13 suites on the first attempt with no retries, at a load
+average of about 12–13. Before that run, `audit:chunks` also passed alone
+with `LUMEN_BROWSER_RETRIES=0`. Each failure quoted above was reproduced
+against main's build (`LUMEN_DIST` and `LUMEN_URL`) or against a scratch
+build without the named change.
+
+## Budget headroom and warm tools: review follow-up on 2026-09-29 (#95)
+
+A review of the branch build (e936ad4) found these problems. Each was
+reproduced against that build (served with `LUMEN_URL`, its route list read
+with `LUMEN_DIST`) and is fixed with a check that fails there. The new
+`LUMEN_CHUNK_DRILLS=name,…` runs single `audit:chunks` drills, which is how
+each failure below was read on its own.
+
+- **A mixed upload imported nothing.** With the converters not saved yet,
+  choosing a Markdown note together with an HTML page aborted the whole
+  selection with the offline toast, so the note was lost too. The Markdown
+  and text files now import, and each HTML or EPUB file is listed as "…was
+  not imported — This tool isn't saved on this device yet…" in the summary.
+  The warming-blocked drill uploads a fresh Markdown note with the HTML page;
+  on e936ad4 it saw only the offline toast.
+- **Leaving a vault needed the backup tools.** Leaving loaded the backup
+  bundle for the baseline delete, so it failed offline before warming,
+  unlike on main. `clearSyncBaseline` (one IndexedDB delete) moved to
+  `syncIdentity.js` in the entry, and leaving is main's code again. The
+  warming-blocked drill leaves a vault; on e936ad4 the toast read "This tool
+  isn't saved on this device yet…".
+- **The typed toast dropped the action's name.** The alert read only "This
+  tool isn't saved…", so after "Leave this sync vault?" or Export backup a
+  screen-reader user heard no action. Every toast now keeps its prefix, for
+  example "Backup failed: This tool isn't saved…". The warming-blocked drill
+  expects each action's own prefix; `warmTools.test.mjs` changed that
+  assertion on purpose.
+- **A reachable server was described as offline.** With the server up but a
+  warm file missing from its build, the first Export backup spent the
+  bounded reload and the second said "Reconnect once" although the device
+  was connected. `loadWarmTool` now uses the probe chunk recovery ran for the
+  failure, or probes itself within the cooldown, and a reachable server gets
+  the error screen's stale wording: "Lumen needs fresh app files: this tool
+  belongs to a different or incomplete Lumen build…". The new `warm-stale`
+  drill keeps the server up without the warm files: one bounded reload
+  naming `backupTools`, then that toast, with no second reload. On e936ad4
+  the second press read "This tool isn't saved…". Unit tests cover offline,
+  unreachable, reachable and a probe that throws.
+- **A missing KaTeX file reloaded the page.** Tutor math uses a plain
+  `import()`, but Vite reports its failure through `vite:preloadError`, and
+  chunk recovery reloaded the page when the server answered, against the
+  code comment and the handoff. It could repeat after the cooldown on a
+  tutor remount or an `online` event, while the learner typed. The failed
+  import's error is now marked with `exemptFromChunkRecovery`, and the
+  listener recovers one task after the event, when the mark is in place; the
+  mark follows the error object, so Safari's nameless message works too. The
+  new `math-reload` drill opens a saved answer on a reachable server without
+  the warm files and waits 4 s: on e936ad4 the page reloaded with a marker
+  naming `tutorMath-D4WRs17h.js`. A unit test dispatches the event the way
+  Vite does and checks that another chunk's failure still reloads.
+- **KaTeX arriving dropped focus to the page.** Drawing math replaces an
+  answer's markup, so a focused link or `[S#]` button inside it was removed
+  and focus fell to `<body>`, for example when Wi-Fi returned after an
+  offline first launch. `useTutorMathFor` keeps an answer's TeX source while
+  focus is inside it and draws once focus leaves; answers without focus draw
+  at once. The new `math-focus` drill holds the warm files, focuses a link in
+  a saved answer, releases them, and checks that another answer drew KaTeX,
+  focus stayed on the link, and the focused answer draws after focus moves
+  on. On e936ad4 focus ended on BODY.
+- **Pending math could mark different spans than KaTeX.** The pending
+  renderer returned the true offset from `start()`, while
+  marked-katex-extension returns the index into the text left after an
+  unmatched `$`, so with a stray `$$` ("price $$ then $x$") the spans moved
+  when KaTeX arrived. The pending `start()` now copies upstream, quirk
+  included. A unit test renders ten inputs before the load and, after it,
+  with KaTeX's output swapped for the pending markup: they must match. On
+  e936ad4, 4 of 10 differed.
+- **Library search failures said only "unavailable".** Retrieval rejects
+  with the typed error, but both tutors showed a generic line. The Mac
+  tutor's stage and On-device Lite's status now add the reason ("Library
+  search was unavailable. This tool isn't saved on this device yet…").
+  `phone_ai_ui_audit` makes the fixture's retrieval reject with the typed
+  error and records the status line; on e936ad4 it read "Library search was
+  unavailable. Generating locally with no web egress…".
+- **A Settings chunk failure put a second h1 in the drawer.** The error
+  panel now takes `headingLevel={2}` inside the Settings dialog, with the
+  same size. The new `settings-error` drill fails the chunk and the probe
+  and checks that the drawer's only h1 is "Settings"; on e936ad4 it found
+  ["Settings", "Lumen’s server cannot be reached"].
+- **The lazy Settings focus check never tested the loading state** (a test
+  defect; the product was right). It held the chunk 1.5 s from its request,
+  and the idle preload asked for it about 150 ms after start, so Settings
+  had usually loaded before the drawer opened (a replay of the old hold: 0
+  of 5 runs saw the loading state), and it read focus before the drawer's
+  requestAnimationFrame focus, which failed about 1 run in 5 under load. The
+  Notebook and Settings chunks are now held until each screen has opened;
+  the check asserts the loading state, waits for focus on the close button,
+  releases the chunk, and checks focus again. It passed 5 of 5 times at a
+  load average of about 12, and on e936ad4, where the product was already
+  right.
+
+Budgets after these fixes (`npm run size`): entry 618,604 bytes (131,396
+headroom), install 681,139 bytes in 42 files (218,861 headroom), warm
+305,006 bytes in 8 files. The baseline delete, the stale-build wording and
+the per-file upload report cost 882 entry bytes; the focus-aware math hook
+lives in the tutor chunks.
+
+Gate: `npm run check` passed (`audit:ai` 570/570, `audit:ai-eval` 27 cases,
+hit@1 0.913). The full `npm run check:browser` passed all 13 suites on the
+first attempt with no retries, at a load average of about 12.
+
+## Budget headroom and warm tools: second review follow-up on 2026-09-29 (#95)
+
+Main moved to 079ff1d (#142, the chat window fit) during the review, so the
+branch no longer merged. It is rebased onto it. On main the quiz, flashcard
+and study plan views had moved from `PhoneLocalAiTutor.jsx` to the lazily
+loaded `PhoneTutorResults.jsx`, whose field renderer had no math hook: kept
+as it was, those fields would have shown `$…$` as TeX source for good. That
+renderer now gets the same `useTutorMathFor` hook, ref and memo input as
+before the move. `phone_ai_ui_audit`'s retrieval drill now comes before
+main's `toggleWebFallback`, and the doc rows keep both sides. Each rebased
+code commit was built on its own.
+
+- **Another tab's turn dropped focus from an answer holding its math.** With
+  focus on a link in an answer that kept its TeX source, a tutor turn saved
+  by another tab (a newer profile revision in IndexedDB and a
+  `lumen-profile-sync-v1` signal, as the app's save path sends) made the
+  Mac tutor merge its history, which rebuilds every answer's evidence
+  arrays. The answer's memo recomputed with the shared renderer, which had
+  already switched to KaTeX, and the new markup dropped focus to `<body>`.
+  The renderers now take the state an answer was drawn with (`{ math }`),
+  so a held answer renders the same TeX source until focus leaves it. The
+  `math-focus` drill now sends such a turn while the answer is held and
+  checks that focus and the TeX source stay; on the rebased tip before the
+  fix (6641ef7) focus ended on BODY. A unit test renders with new, equal
+  evidence arrays after KaTeX loaded, with each held state; on the old
+  renderer it failed with `an answer held at "idle" rendered differently
+  after KaTeX loaded`. On main (079ff1d) the drill stops earlier ("the
+  saved answers did not show their TeX source while KaTeX was held"), since
+  main has no pending math.
+- **A structured answer's field lost a focused citation on the same turn.**
+  The Mac tutor's inline fields (quiz, flashcard and plan text) and On-device
+  Lite's built their `{ __html }` object inside the memo, so new evidence
+  arrays with the same content gave a new object, and React 19 sets
+  `innerHTML` again whenever that object changes. Each field now keeps one
+  object per markup string, as prose answers already did. The drill then
+  focuses the `[S1]` button in a saved study plan's goal (with KaTeX drawn)
+  and sends another tab's turn; on a build of this branch without that
+  change focus ended on BODY.
+- **The Mac tutor's typed library reason had no browser check.** Only the
+  helper and On-device Lite's status were checked. `audit:ai-ui` now blocks
+  the library-retrieval chunk and the chunk-recovery probe on a fresh page
+  that bypasses the worker (offline, before warming), sends an Explain
+  question, and checks the stage "Library search is unavailable. This tool
+  isn't saved on this device yet. Reconnect once, and it will work offline.
+  Using the attached lesson, without the web…", one request, and no reload.
+  `LUMEN_AI_UI_CASES=library-unavailable` runs only this case. On main
+  (079ff1d), where retrieval is in the entry, the stages were ["Searching
+  your library…", "Library passages found. Writing the answer on your Mac,
+  without the web…"]; on a build of this branch without the reason in the
+  Mac stage they were ["Searching your library…", "Library search is
+  unavailable. Using the attached lesson, without the web…"].
+
+Budgets after the rebase (`npm run size`), superseding the figures above:
+main (079ff1d) has entry 716,616 bytes (33,384 headroom) and install
+899,632 bytes in 32 files (368 headroom). The branch has entry 618,566
+bytes (131,434 headroom; the HTML loads 646,841 bytes of JavaScript, main
+727,103), install 685,498 bytes in 41 files (214,502 headroom, about 200 KB
+gzipped) and warm 305,006 bytes in 8 files (about 95 KB gzipped).
+
+Gate on the rebased branch with these fixes (c83c2ef): `npm run check`
+passed (`audit:ai` 574/574, `audit:ai-eval` 27 cases, hit@1 0.913). The full
+`npm run check:browser` passed all 13 suites on the first attempt with no
+retries, at a load average of about 11–12, including main's On-device Lite
+axe runs (`audit:a11y` 75 runs, empty allowlist).

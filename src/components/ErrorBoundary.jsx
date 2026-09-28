@@ -19,7 +19,9 @@ const COPY = {
  * bar, sidebar, and bottom navigation stay usable and navigating (resetKey)
  * clears it. With `fallback` it isolates an optional section such as Storage
  * health. A failed dynamic import stays failed for the life of the document,
- * so recovery reloads rather than retrying in place.
+ * so recovery reloads rather than retrying in place. `headingLevel` (default
+ * 1, the screen's heading) is 2 inside a dialog that has its own h1, such as
+ * the Settings drawer.
  */
 export default class ErrorBoundary extends Component {
   constructor(props) {
@@ -84,7 +86,8 @@ export default class ErrorBoundary extends Component {
 
   render() {
     const { error, status, repairing, repairError } = this.state;
-    const { inline, fallback } = this.props;
+    const { inline, fallback, headingLevel = 1 } = this.props;
+    const Heading = headingLevel === 2 ? "h2" : "h1";
     if (!error) return this.props.children;
     if (fallback) return fallback;
     const [title, detail] = COPY[status];
@@ -97,7 +100,7 @@ export default class ErrorBoundary extends Component {
     const home = canGoHome && <button className={inline && status !== "stale" ? "button primary" : "button secondary"} onClick={this.goHome} type="button"><Home size={17} aria-hidden="true" /> Go to Home</button>;
     const content = <>
       <Icon size={30} aria-hidden="true" />
-      <div role={busy ? "status" : "alert"}><h1>{title}</h1><p>{detail}</p></div>
+      <div role={busy ? "status" : "alert"}><Heading>{title}</Heading><p>{detail}</p></div>
       {repairError && <p className="fatal-error-status" role="status">{repairError}</p>}
       {!busy && <div className="fatal-error-actions">
         {status === "stale" && <button className="button primary" disabled={repairing} onClick={this.repairFiles} type="button"><RotateCcw size={17} aria-hidden="true" /> {repairing ? "Checking app files…" : "Repair app files"}</button>}

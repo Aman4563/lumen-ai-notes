@@ -20,7 +20,7 @@ const MAX_CHAPTER_MARKDOWN_BYTES = 2 * 1024 * 1024;
 /** Below this, a "chapter" is a cover/blank page, not content. */
 const MIN_CHAPTER_MARKDOWN_CHARS = 40;
 
-export const isEpubFileName = (name) => /\.epub$/i.test(String(name || ""));
+export { isEpubFileName } from "./uploads.js";
 
 const fail = (code, message) => {
   const error = new Error(message);

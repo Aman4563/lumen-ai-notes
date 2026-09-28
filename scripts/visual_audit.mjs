@@ -38,6 +38,16 @@ const missingRouteFiles = (page) => page.evaluate(async () => {
   return { files: files.length, missing };
 });
 
+// The warm tools (issue #95) that same list names, once the worker has
+// fetched them after the first idle.
+const missingWarmFiles = (page) => page.evaluate(async () => {
+  const list = await (await caches.match(new URL("./offline-routes.json", location.href).href))?.json();
+  const warm = Array.isArray(list?.warm) ? list.warm : [];
+  const missing = [];
+  for (const file of warm) if (!(await caches.match(new URL(file, location.href).href))) missing.push(file);
+  return { files: warm.length, missing };
+});
+
 const openControlledPage = async (url, errors) => {
   const page = await browser.newPage();
   await page.setViewport({ width: 402, height: 874, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
@@ -68,7 +78,7 @@ const goOffline = async (page, server) => {
 
 const shellState = (page) => page.evaluate(() => ({
   fatal: document.querySelector(".fatal-error h1")?.textContent || "",
-  routeError: document.querySelector(".route-error h1")?.textContent || "",
+  routeError: document.querySelector(".route-error :is(h1, h2)")?.textContent || "",
   bottomNav: Boolean(document.querySelector(".bottom-nav button")),
 }));
 
@@ -112,12 +122,19 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     assert(Boolean(await page.waitForSelector(".review-center-page", { timeout: 15_000 }).catch(() => null)), "offline Review did not render after a Home-only visit");
     await page.evaluate(() => { location.hash = "#/device-evidence"; });
     assert(Boolean(await page.waitForSelector(".device-evidence-page", { timeout: 15_000 }).catch(() => null)), "offline Device evidence did not render after a Home-only visit");
+    // The Notebook and Settings left the startup bundle (issue #95); both are
+    // install-tier screens and must open from the cached shell.
+    assert(await tapBottomNav(page, "Notebook"), "offline: the Notebook tab was not found");
+    assert(Boolean(await page.waitForSelector(".notebook-page .notebook-actions", { timeout: 15_000 }).catch(() => null)), "offline Notebook did not render after a Home-only visit");
+    shell = await shellState(page);
+    assert(!shell.fatal && !shell.routeError, `offline Notebook degraded: ${shell.fatal || shell.routeError}`);
 
     await page.evaluate(() => { location.hash = "#/home"; });
     const settingsButton = await page.waitForSelector('[aria-label="Open settings"]', { timeout: 10_000 }).catch(() => null);
     assert(Boolean(settingsButton), "offline: the shell lost its Settings button");
     if (settingsButton) {
       await settingsButton.click();
+      assert(Boolean(await page.waitForSelector(".settings-page .theme-choices", { timeout: 15_000 }).catch(() => null)), "offline Settings did not render after a Home-only visit");
       assert(Boolean(await page.waitForSelector(".storage-health", { timeout: 15_000 }).catch(() => null)), "offline Settings did not render Storage health after a Home-only visit");
       const exportBackup = await page.$$eval(".settings-drawer button", (buttons) => buttons.some((button) => /Export (?:encrypted )?backup/.test(button.textContent) && !button.disabled));
       assert(exportBackup, "offline Settings lost the backup export");
@@ -133,7 +150,9 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
       const list = await (await caches.match(new URL("./offline-routes.json", location.href).href)).json();
       const failed = [];
       // Each module with the export the app renders from it.
-      const modules = [["Reader", "default"], ["markdownMath", "renderMarkdownWithMath"], ["Whiteboard", "default"], ["AiLearningStudio", "default"], ["AiTutor", "default"], ["PhoneLocalAiTutor", "default"], ["ReviewCenter", "default"], ["ReviewCenter", "ReviewCardDialog"], ["AssessmentDialog", "default"], ["StorageHealth", "default"], ["DeviceEvidence", "default"]];
+      // The reader's TeX renderer is a warm tool now (issue #95); audit:chunks
+      // loads it and the other warm modules from the cache after warming.
+      const modules = [["Reader", "default"], ["Whiteboard", "default"], ["AiLearningStudio", "default"], ["AiTutor", "default"], ["PhoneLocalAiTutor", "default"], ["ReviewCenter", "default"], ["ReviewCenter", "ReviewCardDialog"], ["AssessmentDialog", "default"], ["StorageHealth", "default"], ["DeviceEvidence", "default"], ["Settings", "default"], ["Notebook", "default"]];
       for (const [name, exported] of modules) {
         const file = list.files.find((item) => item.startsWith(`assets/${name}-`) && item.endsWith(".js"));
         try {
@@ -146,6 +165,20 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
       return failed;
     });
     assert(screens.length === 0, `route screens did not load from the offline cache: ${screens.join(" | ")}`);
+
+    // A launch taken offline: the shell boots from the cache, and the
+    // Notebook and Settings, no longer in the startup bundle (issue #95),
+    // load their chunks from it in this fresh document.
+    await page.evaluate(() => { window.lumenOnlineDocument = true; location.hash = "#/home"; });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 20_000 });
+    await page.waitForSelector(".welcome-block", { timeout: 15_000 });
+    assert(!(await page.evaluate(() => window.lumenOnlineDocument === true)), "the offline launch check did not reload the document");
+    assert(await tapBottomNav(page, "Notebook"), "offline launch: the Notebook tab was not found");
+    assert(Boolean(await page.waitForSelector(".notebook-page .notebook-actions", { timeout: 15_000 }).catch(() => null)), "the Notebook did not open in a launch taken offline");
+    await page.$eval('[aria-label="Open settings"]', (button) => button.click());
+    assert(Boolean(await page.waitForSelector(".settings-page .theme-choices", { timeout: 15_000 }).catch(() => null)), "Settings did not open in a launch taken offline");
+    shell = await shellState(page);
+    assert(!shell.fatal && !shell.routeError, `the offline launch degraded: ${shell.fatal || shell.routeError}`);
   } catch (error) {
     // A reload or a replaced app detaches the page mid-check; report it as a failure.
     assert(false, `offline screens after a Home-only visit broke: ${error.message}`);
@@ -198,7 +231,7 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
     await visited.stop();
   }
   assert(errors.length === 0, `offline browser errors: ${errors.join(" | ")}`);
-  return `Read, AI Tutor, Whiteboard, Review, Device evidence, and Settings opened after a Home-only visit and every route screen loaded from the cache; the repair sequence reinstalled the route screens; a visited lecture reloaded (${lectureChars} characters)`;
+  return `Read, AI Tutor, Whiteboard, Review, Device evidence, the Notebook, and Settings opened after a Home-only visit, every route screen loaded from the cache, and the Notebook and Settings opened in a launch taken offline; the repair sequence reinstalled the route screens; a visited lecture reloaded (${lectureChars} characters)`;
 };
 
 const browser = await puppeteer.launch({
@@ -341,6 +374,15 @@ try {
 
   const routeCache = await missingRouteFiles(page);
   assert(routeCache.files > 0 && routeCache.missing.length === 0, `service worker did not precache the route screens: ${routeCache.missing.join(", ") || "no route list"}`);
+  // Warm tools arrive after the first idle, not at install (issue #95).
+  const warmed = await page.waitForFunction(async () => {
+    const list = await (await caches.match(new URL("./offline-routes.json", location.href).href))?.json();
+    if (!Array.isArray(list?.warm) || !list.warm.length) return false;
+    for (const file of list.warm) if (!(await caches.match(new URL(file, location.href).href))) return false;
+    return true;
+  }, { timeout: 30_000, polling: 250 }).then(() => true, () => false);
+  const warmCache = await missingWarmFiles(page);
+  assert(warmed && warmCache.files > 0, `the service worker did not warm the tools after the first idle: ${warmCache.missing.join(", ") || "no warm list"}`);
 
   // "Remove optional offline files" drops visited lectures but keeps the
   // route screens, or every screen would be unavailable offline again.
@@ -356,6 +398,9 @@ try {
     assert(!(await page.evaluate((url) => caches.match(url).then(Boolean), lectureUrl)), "optional offline file cleanup kept the visited lecture");
     const afterCleanup = await missingRouteFiles(page);
     assert(afterCleanup.files > 0 && afterCleanup.missing.length === 0, `optional offline file cleanup removed route screens: ${afterCleanup.missing.join(", ") || "no route list"}`);
+    // Warm tools are app code: cleanup keeps them rather than downloading them again.
+    const warmAfterCleanup = await missingWarmFiles(page);
+    assert(warmAfterCleanup.files > 0 && warmAfterCleanup.missing.length === 0, `optional offline file cleanup removed warm tools: ${warmAfterCleanup.missing.join(", ") || "no warm list"}`);
   }
   await page.$eval(".settings-close", (button) => button.click());
 

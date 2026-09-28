@@ -92,3 +92,59 @@ note the iOS version with each verdict.
    outright, reading `localStorage` itself throws, and Lumen currently fails
    at startup, before narration runs, on main as well. That is a separate
    app-shell issue.
+
+## Offline tools that need a device (issue #95)
+
+The browser audits prove the warm tier in Chrome with a real service worker
+and a stopped server. Only a home-screen app on an iPhone shows whether iOS
+Safari does the same. Note the iOS version with each verdict.
+
+1. **Warming in a home-screen app.** Safari has no `requestIdleCallback`, so
+   Lumen asks the worker to fetch its offline tools 3 s after the first
+   render, by posting a message to `registration.active`. Install Lumen to
+   the Home Screen, open it once online and leave it on Home for 10 s. Then
+   connect the iPhone to the Mac, open Safari → Develop → the iPhone →
+   the Lumen page, and run in the console:
+   `caches.match("./offline-routes.json").then((r) => r.json()).then(async (l) => (await Promise.all(l.warm.map((f) => caches.match(f)))).filter(Boolean).length + " of " + l.warm.length)`.
+   Every warm file must be cached (for example "8 of 8"). If it reads
+   "0 of 8", note whether the service worker received the message.
+2. **Each tool offline.** Turn on Airplane Mode and relaunch from the Home
+   Screen. Export a backup, export it encrypted, export a sync file (create
+   a vault first), import the exported backup up to its review, upload an
+   HTML page and an EPUB, run Check links in the Notebook, open a saved tutor
+   answer with `$x^2$`, and open an edited lecture with TeX. Each must work,
+   and the math must draw as KaTeX, not as `$x^2$`.
+3. **Before warming.** Online, in the Web Inspector console, remove the warm
+   files from the app cache:
+   `caches.match("./offline-routes.json").then((r) => r.json()).then(async (l) => { for (const key of await caches.keys()) { const cache = await caches.open(key); for (const f of l.warm) await cache.delete(new URL(f, location.href).href); } })`.
+   Turn on Airplane Mode and relaunch from the Home Screen. Export a backup:
+   the toast must read "Backup failed: This tool isn't saved on this device
+   yet. Reconnect once, and it will work offline." with no error screen and
+   no reload. Upload a Markdown note and an HTML page together: the note
+   imports and the toast lists the page as not imported. Leave a sync vault:
+   it must work. A
+   saved tutor answer shows `$x^2$` as source text. Settings and the Notebook
+   still open, because they are installed with the app. If the export works
+   instead, Safari answered the file from its HTTP cache (the assets are
+   served `immutable`); record that, since it is not a failure. Turn Airplane
+   Mode off and relaunch: after 3 s, step 1's console check reads every file
+   again.
+4. **An update that takes over offline.** With the warmed build installed,
+   deploy a new build and open the home-screen app online until **Update
+   now** appears. Do not tap it; wait 10 s, then close the app from the app
+   switcher. Turn on Airplane Mode and relaunch, so the update takes over
+   offline. Export a backup and open a saved tutor answer with `$x^2$`: both
+   must work, because the waiting update saved its own copy of the tools.
+   Step 1's console check must read every file. If the export shows the
+   "isn't saved on this device yet" toast, note whether the update had
+   already appeared before you closed the app.
+5. **Math arriving while VoiceOver reads an answer.** Repeat step 3's cache
+   removal, turn on Airplane Mode and relaunch, and open a saved tutor answer
+   with `$x^2$` and a link, in the Mac tutor and in On-device Lite. Turn on
+   VoiceOver and move its cursor onto the link. Turn Airplane Mode off: when
+   the math renderer arrives, VoiceOver must stay on the link and must not
+   start reading the answers again (On-device Lite's message list is a polite
+   live region, and drawing the math replaces an answer's markup). The
+   answer switches to rendered math once you move off it; note whether
+   VoiceOver announces anything then. Headless Chrome checks DOM focus only,
+   not VoiceOver's cursor or announcements.

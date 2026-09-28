@@ -38,6 +38,7 @@ import {
   aiClient,
 } from "../lib/aiClient";
 import { renderTutorInlineMarkdown, renderTutorMarkdown, tutorSpeechText } from "../lib/tutorMarkdown";
+import { useTutorMath, useTutorMathFor } from "../hooks/useTutorMath.js";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
@@ -48,7 +49,7 @@ import TutorConfirmDialog from "./TutorConfirmDialog.jsx";
 import TutorSheet from "./TutorSheet.jsx";
 import { tutorConversationMarkdown, tutorMessageMarkdown } from "../lib/tutorExport";
 import { downloadBlob } from "../lib/download.js";
-import { outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
+import { libraryUnavailableReason, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding";
 import {
   TUTOR_MAX_PROMPT_CHARS as MAX_PROMPT_CHARS,
   TUTOR_MAX_SERVER_HISTORY as MAX_SERVER_HISTORY,
@@ -671,10 +672,15 @@ const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.l
  * citation controls as prose answers, handled by delegation.
  */
 const InlineRichText = ({ text, citationSources = [], webSources = [], onNavigateSource, className = "" }) => {
-  const markup = useMemo(
-    () => ({ __html: renderTutorInlineMarkdown(text, citationSources, webSources) }),
-    [citationSources, text, webSources],
+  const fieldRef = useRef(null);
+  const math = useTutorMathFor(fieldRef);
+  const html = useMemo(
+    () => renderTutorInlineMarkdown(text, citationSources, webSources, { math }),
+    [citationSources, math, text, webSources],
   );
+  // The same markup keeps the same object, so React leaves the field (and a
+  // focused citation in it) alone when only the evidence arrays are new.
+  const markup = useMemo(() => ({ __html: html }), [html]);
   const handleClick = useCallback((event) => {
     const citation = event.target.closest?.("[data-ai-citation]");
     if (!citation) return;
@@ -685,7 +691,7 @@ const InlineRichText = ({ text, citationSources = [], webSources = [], onNavigat
     if (source) onNavigateSource?.(source.original, { citation: `[S${source.citationNumber}]`, sourceId: source.id });
   }, [citationSources, onNavigateSource]);
   // renderTutorInlineMarkdown shows provider HTML as text, then sanitizes through DOMPurify.
-  return <span className={`ai-tutor__inline-md ${className}`.trim()} onClick={handleClick} dangerouslySetInnerHTML={markup} />;
+  return <span ref={fieldRef} className={`ai-tutor__inline-md ${className}`.trim()} onClick={handleClick} dangerouslySetInnerHTML={markup} />;
 };
 
 const copyPlainText = async (text) => {
@@ -714,9 +720,10 @@ const copyPlainText = async (text) => {
 /** Sanitized, GFM-capable output that remains valid while a stream is partial. */
 const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource, streaming = false }) => {
   const responseRef = useRef(null);
+  const math = useTutorMathFor(responseRef);
   const html = useMemo(
-    () => renderTutorMarkdown(text, citationSources, webSources),
-    [citationSources, text, webSources],
+    () => renderTutorMarkdown(text, citationSources, webSources, { math }),
+    [citationSources, math, text, webSources],
   );
   // Keep React from replacing renderer-owned diagrams on unrelated updates.
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
@@ -1081,6 +1088,8 @@ export default function AiTutor({
   onClose,
   className = "",
 }) {
+  // KaTeX loads while the learner reads or types, not when the first answer arrives.
+  useTutorMath();
   const headingId = useId();
   const promptId = useId();
   const sendReasonId = useId();
@@ -2152,6 +2161,7 @@ export default function AiTutor({
           // fallback recommendations. The learner's consumed one-request web
           // authorization remains the separate egress gate.
           const fallbackUsesWeb = requestSpec.webSearch;
+          const unavailableReason = libraryUnavailableReason(retrievalError);
           let fallback = refit(requestSpec.contextSources, fallbackUsesWeb);
           let included = new Set(fallback.includedCitationNumbers);
           if (requestSpec.contextSources.length && !included.size) {
@@ -2170,7 +2180,8 @@ export default function AiTutor({
             ...current,
             citationSources,
             webFallbackStatus: fallbackUsesWeb ? "searching" : "off",
-            stage: fallbackUsesWeb ? "Library search is unavailable. Searching the web, as you allowed…" : "Library search is unavailable. Using the attached lesson, without the web…",
+            // A retrieval tool that is not on this device says why (issue #95).
+            stage: `Library search is unavailable.${unavailableReason ? ` ${unavailableReason}` : ""} ${fallbackUsesWeb ? "Searching the web, as you allowed…" : "Using the attached lesson, without the web…"}`,
             phase: "drafting",
           }));
         }

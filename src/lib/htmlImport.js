@@ -204,4 +204,4 @@ export const htmlToMarkdown = (html) => {
   return { markdown, title: cleanTitle };
 };
 
-export const isHtmlFileName = (name) => /\.html?$/i.test(String(name || ""));
+export { isHtmlFileName } from "./uploads.js";

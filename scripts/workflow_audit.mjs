@@ -1502,7 +1502,7 @@ try {
   assert.ok(reloadedText.includes("SDE-III systems interview"), "personal note did not survive reload");
 
   await page.click('button[aria-label="Open settings"]');
-  await page.waitForSelector(".settings-drawer");
+  await page.waitForSelector(".settings-drawer .settings-page");
   await clickByText(page, ".settings-drawer button", "Export backup");
   let backupPath;
   for (let attempt = 0; attempt < 40; attempt += 1) {

@@ -70,6 +70,17 @@ export const isStaleChunkError = (error) => {
   return CHUNK_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 };
 
+// An optional enhancement (the tutor's KaTeX) whose download fails never
+// reloads the page: the learner keeps readable TeX source instead of losing
+// what they were typing. Its loader marks the failed import's error. The mark
+// follows that error object, so Safari's nameless "Importing a module script
+// failed." is matched as reliably as a message that names the file, and no
+// other chunk's failure is ever mistaken for it.
+const exemptFailures = new WeakSet();
+export const exemptFromChunkRecovery = (error) => {
+  if (error && typeof error === "object") exemptFailures.add(error);
+};
+
 /**
  * Lecture bodies are on-demand chunks. Explain a failed download in plain
  * language instead of showing the browser's dynamic-import error.
@@ -137,7 +148,7 @@ export const createChunkRecovery = ({
   // true: a reload may start; false: not a chunk failure, offline, or within
   // the cooldown; null: a reload is already on its way.
   const eligible = (error) => {
-    if (!isStaleChunkError(error)) return false;
+    if (!isStaleChunkError(error) || exemptFailures.has(error)) return false;
     if (reloadScheduled) return null;
     const previous = readRecoveryMarker(storage);
     return isOnline() && !(previous && now() - previous.attemptedAt < cooldownMs);
@@ -205,7 +216,12 @@ export const createChunkRecovery = ({
       // Vite emits this for both missing JS modules and their extracted CSS.
       // Do not preventDefault: the associated React.lazy promise must still
       // reject on a repeated failure so ErrorBoundary can offer manual repair.
-      void recover(event?.payload);
+      // Vite dispatches it before the failed import's promise rejects; one
+      // task later every handler of that rejection has run, so an optional
+      // enhancement has marked its error (exemptFromChunkRecovery). A lazy
+      // screen recovers through load() in the meantime and shares this probe.
+      const error = event?.payload;
+      setTimeout(() => void recover(error), 0);
     };
     target.addEventListener("vite:preloadError", handlePreloadError);
     return () => target.removeEventListener("vite:preloadError", handlePreloadError);

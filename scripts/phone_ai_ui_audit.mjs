@@ -1159,6 +1159,40 @@ try {
   await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Available"), { timeout: 5_000 });
   await (await page.$(".phone-local-ai-actions .button.primary")).click();
   await page.waitForFunction(() => document.querySelector(".phone-local-ai-badge")?.textContent.includes("Loaded"), { timeout: 10_000 });
+  // Review round 1 (issue #95): library retrieval is a warm tool. When it is
+  // not on this device yet, the status says why instead of a bare
+  // "unavailable", and the answer still arrives from local knowledge.
+  const fieldBeforeRetrievalDrill = await page.$eval(phoneField, (field) => field.value);
+  await page.$eval(phoneField, (field) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, "Why does gradient descent step against the gradient?");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate(() => {
+    window.__PHONE_AI_AUDIT__.failNextRetrieval = true;
+    window.__PHONE_STATUS_LOG__ = [];
+    const record = () => {
+      const text = document.querySelector(".phone-tutor__working")?.textContent || "";
+      if (text && window.__PHONE_STATUS_LOG__.at(-1) !== text) window.__PHONE_STATUS_LOG__.push(text);
+    };
+    window.__PHONE_STATUS_OBSERVER__ = new MutationObserver(record);
+    window.__PHONE_STATUS_OBSERVER__.observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+  const answersBeforeRetrievalDrill = await page.$$eval(".phone-tutor__message.is-assistant", (nodes) => nodes.length);
+  await page.click(sendButtonSelector);
+  await page.waitForFunction((count) => document.querySelectorAll(".phone-tutor__message.is-assistant:not(.is-streaming)").length > count && !document.querySelector(".phone-tutor__working"), { timeout: 10_000 }, answersBeforeRetrievalDrill)
+    .catch(() => assert.fail("an On-device question whose library search could not load did not finish"));
+  const retrievalStatuses = await page.evaluate(() => {
+    window.__PHONE_STATUS_OBSERVER__.disconnect();
+    return window.__PHONE_STATUS_LOG__;
+  });
+  assert.ok(retrievalStatuses.some((text) => text.includes("Library search was unavailable. This tool isn't saved on this device yet. Reconnect once, and it will work offline.")), `the On-device status did not say why library search was unavailable: ${JSON.stringify(retrievalStatuses)}`);
+  assert.match(await page.$$eval(".phone-tutor__message.is-assistant .phone-tutor__evidence", (nodes) => nodes.at(-1).textContent), /local retrieval step was unavailable/, "the answer's evidence did not record the unavailable retrieval");
+  assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.failNextRetrieval), false, "the retrieval drill never reached retrieval");
+  await page.$eval(phoneField, (field, text) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }, fieldBeforeRetrievalDrill);
+
   await toggleWebFallback(page);
 
   await page.click(sendButtonSelector);
