@@ -1323,8 +1323,9 @@ input::placeholder {
   }
 }
 
+/* :where() keeps hover below focus, invalid and open, which recolour the edge. */
 @media (hover: hover) {
-  .ui-select:hover:not(:disabled) {
+  .ui-select:where(:hover:not(:disabled)) {
     --ui-fill: var(--select-bg-hover);
     border-color: var(--select-border-hover);
   }
@@ -1372,12 +1373,18 @@ input::placeholder {
 
     /* This select sizes to its value and never ellipsizes it, so the chevron
        moves to the picker icon laid over the end padding: a value too long
-       for the field fades out under the arrow instead of running into it. */
+       for the field fades out there and is fully covered 9px before the
+       arrow. The padding matches the icon, so a value that fits never fades. */
     .ui-select {
       position: relative;
       overflow: hidden;
       align-items: center;
+      padding-inline-end: 44px;
       background-image: none;
+    }
+
+    .ui-select--sm {
+      padding-inline-end: 42px;
     }
 
     .ui-select::picker-icon {
@@ -1385,17 +1392,29 @@ input::placeholder {
       position: absolute;
       inset-block: 0;
       inset-inline-end: 0;
-      inline-size: 34px;
-      background: var(--ui-chevron-start), var(--ui-chevron-end), linear-gradient(to right, transparent, var(--ui-fill) 10px);
+      inline-size: 44px;
+      background: var(--ui-chevron-start), var(--ui-chevron-end), linear-gradient(to right, transparent, var(--ui-fill) 12px);
       background-position: right 18px center, right 13px center, 0 0;
       background-repeat: no-repeat;
       background-size: 5px 5px, 5px 5px, auto;
     }
 
     .ui-select--sm::picker-icon {
-      inline-size: 30px;
+      inline-size: 42px;
       background-position: right 16px center, right 11px center, 0 0;
     }
+
+    /* It also sizes to its current value, so a toolbar select keeps one width
+       for every choice, as the native select does, instead of moving itself
+       and its neighbours under the pointer after a pick. */
+    .library-view-controls .ui-select { min-inline-size: 10.5rem; }
+    .review-settings-strip .ui-select { min-inline-size: 5.5rem; }
+    .review-settings-strip .ui-select[aria-label="Scheduling algorithm"] { min-inline-size: 10.25rem; }
+    .interview-track-strip .ui-select[aria-label="Interview track"] { min-inline-size: 15.75rem; }
+    .interview-track-strip .ui-select[aria-label="Interview round type"] { min-inline-size: 12.75rem; }
+    .mistake-controls .ui-select { min-inline-size: 10.5rem; }
+    .annotation-section-heading .ui-select { min-inline-size: 9rem; }
+    .teach-header-actions .ui-select { inline-size: 260px; }
 
     /* Open: the edge darkens and the chevron flips (its strokes swap places). */
     .ui-select:open {
@@ -1418,11 +1437,9 @@ input::placeholder {
       color: var(--select-ink);
       background: var(--select-menu-bg);
       box-shadow: var(--shadow-md);
-      /* Open below when it fits (the UA prefers the larger side), and cap the
-         width so long options wrap and the picker can still flip. */
-      position-try-order: normal;
-      position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
-      max-block-size: min(22rem, 60dvh);
+      /* The UA's placement stays: it opens on the side with more room and
+         stretches no further than the viewport, then scrolls. Only the width
+         is capped, so long options wrap. */
       max-inline-size: min(28rem, calc(100vw - 16px));
       overflow-y: auto;
       overscroll-behavior: contain;
@@ -1433,6 +1450,13 @@ input::placeholder {
       .ui-select:open::picker(select) {
         opacity: 0;
         translate: 0 -4px;
+      }
+    }
+
+    /* The global reduced-motion rule does not reach this pseudo-element. */
+    @media (prefers-reduced-motion: reduce) {
+      .ui-select::picker(select) {
+        transition: none;
       }
     }
 
@@ -5749,8 +5773,10 @@ input[type="range"] {
 .speech-target-status.warning { color: #a45a32; }
 
 .speech-choice-grid {
+  /* One column at every width: a device lists up to hundreds of voices and
+     languages, and side by side neither value fitted at 14px (issue #92). */
   display: grid;
-  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.35fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   margin-top: 10px;
 }
@@ -5760,8 +5786,6 @@ input[type="range"] {
   min-width: 0;
   gap: 6px;
 }
-
-.speech-choice-grid select { min-width: 0; }
 
 .speech-voice-detail,
 .speech-availability {
@@ -6331,7 +6355,6 @@ input[type="range"] {
   .speech-popover { max-height: min(76dvh, 650px); }
   .speech-scope-grid button { min-height: 44px; }
   .speech-sleep-row button { min-height: 40px; }
-  .speech-choice-grid { grid-template-columns: 1fr; }
   .speech-range-grid { grid-template-columns: 1fr; gap: 2px; }
   .speech-preset-row button { min-height: 42px; }
   .speech-controls .button { min-height: 44px; }
@@ -7418,6 +7441,10 @@ input[type="range"] {
 }
 
 @media (max-width: 360px) {
+  /* The section picker takes a row of its own under the title, so a 320px
+     phone shows a whole section name; the timer and buttons follow. */
+  .teach-header-actions { flex-wrap: wrap; row-gap: 6px; }
+  .teach-header-actions select { order: -1; flex-basis: 100%; }
   .time-left-suffix { display: none; }
   .reader-view .audio-bar { gap: 2px; padding: 6px; }
   .reader-view .audio-bar .icon-button { width: 34px; height: 36px; }
@@ -7566,6 +7593,8 @@ input[type="range"] {
   align-items: center;
   gap: 7px;
 }
+
+.library-view-controls label { min-inline-size: 0; }
 
 .library-view-controls label > span {
   color: var(--ink-faint);
@@ -8276,7 +8305,7 @@ input[type="range"] {
 .notebook-heading-actions { display: flex; align-items: center; gap: 8px; }
 .batch-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--paper-2); }
 .batch-toolbar strong { color: var(--ink); font-size: 0.76rem; }
-.batch-toolbar label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-faint); font-size: 0.68rem; font-weight: 750; }
+.batch-toolbar label { display: inline-flex; min-inline-size: 0; max-inline-size: 100%; align-items: center; gap: 6px; color: var(--ink-faint); font-size: 0.68rem; font-weight: 750; }
 .batch-check { display: flex; align-items: center; padding-right: 4px; }
 .batch-check input { width: 18px; height: 18px; }
 .notebook-document-row.is-selected { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 14px; }
@@ -8387,8 +8416,6 @@ input[type="range"] {
 .notebook-search:focus-within { border-color: var(--ink-soft); }
 .notebook-document-row:has(> .batch-check) { grid-template-columns: auto minmax(0, 1fr) auto; }
 .interview-track-strip label { min-width: 0; max-width: 100%; }
-.interview-track-strip select,
-.review-settings-strip select { min-width: 0; max-width: 100%; }
 @media (max-width: 740px) {
   .review-mistakes .section-heading,
   .notebook-section .section-heading { align-items: stretch; flex-direction: column; gap: 10px; }

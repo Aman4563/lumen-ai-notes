@@ -6,7 +6,7 @@ import puppeteer from "puppeteer-core";
 import { initialProfile, normalizeProfile } from "../src/lib/db.js";
 import { createMistake } from "../src/lib/mistakes.js";
 import { createReviewItem } from "../src/lib/review.js";
-import { measureSelectsInThemes, selectContractProblems } from "./select_contract.mjs";
+import { chevronClearance, clippedValueProblems, measureSelectsInThemes, selectContractProblems, selectValueFit, valueDependentWidths } from "./select_contract.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -227,19 +227,21 @@ const auditDialog = async (page, label, {
 // Issue #92: every select is the one themed control. A seeded profile makes
 // each select-hosting screen render its selects (highlights, collections, an
 // FSRS scheduler, a mistake); each screen is measured in Paper, Night and
-// Contrast on a 393px touch phone and on a 1280px desktop.
+// Contrast on a 393px touch phone and on a 1280px desktop. The second section
+// title and one collection name are longer than any field that shows them.
 const selectDocumentId = "custom/select-contract";
+const longCollectionName = "Interview preparation and system design reading list";
 const selectProfile = normalizeProfile({
   ...initialProfile,
   settings: { ...initialProfile.settings, theme: "paper" },
   customDocuments: [{
     id: selectDocumentId,
     title: "Select contract lecture",
-    raw: "# Select contract lecture\n\nA held-out split estimates how a model generalizes to data it has not seen.\n\nThe validation split chooses hyperparameters, and the test split stays untouched until the end.\n\n## Second section\n\nKeep every control on the theme.",
+    raw: "# Select contract lecture\n\nA held-out split estimates how a model generalizes to data it has not seen.\n\nThe validation split chooses hyperparameters, and the test split stays untouched until the end.\n\n## Second section: how a held-out validation split keeps every hyperparameter choice honest\n\nKeep every control on the theme.",
     tags: ["audit"],
     collectionId: "select-audit",
   }],
-  collections: [{ id: "select-audit", name: "Audit collection" }],
+  collections: [{ id: "select-audit", name: "Audit collection" }, { id: "select-long", name: longCollectionName }],
   annotations: [{ documentId: selectDocumentId, quote: "A held-out split estimates how a model generalizes", purpose: "definition" }],
   reviewItems: [createReviewItem({ front: "What does the validation split choose?", back: "Hyperparameters, before the final test.", documentId: selectDocumentId })],
   reviewSettings: { ...initialProfile.reviewSettings, scheduler: "fsrs" },
@@ -299,11 +301,40 @@ const auditThemedSelects = async () => {
 
     await navigate("#/library", ".library-page");
     await check("library", 1);
+    const sort = 'select[aria-label="Sort library results"]';
+    // The in-page picker (customizable select) exists only with a mouse.
+    const inPagePicker = await page.$eval(sort, (select) => getComputedStyle(select).appearance === "base-select");
+    const selectsKeepTheirWidth = async (surface, selector) => {
+      if (phone) return;
+      for (const problem of await valueDependentWidths(page, selector)) findings.push(`selects/${viewportName}/${surface}: the width follows the value, so a pick moves the toolbar: ${problem}`);
+    };
+    await selectsKeepTheirWidth("library", ".library-view-controls select");
+    if (inPagePicker) {
+      // The picker honours reduced motion (the global rule cannot reach
+      // ::picker), and keys typed in it stay there: "?" once opened the
+      // shortcut sheet over the open picker.
+      const duration = await page.$eval(sort, (select) => getComputedStyle(select, "::picker(select)").transitionDuration);
+      if (duration.split(",").some((value) => Number.parseFloat(value) > 0)) findings.push(`selects/${viewportName}/library: the select picker still animates (${duration}) with reduced motion`);
+      await page.click(sort);
+      await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, sort)
+        .catch(() => findings.push(`selects/${viewportName}/library: clicking Sort did not open its picker`));
+      await page.keyboard.press("?");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (await page.$('[aria-label="Close keyboard shortcuts"]')) {
+        findings.push(`selects/${viewportName}/library: “?” in the open Sort picker opened the keyboard shortcuts`);
+        await page.keyboard.press("Escape");
+      }
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector).matches(":open"), { timeout: 2_000 }, sort).catch(() => {});
+    }
 
     await navigate(`#/read/${encodeURIComponent(selectDocumentId)}`, ".reader-view .markdown-body h1");
     await openBySelector(page, '[aria-label="Listen"]');
     await page.waitForSelector(".speech-popover");
     await check("reader listen", 2);
+    // The default language and voice read in full (at 1280px the language
+    // once read “All languages (18” faded under the chevron).
+    for (const problem of clippedValueProblems(await selectValueFit(page, ".speech-popover select"))) findings.push(`selects/${viewportName}/reader listen: a Listen select clips its value: ${problem}`);
     const language = 'select[aria-label="Narration language"]';
     if (await page.$eval(language, (select) => !select.disabled && getComputedStyle(select).appearance === "base-select")) {
       // A mouse gets the in-page picker (customizable select); its Escape must
@@ -337,11 +368,84 @@ const auditThemedSelects = async () => {
     await clickByText(page, ".document-tools button", "Teach");
     await page.waitForSelector(".teach-mode");
     await check("teaching mode", 1);
+    const section = 'select[aria-label="Jump to teaching section"]';
+    if (phone) {
+      // On a 320px phone the section picker takes its own row and shows a
+      // short section name whole (it once showed “1. Int…”).
+      await page.setViewport({ ...viewport, width: 320 });
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      for (const problem of clippedValueProblems(await selectValueFit(page, section))) findings.push(`selects/phone 320/teaching mode: the section picker clips its value: ${problem}`);
+      await page.setViewport(viewport);
+    } else {
+      await selectsKeepTheirWidth("teaching mode", section);
+      if (inPagePicker) {
+        // An overlong section title fades out fully at least 8px before the
+        // chevron instead of running into it.
+        await page.select(section, "1");
+        await page.waitForFunction((selector) => document.querySelector(selector).value === "1", {}, section);
+        const [fit] = await selectValueFit(page, section);
+        const clearance = await chevronClearance(page, section);
+        if (fit.fits) findings.push(`selects/${viewportName}/teaching mode: the long section title fits, so the fade is not exercised (“${fit.text}”)`);
+        else if (clearance.clear < 8) findings.push(`selects/${viewportName}/teaching mode: an overlong value shows ${clearance.clear}px from the chevron (needs 8px clear; chevron ${clearance.chevron.join("–")}px from the end)`);
+      }
+    }
     await page.$eval('[aria-label="Exit teaching mode"]', (button) => button.click());
     await page.waitForSelector(".teach-mode", { hidden: true, timeout: 5_000 });
 
     await navigate(`#/board/${encodeURIComponent(selectDocumentId)}`, ".board-canvas");
     await check("whiteboard", 1);
+    if (inPagePicker) {
+      // The open picker focuses an <option>, not the <select>. Board keys
+      // once moved and saved the selected object (ArrowDown), switched tools
+      // (a letter) and kept the page picker from moving.
+      const pagePicker = 'select[aria-label="Current whiteboard page"]';
+      const boardKey = `board:${selectDocumentId}`;
+      const readBoard = () => page.evaluate((key) => new Promise((resolve, reject) => {
+        const open = indexedDB.open("lumen-ai-notes", 1);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const request = open.result.transaction("study-data", "readonly").objectStore("study-data").get(key);
+          request.onsuccess = () => { open.result.close(); resolve(JSON.stringify(request.result?.pages || null)); };
+          request.onerror = () => { open.result.close(); reject(request.error); };
+        };
+      }), boardKey);
+      const saved = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await page.waitForFunction(() => document.querySelector(".board-hint [role='status']")?.textContent === "Saved", { timeout: 5_000 });
+      };
+      await page.click('button[aria-label="Add whiteboard page"]');
+      await page.waitForFunction((selector) => document.querySelector(selector)?.options.length === 2, { timeout: 5_000 }, pagePicker);
+      await page.select(pagePicker, await page.$eval(pagePicker, (select) => select.options[0].value));
+      await page.click('.board-toolbar button[aria-label="Rectangle"]');
+      const canvas = await page.$eval(".board-canvas", (node) => { const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; });
+      await page.mouse.move(canvas.x + canvas.width * 0.4, canvas.y + canvas.height * 0.4);
+      await page.mouse.down();
+      await page.mouse.move(canvas.x + canvas.width * 0.55, canvas.y + canvas.height * 0.55, { steps: 8 });
+      await page.mouse.up();
+      await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"), { timeout: 5_000 });
+      await page.click('.board-toolbar button[aria-label="Select and move objects"]');
+      await page.focus(".board-canvas");
+      await page.keyboard.press("Tab");
+      await page.waitForSelector(".board-selection-actions", { timeout: 5_000 });
+      await saved();
+      const before = await readBoard();
+      const tool = () => page.$eval('.board-toolbar button[aria-pressed="true"]', (button) => button.getAttribute("aria-label"));
+      const toolBefore = await tool();
+      await page.click(pagePicker);
+      await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, pagePicker);
+      await page.keyboard.press("ArrowDown");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const focused = await page.evaluate(() => document.activeElement?.tagName === "OPTION" ? document.activeElement.index : null);
+      await page.keyboard.press("e");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const toolAfter = await tool();
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector).matches(":open"), { timeout: 2_000 }, pagePicker).catch(() => {});
+      await saved();
+      if (await readBoard() !== before) findings.push(`selects/${viewportName}/whiteboard: ArrowDown in the open page picker moved and saved the selected object`);
+      if (focused !== 1) findings.push(`selects/${viewportName}/whiteboard: ArrowDown in the open page picker did not reach the next page (focused option ${focused})`);
+      if (toolAfter !== toolBefore) findings.push(`selects/${viewportName}/whiteboard: “e” in the open page picker switched the tool from ${toolBefore} to ${toolAfter}`);
+    }
 
     await navigate("#/notebook", ".notebook-page");
     await clickByText(page, ".notebook-heading-actions button", "Select");
@@ -349,6 +453,18 @@ const auditThemedSelects = async () => {
     await page.$eval(".batch-check input", (input) => input.click());
     await page.waitForSelector(".batch-toolbar select");
     await check("notebook (highlights, batch)", 2);
+    await selectsKeepTheirWidth("notebook highlights", ".annotation-section-heading select");
+    // A long collection name shrinks the batch select inside its toolbar
+    // (it once ran 157px past a 393px phone's toolbar, chevron and all).
+    const batchOverflow = await page.$eval(".batch-toolbar", async (bar, name) => {
+      const select = bar.querySelector("select");
+      select.value = [...select.options].find((option) => option.textContent === name).value;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const overflow = bar.scrollWidth - bar.clientWidth;
+      select.value = "";
+      return overflow;
+    }, longCollectionName);
+    if (batchOverflow > 1) findings.push(`selects/${viewportName}/notebook batch toolbar: a long collection name runs ${batchOverflow}px past the toolbar`);
     await clickByText(page, ".notebook-heading-actions button", "Done selecting");
     await page.$eval('.notebook-row-actions [aria-label^="Organize "]', (button) => button.click());
     await page.waitForSelector(".manage-doc-dialog");
@@ -358,6 +474,36 @@ const auditThemedSelects = async () => {
     await navigate("#/review", ".review-center-page");
     await page.waitForSelector(".interview-track-strip select", { timeout: 15_000 });
     await check("review (limits, tracks, mistakes)", 7);
+    await selectsKeepTheirWidth("review", ".review-settings-strip select, .interview-track-strip select, .mistake-controls select");
+    if (phone) {
+      // Every Daily limits picker sits the same way: once Scheduler alone
+      // dropped under its label beside an inline Retention.
+      const placements = await page.$$eval(".review-settings-strip label", (labels) => labels.map((label) => {
+        const name = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+        const range = document.createRange();
+        range.selectNodeContents(name);
+        const text = range.getBoundingClientRect();
+        return `${name.textContent.trim()} ${label.querySelector("select").getBoundingClientRect().top >= text.bottom - 1 ? "under" : "beside"} its label`;
+      }));
+      if (new Set(placements.map((placement) => placement.split(" ").slice(1).join(" "))).size > 1) findings.push(`selects/${viewportName}/review: the Daily limits pickers are laid out two ways: ${placements.join(", ")}`);
+    } else if (inPagePicker) {
+      // On a short desktop the picker opens where there is room and scrolls;
+      // the last interview track was once drawn 73px below a 560px window.
+      const track = 'select[aria-label="Interview track"]';
+      await page.setViewport({ ...viewport, height: 560 });
+      await page.$eval(track, (select) => select.scrollIntoView({ block: "center" }));
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.click(track);
+      await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, track)
+        .catch(() => findings.push(`selects/${viewportName}/review: clicking Interview track did not open its picker`));
+      await page.keyboard.press("End");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const last = await page.evaluate(() => { const node = document.activeElement; const box = node.getBoundingClientRect(); return { tag: node.tagName, text: node.textContent.trim(), top: Math.round(box.top), bottom: Math.round(box.bottom), height: innerHeight }; });
+      if (last.tag !== "OPTION" || last.top < 0 || last.bottom > last.height) findings.push(`selects/${viewportName}/review: at 1280×560 the Interview track picker drew its last option off screen (${last.tag} “${last.text}” at ${last.top}–${last.bottom}px of ${last.height}px)`);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector).matches(":open"), { timeout: 2_000 }, track).catch(() => {});
+      await page.setViewport(viewport);
+    }
     await clickByText(page, ".review-center-page button", "New card");
     await page.waitForSelector(".review-card-dialog");
     await check("new card dialog", 1);
@@ -378,18 +524,15 @@ const auditThemedSelects = async () => {
     await check("on-device tutor", phone ? 3 : 2);
     // The composer's Depth and Answer length show their whole value at 16px
     // (Answer length once read “Standard · 640 t”).
-    const clipped = await page.$$eval(".phone-tutor__composer-head select", (selects) => {
-      const canvas = document.createElement("canvas").getContext("2d");
-      return selects.flatMap((select) => {
-        const style = getComputedStyle(select);
-        canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-        const text = select.selectedOptions[0]?.textContent || "";
-        const room = select.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
-        const needed = canvas.measureText(text).width;
-        return needed > room + 0.5 ? [`“${text}” needs ${Math.ceil(needed)}px of ${Math.floor(room)}px`] : [];
-      });
-    });
+    const clipped = clippedValueProblems(await selectValueFit(page, ".phone-tutor__composer-head select"));
     clipped.forEach((problem) => findings.push(`selects/${viewportName}/on-device tutor: the composer select clips its value: ${problem}`));
+    // A structured mode (Quiz) disables Answer length: the disabled look is
+    // measured in every theme too.
+    if (phone) await page.select(".phone-tutor__mode-select select", "quiz");
+    else await clickByText(page, ".phone-tutor__mode-tabs button", "Quiz");
+    const answerLength = await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__composer-head select")].some((select) => select.disabled), { timeout: 5_000 }).then(() => true, () => false);
+    if (answerLength) await check("on-device tutor (Quiz, Answer length disabled)", phone ? 3 : 2);
+    else findings.push(`selects/${viewportName}/on-device tutor: choosing Quiz did not disable Answer length, so the disabled select was not measured`);
     await context.close();
   }
   return measured;

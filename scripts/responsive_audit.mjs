@@ -141,6 +141,19 @@ try {
           }).slice(-8));
         }
         if (overflow.length) problems.push("Content extends beyond the viewport");
+        // Issue #92: a select stays inside its page's content box (at 200%
+        // text on a 360px phone Library Sort once ran 10px into the gutter).
+        const gutterCrossings = [...root.querySelectorAll("select")].filter(visible).flatMap((node) => {
+          const page = node.closest(".page");
+          if (!page || hasScrollOwner(node)) return [];
+          const pageBox = page.getBoundingClientRect();
+          const pageStyle = getComputedStyle(page);
+          const left = pageBox.left + Number.parseFloat(pageStyle.paddingLeft);
+          const right = pageBox.right - Number.parseFloat(pageStyle.paddingRight);
+          const box = node.getBoundingClientRect();
+          return box.left < left - 1 || box.right > right + 1 ? [`${node.getAttribute("aria-label") || "select"} at ${Math.round(box.left)}–${Math.round(box.right)}px, page content ${Math.round(left)}–${Math.round(right)}px`] : [];
+        });
+        if (gutterCrossings.length) problems.push(`Select crosses the page gutter: ${gutterCrossings.join("; ")}`);
         if (dialog && (rect.top < -2 || rect.bottom > innerHeight + 2 || rect.left < -2 || rect.right > innerWidth + 2)) problems.push("Dialog extends beyond the viewport");
         if (canvas) {
           const drawing = root.querySelector(".board-canvas")?.getBoundingClientRect();

@@ -65,10 +65,6 @@
   font-weight: 720;
 }
 
-.ai-tutor__practice-track select {
-  max-width: 100%;
-}
-
 .ai-tutor__practice-intro,
 .ai-tutor__practice-reason {
   margin: 0;

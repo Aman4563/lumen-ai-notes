@@ -1524,7 +1524,9 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
     const target = event.target;
     // Native controls and every open dialog or menu keep their own keys, and
     // nothing may edit the board behind a modal (BOARD-6).
-    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target?.isContentEditable) return;
+    // An open in-page select picker (issue #92) focuses its <option>, so the
+    // select is matched as an ancestor, not only as the target.
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.closest?.("select") || target?.isContentEditable) return;
     if (pendingText || renamingPage || target?.closest?.('[role="dialog"], [aria-modal="true"], [role="menu"]') || document.querySelector('[aria-modal="true"]')) return;
     const canvas = canvasRef.current;
     const onCanvas = target === canvas;

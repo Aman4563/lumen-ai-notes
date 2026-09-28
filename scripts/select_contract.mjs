@@ -124,9 +124,91 @@ export const selectContractProblems = (records, { surface, phone }) => {
   return problems;
 };
 
+// The selected value's text (measured on a canvas in the select's font)
+// against the room inside its padding. A value that fits never reaches the
+// chevron, its fade or an ellipsis.
+export const selectValueFit = (page, selector) => page.$$eval(selector, (selects) => {
+  const canvas = document.createElement("canvas").getContext("2d");
+  return selects.map((select) => {
+    const style = getComputedStyle(select);
+    canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const text = select.selectedOptions[0]?.textContent || "";
+    const room = select.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
+    const needed = canvas.measureText(text).width;
+    return { name: select.getAttribute("aria-label") || select.closest("label")?.firstChild?.textContent?.trim() || "unnamed", text, needed, room, fits: needed <= room + 0.5 };
+  });
+});
+
+export const clippedValueProblems = (records) => records.filter((record) => !record.fits)
+  .map((record) => `“${record.text}” needs ${Math.ceil(record.needed)}px of ${Math.floor(record.room)}px`);
+
+// The customizable select sizes to its current value, so a toolbar select
+// can change width after a pick and move what sits beside it. Tries every
+// option (value set without events, then restored) and reports each select
+// whose width depends on the value.
+export const valueDependentWidths = (page, selector) => page.$$eval(selector, async (selects) => {
+  const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const problems = [];
+  for (const select of selects) {
+    const original = select.value;
+    const widths = new Map();
+    for (const option of select.options) {
+      select.value = option.value;
+      await frame();
+      const width = Math.round(select.getBoundingClientRect().width);
+      if (![...widths.keys()].some((known) => Math.abs(known - width) <= 1)) widths.set(width, option.textContent.trim());
+    }
+    select.value = original;
+    await frame();
+    if (widths.size > 1) problems.push(`select “${select.getAttribute("aria-label") || select.closest("label")?.firstChild?.textContent?.trim() || "unnamed"}” is ${[...widths].map(([width, label]) => `${width}px on “${label}”`).join(", ")}`);
+  }
+  return problems;
+});
+
+// With the customizable select an overlong value is not ellipsized; it must
+// fade out under the picker icon well before the chevron. Screenshots the
+// select and counts the clear columns between the chevron's first stroke and
+// the last visible pixel of the value, in the middle band of the control.
+export const chevronClearance = async (page, selector) => {
+  const handle = await page.$(selector);
+  await handle.evaluate((node) => node.blur());
+  const box = await handle.boundingBox();
+  const fill = await handle.evaluate((node) => getComputedStyle(node).backgroundColor);
+  const shot = await page.screenshot({ clip: { x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) }, encoding: "base64" });
+  return page.evaluate(async (data, background) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${data}`;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const { data: pixels, width, height } = context.getImageData(0, 0, canvas.width, canvas.height);
+    const [red, green, blue] = background.match(/[\d.]+/g).map(Number);
+    const inked = (x) => {
+      for (let y = Math.floor(height * 0.25); y < Math.ceil(height * 0.75); y += 1) {
+        const index = (y * width + x) * 4;
+        if (Math.max(Math.abs(pixels[index] - red), Math.abs(pixels[index + 1] - green), Math.abs(pixels[index + 2] - blue)) > 48) return true;
+      }
+      return false;
+    };
+    let x = width - 3;
+    while (x > 0 && !inked(x)) x -= 1;
+    const chevronEnd = x;
+    while (x > 0 && inked(x)) x -= 1;
+    const chevronStart = x + 1;
+    let clear = 0;
+    while (x > 0 && !inked(x)) { clear += 1; x -= 1; }
+    return { clear, valueSeen: x > 0, chevron: [width - chevronEnd, width - chevronStart] };
+  }, shot, fill);
+};
+
 // Flips the theme attribute the stylesheet keys on, lets the (reduced-motion)
 // transitions finish, and measures; restores the starting theme afterwards.
 export const measureSelectsInThemes = async (page, themes = SELECT_THEMES) => {
+  // A resting pointer over a select marks it :hover, which skips its colours.
+  await page.mouse.move(0, 0);
   const original = await page.evaluate(() => document.documentElement.dataset.theme || "");
   const byTheme = {};
   try {

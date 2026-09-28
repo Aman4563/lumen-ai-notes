@@ -219,7 +219,7 @@ export default function NarrationPanel({
         {speech.currentText && <p className="speech-current"><strong>{speech.activeLabel}</strong>{speech.currentText}</p>}
         {speech.error && <p className="inline-warning">{speech.error}</p>}
       </div>
-      <p className="microcopy">Voices come from iOS. “On device” voices can work offline; voices marked “May use network” can depend on Apple services. Pitch support varies by voice.</p>
+      <p className="microcopy">Voices come from iOS. “On device” voices can work offline; voices marked “Network” can depend on Apple services. Pitch support varies by voice.</p>
     </div>
   );
 }

@@ -2637,7 +2637,6 @@
 
 .ai-tutor__mode-select select {
   flex: 1 1 auto;
-  min-width: 0;
 }
 
 /* Below 981px the bottom navigation is fixed, the page is the only scroller
