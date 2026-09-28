@@ -395,6 +395,13 @@ try {
     await inspect("ai-mac", ".ai-learning-studio");
     await click(page, '[data-ai-engine-option="phone-local"]');
     await inspect("ai-phone", ".phone-tutor");
+    // Depth and Answer length moved into On-device Lite's Options sheet
+    // (#94): every choice reads in full at every size, 200% text included.
+    await click(page, ".phone-tutor__options");
+    await page.waitForSelector(".tutor-sheet .phone-tutor__composer-head select");
+    await inspectValueFit("ai-phone-options-values", ".tutor-sheet .phone-tutor__composer-head select", { everyOption: true });
+    await click(page, ".tutor-sheet__done");
+    await page.waitForSelector(".tutor-sheet", { hidden: true });
     await click(page, '[aria-label="Open settings"]');
     await inspect("settings", ".settings-drawer", { dialog: true });
     // The close control stays reachable after scrolling the long drawer (SHELL-3).

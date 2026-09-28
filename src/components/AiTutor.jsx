@@ -1590,12 +1590,17 @@ export default function AiTutor({
     window.scrollTo({ top: 0, behavior: "instant" });
   }, [configState.status]);
 
-  // The question box grows with its text (up to about six lines, then it
-  // scrolls), including text placed there by a mode, Ask AI or a restore.
+  // The question box grows with its text (up to about six lines, or on wide
+  // screens what the conversation can spare, then it scrolls), including
+  // text placed there by a mode, Ask AI or a restore. The conversation's
+  // own scroller keeps its place, or its end, meanwhile.
   useLayoutEffect(() => {
     const field = promptRef.current;
     if (!field) return undefined;
-    const fit = () => fitQuestionBox(field);
+    const fit = () => {
+      const top = fitQuestionBox(field, conversationRef.current);
+      if (top >= 0) autoTopRef.current = top;
+    };
     fit();
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);

@@ -21,19 +21,25 @@ const px = (value) => Number.parseFloat(value) || 0;
  *   scroller. A conversation whose end was in view keeps it in view when
  *   this switches, and after a window resize the page shows its end.
  *
+ * - `--ai-field-max`: in that column, the tallest the question box may grow
+ *   in whole lines while the conversation keeps `minConversation`; past it
+ *   the box scrolls.
+ *
  * A dock that would take more than about 60% of the room between the top
  * bar and the navigation (large text on a small phone), or overlap the
  * navigation because the tutor starts too far down the page, stays in the
  * page flow (`data-dock="off"`) until it would fit again with a margin, so it
  * does not flicker. The question box's own growth is left out of both
- * decisions, so typing never moves the dock or switches the column; while
- * the learner types a long question, the page scrolls by as much as the
- * dock grows, so what was just above it stays in view and a dock held down
- * by its card's top stays off the navigation. The returned `coverRef` (and
- * `cover`, for effects) is how much of the viewport's bottom the dock or the
- * navigation covers, for following and revealing. The composer's element
- * is the dock; the conversation is optional and only needed for the
- * wide-screen column.
+ * decisions and of the wide column's, so typing never moves the dock or
+ * switches the column; while the learner types a long question, the page
+ * scrolls by as much as the dock grows, so what was just above it stays in
+ * view and a dock held down by its card's top stays off the navigation. Once
+ * the box loses focus, a long question kept in it does count towards the
+ * overlap, so near the top of the page that dock stays in the page flow
+ * instead of over the navigation. The returned `coverRef` (and `cover`, for
+ * effects) is how much of the viewport's bottom the dock or the navigation
+ * covers, for following and revealing. The composer's element is the dock;
+ * the conversation is optional and only needed for the wide-screen column.
  */
 export function useTutorDock({ composerRef, fieldRef, conversationRef, minConversation = 260 }) {
   const coverRef = useRef(0);
@@ -68,11 +74,13 @@ export function useTutorDock({ composerRef, fieldRef, conversationRef, minConver
       publish("--ai-dock-bottom", keyboard ? `${keyboard + 8}px` : "");
       const fieldStyle = field ? getComputedStyle(field) : null;
       const oneLine = fieldStyle ? Math.max(px(fieldStyle.minHeight), px(fieldStyle.lineHeight) + px(fieldStyle.paddingTop) + px(fieldStyle.paddingBottom) + px(fieldStyle.borderTopWidth) + px(fieldStyle.borderBottomWidth)) : 0;
-      const height = composer.offsetHeight - (field ? Math.max(0, field.offsetHeight - oneLine) : 0);
+      const grown = field ? Math.max(0, field.offsetHeight - oneLine) : 0;
+      const height = composer.offsetHeight - grown;
       const share = height / Math.max(1, bottom - top);
       // A sticky dock cannot rise above its card, so a card that starts
-      // too far down would hold it over the navigation.
-      const overlap = navShown && !keyboard ? composer.parentElement.getBoundingClientRect().top + height + 8 - bottom : Number.NEGATIVE_INFINITY;
+      // too far down would hold it over the navigation. A long question
+      // counts once the box is left: while typing, the page scrolls instead.
+      const overlap = navShown && !keyboard ? composer.parentElement.getBoundingClientRect().top + height + (document.activeElement === field ? 0 : grown) + 8 - bottom : Number.NEGATIVE_INFINITY;
       if (composer.dataset.dock !== "off") {
         if (share > 0.6 || overlap > 1) composer.dataset.dock = "off";
       } else if (share < 0.5 && overlap < -24) delete composer.dataset.dock;
@@ -94,6 +102,7 @@ export function useTutorDock({ composerRef, fieldRef, conversationRef, minConver
       if (sticky && document.activeElement === field && (grew > 0 || excess > 1)) window.scrollBy(0, Math.max(grew, excess));
       const page = composer.closest(".ai-page");
       const conversation = conversationRef?.current;
+      let fieldMax = "";
       if (page && conversation && getComputedStyle(page).display === "flex") {
         const card = composer.parentElement;
         const need = conversation.getBoundingClientRect().top - page.getBoundingClientRect().top
@@ -113,7 +122,15 @@ export function useTutorDock({ composerRef, fieldRef, conversationRef, minConver
           // left in view.
           if (afterResize) window.scrollTo({ top: root.scrollHeight, behavior: "instant" });
         }
+        // The column's question box grows only into whole lines the
+        // conversation can spare above its minimum.
+        if (field && !("aiPageScroll" in root.dataset)) {
+          const line = Math.max(1, px(fieldStyle.lineHeight));
+          const spare = conversation.clientHeight + Math.max(0, field.offsetHeight - oneLine) - Math.min(minConversation, window.innerHeight * 0.4);
+          fieldMax = `${Math.floor(oneLine + Math.max(0, Math.floor(spare / line)) * line)}px`;
+        }
       } else delete root.dataset.aiPageScroll;
+      publish("--ai-field-max", fieldMax);
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
     const onResize = () => {
@@ -126,7 +143,11 @@ export function useTutorDock({ composerRef, fieldRef, conversationRef, minConver
       const typing = viewport && document.activeElement === field && Math.abs(viewport.scale - 1) < 0.01;
       const covered = typing ? Math.round(window.innerHeight - viewport.offsetTop - viewport.height) : 0;
       const next = covered > 120 ? covered : 0;
-      if (next === keyboard) return;
+      // Focus also decides whether a long question counts (above).
+      if (next === keyboard) {
+        schedule();
+        return;
+      }
       keyboard = next;
       if (keyboard) root.dataset.aiTyping = "";
       else delete root.dataset.aiTyping;
@@ -191,12 +212,23 @@ export function holdLatest(keep, nodes, onStop) {
 /**
  * Fits a tutor's question box to its text: one line when empty, however its
  * placeholder wraps, and up to its CSS max-height. Measuring it at one line
- * shortens the page for a moment, which pulls a page at its end up and
- * leaves it there, so the page's position is put back.
+ * shortens the page, or lengthens a `scroller` beside the box (the wide
+ * column's conversation), for a moment; that pulls a page or a conversation
+ * at its end up and leaves it there, so both are put back, and a
+ * conversation that was at its end stays there as the box grows. Returns
+ * where it put the scroller, or -1 when it did not move it.
  */
-export function fitQuestionBox(field) {
+export function fitQuestionBox(field, scroller) {
   const y = window.scrollY;
+  const own = scroller && getComputedStyle(scroller).overflowY !== "visible" ? scroller : null;
+  const top = own ? own.scrollTop : 0;
+  const atEnd = Boolean(own) && own.scrollHeight - top - own.clientHeight <= 2;
   field.style.height = "auto";
   if (field.value) field.style.height = `${field.scrollHeight + field.offsetHeight - field.clientHeight}px`;
   if (window.scrollY !== y) window.scrollTo({ top: y, behavior: "instant" });
+  if (!own) return -1;
+  const next = atEnd ? own.scrollHeight - own.clientHeight : top;
+  if (Math.abs(own.scrollTop - next) < 1) return -1;
+  own.scrollTop = next;
+  return own.scrollTop;
 }

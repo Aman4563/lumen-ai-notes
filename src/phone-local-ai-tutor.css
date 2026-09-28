@@ -267,6 +267,22 @@
   .phone-tutor__composer { position: relative; bottom: auto; }
 }
 
+/* Wide screens, model loaded: the chrome above the conversation folds up
+   as the Mac tutor's does, so the welcome clears the dock in a short window
+   (1225x671). A first run keeps its spacing, where the dock would otherwise
+   newly cut the welcome under the download approval (1366x768). Touch
+   screens keep 44px targets. */
+@media (min-width: 981px) {
+  .phone-tutor.is-loaded { gap: 8px; }
+  .is-loaded .phone-tutor__mode-tabs { gap: 6px; padding-block: 0; }
+  .is-loaded .phone-tutor__mode-description { margin-top: -4px; }
+  .is-loaded :is(.phone-tutor__mode-tabs, .phone-tutor__composer-meta) button { min-height: 36px; padding-block: 5px; }
+}
+
+@media (min-width: 981px) and (pointer: coarse) {
+  .is-loaded :is(.phone-tutor__mode-tabs, .phone-tutor__composer-meta) button { min-height: 44px; }
+}
+
 @media (max-width: 719px) {
   .phone-tutor__send-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }

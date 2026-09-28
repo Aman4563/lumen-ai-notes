@@ -530,19 +530,34 @@ const auditThemedSelects = async () => {
 
     await navigate("#/ai", ".ai-learning-studio");
     await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
-    await page.waitForSelector(".phone-tutor__composer select");
-    await check("on-device tutor", phone ? 3 : 2);
-    // The composer's Depth and Answer length show their whole value at 16px
-    // (Answer length once read “Standard · 640 t”).
-    const clipped = clippedValueProblems(await selectValueFit(page, ".phone-tutor__composer-head select"));
-    clipped.forEach((problem) => findings.push(`selects/${viewportName}/on-device tutor: the composer select clips its value: ${problem}`));
+    // Depth and Answer length are in the Options sheet (#94), beside the
+    // phone's Mode select behind it.
+    const optionSelects = ".tutor-sheet .phone-tutor__composer-head select";
+    const openOptions = async () => {
+      await page.waitForSelector(".phone-tutor__options", { timeout: 20_000 });
+      await page.$eval(".phone-tutor__options", (button) => button.click());
+      await page.waitForSelector(optionSelects, { timeout: 5_000 });
+    };
+    const closeOptions = async () => {
+      await page.$eval(".tutor-sheet__done", (button) => button.click());
+      await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
+    };
+    await openOptions();
+    await check("on-device tutor options", phone ? 3 : 2);
+    // Depth and Answer length show their whole value at 16px (Answer length
+    // once read “Standard · 640 t”).
+    const clipped = clippedValueProblems(await selectValueFit(page, optionSelects));
+    clipped.forEach((problem) => findings.push(`selects/${viewportName}/on-device tutor: an Options select clips its value: ${problem}`));
+    await closeOptions();
     // A structured mode (Quiz) disables Answer length: the disabled look is
     // measured in every theme too.
     if (phone) await page.select(".phone-tutor__mode-select select", "quiz");
     else await clickByText(page, ".phone-tutor__mode-tabs button", "Quiz");
-    const answerLength = await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__composer-head select")].some((select) => select.disabled), { timeout: 5_000 }).then(() => true, () => false);
-    if (answerLength) await check("on-device tutor (Quiz, Answer length disabled)", phone ? 3 : 2);
+    await openOptions();
+    const answerLength = await page.waitForFunction((selector) => [...document.querySelectorAll(selector)].some((select) => select.disabled), { timeout: 5_000 }, optionSelects).then(() => true, () => false);
+    if (answerLength) await check("on-device tutor options (Quiz, Answer length disabled)", phone ? 3 : 2);
     else findings.push(`selects/${viewportName}/on-device tutor: choosing Quiz did not disable Answer length, so the disabled select was not measured`);
+    await closeOptions();
     await context.close();
   }
   return measured;
@@ -621,6 +636,43 @@ const auditNarrowFinePointer = async () => {
         if (state.overflow > 2) findings.push(`${where}: the page scrolls sideways by ${state.overflow}px (${state.culprits.join(", ")})`);
         if (state.crossings.length) findings.push(`${where}: a select runs past the page content: ${state.crossings.join("; ")}`);
       }
+      // On-device Lite's Options sheet (#94) sizes its Depth and Answer
+      // length selects to their values with a mouse: both stay inside the
+      // sheet, and neither the sheet nor the page scrolls sideways.
+      await page.evaluate(() => { location.hash = "#/ai"; });
+      await page.waitForSelector('[data-ai-engine-option="phone-local"]', { timeout: 20_000 });
+      await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
+      await page.waitForSelector(".phone-tutor__options", { timeout: 20_000 });
+      await page.$eval(".phone-tutor__options", (button) => button.click());
+      await page.waitForSelector(".tutor-sheet .phone-tutor__composer-head select", { timeout: 5_000 });
+      const sheet = await page.evaluate(async () => {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const panel = document.querySelector(".tutor-sheet");
+        const body = panel.querySelector(".tutor-sheet__body");
+        const bodyBox = body.getBoundingClientRect();
+        const bodyStyle = getComputedStyle(body);
+        const left = bodyBox.left + Number.parseFloat(bodyStyle.paddingLeft);
+        const right = bodyBox.right - Number.parseFloat(bodyStyle.paddingRight);
+        const selects = [...panel.querySelectorAll("select")];
+        return {
+          overflow: Math.max(document.documentElement.scrollWidth - innerWidth, panel.scrollWidth - panel.clientWidth, body.scrollWidth - body.clientWidth),
+          crossings: selects.flatMap((node) => {
+            const box = node.getBoundingClientRect();
+            return box.left < left - 1 || box.right > right + 1 ? [`${node.closest("label")?.firstChild?.textContent || "select"} at ${Math.round(box.left)}–${Math.round(box.right)}px, sheet content ${Math.round(left)}–${Math.round(right)}px`] : [];
+          }),
+          customizable: selects.some((node) => getComputedStyle(node).appearance === "base-select"),
+          expected: CSS.supports("appearance", "base-select"),
+          pointer: matchMedia("(hover: hover) and (pointer: fine)").matches ? "fine" : "not fine",
+        };
+      });
+      summary.cases += 1;
+      if (sheet.customizable) summary.customizable += 1;
+      const where = `narrow fine pointer/on-device Options at ${width}px with ${textScale * 100}% text`;
+      if (sheet.expected && !sheet.customizable) findings.push(`${where}: the selects are not the customizable select (pointer ${sheet.pointer}), so the mouse path went untested`);
+      if (sheet.overflow > 2) findings.push(`${where}: the sheet or the page scrolls sideways by ${sheet.overflow}px`);
+      if (sheet.crossings.length) findings.push(`${where}: a select runs past the sheet content: ${sheet.crossings.join("; ")}`);
+      await page.$eval(".tutor-sheet__done", (button) => button.click());
+      await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 5_000 });
     }
   } finally {
     await fineBrowser.close();
@@ -791,7 +843,7 @@ try {
 
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
   assert.equal(findings.length, 0, `control quality failures:\n${findings.map((finding) => `- ${finding}`).join("\n")}`);
-  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; opener focus-restore verified for all seven dialogs; ${selectsMeasured} select measurements (Paper, Night and Contrast at 393px touch and 1280px) kept the themed select contract on every screen that hosts one; and ${narrow.cases} narrow fine-pointer screens (library, review and notebook at 400px and 320px with 150% and 200% text, ${narrow.customizable} with the customizable select) kept every select inside the page with no sideways scroll.`);
+  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; opener focus-restore verified for all seven dialogs; ${selectsMeasured} select measurements (Paper, Night and Contrast at 393px touch and 1280px) kept the themed select contract on every screen that hosts one; and ${narrow.cases} narrow fine-pointer screens (library, review, notebook and On-device Lite's Options sheet at 400px and 320px with 150% and 200% text, ${narrow.customizable} with the customizable select) kept every select inside the page or sheet with no sideways scroll.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

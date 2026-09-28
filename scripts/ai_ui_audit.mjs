@@ -726,18 +726,39 @@ const auditChatFit = async () => {
     if (end.maxScroll > 1) expect(end.end.bottom <= end.composer.top + 1, `${name}: at the page end the conversation is still under the composer`, { end: end.end, composer: end.composer });
     else expect(end.conversation.bottom <= end.composer.top + 1 && end.conversation.top >= end.topbar - 1, `${name}: the conversation is still covered`, { conversation: end.conversation, composer: end.composer, topbar: end.topbar });
   };
-  // A long question typed over the latest answer shrinks the conversation
-  // (or, where the page scrolls, lifts the page) and never covers its end;
-  // the page does not start scrolling as well as the conversation.
+  // A long question typed over the latest answer, with real keys: the
+  // conversation keeps its end in view (or, where the page scrolls, the page
+  // lifts it) and the page does not start scrolling as well as the
+  // conversation. In the column the box grows only into what the
+  // conversation can spare above its minimum, then scrolls. (Measuring the
+  // box once left the column's conversation 120px short of its end after
+  // every key from the second line on, and a 10-line draft shrank it to
+  // 148px at 1225x671; a draft placed in one go hid both.)
   const typeDraft = async (name, page) => {
     const before = await geometry(page);
-    await page.$eval(".ai-tutor__composer textarea", (field) => field.focus({ preventScroll: true }));
+    const field = ".ai-tutor__composer textarea";
+    const check = async (step) => {
+      const g = await geometry(page);
+      if (before.maxScroll <= 1) expect(g.maxScroll <= 1 && g.conversation.fromEnd <= 2 && g.end.bottom <= g.conversation.bottom + 1 && g.conversation.bottom <= g.composer.top + 1 && g.conversation.clientHeight >= minConversation(g), `${name} with a long question (${step}): the conversation lost its end or its minimum height, or the page scrolls as well`, { maxScroll: g.maxScroll, conversation: g.conversation, end: g.end, field: g.field, composer: g.composer });
+      else expect(!g.conversation.scroller && g.end.bottom <= g.composer.top + 1, `${name} with a long question (${step}): the composer covers the end of the conversation`, { conversation: g.conversation, end: g.end, composer: g.composer });
+    };
+    await page.$eval(field, (node) => node.focus({ preventScroll: true }));
     await setComposerPrompt(page, Array.from({ length: 10 }, (_, line) => `Line ${line + 1} of a long question about ridge and lasso penalties.`).join("\n"));
-    const g = await geometry(page);
-    if (before.maxScroll <= 1) expect(g.maxScroll <= 1 && g.conversation.fromEnd <= 2 && g.conversation.bottom <= g.composer.top + 1, `${name} with a long question: the conversation no longer shows its end, or the page scrolls as well`, { maxScroll: g.maxScroll, conversation: g.conversation, composer: g.composer });
-    else expect(!g.conversation.scroller && g.end.bottom <= g.composer.top + 1, `${name} with a long question: the composer covers the end of the conversation`, { conversation: g.conversation, end: g.end, composer: g.composer });
+    await check("placed in one go");
+    await page.keyboard.type(" More.");
+    await check("one more key");
     await setComposerPrompt(page, "");
-    await page.$eval(".ai-tutor__composer textarea", (field) => field.blur());
+    for (let line = 1; line <= 6; line += 1) {
+      await page.keyboard.type(`Line ${line} of a long question.`);
+      // Shift+Enter starts a new line with a mouse too (TFEAT-10).
+      await page.keyboard.down("Shift");
+      await page.keyboard.press("Enter");
+      await page.keyboard.up("Shift");
+      if (line % 2 === 0) await check(`typed, line ${line}`);
+    }
+    await page.$eval(field, (node) => node.blur());
+    await check("typed, after blur");
+    await setComposerPrompt(page, "");
   };
   const wide = [
     ["1280x720", { width: 1280, height: 720 }, true],
@@ -760,7 +781,7 @@ const auditChatFit = async () => {
       expect(!g.sideways && g.heading === "AI learning studio", `${name}: the page scrolls sideways or lost its heading`, { sideways: g.sideways, heading: g.heading });
       // Touch tablets keep full-size targets in the compact chrome.
       if (viewport.hasTouch) expect(g.targets.length >= 6 && g.targets.every(([, height]) => height >= 44), `${name}: a chrome control is smaller than 44px on a touch screen`, g.targets);
-      if (["1280x720", "1440x900", "1024x768"].includes(name)) await typeDraft(name, page);
+      if (["1280x720", "1440x900", "1366x768", "1225x671", "1024x768"].includes(name)) await typeDraft(name, page);
       // A suggested question reads as a placeholder in the Contrast theme,
       // where its grey is close to the text's black.
       if (name === "1280x720") {
@@ -2446,8 +2467,8 @@ try {
   // Large text (#57 review): at 200% text on a 320px phone a dock holding a
   // Socratic session's strip would be taller than the room above the bottom
   // navigation and hide the whole tutor, header included; it stays in the
-  // page flow then, and docks again at normal size. A long draft alone never
-  // undocks it, so typing does not move the question box.
+  // page flow then, and docks again at normal size. A long draft below the
+  // top of the tutor never undocks it, so typing does not move the box.
   const largeTextContext = await browser.createBrowserContext();
   try {
     const page = await largeTextContext.newPage();

@@ -213,22 +213,24 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       expect(inView(g, g.options), `${name}: Options is off screen`, g.options);
       if (g.options) {
         await page.click(".phone-tutor__options");
-        const sheet = await page.waitForSelector(".tutor-sheet", { timeout: 3_000 }).then(() => page.evaluate(async () => {
+        const sheet = await page.waitForSelector(".tutor-sheet", { timeout: 3_000 }).then(() => page.evaluate(async (wide) => {
           const panel = document.querySelector(".tutor-sheet");
           // Measured once the sheet has slid in.
           await Promise.all(panel.getAnimations().map((animation) => animation.finished.catch(() => {})));
           const controls = [...panel.querySelectorAll("select, button")];
+          // A desktop's themed select is 40px (#92); 44px on phones and touch.
+          const least = (node) => (wide && node.tagName === "SELECT" && !matchMedia("(pointer: coarse)").matches ? 40 : 44);
           return {
             labels: [...panel.querySelectorAll(".phone-tutor__composer-head label > span")].map((node) => node.textContent).join("|"),
             web: /current-web fallback/i.test(panel.querySelector(".phone-tutor__search-toggle")?.textContent || ""),
-            small: controls.filter((node) => node.getBoundingClientRect().height < 44).map((node) => `${node.textContent.trim().slice(0, 20)} ${Math.round(node.getBoundingClientRect().height)}px`),
+            small: controls.filter((node) => node.getBoundingClientRect().height < least(node)).map((node) => `${node.textContent.trim().slice(0, 20)} ${Math.round(node.getBoundingClientRect().height)}px`),
             outside: [...panel.querySelectorAll("select, .phone-tutor__search-toggle")].filter((node) => {
               const rect = node.getBoundingClientRect();
               return rect.top < 0 || rect.bottom > innerHeight + 1;
             }).length,
           };
-        }), () => null);
-        expect(sheet && sheet.labels === "Depth|Answer length" && sheet.web && !sheet.small.length && (options.largeText || !sheet.outside), `${name}: one tap on Options did not show Depth, Answer length and the web fallback in view at 44px`, sheet);
+        }, !phone), () => null);
+        expect(sheet && sheet.labels === "Depth|Answer length" && sheet.web && !sheet.small.length && (options.largeText || !sheet.outside), `${name}: one tap on Options did not show Depth, Answer length and the web fallback in view at full size (44px; a desktop select 40px)`, sheet);
         if (sheet) {
           await page.click(".tutor-sheet__done");
           await page.waitForSelector(".tutor-sheet", { hidden: true, timeout: 3_000 }).catch(() => {});
@@ -341,38 +343,83 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
     }
   }
 
-  // A long question typed at the top of the page at 200% text on a small
-  // phone, where the tutor's top holds the dock: the dock stays off the
-  // navigation.
+  // A long question at the top of the page at 200% text on a small phone,
+  // where the tutor's top holds the dock: the dock stays off the navigation
+  // while it is typed, once the box is left and the page is back at its top,
+  // and when the question is put in the box without focus. (Only typing was
+  // covered once: a kept question sat 29px behind the navigation.)
+  const draft = Array.from({ length: 10 }, (_, line) => `Line ${line + 1} of a long question.`).join("\n");
+  const placeDraft = (page, focus) => page.$eval(".phone-tutor__composer textarea", (field, text, focused) => {
+    if (focused) field.focus({ preventScroll: true });
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }, draft, focus);
+  const offNavigation = (g, step) => expect(g.composer.position !== "sticky" || g.composer.bottom <= g.navTop, `320x568 at 200% text: a long question ${step} left the dock behind the navigation`, { composer: g.composer, navTop: g.navTop, scrollY: g.scrollY });
   {
     const { context, page } = await open("lite-draft", `${fixtureUrl}/__phone-ai-audit?shell&loaded`, { width: 320, height: 568 }, { largeText: true });
     try {
       await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
-      await page.$eval(".phone-tutor__composer textarea", (field, text) => {
-        field.focus({ preventScroll: true });
-        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, text);
-        field.dispatchEvent(new Event("input", { bubbles: true }));
-      }, Array.from({ length: 10 }, (_, line) => `Line ${line + 1} of a long question.`).join("\n"));
-      const g = await geometry(page);
-      expect(g.composer.position !== "sticky" || g.composer.bottom <= g.navTop, "320x568 at 200% text: a long question pushed the dock behind the navigation", { composer: g.composer, navTop: g.navTop });
+      await placeDraft(page, true);
+      offNavigation(await geometry(page), "typed at the page top");
+      await page.$eval(".phone-tutor__composer textarea", (field) => field.blur());
+      offNavigation(await geometry(page), "kept after leaving the box");
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+      offNavigation(await geometry(page), "kept, back at the page top");
+      // The box is still reachable, docked again, at the page end.
+      await toEnd(page);
+      const end = await geometry(page);
+      expect(docked(end) && inView(end, end.field), "320x568 at 200% text: with a long question kept, the dock is not back above the navigation at the page end", { composer: end.composer, field: end.field, navTop: end.navTop });
     } catch (error) {
       failures.push(`320x568 at 200% text draft: ${error.message.split("\n")[0]}`);
     } finally {
       await context.close();
     }
   }
-
-  // Wide screens, model loaded, nothing asked yet: the welcome is above the
-  // dock at the top of the page.
-  for (const [name, viewport] of [["1280x720", { width: 1280, height: 720 }], ["1366x768", { width: 1366, height: 768 }], ["1440x900", { width: 1440, height: 900 }]]) {
-    const { context, page } = await open(`lite-wide-${name}`, `${fixtureUrl}/__phone-ai-audit?shell&loaded`, viewport);
+  {
+    const { context, page } = await open("lite-draft-placed", `${fixtureUrl}/__phone-ai-audit?shell&loaded`, { width: 320, height: 568 }, { largeText: true });
     try {
-      const g = await geometry(page);
-      expect(g.welcomeText && g.welcomeText.bottom <= g.composer.top + 1, `${name} loaded: the dock covers the welcome at the top of the page`, { welcome: g.welcomeText, composer: g.composer });
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+      await placeDraft(page, false);
+      offNavigation(await geometry(page), "put in the box without focus");
     } catch (error) {
-      failures.push(`${name} loaded: ${error.message.split("\n")[0]}`);
+      failures.push(`320x568 at 200% text placed draft: ${error.message.split("\n")[0]}`);
     } finally {
       await context.close();
+    }
+  }
+
+  // Wide screens, nothing asked yet, at the top of the page. With the model
+  // loaded the welcome is above the dock (at 1225x671 the dock once cut its
+  // heading, 51px over it). On a first run the download approval and
+  // Download & load are above the dock, and the dock does not cut the
+  // welcome, which may wait below it.
+  const wideSizes = [["1024x768", { width: 1024, height: 768 }], ["1225x671", { width: 1225, height: 671 }], ["1280x720", { width: 1280, height: 720 }], ["1366x768", { width: 1366, height: 768 }], ["1440x900", { width: 1440, height: 900 }]];
+  for (const [name, viewport] of wideSizes) {
+    for (const loaded of [true, false]) {
+      const state = loaded ? "loaded" : "first run";
+      const { context, page } = await open(`lite-wide-${name}-${loaded ? "loaded" : "first"}`, `${fixtureUrl}/__phone-ai-audit?shell${loaded ? "&loaded" : ""}`, viewport);
+      try {
+        const g = await geometry(page);
+        const heading = await page.evaluate(() => {
+          const node = document.querySelector(".phone-tutor__welcome h3");
+          const rect = node?.getBoundingClientRect();
+          return rect ? { top: Math.round(rect.top), bottom: Math.round(rect.bottom) } : null;
+        });
+        expect(g.welcomeText && heading, `${name} ${state}: no welcome`, { welcome: g.welcomeText });
+        if (loaded) expect(g.welcomeText?.bottom <= g.composer.top + 1, `${name} loaded: the dock covers the welcome at the top of the page`, { heading, welcome: g.welcomeText, composer: g.composer });
+        else {
+          const approval = await page.evaluate(() => [".phone-local-ai-consent", ".phone-local-ai-actions .button.primary"].map((selector) => {
+            const rect = document.querySelector(selector)?.getBoundingClientRect();
+            return rect ? Math.round(rect.bottom) : null;
+          }));
+          expect(approval.every((bottom) => bottom !== null && bottom <= g.composer.top + 1), `${name} first run: the dock covers the download approval or Download & load`, { approval, composer: g.composer });
+          expect(heading && (g.welcomeText.bottom <= g.composer.top + 1 || heading.top >= g.composer.top - 1), `${name} first run: the dock cuts the welcome`, { heading, welcome: g.welcomeText, composer: g.composer });
+        }
+      } catch (error) {
+        failures.push(`${name} ${state}: ${error.message.split("\n")[0]}`);
+      } finally {
+        await context.close();
+      }
     }
   }
 

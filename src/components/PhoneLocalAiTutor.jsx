@@ -1097,7 +1097,7 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   };
 
   return (
-    <section className="phone-tutor" aria-labelledby="phone-tutor-title" onKeyDown={stopOnEscape}>
+    <section className={`phone-tutor${engineStatus.loaded ? " is-loaded" : ""}`} aria-labelledby="phone-tutor-title" onKeyDown={stopOnEscape}>
       <header className="phone-tutor__header">
         <div className="phone-tutor__identity"><span><Cpu size={23} aria-hidden="true" /></span><div><small>Built with Llama · Safari WebGPU · experimental</small><h2 id="phone-tutor-title" ref={headingRef} tabIndex={-1}>Lumen On-device Lite</h2></div></div>
         {history.length > 0 && <button className="phone-tutor__icon-button" type="button" aria-label="Clear on-device session conversation" title="Clear session" disabled={interactionLocked} onClick={() => setConfirmClearOpen(true)}><Trash2 size={18} /></button>}
