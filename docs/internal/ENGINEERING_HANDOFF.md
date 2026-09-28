@@ -838,9 +838,13 @@ Narration state rules (issue #96), which later narration work builds on:
 
 - Sleep timer: `stop()` keeps it. Every Read (`speak`) starts a fresh countdown, except
   `{ continueSession: true }` (the playlist's next chapter), which keeps the running
-  deadline. A timer armed while idle starts counting at the next Read. Resuming after the
-  deadline has passed re-arms it. It is cleared only by expiry, Off, or unmount, and
-  `speak()` returns false when nothing was issued.
+  deadline. A timer armed while idle starts counting at the next Read. A tap on a paused
+  player (Resume, Next, Previous or a section skip) after the deadline has passed re-arms
+  it. It is cleared only by expiry, Off, or unmount, and `speak()` returns false when
+  nothing was issued. `playIndex` checks the deadline before a queue's natural
+  completion, so a deadline that passed in a lecture's last sentence ends narration there
+  and the playlist does not open the next chapter. The Reader announces "Continuing
+  narration" only once the next chapter's `speak()` returns true.
 - Section scope: a section ends at the next heading whose level is at most
   max(its level, 2), so an H2 includes its H3s and an H1 reads its introduction; a heading
   with no body continues through the next section. Sentence scope reads the sentence whose
@@ -850,9 +854,13 @@ Narration state rules (issue #96), which later narration work builds on:
   `{v: 2, index, total, snippet, section}` in localStorage, resolved inside `try`, so a
   blocked or full store never breaks the Reader. `locatePosition` finds the chunk at
   `index` that still starts with the 60-character snippet, then the nearest chunk that does,
-  then the section start, and otherwise starts over with a notice. Resume never lands on
-  the last chunk. Version 1 integers are bounds-checked. Bookmarks play the full lecture
-  whatever the panel's target.
+  then `index` itself when the queue has the saved length and the same section there (a
+  pronunciation override or an edit in place rewords the sentence), then the section start
+  (announced as such), and otherwise starts over with a notice. Resume never lands on the
+  last chunk. Version 1 integers are bounds-checked. Bookmarks play the full lecture
+  whatever the panel's target. The Reader writes a position or bookmark only for the lecture
+  whose queue is playing (`narratedDocumentRef`): a route change such as browser Back
+  renders the next lecture one commit before the stop lands.
 - Voices: a missing voice is never written back to settings (they sync between devices
   with different voice lists); `selectSpeechVoice` falls back at speak time.
 - WebKit before 27 drops a `speak()` queued in the same task as a `cancel()` of live speech.

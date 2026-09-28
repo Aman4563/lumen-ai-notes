@@ -87,4 +87,8 @@ note the iOS version with each verdict.
    stop. The Reader must never show "Lumen could not render this screen".
    Narration keeps playing, and a bookmark that could not be saved says so
    instead of claiming it was saved. Record whether resume and bookmarks
-   persisted in each mode.
+   persisted in each mode. This step covers storage that fails on write. Do
+   not use Settings → Safari → Block All Cookies for it: with storage blocked
+   outright, reading `localStorage` itself throws, and Lumen currently fails
+   at startup, before narration runs, on main as well. That is a separate
+   app-shell issue.

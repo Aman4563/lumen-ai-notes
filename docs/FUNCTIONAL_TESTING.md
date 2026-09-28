@@ -1854,3 +1854,106 @@ its first attempt timed out after 30 s waiting for `.reader-view` after
 opening an uploaded lecture from the Library. Run alone with
 `LUMEN_BROWSER_RETRIES=0`, it then passed twice in 46 s each, and it had
 passed on the first attempt in the earlier full run.
+
+## Review follow-up on 2026-09-28: read-aloud state (#96)
+
+A review of the branch above found these problems, reproduced here against its
+own build (5095726) with `audit:audio`'s mocked iOS engine:
+
+- With the playlist on, a sleep deadline that passed during a chapter's last
+  sentence still opened chapter 2 and announced "Continuing narration:
+  Chapter 2 — Problem Framing and Objectives", then played nothing.
+  `playIndex` handled the natural completion before its sleep check. The
+  same false announcement followed when the deadline passed while chapter 2
+  loaded. Main played chapter 2, because it lost the timer.
+- Paused past the deadline, Next and Previous ended narration and turned the
+  timer Off. Only Resume re-armed it. Main behaves the same.
+- Browser Back during Full lecture saved chapter 1's position under
+  chapter 2, because the route change renders the Reader with chapter 2 one
+  commit before `stop()` lands. Main stored "4" there and resumed chapter 2
+  at a sentence it never reached. The branch stored chapter 1's record and
+  then said chapter 2 "changed since you stopped".
+- After a pronunciation override for a word in the saved sentence, resume
+  fell back to the section start (1/107 for a place at 6/107). The snippet is
+  saved after overrides apply, so it no longer matched. Main resumed exactly.
+- A position that fell back to its section still announced "Narration
+  resumed from your last position."
+- On main too, one long bookmark widened the narration sheet to 711 px of
+  scroll in 375 px at 393 px, which put Delete at x 720. The grid's single
+  column took the snippet's unwrapped width.
+- On main too, a stored bookmark list holding `null` crashed the Reader.
+
+The fixes:
+
+- `playIndex` checks the sleep deadline before the natural completion. The
+  Reader announces "Continuing narration" only once the next chapter's
+  `speak()` returns true.
+- A tap on a paused player (Resume, Next, Previous or a section skip) re-arms
+  a lapsed deadline.
+- The Reader writes positions and bookmarks only for the lecture whose queue
+  it started.
+- `locatePosition` keeps the saved index when the queue has the saved length
+  and the same section there. The section fallback says "This lecture changed
+  since you stopped, so narration resumes at the start of “…”."
+- The bookmark list has one `minmax(0, 1fr)` column.
+- The bookmark reader drops entries that are not objects.
+
+How each is now checked:
+
+- `audit:audio` adds six cases and one assertion: a deadline passing in the
+  last sentence, a deadline passing while the next chapter loads, Next and
+  Previous paused past the deadline, browser Back during narration, a real
+  pronunciation override through Settings after stopping, a long bookmark at
+  393 px and at 320 px with 200% text, and the section-fallback toast in
+  "positions relocate after an edit". Against 5095726:
+
+  ```
+  - positions relocate after an edit: a section fallback announced “”
+  - sleep timer lapsing in a chapter's last sentence: the playlist opened #/read/notes/part-01-foundations/02-problem-framing-and-objectives.md after the sleep deadline passed
+  - sleep timer lapsing while the next chapter loads: chapter 2 was announced as continuing although nothing played: “Continuing narration: Chapter 2 — Problem Framing and Objectives”
+  - Next and Previous while paused past the sleep deadline: Next on a player paused past the sleep deadline ended narration
+  - browser Back during full-lecture narration: chapter 1's narration position was saved under chapter 2: {"v":2,"index":4,"total":107,"snippet":"A route planner may use graph search, a fraud product may co","section":"1. Intelligence as a system property"}
+  - pronunciation override after stopping: stopped at 6 (“checks, and ordinary software.”), then overriding “checks” resumed at Full lecture · 1/107: “Chapter 1 — The AI/ML Mental Model”
+  - a long audio bookmark on a phone: at 393 px and 100% text the narration sheet scrolls sideways: {"scrollWidth":711,"clientWidth":375,"deleteRight":719.703125,"viewport":393}
+  ```
+
+  Against main (57fb5cf) the new cases fail too:
+
+  ```
+  - sleep timer lapsing in a chapter's last sentence: the playlist opened #/read/notes/part-01-foundations/02-problem-framing-and-objectives.md after the sleep deadline passed
+  - sleep timer lapsing while the next chapter loads: narration outlived the sleep deadline into chapter 2
+  - Next and Previous while paused past the sleep deadline: Next on a player paused past the sleep deadline ended narration
+  - browser Back during full-lecture narration: chapter 1's narration position was saved under chapter 2: 4
+  - pronunciation override after stopping: Waiting failed: 5000ms exceeded
+  - a long audio bookmark on a phone: at 393 px and 100% text the narration sheet scrolls sideways: {"scrollWidth":711,"clientWidth":375,"deleteRight":719.703125,"viewport":393}
+  ```
+
+  The pronunciation case times out on main because main stores bare
+  integers. Main resumed that sentence exactly, so the case covers a problem
+  the branch introduced.
+- Unit tests: `narrationPositions.test.mjs` adds "a reworded sentence in a
+  queue of the same length keeps its index". Against 5095726 it returned
+  `{ index: 3, how: 'section' }`. `audioBookmarks.test.mjs` stores
+  `[null, 5, "x", …]`, which threw `Cannot read properties of null (reading
+  'id')` on 5095726 and on main. One existing assertion changed on purpose.
+  "The sentence itself was rewritten, but its section survives" now also
+  grows the queue by one chunk, so it still expects the section fallback,
+  because a rewrite that keeps the length now keeps the index. The new test
+  covers that case.
+
+Not changed: with `localStorage` blocked outright (reading the accessor
+throws, as Safari's Block All Cookies does), both main and this branch fail
+at startup, before any narration code runs. A probe that replaces
+`window.localStorage` with a throwing getter shows "Lumen could not render
+this screen" at `#/home` and at chapter 1 on both builds. That app-shell hardening is
+separate work. DEVICE_TESTING.md now tells the storage-failure device step to
+use write failures (Private Browsing or full storage), not blocked storage.
+
+Gate: `npm run check` passed (`audit:ai` 560/560, `audit:ai-eval` 27 cases,
+hit@1 0.913). The startup entry is 716,654 bytes and the route screens
+895,621 bytes (budgets 750,000 and 900,000). The full `npm run
+check:browser` passed all 13 suites on the first attempt with no retries,
+at a load average of about 11–12. Before that run, `audit:audio` also passed
+alone with `LUMEN_BROWSER_RETRIES=0`. Two assertions in one of its new cases
+were then swapped so each build fails with an accurate message, and the full
+run used that final version.
