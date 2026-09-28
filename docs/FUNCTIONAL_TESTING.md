@@ -2894,3 +2894,68 @@ lives in the tutor chunks.
 Gate: `npm run check` passed (`audit:ai` 570/570, `audit:ai-eval` 27 cases,
 hit@1 0.913). The full `npm run check:browser` passed all 13 suites on the
 first attempt with no retries, at a load average of about 12.
+
+## Budget headroom and warm tools: second review follow-up on 2026-09-29 (#95)
+
+Main moved to 079ff1d (#142, the chat window fit) during the review, so the
+branch no longer merged. It is rebased onto it. On main the quiz, flashcard
+and study plan views had moved from `PhoneLocalAiTutor.jsx` to the lazily
+loaded `PhoneTutorResults.jsx`, whose field renderer had no math hook: kept
+as it was, those fields would have shown `$…$` as TeX source for good. That
+renderer now gets the same `useTutorMathFor` hook, ref and memo input as
+before the move. `phone_ai_ui_audit`'s retrieval drill now comes before
+main's `toggleWebFallback`, and the doc rows keep both sides. Each rebased
+code commit was built on its own.
+
+- **Another tab's turn dropped focus from an answer holding its math.** With
+  focus on a link in an answer that kept its TeX source, a tutor turn saved
+  by another tab (a newer profile revision in IndexedDB and a
+  `lumen-profile-sync-v1` signal, as the app's save path sends) made the
+  Mac tutor merge its history, which rebuilds every answer's evidence
+  arrays. The answer's memo recomputed with the shared renderer, which had
+  already switched to KaTeX, and the new markup dropped focus to `<body>`.
+  The renderers now take the state an answer was drawn with (`{ math }`),
+  so a held answer renders the same TeX source until focus leaves it. The
+  `math-focus` drill now sends such a turn while the answer is held and
+  checks that focus and the TeX source stay; on the rebased tip before the
+  fix (6641ef7) focus ended on BODY. A unit test renders with new, equal
+  evidence arrays after KaTeX loaded, with each held state; on the old
+  renderer it failed with `an answer held at "idle" rendered differently
+  after KaTeX loaded`. On main (079ff1d) the drill stops earlier ("the
+  saved answers did not show their TeX source while KaTeX was held"), since
+  main has no pending math.
+- **A structured answer's field lost a focused citation on the same turn.**
+  The Mac tutor's inline fields (quiz, flashcard and plan text) and On-device
+  Lite's built their `{ __html }` object inside the memo, so new evidence
+  arrays with the same content gave a new object, and React 19 sets
+  `innerHTML` again whenever that object changes. Each field now keeps one
+  object per markup string, as prose answers already did. The drill then
+  focuses the `[S1]` button in a saved study plan's goal (with KaTeX drawn)
+  and sends another tab's turn; on a build of this branch without that
+  change focus ended on BODY.
+- **The Mac tutor's typed library reason had no browser check.** Only the
+  helper and On-device Lite's status were checked. `audit:ai-ui` now blocks
+  the library-retrieval chunk and the chunk-recovery probe on a fresh page
+  that bypasses the worker (offline, before warming), sends an Explain
+  question, and checks the stage "Library search is unavailable. This tool
+  isn't saved on this device yet. Reconnect once, and it will work offline.
+  Using the attached lesson, without the web…", one request, and no reload.
+  `LUMEN_AI_UI_CASES=library-unavailable` runs only this case. On main
+  (079ff1d), where retrieval is in the entry, the stages were ["Searching
+  your library…", "Library passages found. Writing the answer on your Mac,
+  without the web…"]; on a build of this branch without the reason in the
+  Mac stage they were ["Searching your library…", "Library search is
+  unavailable. Using the attached lesson, without the web…"].
+
+Budgets after the rebase (`npm run size`), superseding the figures above:
+main (079ff1d) has entry 716,616 bytes (33,384 headroom) and install
+899,632 bytes in 32 files (368 headroom). The branch has entry 618,566
+bytes (131,434 headroom; the HTML loads 646,841 bytes of JavaScript, main
+727,103), install 685,498 bytes in 41 files (214,502 headroom, about 200 KB
+gzipped) and warm 305,006 bytes in 8 files (about 95 KB gzipped).
+
+Gate on the rebased branch with these fixes (c83c2ef): `npm run check`
+passed (`audit:ai` 574/574, `audit:ai-eval` 27 cases, hit@1 0.913). The full
+`npm run check:browser` passed all 13 suites on the first attempt with no
+retries, at a load average of about 11–12, including main's On-device Lite
+axe runs (`audit:a11y` 75 runs, empty allowlist).

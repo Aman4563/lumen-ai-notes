@@ -929,12 +929,13 @@ names two of them:
   closure minus anything in `files` or the HTML. No budget.
 
 A route or warm module that does not produce its own lazy chunk fails the build. On 2026-09-29
-(issue #95, after its review fixes) the entry script was 618,604 B (main before it: 716,654 B),
-leaving 131,396 B of headroom. The HTML loads 646,879 B of JavaScript in all (main: 727,141 B),
-because the bundler now preloads `review` and `fsrs` (17.8 KB) as chunks of their own. Install
-adds 42 files and 681,139 B (main: 895,621 B), leaving 218,861 B of headroom, about 199 KB
-gzipped. Warm is 8 files and 305,006 B, about 96 KB gzipped. `npm run size` prints these figures, and `audit:app`
-prints the same lines. The Reader's Markdown renderer (marked and DOMPurify, about 85 KB) is
+(issue #95, after its second review and a rebase onto main 079ff1d, the chat window fit) the
+entry script was 618,566 B (main before it: 716,616 B), leaving 131,434 B of headroom. The HTML
+loads 646,841 B of JavaScript in all (main: 727,103 B), because the bundler now preloads
+`review` and `fsrs` (17.8 KB) as chunks of their own. Install adds 41 files and 685,498 B
+(main: 899,632 B, 368 B of headroom), leaving 214,502 B of headroom, about 200 KB gzipped.
+Warm is 8 files and 305,006 B, about 95 KB gzipped. `npm run size` prints these figures, and
+`audit:app` prints the same lines. The Reader's Markdown renderer (marked and DOMPurify, about 85 KB) is
 pinned in the entry with a side-effect import in `App.jsx`: the link check used to keep it
 there, and as a shared route chunk it would spend the install budget. Lectures, search data,
 Mermaid, fonts, the FSRS optimizer, and the WebLLM runtime stay on demand. Median install
@@ -978,7 +979,11 @@ started when either tutor mounts; until it resolves, math renders as its escaped
 marked-katex-extension (its `start()` is copied, quirk included), and `useTutorMathFor` (a
 `useSyncExternalStore` subscription) re-renders each answer once it has loaded, with the same
 KaTeX output as before. An answer that holds keyboard focus keeps its TeX source until focus
-leaves it, because drawing replaces its markup and would drop focus to the page. A failed load
+leaves it, because drawing replaces its markup and would drop focus to the page. That holds
+when it renders again for another reason, such as another tab's tutor turn rebuilding its
+evidence: the renderers take the state the answer was drawn with (`{ math }`), not the live
+one, and inline fields keep one markup object per string, so React leaves their DOM alone
+when only the evidence arrays are new. A failed load
 leaves the source showing and retries on the next mount or `online` event; it never reloads,
 also when the server answers without the file: `ensureTutorMath` marks the failed import's
 error with `exemptFromChunkRecovery`, and the `vite:preloadError` listener, which recovers one
