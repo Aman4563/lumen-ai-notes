@@ -1,8 +1,10 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { headroomLines, measureBuild } from "./bundle_budget.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const dist = resolve(root, "dist");
+// LUMEN_DIST audits another build directory (for example an older release).
+const dist = resolve(process.env.LUMEN_DIST || resolve(root, "dist"));
 const failures = [];
 
 const assert = (condition, message) => {
@@ -105,3 +107,4 @@ console.log(`Startup entry: ${entryScript} (${entryScript ? statSync(resolve(dis
 console.log(`On-demand JavaScript chunks: ${scripts.length - 1}`);
 console.log(`Manifest icons: ${manifest.icons.length}`);
 console.log(`Offline route screens: ${routeFiles.length} files listed, ${installOnlyFiles.length} (${routeBytes} bytes) beyond the HTML entry`);
+for (const line of headroomLines(measureBuild(dist))) console.log(line);

@@ -20,6 +20,7 @@
     "dev:ai": "HOST=127.0.0.1 PORT=8787 TLS_CERT_FILE= TLS_KEY_FILE= AI_ALLOWED_ORIGINS= AI_ENABLED=true WEB_SEARCH_ENABLED=false node --env-file-if-exists=.env server/server.mjs",
     "dev:ai:search": "HOST=127.0.0.1 PORT=8787 TLS_CERT_FILE= TLS_KEY_FILE= AI_ALLOWED_ORIGINS= AI_ENABLED=true WEB_SEARCH_ENABLED=true node --env-file-if-exists=.env server/server.mjs",
     "build": "vite build",
+    "size": "npm run build && node scripts/size_report.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "start:local-ai": "HOST=127.0.0.1 PORT=4187 TLS_CERT_FILE= TLS_KEY_FILE= AI_ALLOWED_ORIGINS= AI_ENABLED=true WEB_SEARCH_ENABLED=true node --env-file-if-exists=.env server/server.mjs",
     "start": "node --env-file-if-exists=.env server/server.mjs",
