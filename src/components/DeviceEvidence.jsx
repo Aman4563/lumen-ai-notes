@@ -39,6 +39,16 @@ const HUMAN_CHECKS = [
     criterion: "An interruption (timer, call, or Siri) paused narration; returning to the app required one explicit tap to resume, and audio never auto-played from the background.",
   },
   {
+    id: "voice-cancel-speak",
+    area: "Narration transport (AUDIO-001)",
+    criterion: "During full-lecture narration, Next, Previous, Pause then Resume, and playing an audio bookmark each spoke the sentence the player shows, with no silent step, and the first Read started audio at once. Note the iOS version: before iOS 27, Safari dropped an utterance queued straight after a cancel.",
+  },
+  {
+    id: "voice-storage-failure",
+    area: "Narration storage (AUDIO-001)",
+    criterion: "In a Private Browsing tab, and on a phone with storage nearly full, full-lecture narration advanced and a bookmark could be attempted without “Lumen could not render this screen”; a bookmark that could not be saved said so.",
+  },
+  {
     id: "voiceover-reader",
     area: "VoiceOver (A11Y-001)",
     criterion: "With VoiceOver on, the rotor navigates the Reader by headings, and lecture text reads in document order.",
