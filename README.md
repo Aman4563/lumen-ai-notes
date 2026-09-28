@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Aman4563/lumen-ai-notes/actions/workflows/ci.yml/badge.svg)](https://github.com/Aman4563/lumen-ai-notes/actions/workflows/ci.yml)
 [![Code license: MIT](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
-[![Notes license: CC BY 4.0](https://img.shields.io/badge/notes-CC%20BY%204.0-lightgrey.svg)](LICENSE-NOTES.md)
+[![Notes license: CC BY 4.0](https://img.shields.io/badge/notes-CC%20BY%204.0-lightgrey.svg)](LICENSES/NOTES-CC-BY-4.0.md)
 
 Lumen AI Notes is two things in one repository: a from-scratch AI and machine
 learning curriculum, and an iPhone-first, local-first study app for working
@@ -258,6 +258,8 @@ scripts/        content index generator, test and browser check runners, HTTPS h
 eval/           versioned retrieval and grounding evaluation
 infra/searxng/  optional loopback-only SearXNG for web search (Docker Compose)
 docs/           guides, design notes and testing notes (see docs/README.md)
+LICENSES/       the notes licence, third-party notices and bundled model licences
+.github/        contributing guide, code of conduct, security policy, templates, CI
 ```
 
 ## Development
@@ -271,27 +273,27 @@ npm run check:browser   # browser suites in Chrome against an isolated server
 
 `npm run check:release` runs both. The checks also need Ruby for the
 curriculum audit, and the browser suites need Google Chrome (or
-`CHROME_PATH`). See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the release
+`CHROME_PATH`). See the [contributing guide](.github/CONTRIBUTING.md) for setup, the release
 gate and the constraints every change must respect, and
 [docs/README.md](docs/README.md) for the guides and design notes.
 
 ## Contributing
 
 Corrections to the notes and improvements to the app are welcome. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and follow
-the [Code of Conduct](CODE_OF_CONDUCT.md).
+the [contributing guide](.github/CONTRIBUTING.md) before opening a pull request, and follow
+the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
 ## Security
 
-Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md),
+Report vulnerabilities privately as described in the [security policy](.github/SECURITY.md),
 not in a public issue.
 
 ## License
 
 - The application code is licensed under the [MIT License](LICENSE).
 - The curriculum notes in `notes/` are licensed under
-  [Creative Commons Attribution 4.0](LICENSE-NOTES.md): you may share and adapt
+  [Creative Commons Attribution 4.0](LICENSES/NOTES-CC-BY-4.0.md): you may share and adapt
   them with credit. Third-party images and quotations linked from the notes
   keep their owners' licenses.
 - Third-party models and runtimes keep their own terms; see
-  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+  [the third-party notices](LICENSES/THIRD_PARTY_NOTICES.md).

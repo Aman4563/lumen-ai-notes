@@ -258,7 +258,7 @@ npm start
 ```
 
 For an iPhone on the private LAN, use the trusted local HTTPS setup in
-[`LOCAL_HTTPS.md`](./LOCAL_HTTPS.md). A plain LAN HTTP origin cannot provide
+[`LOCAL_HTTPS.md`](LOCAL_HTTPS.md). A plain LAN HTTP origin cannot provide
 Safari WebGPU, a reliable installed PWA, or encrypted prompt transport. The
 server enables TLS only when both `TLS_CERT_FILE` and `TLS_KEY_FILE` are set;
 supplying only one fails at startup. If AI or search is enabled on a

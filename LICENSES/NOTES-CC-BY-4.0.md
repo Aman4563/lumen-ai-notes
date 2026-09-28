@@ -1,6 +1,6 @@
 # Curriculum notes license
 
-The curriculum notes in [`notes/`](notes/README.md) are licensed under the
+The curriculum notes in [`notes/`](../notes/README.md) are licensed under the
 [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/)
 (CC BY 4.0). You may share and adapt them for any purpose, including
 commercially, provided you give appropriate credit (for example, "Lumen AI
@@ -11,7 +11,7 @@ Third-party images and quotations linked from the notes keep their owners'
 licenses and are not covered by this grant.
 
 The application code is licensed separately under the MIT License in
-[`LICENSE`](LICENSE). Third-party models and runtimes keep their own terms; see
+[`LICENSE`](../LICENSE). Third-party models and runtimes keep their own terms; see
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 The full legal code follows.

@@ -28,12 +28,12 @@ npm run preview    # serve dist/ on http://127.0.0.1:4173
 The Mac local AI tutor needs a local model server (Ollama). On-device Lite runs
 in the browser through WebLLM, and the rest of the app works without either.
 To develop against a local [Ollama](https://ollama.com) model, see
-[docs/guides/AI_SERVER.md](docs/guides/AI_SERVER.md) and run `npm run dev:ai`
+[docs/guides/AI_SERVER.md](../docs/guides/AI_SERVER.md) and run `npm run dev:ai`
 alongside `npm run dev`. No paid AI API is used or accepted. On-device Lite
 (WebLLM) is documented in
-[docs/guides/PHONE_LOCAL_AI.md](docs/guides/PHONE_LOCAL_AI.md). Never commit
+[docs/guides/PHONE_LOCAL_AI.md](../docs/guides/PHONE_LOCAL_AI.md). Never commit
 `.env`, anything under `.local/`, certificates or keys, or learner backups.
-[docs/README.md](docs/README.md) indexes the user guides, design notes and
+[docs/README.md](../docs/README.md) indexes the user guides, design notes and
 maintainer references.
 
 ## Workflow
@@ -64,7 +64,7 @@ server from `dist/`, so no manual preview is needed; set `LUMEN_URL` to test an
 already running app, or pass suite names (`npm run check:browser -- ai-ui
 responsive`) to narrow a run. A failed suite is retried once and reported as
 "Passed only on retry"; treat a repeat as a bug to fix, and set
-`LUMEN_BROWSER_RETRIES=0` when diagnosing. [docs/FUNCTIONAL_TESTING.md](docs/FUNCTIONAL_TESTING.md)
+`LUMEN_BROWSER_RETRIES=0` when diagnosing. [docs/FUNCTIONAL_TESTING.md](../docs/FUNCTIONAL_TESTING.md)
 summarizes what the browser suites cover.
 
 Changes to the AI tutor or server should also pass the real-model acceptance
@@ -80,7 +80,7 @@ so in the pull request.
 ## Constraints to respect
 
 - **Invariants.**
-  [docs/internal/ENGINEERING_HANDOFF.md](docs/internal/ENGINEERING_HANDOFF.md)
+  [docs/internal/ENGINEERING_HANDOFF.md](../docs/internal/ENGINEERING_HANDOFF.md)
   section 18 lists the data, AI, grounding, phone-model, rendering and privacy invariants
   every change must preserve (for example: never persist an incomplete AI
   answer as complete, citations resolve only to supplied evidence, API
@@ -104,7 +104,7 @@ so in the pull request.
 - **The retrieval evaluation.** `npm run audit:ai-eval` scores
   `eval/fixtures/v1/retrieval.json` against the generated notes corpus and
   pins its document count. Changing cases or thresholds means re-baselining
-  the fixture and bumping `suiteVersion` (see [eval/README.md](eval/README.md)).
+  the fixture and bumping `suiteVersion` (see [eval/README.md](../eval/README.md)).
 - **Persisted data.** A new profile field needs the `normalizeProfile`
   normalizer in `src/lib/db.js`, the backup round-trip fixture in
   `src/lib/backup.test.mjs`, and the `mergeProfileVersions` merge in
@@ -114,7 +114,7 @@ so in the pull request.
 
 ## Tracking status
 
-[docs/internal/PRODUCT_REQUIREMENTS.md](docs/internal/PRODUCT_REQUIREMENTS.md)
+[docs/internal/PRODUCT_REQUIREMENTS.md](../docs/internal/PRODUCT_REQUIREMENTS.md)
 is the status authority. When a change ships or verifies a requirement, append a dated row to its
 verification log (never rewrite earlier rows), and add a short dated entry to
 docs/FUNCTIONAL_TESTING.md for bugs you reproduced and how they are now
@@ -124,7 +124,7 @@ checked.
 
 The notes live in `notes/`, one folder per part (`part-NN-topic/`) with a
 `README.md` index and numbered chapters (`NN-topic.md`). Every chapter must be
-linked from its part index and every part from [notes/README.md](notes/README.md).
+linked from its part index and every part from [notes/README.md](../notes/README.md).
 `npm run audit:notes` checks local links, structure and Mermaid fences, and
 rejects LaTeX: write equations as MathML or readable Unicode with
 `<sub>`/`<sup>`, never `$$`, `\[`, `\(` or TeX commands such as `\frac`.
@@ -136,6 +136,6 @@ request.
 Corrections are very welcome: open a "Curriculum content" issue or a pull
 request that names the chapter and section, explains what is wrong, and cites
 a source where one applies. Keep the layered depth (beginner, practitioner,
-advanced) described in the [README](README.md). Notes contributions are
-licensed under CC BY 4.0 ([LICENSE-NOTES.md](LICENSE-NOTES.md)); code
-contributions under MIT ([LICENSE](LICENSE)).
+advanced) described in the [README](../README.md). Notes contributions are
+licensed under CC BY 4.0 ([LICENSES/NOTES-CC-BY-4.0.md](../LICENSES/NOTES-CC-BY-4.0.md)); code
+contributions under MIT ([LICENSE](../LICENSE)).
