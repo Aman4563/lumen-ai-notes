@@ -68,7 +68,7 @@ Do **not** put these local files in a source archive, commit, ticket, or ordinar
 - `.local/https/server-key.pem`
 - exported learner backups or browser-profile data
 
-The TLS CA signing key is still present in this workspace. [LOCAL_HTTPS.md](./LOCAL_HTTPS.md)
+The TLS CA signing key is still present in this workspace. [LOCAL_HTTPS.md](../guides/LOCAL_HTTPS.md)
 requires encrypted offline custody and removal from the working Mac after setup. Treat that
 as an operational action, not documentation trivia. Transfer any required secret through a
 separate secure channel; this document intentionally contains none.
@@ -145,7 +145,7 @@ after an upstream regression report concerning later versions; see
 
 ### 2.2 Main routes and surfaces
 
-Hash routing is owned by [src/App.jsx](./src/App.jsx):
+Hash routing is owned by [src/App.jsx](../../src/App.jsx):
 
 | Route | Surface | Main component |
 |---|---|---|
@@ -1415,13 +1415,13 @@ Open `http://127.0.0.1:4187/`. This is the correct stable Mac test path, not
 6. run `npm run build` then `npm start`;
 7. open that exact HTTPS origin in Safari and install the PWA there.
 
-See [LOCAL_HTTPS.md](./LOCAL_HTTPS.md) and [AI_SERVER.md](./AI_SERVER.md). Do not solve an
+See [LOCAL_HTTPS.md](../guides/LOCAL_HTTPS.md) and [AI_SERVER.md](../guides/AI_SERVER.md). Do not solve an
 Origin error with wildcard CORS or by exposing Ollama/SearXNG.
 
 ### 16.5 SearXNG
 
 Use the repository setup command and Compose file documented in
-[infra/searxng/README.md](./infra/searxng/README.md). Verify:
+[infra/searxng/README.md](../../infra/searxng/README.md). Verify:
 
 - container image digest, UID 977, read-only root, dropped capabilities, resource bounds;
 - loopback port only;
@@ -1631,77 +1631,77 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 
 ### Frontend orchestration and state
 
-- [src/App.jsx](./src/App.jsx) — routes, profile lifecycle, persistence, document state,
+- [src/App.jsx](../../src/App.jsx) — routes, profile lifecycle, persistence, document state,
   backup/reset, AI adapters/history, source navigation, review/board integration.
-- [src/lib/db.js](./src/lib/db.js) — profile v4 normalizer, IndexedDB/fallback, budgets,
+- [src/lib/db.js](../../src/lib/db.js) — profile v4 normalizer, IndexedDB/fallback, budgets,
   authoritative replace.
-- [src/lib/profileSync.js](./src/lib/profileSync.js) — record-aware cross-tab profile merge.
-- [src/lib/boardSync.js](./src/lib/boardSync.js) — board merge/rebase.
-- [src/lib/backup.js](./src/lib/backup.js) — canonical backup, integrity, preflight.
-- [src/lib/storageBudget.js](./src/lib/storageBudget.js) — 20 MiB/250-board aggregate gate.
+- [src/lib/profileSync.js](../../src/lib/profileSync.js) — record-aware cross-tab profile merge.
+- [src/lib/boardSync.js](../../src/lib/boardSync.js) — board merge/rebase.
+- [src/lib/backup.js](../../src/lib/backup.js) — canonical backup, integrity, preflight.
+- [src/lib/storageBudget.js](../../src/lib/storageBudget.js) — 20 MiB/250-board aggregate gate.
 
 ### Content and learning
 
-- [src/lib/content.js](./src/lib/content.js) — metadata and lazy Markdown/search imports.
-- [src/lib/search.js](./src/lib/search.js) — ordinary library lexical search.
-- [src/lib/libraryRetrieval.js](./src/lib/libraryRetrieval.js) — AI Library-first retrieval.
-- [src/components/Reader.jsx](./src/components/Reader.jsx) — reading/editing/notes/anchors.
-- [src/lib/annotations.js](./src/lib/annotations.js) — text index, anchor resolve/relocate.
-- [src/lib/review.js](./src/lib/review.js) — scheduling/queue/grade/undo.
-- [src/components/ReviewCenter.jsx](./src/components/ReviewCenter.jsx) — review UI/authoring.
-- [src/hooks/useSpeech.js](./src/hooks/useSpeech.js), [src/lib/speech.js](./src/lib/speech.js),
-  [src/components/NarrationPanel.jsx](./src/components/NarrationPanel.jsx) — audio.
-- [src/components/TeachingMode.jsx](./src/components/TeachingMode.jsx) — slide teaching.
-- [src/components/Whiteboard.jsx](./src/components/Whiteboard.jsx) — board editor.
+- [src/lib/content.js](../../src/lib/content.js) — metadata and lazy Markdown/search imports.
+- [src/lib/search.js](../../src/lib/search.js) — ordinary library lexical search.
+- [src/lib/libraryRetrieval.js](../../src/lib/libraryRetrieval.js) — AI Library-first retrieval.
+- [src/components/Reader.jsx](../../src/components/Reader.jsx) — reading/editing/notes/anchors.
+- [src/lib/annotations.js](../../src/lib/annotations.js) — text index, anchor resolve/relocate.
+- [src/lib/review.js](../../src/lib/review.js) — scheduling/queue/grade/undo.
+- [src/components/ReviewCenter.jsx](../../src/components/ReviewCenter.jsx) — review UI/authoring.
+- [src/hooks/useSpeech.js](../../src/hooks/useSpeech.js), [src/lib/speech.js](../../src/lib/speech.js),
+  [src/components/NarrationPanel.jsx](../../src/components/NarrationPanel.jsx) — audio.
+- [src/components/TeachingMode.jsx](../../src/components/TeachingMode.jsx) — slide teaching.
+- [src/components/Whiteboard.jsx](../../src/components/Whiteboard.jsx) — board editor.
 
 ### AI frontend and shared contracts
 
-- [src/components/AiLearningStudio.jsx](./src/components/AiLearningStudio.jsx) — engine chooser.
-- [src/components/AiTutor.jsx](./src/components/AiTutor.jsx) — Mac UI/request orchestration.
-- [src/lib/aiClient.js](./src/lib/aiClient.js) — same-origin HTTP/NDJSON validation.
-- [src/lib/aiRequestBudget.js](./src/lib/aiRequestBudget.js) — canonical request-byte fit.
-- [src/lib/conversationMemory.js](./src/lib/conversationMemory.js) — complete-pair memory.
-- [src/lib/tutorGrounding.js](./src/lib/tutorGrounding.js) — safe S-labelled context blocks.
-- [src/lib/aiProvenance.js](./src/lib/aiProvenance.js) — durable AI draft/source materialization.
-- [src/lib/tutorMarkdown.js](./src/lib/tutorMarkdown.js) — sanitized prose/citations; model HTML as text.
-- [src/lib/untrustedMarkdown.js](./src/lib/untrustedMarkdown.js) — shared untrusted rules
+- [src/components/AiLearningStudio.jsx](../../src/components/AiLearningStudio.jsx) — engine chooser.
+- [src/components/AiTutor.jsx](../../src/components/AiTutor.jsx) — Mac UI/request orchestration.
+- [src/lib/aiClient.js](../../src/lib/aiClient.js) — same-origin HTTP/NDJSON validation.
+- [src/lib/aiRequestBudget.js](../../src/lib/aiRequestBudget.js) — canonical request-byte fit.
+- [src/lib/conversationMemory.js](../../src/lib/conversationMemory.js) — complete-pair memory.
+- [src/lib/tutorGrounding.js](../../src/lib/tutorGrounding.js) — safe S-labelled context blocks.
+- [src/lib/aiProvenance.js](../../src/lib/aiProvenance.js) — durable AI draft/source materialization.
+- [src/lib/tutorMarkdown.js](../../src/lib/tutorMarkdown.js) — sanitized prose/citations; model HTML as text.
+- [src/lib/untrustedMarkdown.js](../../src/lib/untrustedMarkdown.js) — shared untrusted rules
   (links, images, raw HTML) and the renderer for saved AI output.
-- [src/lib/markdown.js](./src/lib/markdown.js) — shared Markdown extension points.
-- [src/lib/mermaidDiagrams.js](./src/lib/mermaidDiagrams.js) and
-  [src/lib/useMermaidDiagrams.js](./src/lib/useMermaidDiagrams.js) — diagram lifecycle.
+- [src/lib/markdown.js](../../src/lib/markdown.js) — shared Markdown extension points.
+- [src/lib/mermaidDiagrams.js](../../src/lib/mermaidDiagrams.js) and
+  [src/lib/useMermaidDiagrams.js](../../src/lib/useMermaidDiagrams.js) — diagram lifecycle.
 
 ### Phone AI
 
-- [src/components/PhoneLocalAiSettings.jsx](./src/components/PhoneLocalAiSettings.jsx) —
+- [src/components/PhoneLocalAiSettings.jsx](../../src/components/PhoneLocalAiSettings.jsx) —
   compatibility, download/load/release/delete.
-- [src/components/PhoneLocalAiTutor.jsx](./src/components/PhoneLocalAiTutor.jsx) — phone
+- [src/components/PhoneLocalAiTutor.jsx](../../src/components/PhoneLocalAiTutor.jsx) — phone
   retrieval, composer, history, stream, evidence, exact-query consent.
-- [src/lib/phoneLocalAi.js](./src/lib/phoneLocalAi.js) — artifact, lifecycle, fit, planner,
+- [src/lib/phoneLocalAi.js](../../src/lib/phoneLocalAi.js) — artifact, lifecycle, fit, planner,
   inference, grounding, search contracts.
-- [src/workers/phoneLocalAi.worker.js](./src/workers/phoneLocalAi.worker.js) — WebLLM worker.
-- [PHONE_LOCAL_AI.md](./PHONE_LOCAL_AI.md) — runtime/security/device contract.
+- [src/workers/phoneLocalAi.worker.js](../../src/workers/phoneLocalAi.worker.js) — WebLLM worker.
+- [PHONE_LOCAL_AI.md](../guides/PHONE_LOCAL_AI.md) — runtime/security/device contract.
 
 ### Server/search/operations
 
-- [server/server.mjs](./server/server.mjs) — static server, routing, admission/security/logs.
-- [server/ai/config.mjs](./server/ai/config.mjs) — env/defaults/public capability envelope.
-- [server/ai/contracts.mjs](./server/ai/contracts.mjs) — request/structured validation.
-- [server/ai/ollama.mjs](./server/ai/ollama.mjs) — prompt, tools, exact fit, generation,
+- [server/server.mjs](../../server/server.mjs) — static server, routing, admission/security/logs.
+- [server/ai/config.mjs](../../server/ai/config.mjs) — env/defaults/public capability envelope.
+- [server/ai/contracts.mjs](../../server/ai/contracts.mjs) — request/structured validation.
+- [server/ai/ollama.mjs](../../server/ai/ollama.mjs) — prompt, tools, exact fit, generation,
   terminal/citation/repair logic.
-- [server/ai/streaming.mjs](./server/ai/streaming.mjs) — downstream NDJSON protocol.
-- [server/ai/searxng.mjs](./server/ai/searxng.mjs) — query/URL/result safety/ranking.
-- [infra/searxng/compose.yaml](./infra/searxng/compose.yaml) — hardened deployment.
-- [scripts/create_local_https.sh](./scripts/create_local_https.sh) — CA/leaf create/renew.
-- [AI_SERVER.md](./AI_SERVER.md), [docs/AI_STREAMING.md](./docs/AI_STREAMING.md),
-  [LOCAL_HTTPS.md](./LOCAL_HTTPS.md) — operator/protocol docs.
+- [server/ai/streaming.mjs](../../server/ai/streaming.mjs) — downstream NDJSON protocol.
+- [server/ai/searxng.mjs](../../server/ai/searxng.mjs) — query/URL/result safety/ranking.
+- [infra/searxng/compose.yaml](../../infra/searxng/compose.yaml) — hardened deployment.
+- [scripts/create_local_https.sh](../../scripts/create_local_https.sh) — CA/leaf create/renew.
+- [AI_SERVER.md](../guides/AI_SERVER.md), [docs/AI_STREAMING.md](../AI_STREAMING.md),
+  [LOCAL_HTTPS.md](../guides/LOCAL_HTTPS.md) — operator/protocol docs.
 
 ### Build/PWA/recovery
 
-- [vite.config.js](./vite.config.js) — build ID, proxy, target, chunk warning.
-- [src/main.jsx](./src/main.jsx) — early preload recovery and SW registration.
-- [public/service-worker.js](./public/service-worker.js) — release cache strategy.
-- [src/lib/chunkRecovery.js](./src/lib/chunkRecovery.js) — reload/manual repair.
-- [APP_GUIDE.md](./APP_GUIDE.md) — user/operator workflow.
+- [vite.config.js](../../vite.config.js) — build ID, proxy, target, chunk warning.
+- [src/main.jsx](../../src/main.jsx) — early preload recovery and SW registration.
+- [public/service-worker.js](../../public/service-worker.js) — release cache strategy.
+- [src/lib/chunkRecovery.js](../../src/lib/chunkRecovery.js) — reload/manual repair.
+- [APP_GUIDE.md](../guides/APP_GUIDE.md) — user/operator workflow.
 
 ### Test/audit entry points
 
@@ -1739,7 +1739,7 @@ Before accepting this handoff as a durable engineering baseline:
       origin.
 - [ ] Run live Library-first, source-free, prose-web, and structured-web fixtures.
 - [ ] Execute the trusted-HTTPS physical-iPhone matrix in
-      [PHONE_LOCAL_AI.md](./PHONE_LOCAL_AI.md).
+      [PHONE_LOCAL_AI.md](../guides/PHONE_LOCAL_AI.md).
 - [x] Establish the versioned claim-level/search quality evaluation set.
       (Deterministic tier delivered 2026-09-01 as `eval/fixtures/v1` +
       `audit:ai-eval` in `npm run check`; live-Qwen and device tiers remain

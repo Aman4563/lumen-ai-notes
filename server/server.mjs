@@ -846,7 +846,7 @@ export const createApplicationServer = ({
   if (exposesPrivateApis && !isLoopbackAddress(config.host)) {
     if (config.authMode !== "pairing" && !config.allowUnauthenticatedLan) {
       throw new Error(
-        "Serving AI or web search beyond loopback now requires learner pairing. Set AI_AUTH=pairing with an AI_PAIRING_CODE (recommended), or acknowledge the single-learner trusted-LAN profile explicitly with AI_ALLOW_UNAUTHENTICATED_LAN=true. See AI_SERVER.md.",
+        "Serving AI or web search beyond loopback now requires learner pairing. Set AI_AUTH=pairing with an AI_PAIRING_CODE (recommended), or acknowledge the single-learner trusted-LAN profile explicitly with AI_ALLOW_UNAUTHENTICATED_LAN=true. See docs/guides/AI_SERVER.md.",
       );
     }
     if (!tlsOptions) throw new Error("TLS is required when local AI or web search binds beyond loopback");

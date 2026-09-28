@@ -7,6 +7,13 @@
     "node": ">=20.19"
   },
   "description": "An iPhone-first, local-first AI/ML curriculum reader and study studio.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aman4563/lumen-ai-notes.git"
+  },
+  "homepage": "https://github.com/Aman4563/lumen-ai-notes#readme",
+  "bugs": "https://github.com/Aman4563/lumen-ai-notes/issues",
   "scripts": {
     "prebuild": "node scripts/generate_content_index.mjs",
     "dev": "vite --host 127.0.0.1",

@@ -10,7 +10,7 @@ page pasted into issue #7.
 No cable required for the evidence run itself — the phone just needs the
 trusted HTTPS address:
 
-1. Serve the app over HTTPS on the LAN (`AI_SERVER.md` §TLS): the leaf at
+1. Serve the app over HTTPS on the LAN ([`guides/AI_SERVER.md`](guides/AI_SERVER.md) §TLS): the leaf at
    `.local/https/server-cert.pem` is valid to 2027-10-03.
 2. On the iPhone, install and trust the local CA once:
    Safari → download `ca-cert.pem` from the served address → Settings →

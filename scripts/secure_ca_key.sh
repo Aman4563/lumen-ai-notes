@@ -18,7 +18,7 @@
 #   5. boots the server once on loopback to prove the serve still works.
 #
 # Renewal (before 2027-10-03): bring the USB back, restore the two files to
-# .local/https/, re-run the leaf issuance from AI_SERVER.md, then run this
+# .local/https/, re-run the leaf issuance from docs/guides/AI_SERVER.md, then run this
 # script again. The public ca-cert.pem stays on the machine — it is not a
 # secret and the app serves it for device trust installation.
 
