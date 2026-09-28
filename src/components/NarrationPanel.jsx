@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import {
   SPEECH_SCOPES,
+  formatSpeechRate,
   selectSpeechVoice,
   speechLanguageLabel,
   voiceMatchesLanguage,
@@ -140,7 +141,7 @@ export default function NarrationPanel({
       {speech.selectedVoice && (
         <div className="speech-voice-detail">
           <Volume2 size={16} />
-          <span><strong>{speech.selectedVoice.name}</strong>{speech.selectedVoice.lang} · {speech.selectedVoice.localService ? "reported on device" : "availability and privacy depend on iOS"}</span>
+          <span><strong>{speech.selectedVoice.name}</strong>{speech.selectedVoice.lang} · {speech.selectedVoice.localService ? "reported on device" : speech.copy.networkVoice}</span>
         </div>
       )}
 
@@ -153,8 +154,8 @@ export default function NarrationPanel({
 
       <div className="range-grid speech-range-grid">
         <label>
-          <span>Speed <output>{Number(settings.speechRate).toFixed(1)}×</output></span>
-          <input aria-label="Narration speed" type="range" min="0.6" max="1.6" step="0.1" value={settings.speechRate} onChange={(event) => onSettingsChange({ speechRate: Number(event.target.value) })} />
+          <span>Speed <output>{formatSpeechRate(settings.speechRate)}</output></span>
+          <input aria-label="Narration speed" type="range" min="0.6" max="1.6" step="0.05" value={settings.speechRate} aria-valuetext={formatSpeechRate(settings.speechRate)} onChange={(event) => onSettingsChange({ speechRate: Number(event.target.value) })} />
         </label>
         <label>
           <span>Pitch <output>{Number(settings.speechPitch).toFixed(1)}</output></span>
@@ -168,7 +169,7 @@ export default function NarrationPanel({
 
       <div className="speech-preset-row" aria-label="Narration speed presets">
         {[{ label: "Calm", value: 0.8 }, { label: "Natural", value: 1 }, { label: "Review", value: 1.25 }].map((preset) => (
-          <button className={Math.abs(settings.speechRate - preset.value) < 0.01 ? "active" : ""} onClick={() => onSettingsChange({ speechRate: preset.value })} key={preset.label} type="button">{preset.label} <span>{preset.value}×</span></button>
+          <button className={Math.abs(settings.speechRate - preset.value) < 0.01 ? "active" : ""} onClick={() => onSettingsChange({ speechRate: preset.value })} key={preset.label} type="button">{preset.label} <span>{formatSpeechRate(preset.value)}</span></button>
         ))}
         <button onClick={() => onSettingsChange({ speechRate: 1, speechPitch: 1, speechVolume: 1 })} aria-label="Reset narration sound" title="Reset speed, pitch, and volume" type="button"><RotateCcw size={15} /></button>
       </div>
@@ -215,11 +216,14 @@ export default function NarrationPanel({
         ))}
       </div>
 
-      <div className="speech-live" role="status" aria-live="polite">
+      {/* Shown, not announced: the Reader's live region announces each
+          narration message once, and spoken sentences are never announced
+          over the voice reading them (issue #97). */}
+      <div className="speech-live">
         {speech.currentText && <p className="speech-current"><strong>{speech.activeLabel}</strong>{speech.currentText}</p>}
         {speech.error && <p className="inline-warning">{speech.error}</p>}
       </div>
-      <p className="microcopy">Voices come from iOS. “On device” voices can work offline; voices marked “Network” can depend on Apple services. Pitch support varies by voice.</p>
+      <p className="microcopy">{speech.copy.microcopy}</p>
     </div>
   );
 }

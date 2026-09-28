@@ -16,7 +16,7 @@ const PURPOSES = [
   { id: "interview", label: "Interview" },
 ];
 
-const ANNOTATION_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-view > :not(.annotation-dialog-layer)"];
+const ANNOTATION_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-view > :not(.annotation-dialog-layer):not(.narration-live)"];
 
 export default function AnnotationDialog({ draft, onClose, onSave }) {
   const [color, setColor] = useState("gold");

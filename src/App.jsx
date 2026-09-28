@@ -1474,6 +1474,12 @@ export default function App() {
       if (profileRef.current.settings.narrationAutoAdvance !== true) return;
       autoAdvanceNarrationRef.current?.();
     },
+    // The sleep timer ends the session and the player with it, so its notice
+    // is a toast (announced by ToastAnnouncer) on whichever screen is open;
+    // the Reader's own live region skips it (issue #97).
+    onNotice: (notice) => {
+      if (notice.code === "sleep-ended") notify(notice.message, "info", 8000);
+    },
   });
   const wakeLock = useWakeLock(profile.settings.keepScreenAwake && (view === "reader" || view === "board"));
 
