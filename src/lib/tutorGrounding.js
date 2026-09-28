@@ -1,3 +1,5 @@
+import { isWarmToolUnavailable } from "./warmTools.js";
+
 // A deictic word must name lesson material itself: "the current state of the
 // art" or "the open problems in RL" are general questions, not requests
 // about the open lesson.
@@ -9,6 +11,14 @@ const OPEN_LESSON_REFERENCE = /\b(?:this|these|that|current|open|opened|selected
  * wording shares no terms with the lesson, so retrieval must reserve it.
  */
 export const refersToOpenLesson = (prompt) => OPEN_LESSON_REFERENCE.test(String(prompt || ""));
+
+/**
+ * Why library search was unavailable, in the learner's words, or "" when the
+ * tutors' own line says enough. Retrieval is a warm tool (issue #95): until it
+ * is saved on this device, or when the server's build lacks it, its typed
+ * message tells the learner what to do.
+ */
+export const libraryUnavailableReason = (error) => (isWarmToolUnavailable(error) ? error.message : "");
 
 /** A web query is allowed only when both independent gates are true. */
 export const shouldUseWebFallback = ({ learnerAllowedWeb, trace }) => (

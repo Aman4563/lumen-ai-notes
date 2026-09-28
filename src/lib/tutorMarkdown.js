@@ -1,4 +1,5 @@
 import { Marked, Renderer } from "marked";
+import { exemptFromChunkRecovery } from "./chunkRecovery.js";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
 import { escapeAttribute, lineBreakExtension, untrustedRenderer, untrustedTokenizer } from "./untrustedMarkdown.js";
 import { tutorPlainText } from "./tutorExport.js";
@@ -111,10 +112,10 @@ const createTutorMarked = (mathExtensions) => {
 // KaTeX (about 259 KB) is a warm tool (issue #95): it is in neither the
 // startup bundle nor the install tier, and the service worker fetches it after
 // the first idle. Until it loads, math reads as its own TeX source in a code
-// span. The delimiters are those of marked-katex-extension with `nonStandard`
-// (tutorMath.js), so the same spans become KaTeX once it has loaded. The
-// source is escaped here and sanitized with everything else; it never becomes
-// live markup.
+// span. The rules and start() below copy marked-katex-extension 5.1.12 with
+// `nonStandard` (tutorMath.js), so the same spans become KaTeX once it has
+// loaded. The source is escaped here and sanitized with everything else; it
+// never becomes live markup.
 const INLINE_MATH = /^(\${1,2})(?!\$)((?:\\.|[^\\\n])*?(?:\\.|[^\\\n$]))\1/;
 const BLOCK_MATH = /^(\${1,2})\n((?:\\[^]|[^\\])+?)\n\1(?:\n|$)/;
 const pendingMath = (token) => {
@@ -126,16 +127,19 @@ const PENDING_MATH_EXTENSIONS = [{
     {
       name: "inlineKatex",
       level: "inline",
+      // Upstream's start(), quirk included: after skipping an unmatched "$"
+      // it returns the index into the remaining text, not into `src`. With a
+      // stray "$$" in the prose ("price $$ then $x$") marked then tries the
+      // tokenizer at an earlier position than the math it found, and KaTeX
+      // draws that span; returning the true offset here would show a
+      // different span as pending than KaTeX draws once it loads.
       start(src) {
         let rest = src;
-        let offset = 0;
         while (rest) {
           const index = rest.indexOf("$");
           if (index < 0) return undefined;
-          if (INLINE_MATH.test(rest.slice(index))) return offset + index;
-          const skipped = rest.slice(index + 1).replace(/^\$+/, "");
-          offset += rest.length - skipped.length;
-          rest = skipped;
+          if (INLINE_MATH.test(rest.slice(index))) return index;
+          rest = rest.slice(index + 1).replace(/^\$+/, "");
         }
         return undefined;
       },
@@ -183,8 +187,10 @@ export const subscribeTutorMath = (listener) => {
 /**
  * Loads KaTeX and marked-katex-extension (tutorMath.js) and switches the tutor
  * renderer to them. Math is an enhancement, not an action, so this is a plain
- * import: a failure leaves the TeX source showing and never reloads the page.
- * A failed load stays retryable.
+ * import, and its failure is exempt from chunk recovery: it leaves the TeX
+ * source showing and never reloads the page, also when the server answers
+ * without the file (a reload there could drop a question being typed, and
+ * the retry on `online` would repeat it). A failed load stays retryable.
  */
 export const ensureTutorMath = () => {
   if (mathState === "ready") return Promise.resolve();
@@ -195,6 +201,7 @@ export const ensureTutorMath = () => {
         setMathState("ready");
       })
       .catch((error) => {
+        exemptFromChunkRecovery(error);
         mathLoad = null;
         setMathState("failed");
         throw error;

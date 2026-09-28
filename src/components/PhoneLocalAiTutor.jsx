@@ -44,10 +44,10 @@ import {
 import { renderPhoneTutorMarkdown } from "../lib/phoneTutorMarkdown.js";
 import { tutorSpeechText } from "../lib/tutorMarkdown.js";
 import { tutorMessageMarkdown } from "../lib/tutorExport.js";
-import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
+import { libraryUnavailableReason, retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { ANSWER_FOLLOW_UPS, topicQuestionFor, withoutCitationLabels } from "../lib/tutorFollowUps.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
-import { useTutorMath } from "../hooks/useTutorMath.js";
+import { useTutorMath, useTutorMathFor } from "../hooks/useTutorMath.js";
 import "../phone-local-ai-tutor.css";
 
 export const PHONE_TUTOR_MODES = Object.freeze([
@@ -289,7 +289,7 @@ export const sanitizePhoneCitations = (citations) => (Array.isArray(citations) ?
 
 const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, onCopy, streaming = false }) => {
   const responseRef = useRef(null);
-  const math = useTutorMath();
+  const math = useTutorMathFor(responseRef);
   const html = useMemo(
     () => renderPhoneTutorMarkdown(text, sources, citations),
     [citations, math, sources, text], // eslint-disable-line react-hooks/exhaustive-deps
@@ -825,7 +825,14 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
             payload: { ...spec.payload, context: "", contextRanges: [], documentTitle: "General AI/ML question" },
           };
           setStreamingSources([]);
-          setRequestState({ status: "running", message: spec.allowSearch ? "Library search was unavailable; preparing an exact web query for your approval…" : "Library search was unavailable. Generating locally with no web egress…" });
+          // A retrieval tool that is not on this device says why (issue #95).
+          const unavailableReason = libraryUnavailableReason(retrievalError);
+          setRequestState({
+            status: "running",
+            message: unavailableReason
+              ? `Library search was unavailable. ${unavailableReason} ${spec.allowSearch ? "Preparing an exact web query for your approval…" : "Generating locally with no web egress…"}`
+              : spec.allowSearch ? "Library search was unavailable; preparing an exact web query for your approval…" : "Library search was unavailable. Generating locally with no web egress…",
+          });
         }
       } else {
         setStreamingSources(spec.sources);

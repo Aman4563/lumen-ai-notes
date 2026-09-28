@@ -51,9 +51,9 @@ import { customDocumentBytes, isEpubFileName, isHtmlFileName, MAX_CUSTOM_DOCUMEN
 import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { mergeBoardVersions } from "./lib/boardSync.js";
-import { adoptVaultConfig, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
+import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
 // Actions load these tools on use; the service worker warms them (issue #95).
-import { loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
+import { isWarmToolUnavailable, loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
 // The lecture renderer (marked and DOMPurify, about 85 KB) stays in the
 // startup bundle, where the link check used to hold it: every lecture needs
 // it first, and as a shared route chunk it would spend the install budget.
@@ -1934,13 +1934,30 @@ export default function App() {
     try {
       const uploaded = [];
       const bookSummaries = [];
+      const skipped = [];
       // HTML and EPUB converters are a warm tool; Markdown and text never
-      // load them, so those uploads work offline from the first launch.
-      const { describeEpubReport, htmlToMarkdown, importEpub } = accepted.some((file) => isEpubFileName(file.name) || isHtmlFileName(file.name))
-        ? await loadImportConverters()
-        : {};
+      // load them, so those uploads work offline from the first launch. When
+      // the converters are not on this device yet, the Markdown and text files
+      // in the same selection still import, and each HTML or EPUB file is
+      // reported with the reason.
+      const needsConverters = (file) => isEpubFileName(file.name) || isHtmlFileName(file.name);
+      let converters = null;
+      let converterFailure = null;
+      if (accepted.some(needsConverters)) {
+        try {
+          converters = await loadImportConverters();
+        } catch (error) {
+          if (!isWarmToolUnavailable(error)) throw error;
+          converterFailure = error;
+        }
+      }
+      const { describeEpubReport, htmlToMarkdown, importEpub } = converters || {};
       for (const file of accepted) {
         const now = new Date().toISOString();
+        if (converterFailure && needsConverters(file)) {
+          skipped.push(`${file.name} was not imported — ${converterFailure.message}`);
+          continue;
+        }
         if (isEpubFileName(file.name)) {
           // An EPUB fans out to one document per chapter, in spine order,
           // with the lossy-import report surfaced in the notification.
@@ -1981,10 +1998,14 @@ export default function App() {
         }
         fresh.push(doc);
       }
+      const duplicates = `${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped`;
+      const fileNotes = [...bookSummaries, ...skipped].join(" · ").replace(/\.$/u, "");
       if (!fresh.length) {
-        notify(bookSummaries.length && !duplicateCount
-          ? `Nothing was imported. ${bookSummaries.join(" · ")}`
-          : `Every selected file matches a document already in your notebook (${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped). Nothing was imported.`, "warning", 6000);
+        notify(duplicateCount && skipped.length
+          ? `Nothing was imported: ${duplicates}. ${skipped.join(" · ").replace(/\.$/u, "")}.`
+          : fileNotes && !duplicateCount
+            ? `Nothing was imported. ${fileNotes}.`
+            : `Every selected file matches a document already in your notebook (${duplicates}). Nothing was imported.`, "warning", 6000);
         return;
       }
       // Post-conversion byte budget: EPUB and HTML text can outgrow the
@@ -2015,8 +2036,8 @@ export default function App() {
           activity: recordActivityEntry(current.activity, { kind: "upload", label: admitted.length === 1 ? `Uploaded “${admitted[0].title}”` : `Uploaded ${admitted.length} documents`, refId: admitted[0]?.id || "" }),
         };
       });
-      const cautions = rejected || duplicateCount || droppedForBudget;
-      notify(`${budgeted.length} document${budgeted.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped` : ""}${droppedForBudget ? `; ${droppedForBudget} over the 16 MB budget` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. ${bookSummaries.length ? `${bookSummaries.join(" · ")}. ` : ""}No existing notes were replaced.`, cautions ? "warning" : "success", cautions ? 6000 : undefined);
+      const cautions = rejected || duplicateCount || droppedForBudget || skipped.length;
+      notify(`${budgeted.length} document${budgeted.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicates}` : ""}${droppedForBudget ? `; ${droppedForBudget} over the 16 MB budget` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. ${fileNotes ? `${fileNotes}. ` : ""}No existing notes were replaced.`, cautions ? "warning" : "success", cautions ? 6000 : undefined);
     } catch (error) {
       notify(warmToolFailureMessage(error, "Import failed: "), "error", 5000);
     }
@@ -2893,15 +2914,8 @@ export default function App() {
 
   const leaveSyncVaultAction = useCallback(async () => {
     if (!window.confirm("Leave this sync vault? Your local data stays; only the vault membership and sync baseline are removed.")) return;
-    // Load the baseline store first, so an unavailable tool leaves the
-    // membership and its baseline together rather than half removed.
-    let clearSyncBaseline;
-    try {
-      ({ clearSyncBaseline } = await loadBackupTools());
-    } catch (error) {
-      notify(warmToolFailureMessage(error, "Could not leave the vault: "), "error", 6000);
-      return;
-    }
+    // Both live in the startup bundle (syncIdentity.js), so leaving needs no
+    // warm tool and works offline from the first launch.
     clearVaultConfig();
     await clearSyncBaseline();
     setSyncVaultConfig(null);
@@ -3254,7 +3268,7 @@ export default function App() {
         </nav>
       </div>
 
-      {settingsOpen && <div className="settings-overlay" inert={installOpen || shortcutsOpen} aria-hidden={installOpen || shortcutsOpen ? "true" : undefined}><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="settings-drawer-header"><h1 id="settings-title">Settings</h1><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button></div><ErrorBoundary inline onHome={() => { setSettingsOpen(false); changeView("home"); }}><Suspense fallback={<div className="view-loading" role="status">Opening settings…</div>}><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} syncVault={syncVaultConfig} syncDeviceId={syncDeviceIdRef.current} onCreateSyncVault={createSyncVaultAction} onLeaveSyncVault={leaveSyncVaultAction} onSyncExport={exportSyncFile} onSyncImport={importSyncFiles} /></Suspense></ErrorBoundary></div></div>}
+      {settingsOpen && <div className="settings-overlay" inert={installOpen || shortcutsOpen} aria-hidden={installOpen || shortcutsOpen ? "true" : undefined}><button className="modal-scrim" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button" /><div ref={settingsDialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="settings-drawer-header"><h1 id="settings-title">Settings</h1><button className="icon-button settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings" type="button"><X size={20} /></button></div><ErrorBoundary inline headingLevel={2} onHome={() => { setSettingsOpen(false); changeView("home"); }}><Suspense fallback={<div className="view-loading" role="status">Opening settings…</div>}><SettingsView settings={profile.settings} backupMeta={profile.backupMeta} aiHistoryCount={profile.aiTutorHistory?.length || 0} onClearAiHistory={clearAiTutorHistory} onSettingsChange={updateSettings} onResetSettings={resetSettings} onResetApp={resetApplication} onExport={exportBackup} onImport={importBackup} onInstall={() => setInstallOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onNotify={notify} online={online} secureContext={window.isSecureContext} saveStatus={saveStatus} wakeLock={wakeLock} storagePersisted={storagePersisted} onRequestStorage={requestPersistentStorage} syncVault={syncVaultConfig} syncDeviceId={syncDeviceIdRef.current} onCreateSyncVault={createSyncVaultAction} onLeaveSyncVault={leaveSyncVaultAction} onSyncExport={exportSyncFile} onSyncImport={importSyncFiles} /></Suspense></ErrorBoundary></div></div>}
       {installOpen && <InstallSheet secureContext={window.isSecureContext} onClose={() => setInstallOpen(false)} />}
       <BackupImportDialog candidate={backupCandidate} busy={backupBusy} onClose={() => { if (!backupBusy) setBackupCandidate(null); }} onConfirm={confirmBackupImport} />
       <CreateNoteDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createNote} />

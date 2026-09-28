@@ -78,7 +78,7 @@ const goOffline = async (page, server) => {
 
 const shellState = (page) => page.evaluate(() => ({
   fatal: document.querySelector(".fatal-error h1")?.textContent || "",
-  routeError: document.querySelector(".route-error h1")?.textContent || "",
+  routeError: document.querySelector(".route-error :is(h1, h2)")?.textContent || "",
   bottomNav: Boolean(document.querySelector(".bottom-nav button")),
 }));
 

@@ -1,6 +1,7 @@
 import { mergeBoardVersions } from "./boardSync.js";
 import { mergeProfileVersions } from "./profileSync.js";
 import { normalizeBoardDocument } from "./db.js";
+import { SYNC_BASELINE_DATABASE as BASELINE_DATABASE } from "./syncIdentity.js";
 
 /**
  * SYNC-001 v1 (issue #14): encrypted, account-free, file-based cross-device
@@ -20,6 +21,7 @@ export {
   DEVICE_ID_STORAGE_KEY,
   VAULT_CONFIG_STORAGE_KEY,
   adoptVaultConfig,
+  clearSyncBaseline,
   clearVaultConfig,
   createVaultConfig,
   getDeviceId,
@@ -28,7 +30,6 @@ export {
   syncFileNameFor,
 } from "./syncIdentity.js";
 
-const BASELINE_DATABASE = "lumen-sync-baseline-v1";
 const BASELINE_STORE = "baseline";
 const BASELINE_KEY = "current";
 
@@ -132,12 +133,4 @@ export const saveSyncBaseline = async (baseline) => {
   } catch {
     return false;
   }
-};
-
-export const clearSyncBaseline = async () => {
-  if (!globalThis.indexedDB) return;
-  await new Promise((resolve) => {
-    const request = globalThis.indexedDB.deleteDatabase(BASELINE_DATABASE);
-    request.onsuccess = request.onerror = request.onblocked = () => resolve();
-  });
 };

@@ -15,10 +15,24 @@ let browser;
 
 const navigationWasReload = (page) => page.evaluate(() => performance.getEntriesByType("navigation")[0]?.type === "reload");
 
+// Every drill runs by default. LUMEN_CHUNK_DRILLS=name,name runs only those,
+// so one drill's result (or its failure against an older build) can be read
+// on its own: recovery, mermaid, lazy-focus, settings-error, math-focus,
+// math-reload, warm-offline, warm-blocked, warm-stale, update.
+const CHUNK_DRILLS = ["recovery", "mermaid", "lazy-focus", "settings-error", "math-focus", "math-reload", "warm-offline", "warm-blocked", "warm-stale", "update"];
+const selectedDrills = (process.env.LUMEN_CHUNK_DRILLS || "").split(",").map((name) => name.trim()).filter(Boolean);
+const unknownDrills = selectedDrills.filter((name) => !CHUNK_DRILLS.includes(name));
+if (unknownDrills.length) throw new Error(`Unknown chunk drills ${unknownDrills.join(", ")}; choose from ${CHUNK_DRILLS.join(", ")}`);
+const runs = (name) => !selectedDrills.length || selectedDrills.includes(name);
+const PHONE_VIEWPORT = { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true };
+
 // --- Warm tools (issue #95) ----------------------------------------------
 // setOfflineMode does not stop service-worker fetches, so these drills use a
 // real worker, their own server, and stop it (as audit:visual does).
 const WARM_TOOL_OFFLINE_MESSAGE = "This tool isn't saved on this device yet. Reconnect once, and it will work offline.";
+// A server that answers without the tool's file (review round 1).
+const WARM_TOOL_STALE_MESSAGE = "Lumen needs fresh app files: this tool belongs to a different or incomplete Lumen build. Your notes and progress are safe. Reload Lumen while connected to the Lumen server.";
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const EDITED_LECTURE = "notes/00-roadmap.md";
 
 const startIsolatedServer = async (distDirectory = dist) => {
@@ -107,6 +121,7 @@ const writeUploadFixtures = async (directory) => {
     html: join(directory, "warm-drill-page.html"),
     epub: join(directory, "warm-drill-book.epub"),
     markdown: join(directory, "warm-drill-plain.md"),
+    mixedMarkdown: join(directory, "warm-drill-mixed.md"),
   };
   await writeFile(files.html, "<html><head><title>Warm drill page</title></head><body><h1>Warm drill page</h1><p>Converted from <strong>HTML</strong> without a connection.</p></body></html>");
   await writeFile(files.epub, storedZip([
@@ -116,6 +131,7 @@ const writeUploadFixtures = async (directory) => {
     ["OEBPS/chapter1.xhtml", "<html><head><title>Offline chapter</title></head><body><h1>Offline chapter</h1><p>This chapter was imported from an EPUB while the Lumen server was stopped.</p></body></html>"],
   ]));
   await writeFile(files.markdown, "# Warm drill plain note\n\nMarkdown never needs a converter.\n");
+  await writeFile(files.mixedMarkdown, "# Warm drill mixed note\n\nChosen together with an HTML page whose converter is not saved yet.\n");
   return files;
 };
 
@@ -146,6 +162,25 @@ const seedWarmDrillProfile = (page) => page.evaluate((lectureId) => new Promise(
     transaction.onabort = () => reject(transaction.error || new Error("seeding the profile aborted"));
   };
 }), EDITED_LECTURE);
+
+// Saved tutor turns only, for the math drills.
+const seedTutorHistory = (page, answers) => page.evaluate((contents) => new Promise((resolveSeed, reject) => {
+  const now = new Date().toISOString();
+  const turn = (id, role, content) => ({ id, role, content, mode: "explain", createdAt: now, requestId: null, data: null, citationSources: [], webSources: [], responseProfile: "balanced" });
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const transaction = request.result.transaction("study-data", "readwrite");
+    const store = transaction.objectStore("study-data");
+    const get = store.get("profile");
+    get.onsuccess = () => {
+      store.put({ ...(get.result || {}), aiTutorHistory: contents.flatMap((content, index) => [turn(`math-q${index}`, "user", `Question ${index + 1}`), turn(`math-a${index}`, "assistant", content)]) }, "profile");
+    };
+    transaction.oncomplete = () => resolveSeed();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error("seeding the profile aborted"));
+  };
+}), answers);
 
 const step = (label) => console.log(`Warm tool drill: ${label}`);
 
@@ -197,11 +232,16 @@ const goOffline = async (page, server) => {
 };
 
 const toastText = (page) => page.$eval(".toast", (node) => node.textContent).catch(() => "");
+// On failure, name the last toast seen: an error toast may have closed by then.
 const waitForToast = (page, pattern, label) => page.waitForFunction(
-  (source) => new RegExp(source).test(document.querySelector(".toast")?.textContent || ""),
-  { timeout: 20_000 },
+  (source) => {
+    const text = document.querySelector(".toast")?.textContent || "";
+    if (text) window.lumenLastToast = text;
+    return new RegExp(source).test(text);
+  },
+  { timeout: 20_000, polling: 100 },
   pattern.source,
-).catch(async () => assert.fail(`${label}: expected a toast matching ${pattern}, saw "${await toastText(page)}"`));
+).catch(async () => assert.fail(`${label}: expected a toast matching ${pattern}, saw "${await toastText(page) || await page.evaluate(() => window.lumenLastToast || "").catch(() => "")}"`));
 const dismissToast = async (page) => {
   await page.$eval(".toast button", (button) => button.click()).catch(() => {});
   await page.waitForSelector(".toast", { hidden: true, timeout: 5_000 });
@@ -219,7 +259,7 @@ const shellIntact = async (page, label) => {
   const state = await page.evaluate(() => ({
     sameDocument: window.lumenWarmDrillDocument === true,
     fatal: document.querySelector(".fatal-error h1")?.textContent || "",
-    routeError: document.querySelector(".route-error h1")?.textContent || "",
+    routeError: document.querySelector(".route-error :is(h1, h2)")?.textContent || "",
     recoveryMarker: sessionStorage.getItem("lumen:chunk-recovery-v1"),
   }));
   assert.equal(state.sameDocument, true, `${label}: the page reloaded`);
@@ -357,38 +397,57 @@ const warmingBlockedDrill = async (downloads, fixtures) => {
     step("warming failed as blocked; stopping the server");
     await goOffline(page, server);
 
-    const expectTypedToast = async (label) => {
-      await waitForToast(page, new RegExp(WARM_TOOL_OFFLINE_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), label);
+    // Review round 1: each toast still names the action it answers (the
+    // alert is announced on its own), then gives the typed reason.
+    const expectTypedToast = async (label, action) => {
+      await waitForToast(page, new RegExp(escapeRegExp(`${action}${WARM_TOOL_OFFLINE_MESSAGE}`)), label);
       await dismissToast(page);
       await shellIntact(page, label);
     };
     await openSettings(page);
     assert.ok(await clickButton(page, ".settings-drawer", /^\s*Export backup/), "blocked: no Export backup button");
-    await expectTypedToast("blocked backup export");
+    await expectTypedToast("blocked backup export", "Backup failed: ");
     await typeInto(page, 'input[aria-label="Optional backup encryption password"]', "warm drill passphrase");
     assert.ok(await clickButton(page, ".settings-drawer", /Export encrypted backup/), "blocked: no Export encrypted backup button");
-    await expectTypedToast("blocked encrypted export");
+    await expectTypedToast("blocked encrypted export", "Backup failed: ");
     await (await page.$('.settings-drawer input[type="file"][accept*=".lumenc"]:not([multiple])')).uploadFile(fixtures.markdown);
-    await expectTypedToast("blocked backup import");
+    await expectTypedToast("blocked backup import", "Could not import backup: ");
     await typeInto(page, 'input[aria-label="Sync vault passphrase"]', "warm drill vault passphrase");
     assert.ok(await clickButton(page, ".settings-drawer", /Create sync vault/), "blocked: could not create a sync vault");
     await waitForToast(page, /Sync vault created/, "blocked vault creation");
     assert.ok(await clickButton(page, ".settings-drawer", /Export my sync file/), "blocked: no Export my sync file button");
-    await expectTypedToast("blocked sync export");
+    await expectTypedToast("blocked sync export", "Sync export failed: ");
+    // Leaving a vault needs no warm tool (as before issue #95): the
+    // membership and its baseline live in the startup bundle.
+    page.once("dialog", (dialog) => void dialog.accept());
+    assert.ok(await clickButton(page, ".settings-drawer", /^\s*Leave vault/), "blocked: no Leave vault button");
+    await waitForToast(page, /Left the sync vault/, "leaving the vault with warming blocked");
+    await dismissToast(page);
+    assert.equal(await page.evaluate(() => localStorage.getItem("lumen-sync-vault-v1")), null, "the vault membership stayed after leaving");
+    await shellIntact(page, "blocked vault leave");
     await closeSettings(page);
 
     await openNotebook(page);
     const uploadInput = await page.$('.notebook-actions input[type="file"]');
     await uploadInput.uploadFile(fixtures.html);
-    await expectTypedToast("blocked HTML upload");
+    await expectTypedToast("blocked HTML upload", "warm-drill-page.html was not imported — ");
     await uploadInput.uploadFile(fixtures.epub);
-    await expectTypedToast("blocked EPUB upload");
+    await expectTypedToast("blocked EPUB upload", "warm-drill-book.epub was not imported — ");
     // Markdown needs no converter, so it still imports.
     await uploadInput.uploadFile(fixtures.markdown);
     await waitForToast(page, /1 document imported/, "blocked-tier Markdown upload");
     await dismissToast(page);
+    // Review round 1: chosen together with an HTML page, the Markdown note
+    // still imports and the page is reported with the reason.
+    await uploadInput.uploadFile(fixtures.mixedMarkdown, fixtures.html);
+    await waitForToast(page, new RegExp(`1 document imported.*warm-drill-page\\.html was not imported — ${escapeRegExp(WARM_TOOL_OFFLINE_MESSAGE)}`), "blocked mixed Markdown and HTML upload");
+    await dismissToast(page);
+    const mixedTitles = await page.$$eval(".notebook-document-row", (rows) => rows.map((row) => row.textContent));
+    assert.ok(mixedTitles.some((title) => title.includes("Warm drill mixed note")), `the Markdown note chosen with an HTML page was not imported: ${JSON.stringify(mixedTitles)}`);
+    assert.equal(mixedTitles.some((title) => title.includes("Warm drill page")), false, "an HTML page was imported without its converter");
+    await shellIntact(page, "blocked mixed upload");
     assert.ok(await clickButton(page, ".notebook-heading-actions", /Check links/), "blocked: no Check links button");
-    await expectTypedToast("blocked link check");
+    await expectTypedToast("blocked link check", "The link check could not start: ");
     assert.equal(await page.$(".link-report"), null, "a link report appeared although the link check could not load");
 
     // Math is readable TeX source, never an error.
@@ -485,6 +544,193 @@ const updateDrill = async (downloads) => {
   }
 };
 
+// A fresh tab on its own sessionStorage (no recovery marker), with the
+// service worker bypassed so every file comes from the server.
+const openFreshPage = async (url, { downloads } = {}) => {
+  const page = await browser.newPage();
+  await page.setViewport(PHONE_VIEWPORT);
+  await page.setBypassServiceWorker(true);
+  await page.setCacheEnabled(false);
+  if (downloads) {
+    const session = await page.createCDPSession();
+    await session.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
+  }
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.waitForSelector(".welcome-block", { timeout: 30_000 });
+  return page;
+};
+
+// Review round 1: when Settings cannot load, its error panel sits under the
+// drawer's own h1 ("Settings") as an h2, so the dialog keeps one h1.
+const settingsErrorDrill = async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setViewport(PHONE_VIEWPORT);
+    await page.setBypassServiceWorker(true);
+    await page.setCacheEnabled(false);
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const { pathname } = new URL(request.url());
+      // The chunk cannot be downloaded and the server does not answer the
+      // probe, so the drawer explains the failure instead of reloading.
+      if (/\/assets\/Settings-[^/]+\.js$/.test(pathname) || pathname === "/api/health") {
+        void request.abort("internetdisconnected");
+        return;
+      }
+      void request.continue();
+    });
+    await page.goto(baseUrl.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector(".welcome-block", { timeout: 30_000 });
+    await page.$eval('[aria-label="Open settings"]', (button) => button.click());
+    await page.waitForFunction(() => /cannot be reached|not available offline/.test(document.querySelector(".settings-drawer .route-error")?.textContent || ""), { timeout: 20_000 })
+      .catch(async () => assert.fail(`Settings did not show its error panel: ${await page.$eval(".settings-drawer", (node) => node.textContent.slice(0, 200)).catch(() => "no drawer")}`));
+    const state = await page.evaluate(() => {
+      const title = document.querySelector(".settings-drawer .route-error h2");
+      return {
+        h1: [...document.querySelectorAll(".settings-drawer h1")].map((node) => node.textContent),
+        title: title?.textContent || "",
+        titleSize: title ? Number.parseFloat(getComputedStyle(title).fontSize) : 0,
+        fatal: Boolean(document.querySelector(".fatal-error")),
+      };
+    });
+    assert.deepEqual(state.h1, ["Settings"], `the Settings dialog has more than its own h1: ${JSON.stringify(state.h1)}`);
+    assert.ok(state.title, "the Settings error panel has no h2 title");
+    assert.ok(state.titleSize >= 20, `the Settings error title lost its heading size (${state.titleSize}px)`);
+    assert.equal(state.fatal, false, "a Settings chunk failure replaced the whole app");
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".settings-drawer .settings-close"), { timeout: 5_000 })
+      .catch(() => assert.fail("Settings did not keep focus on its close button beside the error panel"));
+  } finally {
+    await page.close().catch(() => {});
+  }
+};
+
+// Review round 1: KaTeX arriving must not destroy a focused control inside a
+// saved answer. That answer keeps its TeX source while focus is inside it
+// and draws KaTeX once focus leaves; an answer without focus draws at once.
+const mathFocusDrill = async () => {
+  const warm = new Set(readRouteListFile().warm || []);
+  const page = await browser.newPage();
+  const held = [];
+  let holding = true;
+  try {
+    await page.setViewport(PHONE_VIEWPORT);
+    await page.setBypassServiceWorker(true);
+    await page.setCacheEnabled(false);
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (holding && warm.has(new URL(request.url()).pathname.replace(/^\/+/, ""))) {
+        held.push(request);
+        return;
+      }
+      void request.continue();
+    });
+    await page.goto(baseUrl.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector(".welcome-block", { timeout: 30_000 });
+    await seedTutorHistory(page, [
+      "It is $x^2$, the square of x. See [the KaTeX guide](https://katex.org/docs/supported.html) for syntax.",
+      "A second answer: $y^2$, with no link.",
+    ]);
+    // The recovery drill on this origin chose On-device Lite; these are
+    // saved Mac tutor answers.
+    await page.evaluate(() => localStorage.removeItem("lumen.ai.engine.v1"));
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector(".welcome-block", { timeout: 30_000 });
+    await page.evaluate(() => { location.hash = "#/ai"; });
+    await page.waitForFunction(() => document.querySelectorAll(".ai-tutor__response-text .ai-tutor__math-pending").length >= 2, { timeout: 20_000 })
+      .catch(() => assert.fail("the saved answers did not show their TeX source while KaTeX was held"));
+    const linkSelector = '.ai-tutor__response-text a[href^="https://katex.org"]';
+    await page.$eval(linkSelector, (link) => link.focus());
+    assert.equal(await page.evaluate((selector) => document.activeElement === document.querySelector(selector), linkSelector), true, "could not focus the link in the saved answer");
+    assert.ok(held.some((request) => /\/assets\/tutorMath-[^/]+\.js$/.test(new URL(request.url()).pathname)), `tutor math was never requested, so nothing was held (${held.map((request) => request.url()).join(", ")})`);
+    holding = false;
+    held.splice(0).forEach((request) => void request.continue());
+    await page.waitForFunction(() => [...document.querySelectorAll(".ai-tutor__response-text")].find((node) => !node.querySelector('a[href^="https://katex.org"]'))?.querySelector(".katex"), { timeout: 20_000 })
+      .catch(() => assert.fail("KaTeX never drew the answer that had no focus"));
+    await page.evaluate(() => new Promise((resolveFrames) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolveFrames, 150)))));
+    const kept = await page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        tag: active?.tagName,
+        text: active?.textContent,
+        pending: Boolean(active?.closest?.(".ai-tutor__response-text")?.querySelector(".ai-tutor__math-pending")),
+      };
+    });
+    assert.deepEqual(kept, { tag: "A", text: "the KaTeX guide", pending: true }, "KaTeX arriving moved focus out of the answer being read");
+    await page.$eval('[aria-label="Open settings"]', (button) => button.focus());
+    await page.waitForFunction((selector) => document.querySelector(selector)?.closest(".ai-tutor__response-text")?.querySelector(".katex"), { timeout: 10_000 }, linkSelector)
+      .catch(() => assert.fail("the answer did not draw its math once focus left it"));
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Open settings", "drawing the math took focus back");
+  } finally {
+    holding = false;
+    held.splice(0).forEach((request) => void request.continue().catch(() => {}));
+    await page.close().catch(() => {});
+  }
+};
+
+// Review round 1: the server answers but its build lacks the warm files (an
+// incomplete deploy, or a tab from another build). The tutor's math is an
+// enhancement and never reloads the page for that.
+const mathReloadDrill = async () => {
+  const farm = await distWithoutWarmTools(join(profileDirectory, "dist-math-reload"));
+  const server = await startIsolatedServer(farm.directory);
+  let page;
+  try {
+    page = await openFreshPage(server.url);
+    await seedWarmDrillProfile(page);
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector(".welcome-block", { timeout: 30_000 });
+    await page.evaluate(() => { window.lumenMathDrill = true; location.hash = "#/ai"; });
+    await page.waitForSelector(".ai-tutor__response-text .ai-tutor__math-pending", { timeout: 20_000 })
+      .catch(async () => assert.fail(`the saved answer did not show its TeX source with KaTeX missing: ${JSON.stringify(await page.evaluate(() => ({
+        sameDocument: window.lumenMathDrill === true,
+        navigation: performance.getEntriesByType("navigation")[0]?.type,
+        hash: location.hash,
+        marker: sessionStorage.getItem("lumen:chunk-recovery-v1"),
+        answer: document.querySelector(".ai-tutor__response-text")?.textContent || document.querySelector("#main-content")?.textContent.slice(0, 160) || "",
+      })).catch((error) => error.message))}`));
+    // A recovery reload would follow the server probe within this window.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 4_000));
+    const state = await page.evaluate(() => ({
+      sameDocument: window.lumenMathDrill === true,
+      marker: sessionStorage.getItem("lumen:chunk-recovery-v1"),
+      pending: document.querySelector(".ai-tutor__response-text .ai-tutor__math-pending")?.textContent || "",
+    }));
+    assert.deepEqual(state, { sameDocument: true, marker: null, pending: "$x^2$" }, "a missing KaTeX file reloaded the page while the server answered");
+  } finally {
+    await page?.close().catch(() => {});
+    await server.stop();
+  }
+};
+
+// Review round 1: with the server answering but the tool's file missing, an
+// action gets its one bounded reload, then says the app files need
+// refreshing, not "reconnect once".
+const staleWarmToolDrill = async (downloads) => {
+  const farm = await distWithoutWarmTools(join(profileDirectory, "dist-stale-warm-tools"));
+  const server = await startIsolatedServer(farm.directory);
+  let page;
+  try {
+    page = await openFreshPage(server.url, { downloads });
+    await page.evaluate(() => { window.lumenStaleDrill = true; });
+    await openSettings(page);
+    assert.ok(await clickButton(page, ".settings-drawer", /^\s*Export backup/), "stale: no Export backup button");
+    await page.waitForFunction(() => window.lumenStaleDrill !== true, { timeout: 20_000 })
+      .catch(() => assert.fail("a backup tool missing from a reachable server did not get its one bounded reload"));
+    await page.waitForSelector(".welcome-block", { timeout: 30_000 });
+    assert.match(await page.evaluate(() => sessionStorage.getItem("lumen:chunk-recovery-v1") || ""), /backupTools-/, "the bounded reload did not name the missing tool");
+    await page.evaluate(() => { window.lumenStaleDrill = true; });
+    await openSettings(page);
+    assert.ok(await clickButton(page, ".settings-drawer", /^\s*Export backup/), "stale: no Export backup button after the reload");
+    await waitForToast(page, new RegExp(escapeRegExp(`Backup failed: ${WARM_TOOL_STALE_MESSAGE}`)), "stale backup export after its reload");
+    assert.doesNotMatch(await toastText(page), /Reconnect once/, "a reachable server was described as offline");
+    assert.equal(await page.evaluate(() => window.lumenStaleDrill === true), true, "the second press reloaded again within the cooldown");
+    assert.equal(await page.$(".fatal-error"), null, "a missing tool replaced the whole app");
+  } finally {
+    await page?.close().catch(() => {});
+    await server.stop();
+  }
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -492,242 +738,276 @@ try {
     userDataDir: profileDirectory,
     args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check"],
   });
-  const page = await browser.newPage();
-  await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
-  // Force each lazy request through DevTools interception instead of allowing a
-  // prior shell-cache response to hide the simulated missing deployment file.
-  await page.setBypassServiceWorker(true);
-  await page.setCacheEnabled(false);
+  if (runs("recovery")) {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    // Force each lazy request through DevTools interception instead of allowing a
+    // prior shell-cache response to hide the simulated missing deployment file.
+    await page.setBypassServiceWorker(true);
+    await page.setCacheEnabled(false);
 
-  await page.goto(baseUrl.href, { waitUntil: "networkidle2", timeout: 30_000 });
-  await page.waitForSelector(".welcome-block");
-  await page.evaluate(() => localStorage.setItem("lumen:chunk-recovery-audit", "preserve"));
+    await page.goto(baseUrl.href, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".welcome-block");
+    await page.evaluate(() => localStorage.setItem("lumen:chunk-recovery-audit", "preserve"));
 
-  let blockWhiteboard = true;
-  let blockedWhiteboard = 0;
-  let blockPhoneCss = false;
-  let blockedPhoneCss = 0;
-  let missingWhiteboard = false;
-  let missingStorageHealth = false;
-  const observedAssets = [];
-  await page.setRequestInterception(true);
-  page.on("request", (request) => {
-    const pathname = new URL(request.url()).pathname;
-    if (pathname.includes("/assets/")) observedAssets.push(pathname);
-    // A file that is missing from the deployment itself, on every request.
-    if ((missingWhiteboard && /\/assets\/Whiteboard-[^/]+\.js$/.test(pathname)) || (missingStorageHealth && /\/assets\/StorageHealth-[^/]+\.js$/.test(pathname))) {
-      void request.respond({ status: 404, contentType: "text/plain", body: "missing" });
-      return;
-    }
-    if (blockWhiteboard && /\/assets\/Whiteboard-[^/]+\.js$/.test(pathname)) {
-      blockWhiteboard = false;
-      blockedWhiteboard += 1;
-      void request.abort("failed");
-      return;
-    }
-    if (blockPhoneCss && /\/assets\/PhoneLocalAiTutor-[^/]+\.css$/.test(pathname)) {
-      blockPhoneCss = false;
-      blockedPhoneCss += 1;
-      void request.abort("failed");
-      return;
-    }
-    void request.continue();
-  });
+    let blockWhiteboard = true;
+    let blockedWhiteboard = 0;
+    let blockPhoneCss = false;
+    let blockedPhoneCss = 0;
+    let missingWhiteboard = false;
+    let missingStorageHealth = false;
+    const observedAssets = [];
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (pathname.includes("/assets/")) observedAssets.push(pathname);
+      // A file that is missing from the deployment itself, on every request.
+      if ((missingWhiteboard && /\/assets\/Whiteboard-[^/]+\.js$/.test(pathname)) || (missingStorageHealth && /\/assets\/StorageHealth-[^/]+\.js$/.test(pathname))) {
+        void request.respond({ status: 404, contentType: "text/plain", body: "missing" });
+        return;
+      }
+      if (blockWhiteboard && /\/assets\/Whiteboard-[^/]+\.js$/.test(pathname)) {
+        blockWhiteboard = false;
+        blockedWhiteboard += 1;
+        void request.abort("failed");
+        return;
+      }
+      if (blockPhoneCss && /\/assets\/PhoneLocalAiTutor-[^/]+\.css$/.test(pathname)) {
+        blockPhoneCss = false;
+        blockedPhoneCss += 1;
+        void request.abort("failed");
+        return;
+      }
+      void request.continue();
+    });
 
-  const documentId = encodeURIComponent("notes/00-roadmap.md");
-  await page.goto(new URL(`#/board/${documentId}`, baseUrl).href, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-  await page.waitForSelector(".advanced-board", { timeout: 30_000 });
-  assert.equal(blockedWhiteboard, 1, `the stale Whiteboard chunk request was not simulated exactly once; observed ${observedAssets.join(", ")}`);
-  assert.equal(await navigationWasReload(page), true, "a stale Whiteboard chunk did not trigger the bounded reload");
-  assert.equal(await page.evaluate(() => localStorage.getItem("lumen:chunk-recovery-audit")), "preserve", "chunk recovery removed local browser data");
-  assert.equal(await page.$(".fatal-error"), null, "Whiteboard remained on the fatal error screen after a fresh chunk became available");
+    const documentId = encodeURIComponent("notes/00-roadmap.md");
+    await page.goto(new URL(`#/board/${documentId}`, baseUrl).href, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+    await page.waitForSelector(".advanced-board", { timeout: 30_000 });
+    assert.equal(blockedWhiteboard, 1, `the stale Whiteboard chunk request was not simulated exactly once; observed ${observedAssets.join(", ")}`);
+    assert.equal(await navigationWasReload(page), true, "a stale Whiteboard chunk did not trigger the bounded reload");
+    assert.equal(await page.evaluate(() => localStorage.getItem("lumen:chunk-recovery-audit")), "preserve", "chunk recovery removed local browser data");
+    assert.equal(await page.$(".fatal-error"), null, "Whiteboard remained on the fatal error screen after a fresh chunk became available");
 
-  await page.goto(new URL("#/ai", baseUrl).href, { waitUntil: "networkidle2", timeout: 30_000 });
-  await page.waitForSelector('[data-ai-engine-option="phone-local"]');
-  assert.equal(await page.evaluate(() => sessionStorage.getItem("lumen:chunk-recovery-v1")), null, "Whiteboard recovery left its cooldown marker after the fresh chunk loaded");
-  blockPhoneCss = true;
-  let resolvePhoneReload;
-  const phoneReloaded = new Promise((resolve) => { resolvePhoneReload = resolve; });
-  const handlePhoneReload = () => resolvePhoneReload(true);
-  page.once("load", handlePhoneReload);
-  await page.click('[data-ai-engine-option="phone-local"]');
-  const phoneReloadObserved = await Promise.race([
-    phoneReloaded,
-    new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
-  ]);
-  page.off("load", handlePhoneReload);
-  assert.equal(phoneReloadObserved, true, `stale on-device tutor CSS did not reload; blocked=${blockedPhoneCss}; assets=${observedAssets.join(", ")}`);
-  await page.waitForSelector('[data-ai-engine-option="phone-local"]', { timeout: 30_000 });
-  assert.equal(blockedPhoneCss, 1, "the stale on-device tutor CSS request was not simulated exactly once");
-  assert.equal(await navigationWasReload(page), true, "stale on-device tutor CSS did not trigger the bounded reload");
+    await page.goto(new URL("#/ai", baseUrl).href, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector('[data-ai-engine-option="phone-local"]');
+    assert.equal(await page.evaluate(() => sessionStorage.getItem("lumen:chunk-recovery-v1")), null, "Whiteboard recovery left its cooldown marker after the fresh chunk loaded");
+    blockPhoneCss = true;
+    let resolvePhoneReload;
+    const phoneReloaded = new Promise((resolve) => { resolvePhoneReload = resolve; });
+    const handlePhoneReload = () => resolvePhoneReload(true);
+    page.once("load", handlePhoneReload);
+    await page.click('[data-ai-engine-option="phone-local"]');
+    const phoneReloadObserved = await Promise.race([
+      phoneReloaded,
+      new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
+    ]);
+    page.off("load", handlePhoneReload);
+    assert.equal(phoneReloadObserved, true, `stale on-device tutor CSS did not reload; blocked=${blockedPhoneCss}; assets=${observedAssets.join(", ")}`);
+    await page.waitForSelector('[data-ai-engine-option="phone-local"]', { timeout: 30_000 });
+    assert.equal(blockedPhoneCss, 1, "the stale on-device tutor CSS request was not simulated exactly once");
+    assert.equal(await navigationWasReload(page), true, "stale on-device tutor CSS did not trigger the bounded reload");
 
-  // The repaired document may already restore the remembered engine; choosing
-  // it again is harmless and verifies the now-available CSS/module pair works.
-  await page.click('[data-ai-engine-option="phone-local"]');
-  await page.waitForSelector(".phone-local-ai", { timeout: 30_000 });
-  assert.equal(await page.$(".fatal-error"), null, "on-device tutor remained on the fatal error screen after recovery");
-  assert.equal(await page.evaluate(() => sessionStorage.getItem("lumen:chunk-recovery-v1")), null, "successful lazy loading did not clear the recovery cooldown marker");
+    // The repaired document may already restore the remembered engine; choosing
+    // it again is harmless and verifies the now-available CSS/module pair works.
+    await page.click('[data-ai-engine-option="phone-local"]');
+    await page.waitForSelector(".phone-local-ai", { timeout: 30_000 });
+    assert.equal(await page.$(".fatal-error"), null, "on-device tutor remained on the fatal error screen after recovery");
+    assert.equal(await page.evaluate(() => sessionStorage.getItem("lumen:chunk-recovery-v1")), null, "successful lazy loading did not clear the recovery cooldown marker");
 
-  const routeError = () => page.evaluate(() => ({
-    title: document.querySelector(".route-error h1")?.textContent || "",
-    actions: [...document.querySelectorAll(".route-error button")].map((button) => button.textContent.trim()),
-    bottomNav: Boolean(document.querySelector(".bottom-nav button")),
-    fatal: Boolean(document.querySelector(".fatal-error")),
-    // The panel lives inside the one <main id="main-content"> landmark.
-    inMain: Boolean(document.querySelector("#main-content .route-error")),
-    mains: document.querySelectorAll("main, [role='main']").length,
-    headingFocused: document.activeElement === document.querySelector(".route-error h1"),
-  }));
-  const goHomeFromRouteError = async () => {
-    await page.$$eval(".route-error button", (buttons) => buttons.find((button) => button.textContent.includes("Go to Home")).click());
-    await page.waitForSelector(".welcome-block", { timeout: 15_000 });
-    assert.equal(await page.$(".route-error"), null, "navigating Home did not clear the failed screen");
-  };
+    const routeError = () => page.evaluate(() => ({
+      title: document.querySelector(".route-error h1")?.textContent || "",
+      actions: [...document.querySelectorAll(".route-error button")].map((button) => button.textContent.trim()),
+      bottomNav: Boolean(document.querySelector(".bottom-nav button")),
+      fatal: Boolean(document.querySelector(".fatal-error")),
+      // The panel lives inside the one <main id="main-content"> landmark.
+      inMain: Boolean(document.querySelector("#main-content .route-error")),
+      mains: document.querySelectorAll("main, [role='main']").length,
+      headingFocused: document.activeElement === document.querySelector(".route-error h1"),
+    }));
+    const goHomeFromRouteError = async () => {
+      await page.$$eval(".route-error button", (buttons) => buttons.find((button) => button.textContent.includes("Go to Home")).click());
+      await page.waitForSelector(".welcome-block", { timeout: 15_000 });
+      assert.equal(await page.$(".route-error"), null, "navigating Home did not clear the failed screen");
+    };
 
-  // Offline, a screen that was never downloaded stays inside the shell and
-  // says so; it neither reloads nor replaces the app.
-  await page.setOfflineMode(true);
-  await page.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Read").click());
-  await page.waitForSelector(".route-error", { timeout: 30_000 });
-  const offlineScreen = await routeError();
-  assert.equal(offlineScreen.title, "This screen is not available offline yet", "an offline chunk failure was not explained as offline");
-  assert.equal(offlineScreen.bottomNav, true, "an offline chunk failure removed the bottom navigation");
-  assert.equal(offlineScreen.fatal, false, "an offline chunk failure replaced the whole app");
-  assert.ok(offlineScreen.actions.some((label) => label.includes("Go to Home")), "the offline screen has no way back to Home");
-  assert.equal(offlineScreen.inMain && offlineScreen.mains === 1, true, `the failed screen left the single main landmark (${offlineScreen.mains} mains, inside #main-content: ${offlineScreen.inMain})`);
-  await goHomeFromRouteError();
-  // React.lazy rethrows the failed import at once, so on a second visit the
-  // panel is present when route focus runs and its heading takes focus.
-  await page.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Read").click());
-  await page.waitForSelector(".route-error h1", { timeout: 15_000 });
-  await page.waitForFunction(() => document.activeElement === document.querySelector(".route-error h1"), { timeout: 5_000 }).catch(() => {});
-  assert.equal((await routeError()).headingFocused, true, "returning to a failed screen did not move route focus to its heading");
-  await goHomeFromRouteError();
-  await page.setOfflineMode(false);
+    // Offline, a screen that was never downloaded stays inside the shell and
+    // says so; it neither reloads nor replaces the app.
+    await page.setOfflineMode(true);
+    await page.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Read").click());
+    await page.waitForSelector(".route-error", { timeout: 30_000 });
+    const offlineScreen = await routeError();
+    assert.equal(offlineScreen.title, "This screen is not available offline yet", "an offline chunk failure was not explained as offline");
+    assert.equal(offlineScreen.bottomNav, true, "an offline chunk failure removed the bottom navigation");
+    assert.equal(offlineScreen.fatal, false, "an offline chunk failure replaced the whole app");
+    assert.ok(offlineScreen.actions.some((label) => label.includes("Go to Home")), "the offline screen has no way back to Home");
+    assert.equal(offlineScreen.inMain && offlineScreen.mains === 1, true, `the failed screen left the single main landmark (${offlineScreen.mains} mains, inside #main-content: ${offlineScreen.inMain})`);
+    await goHomeFromRouteError();
+    // React.lazy rethrows the failed import at once, so on a second visit the
+    // panel is present when route focus runs and its heading takes focus.
+    await page.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Read").click());
+    await page.waitForSelector(".route-error h1", { timeout: 15_000 });
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".route-error h1"), { timeout: 5_000 }).catch(() => {});
+    assert.equal((await routeError()).headingFocused, true, "returning to a failed screen did not move route focus to its heading");
+    await goHomeFromRouteError();
+    await page.setOfflineMode(false);
 
-  // A file missing from the deployment while the server is reachable: one
-  // bounded reload, then an in-shell repair prompt instead of the fatal screen.
-  missingWhiteboard = true;
-  let resolveBoardReload;
-  const boardReloaded = new Promise((resolve) => { resolveBoardReload = resolve; });
-  const handleBoardReload = () => resolveBoardReload(true);
-  page.once("load", handleBoardReload);
-  await page.evaluate((id) => { location.hash = `#/board/${id}`; }, documentId);
-  const boardReloadObserved = await Promise.race([boardReloaded, new Promise((resolve) => setTimeout(() => resolve(false), 15_000))]);
-  page.off("load", handleBoardReload);
-  assert.equal(boardReloadObserved, true, "a missing Whiteboard chunk did not get its one bounded reload");
-  await page.waitForFunction(() => document.querySelector(".route-error h1")?.textContent === "Lumen needs fresh app files", { timeout: 30_000 });
-  const staleScreen = await routeError();
-  assert.equal(staleScreen.bottomNav, true, "a missing chunk after recovery removed the bottom navigation");
-  assert.equal(staleScreen.fatal, false, "a missing chunk after recovery replaced the whole app");
-  assert.ok(staleScreen.actions.some((label) => label.includes("Repair app files")), "a missing deployment file did not offer app-file repair");
-  assert.equal(await page.evaluate(() => localStorage.getItem("lumen:chunk-recovery-audit")), "preserve", "the in-shell failure removed local browser data");
-  await goHomeFromRouteError();
-  missingWhiteboard = false;
+    // A file missing from the deployment while the server is reachable: one
+    // bounded reload, then an in-shell repair prompt instead of the fatal screen.
+    missingWhiteboard = true;
+    let resolveBoardReload;
+    const boardReloaded = new Promise((resolve) => { resolveBoardReload = resolve; });
+    const handleBoardReload = () => resolveBoardReload(true);
+    page.once("load", handleBoardReload);
+    await page.evaluate((id) => { location.hash = `#/board/${id}`; }, documentId);
+    const boardReloadObserved = await Promise.race([boardReloaded, new Promise((resolve) => setTimeout(() => resolve(false), 15_000))]);
+    page.off("load", handleBoardReload);
+    assert.equal(boardReloadObserved, true, "a missing Whiteboard chunk did not get its one bounded reload");
+    await page.waitForFunction(() => document.querySelector(".route-error h1")?.textContent === "Lumen needs fresh app files", { timeout: 30_000 });
+    const staleScreen = await routeError();
+    assert.equal(staleScreen.bottomNav, true, "a missing chunk after recovery removed the bottom navigation");
+    assert.equal(staleScreen.fatal, false, "a missing chunk after recovery replaced the whole app");
+    assert.ok(staleScreen.actions.some((label) => label.includes("Repair app files")), "a missing deployment file did not offer app-file repair");
+    assert.equal(await page.evaluate(() => localStorage.getItem("lumen:chunk-recovery-audit")), "preserve", "the in-shell failure removed local browser data");
+    await goHomeFromRouteError();
+    missingWhiteboard = false;
 
-  // Storage health is optional: when it cannot load, Settings and backup
-  // export stay usable. The recovery reload was already spent above.
-  missingStorageHealth = true;
-  await page.$eval('[aria-label="Open settings"]', (button) => button.click());
-  await page.waitForSelector(".storage-health-unavailable", { timeout: 30_000 });
-  assert.equal(await page.$(".fatal-error"), null, "a missing Storage health chunk replaced the whole app");
-  assert.equal(await page.$$eval(".settings-drawer button", (buttons) => buttons.some((button) => /Export (?:encrypted )?backup/.test(button.textContent) && !button.disabled)), true, "a missing Storage health chunk made backup export unavailable");
-  await page.$eval(".settings-close", (button) => button.click());
-  missingStorageHealth = false;
-  await page.close();
-
-  // Issue #96 (NM1): a lecture whose Mermaid chunk stays missing while the
-  // server answers. The marker names that chunk, so the Reader chunk loading
-  // after the one reload must not clear it; before the fix every reload
-  // re-armed the next and the tab looped (113 navigations measured). A new
-  // tab starts with its own sessionStorage, so no earlier marker applies.
-  const lecturePage = await browser.newPage();
-  await lecturePage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
-  await lecturePage.setBypassServiceWorker(true);
-  await lecturePage.setCacheEnabled(false);
-  await lecturePage.setRequestInterception(true);
-  let blockedMermaid = 0;
-  let documentLoads = 0;
-  let lastDocumentLoad = Date.now();
-  lecturePage.on("request", (request) => {
-    if (request.isNavigationRequest() && request.frame() === lecturePage.mainFrame()) {
-      documentLoads += 1;
-      lastDocumentLoad = Date.now();
-    }
-    if (/\/assets\/mermaid\.core-[^/]+\.js$/.test(new URL(request.url()).pathname)) {
-      blockedMermaid += 1;
-      void request.abort("failed");
-      return;
-    }
-    void request.continue();
-  });
-  const lectureId = encodeURIComponent("notes/part-01-foundations/01-ai-ml-mental-model.md");
-  await lecturePage.goto(new URL(`#/read/${lectureId}`, baseUrl).href, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-  // Settled: the diagram shows its failure and no document has loaded for 4 s.
-  let settled = false;
-  for (const giveUpAt = Date.now() + 30_000; Date.now() < giveUpAt;) {
-    const failed = await lecturePage.evaluate(() => Boolean(document.querySelector('.diagram-shell[data-diagram-status="error"]'))).catch(() => false);
-    if (failed && Date.now() - lastDocumentLoad > 4_000) {
-      settled = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Storage health is optional: when it cannot load, Settings and backup
+    // export stay usable. The recovery reload was already spent above.
+    missingStorageHealth = true;
+    await page.$eval('[aria-label="Open settings"]', (button) => button.click());
+    await page.waitForSelector(".storage-health-unavailable", { timeout: 30_000 });
+    assert.equal(await page.$(".fatal-error"), null, "a missing Storage health chunk replaced the whole app");
+    assert.equal(await page.$$eval(".settings-drawer button", (buttons) => buttons.some((button) => /Export (?:encrypted )?backup/.test(button.textContent) && !button.disabled)), true, "a missing Storage health chunk made backup export unavailable");
+    await page.$eval(".settings-close", (button) => button.click());
+    missingStorageHealth = false;
+    await page.close();
   }
-  const mermaidReloads = documentLoads - 1;
-  assert.ok(blockedMermaid >= 1, "the Mermaid chunk request was never made, so nothing was tested");
-  assert.ok(mermaidReloads <= 1, `a lecture whose Mermaid chunk is missing reloaded ${mermaidReloads} times within the cooldown (Mermaid blocked ${blockedMermaid} times)`);
-  assert.equal(settled, true, "a missing Mermaid chunk never settled on the diagram failure inside the Reader");
-  assert.equal(await lecturePage.$(".fatal-error"), null, "a missing Mermaid chunk replaced the whole app");
-  assert.ok(await lecturePage.$(".markdown-body h1"), "the lecture did not stay readable with its diagram unavailable");
-  await lecturePage.close();
+
+  let mermaidReloads = null;
+  if (runs("mermaid")) {
+    // Issue #96 (NM1): a lecture whose Mermaid chunk stays missing while the
+    // server answers. The marker names that chunk, so the Reader chunk loading
+    // after the one reload must not clear it; before the fix every reload
+    // re-armed the next and the tab looped (113 navigations measured). A new
+    // tab starts with its own sessionStorage, so no earlier marker applies.
+    const lecturePage = await browser.newPage();
+    await lecturePage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    await lecturePage.setBypassServiceWorker(true);
+    await lecturePage.setCacheEnabled(false);
+    await lecturePage.setRequestInterception(true);
+    let blockedMermaid = 0;
+    let documentLoads = 0;
+    let lastDocumentLoad = Date.now();
+    lecturePage.on("request", (request) => {
+      if (request.isNavigationRequest() && request.frame() === lecturePage.mainFrame()) {
+        documentLoads += 1;
+        lastDocumentLoad = Date.now();
+      }
+      if (/\/assets\/mermaid\.core-[^/]+\.js$/.test(new URL(request.url()).pathname)) {
+        blockedMermaid += 1;
+        void request.abort("failed");
+        return;
+      }
+      void request.continue();
+    });
+    const lectureId = encodeURIComponent("notes/part-01-foundations/01-ai-ml-mental-model.md");
+    await lecturePage.goto(new URL(`#/read/${lectureId}`, baseUrl).href, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+    // Settled: the diagram shows its failure and no document has loaded for 4 s.
+    let settled = false;
+    for (const giveUpAt = Date.now() + 30_000; Date.now() < giveUpAt;) {
+      const failed = await lecturePage.evaluate(() => Boolean(document.querySelector('.diagram-shell[data-diagram-status="error"]'))).catch(() => false);
+      if (failed && Date.now() - lastDocumentLoad > 4_000) {
+        settled = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    mermaidReloads = documentLoads - 1;
+    assert.ok(blockedMermaid >= 1, "the Mermaid chunk request was never made, so nothing was tested");
+    assert.ok(mermaidReloads <= 1, `a lecture whose Mermaid chunk is missing reloaded ${mermaidReloads} times within the cooldown (Mermaid blocked ${blockedMermaid} times)`);
+    assert.equal(settled, true, "a missing Mermaid chunk never settled on the diagram failure inside the Reader");
+    assert.equal(await lecturePage.$(".fatal-error"), null, "a missing Mermaid chunk replaced the whole app");
+    assert.ok(await lecturePage.$(".markdown-body h1"), "the lecture did not stay readable with its diagram unavailable");
+    await lecturePage.close();
+  }
 
   // The Notebook and Settings are lazy now (issue #95). Opened while their
   // chunks are still downloading, route focus still ends on the Notebook's
   // heading and Settings still focuses its close button, as when both were
-  // in the startup bundle.
-  const slowPage = await browser.newPage();
-  await slowPage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
-  await slowPage.setBypassServiceWorker(true);
-  await slowPage.setCacheEnabled(false);
-  await slowPage.setRequestInterception(true);
-  let heldScreens = 0;
-  slowPage.on("request", (request) => {
-    if (/\/assets\/(?:Notebook|Settings)-[^/]+\.js$/.test(new URL(request.url()).pathname)) {
-      heldScreens += 1;
-      setTimeout(() => void request.continue(), 1_500);
-      return;
+  // in the startup bundle. Each chunk is held until its screen has been
+  // opened (the app also preloads both on idle), so the loading state is
+  // what is tested; the Settings check used a timer and the idle preload
+  // often finished first (review round 1).
+  if (runs("lazy-focus")) {
+    const slowPage = await browser.newPage();
+    await slowPage.setViewport(PHONE_VIEWPORT);
+    await slowPage.setBypassServiceWorker(true);
+    await slowPage.setCacheEnabled(false);
+    await slowPage.setRequestInterception(true);
+    const heldScreens = { Notebook: [], Settings: [] };
+    const requestedScreens = { Notebook: 0, Settings: 0 };
+    const releasedScreens = new Set();
+    const releaseScreen = (name) => {
+      releasedScreens.add(name);
+      heldScreens[name].splice(0).forEach((request) => void request.continue());
+    };
+    slowPage.on("request", (request) => {
+      const name = new URL(request.url()).pathname.match(/\/assets\/(Notebook|Settings)-[^/]+\.js$/)?.[1];
+      if (name) requestedScreens[name] += 1;
+      if (name && !releasedScreens.has(name)) {
+        heldScreens[name].push(request);
+        return;
+      }
+      void request.continue();
+    });
+    try {
+      await slowPage.goto(baseUrl.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await slowPage.waitForSelector(".welcome-block", { timeout: 30_000 });
+      await slowPage.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Notebook").click());
+      const notebookLoading = await slowPage.evaluate(() => Boolean(document.querySelector("#main-content .view-loading")) && !document.querySelector(".notebook-page"));
+      assert.equal(notebookLoading, true, "the Notebook was already loaded, so its lazy route focus was not tested");
+      releaseScreen("Notebook");
+      await slowPage.waitForSelector(".notebook-page h1", { timeout: 15_000 });
+      await slowPage.waitForFunction(() => document.activeElement?.matches?.(".notebook-page h1"), { timeout: 5_000 }).catch(() => {});
+      const notebookFocus = await slowPage.evaluate(() => ({ tag: document.activeElement?.tagName, text: document.activeElement?.textContent?.trim() }));
+      assert.deepEqual(notebookFocus, { tag: "H1", text: "Study notebook" }, "route focus stayed on the main landmark after the lazy Notebook rendered");
+
+      await slowPage.$eval('[aria-label="Open settings"]', (button) => button.click());
+      const settingsLoading = await slowPage.evaluate(() => Boolean(document.querySelector(".settings-drawer .view-loading")) && !document.querySelector(".settings-drawer .settings-page"));
+      assert.equal(settingsLoading, true, "Settings was already loaded, so its focus while loading was not tested");
+      const closeFocused = () => slowPage.waitForFunction(() => document.activeElement === document.querySelector(".settings-drawer .settings-close"), { timeout: 5_000 }).then(() => true, () => false);
+      const focusName = () => slowPage.evaluate(() => document.activeElement?.getAttribute("aria-label") || document.activeElement?.tagName || null);
+      assert.equal(await closeFocused(), true, `Settings did not focus its close button while its content loaded (focus: ${await focusName()})`);
+      releaseScreen("Settings");
+      await slowPage.waitForSelector(".settings-drawer .settings-page", { timeout: 15_000 });
+      assert.equal(await closeFocused(), true, `Settings moved focus off its close button when its content arrived (focus: ${await focusName()})`);
+      assert.ok(requestedScreens.Notebook >= 1 && requestedScreens.Settings >= 1, `the Notebook and Settings chunks were not both requested (${JSON.stringify(requestedScreens)})`);
+    } finally {
+      await slowPage.close().catch(() => {});
     }
-    void request.continue();
-  });
-  await slowPage.goto(baseUrl.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await slowPage.waitForSelector(".welcome-block", { timeout: 30_000 });
-  await slowPage.$$eval(".bottom-nav button", (buttons) => buttons.find((button) => button.textContent.trim() === "Notebook").click());
-  const notebookLoading = await slowPage.evaluate(() => Boolean(document.querySelector("#main-content .view-loading")) && !document.querySelector(".notebook-page"));
-  await slowPage.waitForSelector(".notebook-page h1", { timeout: 15_000 });
-  await slowPage.waitForFunction(() => document.activeElement?.matches?.(".notebook-page h1"), { timeout: 5_000 }).catch(() => {});
-  const notebookFocus = await slowPage.evaluate(() => ({ tag: document.activeElement?.tagName, text: document.activeElement?.textContent?.trim() }));
-  assert.equal(notebookLoading, true, "the Notebook was already loaded, so its lazy route focus was not tested");
-  assert.deepEqual(notebookFocus, { tag: "H1", text: "Study notebook" }, "route focus stayed on the main landmark after the lazy Notebook rendered");
-  await slowPage.$eval('[aria-label="Open settings"]', (button) => button.click());
-  await slowPage.waitForSelector(".settings-drawer .settings-page", { timeout: 15_000 });
-  assert.equal(await slowPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close settings", "Settings did not focus its close button while its content loaded");
-  assert.ok(heldScreens >= 2, `the Notebook and Settings chunks were not both requested (${heldScreens})`);
-  await slowPage.close();
+  }
 
-  // Warm tools: warmed then offline, and with warming blocked.
-  const downloads = join(profileDirectory, "downloads");
-  await mkdir(downloads, { recursive: true });
-  const fixtures = await writeUploadFixtures(profileDirectory);
+  if (runs("settings-error")) await settingsErrorDrill();
+
+  // Warm tools: warmed then offline, with warming blocked, with the server
+  // answering but the files missing, and across an update.
   assert.ok(existsSync(join(dist, "offline-routes.json")), `no build to serve at ${dist}`);
-  await warmThenOfflineDrill(downloads, fixtures);
-  const blockedDownloads = join(profileDirectory, "downloads-blocked");
-  await mkdir(blockedDownloads, { recursive: true });
-  await warmingBlockedDrill(blockedDownloads, fixtures);
-  const updateDownloads = join(profileDirectory, "downloads-update");
-  await mkdir(updateDownloads, { recursive: true });
-  await updateDrill(updateDownloads);
+  if (runs("math-focus")) await mathFocusDrill();
+  if (runs("math-reload")) await mathReloadDrill();
+  const fixtures = await writeUploadFixtures(profileDirectory);
+  const downloadsFor = async (name) => {
+    const directory = join(profileDirectory, name);
+    await mkdir(directory, { recursive: true });
+    return directory;
+  };
+  if (runs("warm-offline")) await warmThenOfflineDrill(await downloadsFor("downloads"), fixtures);
+  if (runs("warm-blocked")) await warmingBlockedDrill(await downloadsFor("downloads-blocked"), fixtures);
+  if (runs("warm-stale")) await staleWarmToolDrill(await downloadsFor("downloads-stale"));
+  if (runs("update")) await updateDrill(await downloadsFor("downloads-update"));
 
-  console.log(`Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, Settings kept backup export without Storage health, and a lecture with a missing Mermaid chunk reloaded ${mermaidReloads} time(s), then showed the diagram failure in the Reader. The lazy Notebook and Settings kept their route and dialog focus while their chunks loaded. Warm tools: after one idle, with the server stopped, backup export and import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor answer with math, an edited lecture with TeX, and every warm module worked; with warming blocked each action said it needs a connection once, with no error screen or reload, and math stayed readable TeX source; and a waiting update saved its own warm tools, so backup export still worked after it took over with the server stopped.`);
+  if (selectedDrills.length) console.log(`Chunk recovery audit passed the selected drills: ${selectedDrills.join(", ")}.`);
+  else console.log(`Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, Settings kept backup export without Storage health, and a lecture with a missing Mermaid chunk reloaded ${mermaidReloads} time(s), then showed the diagram failure in the Reader. The lazy Notebook and Settings kept their route and dialog focus while their chunks loaded, and a Settings chunk failure kept the drawer to one h1. Tutor math kept focus in the answer being read and never reloaded the page when its file was missing. Warm tools: after one idle, with the server stopped, backup export and import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor answer with math, an edited lecture with TeX, and every warm module worked; with warming blocked each action said it needs a connection once, after its own name, with no error screen or reload, a vault could still be left, a Markdown note chosen with an HTML page still imported, and math stayed readable TeX source; with the server answering but the files missing, an action said the app files need refreshing after its one reload; and a waiting update saved its own warm tools, so backup export still worked after it took over with the server stopped.`);
 } finally {
   await browser?.close().catch(() => {});
   await rm(profileDirectory, { recursive: true, force: true });

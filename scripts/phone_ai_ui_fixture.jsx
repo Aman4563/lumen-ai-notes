@@ -7,6 +7,7 @@ import {
   makeDeterministicPhoneSearchPlan,
   PHONE_LOCAL_AI_DISCLOSURE,
 } from "../src/lib/phoneLocalAi.js";
+import { WarmToolUnavailableError } from "../src/lib/warmTools.js";
 import "katex/dist/katex.min.css";
 import "../src/styles.css";
 import "../src/responsive.css";
@@ -59,6 +60,9 @@ class AuditPhoneEngine {
     // Streams this many paragraphs, one every 60 ms, for the jump-pill checks.
     this.slowNextGeneration = 0;
     this.failNextGeneration = false;
+    // The next retrieval rejects as the app's does when its warm tool is not
+    // on this device yet (issue #95).
+    this.failNextRetrieval = false;
     this.failNextDelete = false;
     this.vetoNextSearchPlan = false;
     this.retrievalCalls = [];
@@ -246,6 +250,10 @@ const sources = [{
 const retrieveLibrary = async (query, options = {}) => {
   engine.retrievalCalls.push({ query, options: { maxDocuments: options.maxDocuments, maxPassages: options.maxPassages, maxBytes: options.maxBytes } });
   if (options.signal?.aborted) throw options.signal.reason;
+  if (engine.failNextRetrieval) {
+    engine.failNextRetrieval = false;
+    throw new WarmToolUnavailableError(new TypeError("Importing a module script failed."));
+  }
   const timeSensitive = /safari|latest|current/i.test(query);
   return {
     passages: [{

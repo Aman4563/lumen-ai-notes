@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTutorContext, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "./tutorGrounding.js";
+import { buildTutorContext, libraryUnavailableReason, outputTokensForProfile, refersToOpenLesson, retrievalTraceCounts, shouldUseWebFallback } from "./tutorGrounding.js";
+import { WARM_TOOL_OFFLINE_MESSAGE, WARM_TOOL_STALE_MESSAGE, WarmToolUnavailableError } from "./warmTools.js";
+
+// Review round 1: retrieval rejects with the warm tool's typed error, and the
+// tutors now say why instead of a bare "unavailable".
+test("a library search whose tool is not on this device gives its reason", () => {
+  const download = new TypeError("Importing a module script failed.");
+  assert.equal(libraryUnavailableReason(new WarmToolUnavailableError(download)), WARM_TOOL_OFFLINE_MESSAGE);
+  assert.equal(libraryUnavailableReason(new WarmToolUnavailableError(download, { stale: true })), WARM_TOOL_STALE_MESSAGE);
+  assert.equal(libraryUnavailableReason(new Error("The local library index is corrupt")), "", "other failures keep the tutors' own line");
+  assert.equal(libraryUnavailableReason(undefined), "");
+});
 
 test("source context never cuts a label or claims a source that did not fit", () => {
   const sources = [

@@ -1,4 +1,4 @@
-import { isStaleChunkError, recoverableImport } from "./chunkRecovery.js";
+import { isStaleChunkError, probeAppServer, recentServerProbe, recoverableImport } from "./chunkRecovery.js";
 
 /**
  * Warm tools (issue #95) are app code that only an action needs: uploads of
@@ -9,36 +9,49 @@ import { isStaleChunkError, recoverableImport } from "./chunkRecovery.js";
  * screen's offline wording) instead of showing a download error.
  */
 export const WARM_TOOL_OFFLINE_MESSAGE = "This tool isn't saved on this device yet. Reconnect once, and it will work offline.";
+/**
+ * The server answers but does not have the tool's file: the page belongs to
+ * another build, or the server's build is incomplete. The error screen's
+ * "fresh app files" wording, for an action instead of a screen.
+ */
+export const WARM_TOOL_STALE_MESSAGE = "Lumen needs fresh app files: this tool belongs to a different or incomplete Lumen build. Your notes and progress are safe. Reload Lumen while connected to the Lumen server.";
 
 export class WarmToolUnavailableError extends Error {
-  constructor(cause) {
-    super(WARM_TOOL_OFFLINE_MESSAGE, { cause });
+  constructor(cause, { stale = false } = {}) {
+    super(stale ? WARM_TOOL_STALE_MESSAGE : WARM_TOOL_OFFLINE_MESSAGE, { cause });
     this.name = "WarmToolUnavailableError";
-    this.code = "WARM_TOOL_OFFLINE";
+    this.code = stale ? "WARM_TOOL_STALE" : "WARM_TOOL_OFFLINE";
+    this.status = stale ? "stale" : "offline";
   }
 }
 
-export const isWarmToolUnavailable = (error) => error?.code === "WARM_TOOL_OFFLINE";
+export const isWarmToolUnavailable = (error) => error instanceof WarmToolUnavailableError || ["WARM_TOOL_OFFLINE", "WARM_TOOL_STALE"].includes(error?.code);
+
+const browserOnline = () => globalThis.navigator?.onLine !== false;
 
 /**
  * Loads a warm tool through chunk recovery: a stale build that the server can
- * replace still gets its one bounded reload, while a file that cannot be
- * downloaded (offline, or the server unreachable) rejects with the typed
- * error. Any other failure keeps its own message. `name` is the tool's chunk
- * name, so loading it clears a recovery marker its own failure left.
+ * replace still gets its one bounded reload. A file that cannot be downloaded
+ * rejects with a typed error: offline, or with the server unreachable, the
+ * tool is not saved on this device yet; with the server answering (after the
+ * reload was spent, or within its cooldown), the app files need refreshing.
+ * Any other failure keeps its own message. `name` is the tool's chunk name,
+ * so loading it clears a recovery marker its own failure left.
  */
-export const loadWarmTool = async (loader, name, { load = recoverableImport } = {}) => {
+export const loadWarmTool = async (loader, name, { load = recoverableImport, isOnline = browserOnline, probe = probeAppServer } = {}) => {
   try {
     return await load(loader, name);
   } catch (error) {
-    throw isStaleChunkError(error) ? new WarmToolUnavailableError(error) : error;
+    if (!isStaleChunkError(error)) throw error;
+    // Chunk recovery remembers the probe it just ran for this failure; within
+    // the reload cooldown it skips the probe, so ask the server here.
+    const reachable = isOnline() && (recentServerProbe(error) ?? await Promise.resolve().then(() => probe()).catch(() => false));
+    throw new WarmToolUnavailableError(error, { stale: reachable === true });
   }
 };
 
-/** A toast for a failed action: the typed offline text alone, anything else after the action's own prefix. */
-export const warmToolFailureMessage = (error, prefix = "") => (isWarmToolUnavailable(error)
-  ? error.message
-  : `${prefix}${error?.message || String(error)}`);
+/** A toast for a failed action: the action's own prefix, then why it failed. */
+export const warmToolFailureMessage = (error, prefix = "") => `${prefix}${error?.message || String(error)}`;
 
 // A tool loads once per document; later calls reuse the module without
 // another trip through the module loader (a tutor's retrieval runs on every

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { renderPhoneTutorInlineMarkdown } from "../lib/phoneTutorMarkdown.js";
-import { useTutorMath } from "../hooks/useTutorMath.js";
+import { useTutorMathFor } from "../hooks/useTutorMath.js";
 import "../phone-tutor-results.css";
 
 // On-device Lite's quiz, flashcard and study-plan views. The tutor loads
@@ -15,7 +15,8 @@ import "../phone-tutor-results.css";
  * navigable [S#]/[W#] citation controls the prose surface produces.
  */
 const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSource }) => {
-  const math = useTutorMath();
+  const fieldRef = useRef(null);
+  const math = useTutorMathFor(fieldRef);
   const markup = useMemo(() => ({ __html: renderPhoneTutorInlineMarkdown(text, sources, citations) }), [citations, math, sources, text]); // eslint-disable-line react-hooks/exhaustive-deps
   const handleClick = (event) => {
     const citationButton = event.target.closest?.("[data-ai-citation]");
@@ -29,7 +30,7 @@ const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSo
     if (source) onNavigateSource?.(source.original || source, { sourceId: source.id, anchor: source.anchor });
   };
   // renderPhoneTutorInlineMarkdown shows model-authored HTML as text, then sanitizes with DOMPurify.
-  return <span className="phone-tutor__inline-md" onClick={handleClick} dangerouslySetInnerHTML={markup} />;
+  return <span ref={fieldRef} className="phone-tutor__inline-md" onClick={handleClick} dangerouslySetInnerHTML={markup} />;
 };
 
 export const QuizResult = ({ quiz, messageId, sources = [], citations = [], onNavigateSource }) => {

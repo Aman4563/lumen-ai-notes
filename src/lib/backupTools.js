@@ -3,4 +3,4 @@
 // fetches them after the first idle so they also work offline.
 export { createBackup, createRecoverySnapshot, preflightBackup } from "./backup.js";
 export { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile, readEncryptedHeader } from "./backupCrypto.js";
-export { checkSyncHeader, clearSyncBaseline, foldPeerSnapshots, loadSyncBaseline, saveSyncBaseline } from "./syncVault.js";
+export { checkSyncHeader, foldPeerSnapshots, loadSyncBaseline, saveSyncBaseline } from "./syncVault.js";

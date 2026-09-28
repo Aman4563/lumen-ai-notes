@@ -1,13 +1,16 @@
 import { createId } from "./id.js";
 
 /**
- * SYNC-001 device identity and vault membership (localStorage only). Settings
- * renders these on every open and creating or leaving a vault writes them, so
- * they stay in the startup bundle; the encrypted fold and its IndexedDB
- * baseline (`syncVault.js`) load with the backup tools on first use.
+ * SYNC-001 device identity and vault membership. Settings renders these on
+ * every open, and creating or leaving a vault writes them, so they stay in the
+ * startup bundle: leaving a vault works offline from the first launch. The
+ * encrypted fold and the rest of the baseline store (`syncVault.js`) load
+ * with the backup tools on first use.
  */
 export const DEVICE_ID_STORAGE_KEY = "lumen-device-id-v1";
 export const VAULT_CONFIG_STORAGE_KEY = "lumen-sync-vault-v1";
+// The sync baseline lives in its own IndexedDB database (see syncVault.js).
+export const SYNC_BASELINE_DATABASE = "lumen-sync-baseline-v1";
 
 /** Durable per-device identity — distinct from the per-tab writerId. */
 export const getDeviceId = (storage = globalThis.localStorage) => {
@@ -62,4 +65,13 @@ export const clearVaultConfig = (storage = globalThis.localStorage) => {
   try {
     storage.removeItem(VAULT_CONFIG_STORAGE_KEY);
   } catch { /* nothing to clear */ }
+};
+
+/** Leaving a vault removes its baseline with the membership: one database delete. */
+export const clearSyncBaseline = async () => {
+  if (!globalThis.indexedDB) return;
+  await new Promise((resolve) => {
+    const request = globalThis.indexedDB.deleteDatabase(SYNC_BASELINE_DATABASE);
+    request.onsuccess = request.onerror = request.onblocked = () => resolve();
+  });
 };

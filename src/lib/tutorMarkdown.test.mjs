@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { escapeAttribute } from "./untrustedMarkdown.js";
 import {
   ensureTutorMath,
   getTutorMathState,
@@ -22,10 +23,29 @@ const APP_LIBRARY_CITATION = /<button class="ai-tutor__citation" type="button" d
 // Every live tag other than the renderer's own citation buttons.
 const tagsBesideAppCitations = (html) => liveTags(html.replace(APP_LIBRARY_CITATION, ""));
 
+// Review round 1: pending math must mark the spans KaTeX draws once loaded,
+// also around a stray "$$" in prose. The pending renders are captured before
+// the load, and compared after it with KaTeX's output swapped for the
+// pending markup (see "pending math marks the spans KaTeX draws").
+const PARITY_INPUTS = [
+  "price $$ then $x$",
+  "costs $$ and $5 each, $x$",
+  "one $ two $$ three $x$ four",
+  "a $$b$$ c and $x^2$, then $$",
+  "$x$$y$ and \\$5 plus $z$",
+  "cost $5 and $10 only",
+  "Loss $x^2$ and $a<b>c$ [S1].",
+  "$$\n\\frac{1}{2}\n$$\n\nThen $$ and $w$.",
+];
+const PARITY_INLINE_INPUTS = ["Pick $$ or $y$", "Option $$y$$ and $$ z $x$"];
+const pendingParity = [];
+
 // KaTeX is a warm tool (issue #95). This test runs first, before anything
 // loads it: until then math is its own escaped TeX source in a code span.
 test("math reads as escaped TeX source until KaTeX loads, never as live markup", () => {
   assert.equal(getTutorMathState(), "idle");
+  for (const input of PARITY_INPUTS) pendingParity.push(render(input));
+  for (const input of PARITY_INLINE_INPUTS) pendingParity.push(renderTutorInlineMarkdownUnsanitized(input, sources, web));
   const result = render([
     "Loss $x^2$ and $a<b>c$ [S1].",
     "",
@@ -63,6 +83,27 @@ test("KaTeX loads on demand, tells subscribers, and draws what KaTeX draws", asy
   assert.equal(render("$\nx\n$"), `${katex.renderToString("x", { ...options, displayMode: false })}\n`);
   assert.equal(renderTutorInlineMarkdownUnsanitized("Pick $$y$$", sources, web), `Pick ${katex.renderToString("y", { ...options, displayMode: true })}`);
   assert.doesNotMatch(render("Loss $x^2$."), /ai-tutor__math-pending/u);
+});
+
+test("pending math marks the spans KaTeX draws once it loads, also beside a stray $$", async () => {
+  await ensureTutorMath();
+  const { default: katex } = await import("katex");
+  const renderToString = katex.renderToString;
+  // marked-katex-extension and tutorMath.js call this same object's method.
+  katex.renderToString = (tex, options = {}) => {
+    const delimiter = options.displayMode ? "$$" : "$";
+    return `<code class="ai-tutor__math-pending">${escapeAttribute(`${delimiter}${tex}${delimiter}`)}</code>`;
+  };
+  try {
+    const loaded = [
+      ...PARITY_INPUTS.map((input) => render(input)),
+      ...PARITY_INLINE_INPUTS.map((input) => renderTutorInlineMarkdownUnsanitized(input, sources, web)),
+    ];
+    assert.deepEqual(pendingParity, loaded);
+    assert.equal(pendingParity[0], '<p>price $<code class="ai-tutor__math-pending">$then$</code>x$</p>\n', "the stray-$$ case follows marked-katex-extension's span choice");
+  } finally {
+    katex.renderToString = renderToString;
+  }
 });
 
 test("renders known library and web citations as the renderer's own controls", () => {
