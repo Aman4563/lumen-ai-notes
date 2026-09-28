@@ -264,9 +264,11 @@ On a phone the Mac tutor is one scrolling page, with the question box docked abo
 the bottom navigation (with very large text on a small phone, where the dock would
 cover the conversation, it stays at the end of the page instead). On a wider screen the
 tutor fits the window: the conversation and the evidence column scroll on their own
-above the question box. A saved conversation opens at its latest turn. The question box
-starts empty, with the mode's suggested question as its placeholder; **Use suggestion**
-puts it in the box. **Options** holds depth, answer length, web fallback and the
+above the question box (in a window too short for that, the page scrolls instead, as on
+a phone). A saved conversation opens at its latest turn, also when **Ask AI** brings an
+excerpt from the Reader. The question box starts empty, with the mode's suggested
+question as its placeholder; **Use suggestion** (just its sparkle icon with very large
+text) puts it in the box. **Options** holds depth, answer length, web fallback and the
 privacy details, and names any setting you changed. With a keyboard, Enter sends and
 Shift+Enter starts a new line (Cmd/Ctrl+Enter in Code review); Up arrow in an empty box
 brings back your last question and Esc stops an answer. Scroll back while an answer

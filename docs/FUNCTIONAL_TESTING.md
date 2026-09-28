@@ -709,8 +709,8 @@ bytes; route screens 890,629 bytes) and all 13 `npm run check:browser`
 suites on the first attempt (`audit:ai-ui` 109 s, `audit:responsive` 434
 layout and 367 control checks, `audit:a11y` 57 axe runs).
 
-Still open: hiding the bottom navigation while typing (needs a physical
-iPhone); a session strip, interview practice and quiz follow-through on
+Still open: hiding the bottom navigation while typing is implemented
+(`useTutorDock`, #93) but unverified on a physical iPhone; a session strip, interview practice and quiz follow-through on
 On-device Lite (its docked composer landed with #94 on 2026-09-28); titled
 multi-topic threads (designed in
 `docs/TUTOR_THREADS_DESIGN.md`); and the server-side Socratic prompt fixes
@@ -2008,9 +2008,11 @@ Fix:
   only as accessible descriptions. Between 981 and 1079 px Grounding sits
   above the conversation, in a panel capped at min(40dvh, 320 px) when open.
 - When the chrome would leave the conversation less than min(260 px, 40%
-  of the screen), the column grows to the height the tutor measures for
-  that (`--ai-column-min`) and the page scrolls, with the composer still
-  docked, instead of squeezing the conversation into a slit. That covers
+  of the screen), the page scrolls, with the composer still docked,
+  instead of squeezing the conversation into a slit. (Since the review
+  follow-up below, the page is then the only scroller:
+  `html[data-ai-page-scroll]` replaced a measured `--ai-column-min`
+  column height that kept the conversation scrolling inside the page.) That covers
   Grounding open at 1024×768, 200% text, the engine notes and a short
   window. 1280×720, 1366×768, 1180×820 and larger fit without page scroll
   with 50–90 px to spare. 1225×671 and 1024×768 fit with 1–6 px to spare,
@@ -2019,8 +2021,8 @@ Fix:
 - Below 981 px the page stays the only scroller (#57). The new
   `src/hooks/useTutorDock.js` measures the top bar, the bottom navigation,
   the dock and an on-screen keyboard. It publishes `--ai-top`,
-  `--ai-nav-space`, `--ai-dock-bottom`, `--ai-composer-space` and
-  `--ai-column-min`. The dock and the page-end padding sit on the measured
+  `--ai-nav-space`, `--ai-dock-bottom` and `--ai-composer-space`, and
+  switches the wide-screen fallback above. The dock and the page-end padding sit on the measured
   navigation, so the dock no longer slides under larger text or rises at
   the page end. A dock that would overlap the navigation because the tutor
   starts too far down stays in the page flow until it fits again. The hook
@@ -2205,7 +2207,8 @@ mode is chosen, or when the conversation holds a structured answer. The
 Mac tutor's quiz views already load this way. Like the WebLLM runtime,
 the chunk is cached by the service worker on that first online use, so a
 model that can run offline finds it there. If it cannot load, the answer
-shows "This view could not load" with Try again. Route screens are 892,595
+shows "This view could not load" (since the review follow-up below, with
+Reload rather than a Try again that could not work). Route screens are 892,595
 bytes: 7,405 under the budget, 767 more than main and 4,187 fewer than
 #93's tip.
 
@@ -2274,3 +2277,180 @@ Evidence:
   suites on the first attempt with no retries (`audit:phone-ai-ui` 47 s,
   `audit:ai-ui` 164 s, `audit:responsive` 434 layout and 367 control
   checks, `audit:a11y` 75 axe runs).
+
+## Review follow-up on 2026-09-28: chat window fit (#93, #94)
+
+Three review lenses (layout, code and behaviour) measured both engines at
+20 viewports on the branch. Reproduced and fixed:
+
+- Mac tutor, wide screens, a 10-line question typed over the latest of
+  five answers. At 1280×720 the composer grew to 226 px and the column
+  switched to its fallback: the page scrolled 63 px while the conversation
+  still scrolled inside, 53 px of it sat under the composer and its end was
+  87 px out of view. At 1440×900 the conversation shrank from 495 to
+  377 px and its end went 120 px out of view. Now the column decision
+  leaves the box's growth out, as the dock decision already did. A
+  conversation that was at its end stays there when it shrinks. While the
+  learner types, a page that scrolls moves up by the dock's growth. The box
+  measured itself by collapsing to one line, which pulled a page at its end
+  up by the box's height for good; the shared `fitQuestionBox` puts the
+  page back. At 1280×720 the conversation is now 197 px with its end in
+  view and no page scroll, and at 1440×900 it is 377 px with its end in
+  view. Where the page scrolls (1024×768, 200% text) the end stays 13 px
+  above the composer.
+- The Mac fallback scrolled twice: at 1280×600 in every state (page
+  37–155 px plus the conversation), at 1024×768 with Grounding open (page
+  290 px, the conversation wholly under the composer at open) and at 200%
+  text (page 84–163 px). The page is now the only scroller there, as on
+  phones. `useTutorDock` sets `html[data-ai-page-scroll]`, with hysteresis,
+  instead of publishing `--ai-column-min`. The conversation, the Evidence
+  column and the Grounding panel then flow in the page under the sticky
+  composer. When the layout switches, a conversation whose end was in view
+  keeps it in view. After a window resize the page shows its end, the
+  latest turn above the box, as the column did; Grounding or the engine
+  notes opened by the learner stay in view. Without this, `audit:responsive`
+  caught that resizing the window to 1225×450 left the page at its top with
+  its end out of reach, since the switch lands a frame after the resize.
+- The empty conversation's suggested starts were cut 9–21 px inside its
+  box at 1024×768, 1225×671 and a 1280×720 first visit. The welcome is
+  tighter at 981 px and wider.
+- On touch tablets (coarse pointer, 981 px and wider) the compact chrome
+  had 36, 28 and 34 px controls. The engine picker, the mode tabs, Refresh,
+  Options and Use suggestion are 44 px there again. Fine pointers keep the
+  compact sizes, so the column's room is unchanged on desktops.
+- Reading back mid-answer from outside the conversation (PageUp, Home or
+  ArrowUp with Options focused, or a wheel over the Evidence column) was
+  undone in 3 of 31 runs. The tutor's own follow scroll landed just after
+  the key, and its scroll event resumed following as if the learner had
+  come back to the end. The tutor now marks its follow scrolls and does not
+  resume on them. The rule predates #93; #93 made the race decisive,
+  because the page no longer scrolls there.
+- Reader Ask AI with a saved conversation opened it at its oldest turn.
+  The open-at-latest hold skipped inserts, and consuming the insert ended
+  the hold. With a docked box the conversation now opens at its latest
+  turn with the excerpt in the box (on wide screens inside its own
+  scroller, the page untouched). An undocked box is revealed instead, as
+  before.
+- At 200% text on phones the empty Mac dock was 52 px taller than main's
+  (167 against 115 px), because Use suggestion took a row of its own. It
+  now shrinks to its sparkle icon (its name unchanged) beside Options when
+  the row is narrower than 12.5em of its own text (17.5em on Lite), so the
+  dock is 115 px again.
+- In the Contrast theme the suggested question (placeholder #333 on white)
+  looked like typed text (#000). Both tutors' placeholders are italic
+  there. The `text-overflow: ellipsis` on `::placeholder` never applied
+  (Chrome computes `clip`) and is gone.
+- On-device Lite kept the sent question in the dock. After each send the
+  dock was 142 px at 393×852 (286 px at 200% text) and covered the new
+  answer. An answered question now leaves the box, as in the Mac tutor; an
+  error, Cancel or a declined search keeps it for Retry and editing.
+- Lite dropped keyboard focus to the page for the whole generation after
+  Enter, because the box was disabled (this predates #94). The box is now
+  read-only while an answer runs, so focus stays in it, and Up-arrow
+  recall is off meanwhile.
+- Lite at 320×568 with 200% text: a long question typed at the page top
+  pushed the dock 29 px behind the navigation, because the tutor's top
+  held it. The page now scrolls by the growth while the learner types.
+- Lite on wide screens: the dock covered the empty welcome at the page top
+  (98–118 px). The page heading is now hidden on wide screens for both
+  engines, and Lite's header and welcome are compact at every width. At
+  1280×720, 1366×768 and 1440×900 the welcome text ends above the dock.
+- Lite's answer actions (Copy, Save, Regenerate, Listen) overflowed
+  sideways at 320 px and at 200% text, so the phone zoomed the page out to
+  a 370 or 496 px layout viewport, with "On-device Lite" one letter per
+  line. This predates #94. On phones the actions now take their own row
+  under the label.
+- Lite's "This view could not load. Try again" could never work: a browser
+  keeps a failed module download for the life of the page, so Try again
+  got the same failure without a request. The answer now says a reload
+  shows the view and clears the on-device conversation, and offers Reload.
+  An automatic reload, as `recoverableImport` does for screens, would
+  clear the conversation without asking.
+- The first-run engine card's Tab order went consent → Download & load →
+  Details, back up to the card's top. The disclosure now follows the
+  heading in the page.
+- In the Contrast theme the mode label in Lite's question bubbles was
+  1.05:1 (the global `small` rule on navy). It keeps the bubble's white.
+- The open-at-latest hold, now `holdLatest` and shared by both tutors,
+  releases its resize observer and window listeners when the learner
+  scrolls or after 1.5 s, not only when the tutor unmounts.
+- Audit precision: Clear model files is opened through Manage and clicked
+  as a learner would, and Lite's `useSuggestion` checks that the box holds
+  exactly the placeholder's question and that the button is gone.
+
+Setup changed with the behaviour, assertions unchanged: the main
+`audit:phone-ai-ui` flow re-sent the question left in the box after three
+answers, and waited for an enabled Send as its "answer done" signal. It now
+puts the same question back before those re-sends, and after the
+strong-library answer it waits for a writable, empty box instead. Its Clear
+model files step opens Manage and scrolls the button clear of the dock
+before a real click.
+
+Assertion changed on purpose: the chat-fit fallback cells (1225×671 and
+1024×768, now also 1280×600) required the conversation to stay its own
+scroller, pinned to its minimum height, inside the scrolling page. They
+now require one scroller. When the page scrolls, neither the conversation
+nor the Evidence column scrolls, the conversation opens at its latest turn
+above the sticky composer, and its end clears the composer at the page
+end. The Grounding-open and engine-notes states are checked the same way.
+Where the page does not scroll, the column checks are unchanged.
+
+Not changed, deliberate limits:
+
+- Mac tutor, first visit at 320×568 with 200% text: the consent card
+  keeps its full wording, so the dock (373 px) stays in the page flow and
+  the box is reached by scrolling past it; nothing is covered. Main is the
+  same (545 px, at 1,678 px down the page).
+- Phone first opens at 375×667, 320×568, with iPhone standalone insets and
+  at 200% text still start the welcome under the dock: Mac 88–243 px, Lite
+  45–89 px, and none of it above the dock for Lite loaded at 375×667 and
+  on a Lite first run at 393×852. Main had the conversation below the fold
+  (0–6 px visible). The page scrolls to it; the chrome above it (engine
+  picker, tutor header, ready line, mode, and on a first run the download
+  approval) is what the learner uses first.
+- Landscape phones (480 px tall or less): the box and Send are not on
+  screen at open or after a send, as on main. The composer stays in the
+  page flow there by design, and Jump to latest floats above the
+  navigation. #93's "box and Send visible at every tested size" does not
+  cover viewports 480 px tall or less.
+- On-device Lite still has no streaming follow; Jump to latest brings
+  back a streaming answer (5.7 KB of route budget is left).
+- Phones, in-app navigation to a saved conversation: focus goes to the
+  visually hidden page heading, as on every route (`audit:a11y` checks
+  heading focus on navigation), while the view is at the latest turn. The
+  first Tab moves to the engine picker at the top of the page.
+
+Regression checks, each failing before the fix and passing after:
+
+- `audit:ai-ui` chat-fit (`LUMEN_AI_UI_CASES=chat-fit`) adds 1440×900 and
+  1280×600 to the wide cells, a long question at 1280×720, 1440×900,
+  1024×768 and 1280×720 at 200% text, empty conversations at 1225×671,
+  1024×768 and 1280×600, 44 px chrome on the touch cells, the Contrast
+  placeholder, a read-back race made certain (Home dispatched from Options
+  right after the tutor's follow scroll, before its scroll event), a real
+  Home press after each 1280×720 follow run, Ask AI with five saved
+  answers at 1280×720 and 393×852, and the empty dock at 200% text.
+  Against this branch's build before the fix it failed 19 ways; against
+  main (audit-dist) 68.
+- `audit:phone-ai-ui` chat-fit (`LUMEN_PHONE_AI_UI_CASES=chat-fit`) adds the
+  engine card's Tab order on every first open, the page width after
+  answers at 320×568 and 393×852 at 200% text, sending with Enter
+  (focus kept, question cleared, one-line dock), a long question at the
+  page top at 320×568 with 200% text, the welcome above the dock at
+  1280×720, 1366×768 and 1440×900, axe `color-contrast` over a
+  conversation in Paper, Night and Contrast, and a failed view download
+  whose action must reload. The fixture runs from source, so these ran
+  against the pre-fix source with its build as `LUMEN_URL`: 17 failures.
+- `src/lib/tutorDock.test.mjs` checks that `holdLatest` lets go of its
+  observer and listeners when it stops and calls `onStop` once.
+
+Gate on the final tip: `npm run check` passed (`audit:ai` 543/543, AI eval
+27 cases, hit@1 0.913). The startup entry is 715,605 bytes. The route
+screens are 894,581 bytes: 1,986 more than before the review, 5,419 under
+the budget. `npm run check:browser` passed all 13 suites on the first
+attempt with no retries (`audit:ai-ui` 189 s, `audit:phone-ai-ui` 64 s,
+`audit:responsive` 434 layout and 367 control checks, `audit:a11y` 75 axe
+runs). An earlier full run failed `audit:phone-ai-ui` (the setup change
+above) and `audit:responsive` (the resize switch above) on both attempts.
+Each was fixed and passed alone with `LUMEN_BROWSER_RETRIES=0` before the
+final run.
