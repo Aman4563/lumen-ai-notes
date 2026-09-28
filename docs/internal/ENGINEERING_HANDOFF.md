@@ -779,7 +779,9 @@ GFM headings, emphasis, lists, blockquotes, tables, links, code, code-copy contr
 the tutor renderer shows it as text before DOMPurify runs, because DOMPurify's default
 profile keeps `<button>` and `data-*`. The same untrusted rules (`untrustedMarkdown.js`,
 without KaTeX) render saved AI output in Review. The Reader's renderer still passes author
-HTML and images to DOMPurify, for learner-authored content only.
+HTML and images to DOMPurify, for learner-authored content only. KaTeX is a warm tool
+(§10.1): the Reader and both tutors show math as its readable TeX source until it has loaded,
+then render the same KaTeX output as before.
 
 Structured Quiz/Flashcard/Study-plan results use dedicated validated React components.
 Each string field renders through a sanitized inline variant of the tutor renderer: KaTeX
@@ -910,20 +912,64 @@ under the ink, so the eraser's `destination-out` affects ink only.
 ### 10.1 Service-worker strategy
 
 `public/service-worker.js` receives a build identifier through its registration URL and uses
-a distinct `lumen-ai-notes-v<build>` shell cache per release. Install caches the shell, the
-exact entry JS/CSS discovered from built HTML, and the route screens listed in the build's
-`offline-routes.json` (emitted by a plugin in `vite.config.js`: Reader and its lazy TeX
-renderer `markdownMath.js`, Whiteboard, AI studio, both tutors, the review center with its
-card editor, the readiness check, Storage health, and Device evidence with their static
-imports and CSS). That adds 30 files and 773,930 bytes to the 714 KB entry. The Node server
-sends them uncompressed; a gzip host would send about 223 KB. KaTeX's JavaScript (259 KB) is
-included because the tutor imports it directly and the reader's TeX renderer shares it. The
-review center and readiness check joined the list when the startup-bundle split made them
-lazy, so the install set shrank slightly rather than grew: the entry script plus route files
-is about 1.49 MB instead of 1.60 MB. Lectures, search data, Mermaid, fonts, the FSRS
-optimizer, and the WebLLM runtime stay on demand. Median install time, measured before that
-split, rose from 253 to 738 ms at 50 Mbps/10 ms (home Wi-Fi) and from 957 to 4,776 ms at 1.6
-Mbps/150 ms; registration waits for the load event, so first paint is unchanged. Install
+a distinct `lumen-ai-notes-v<build>` shell cache per release. The build sorts app code into
+three tiers, and `offline-routes.json` (version 2, emitted by a plugin in `vite.config.js`)
+names two of them:
+
+- **Startup**: the entry script and the chunks the HTML preloads. Budget 750,000 B for the
+  entry script.
+- **Install** (`files`): the route screens in `OFFLINE_ROUTE_MODULES` with their static imports
+  and CSS: Reader, Whiteboard, AI studio, both tutors (with KaTeX's CSS), the review center
+  with its card editor, the readiness check, Storage health, Device evidence, Settings and the
+  Notebook. Install caches these with the shell. Budget 900,000 B beyond the HTML's files.
+- **Warm** (`warm`): tools only an action needs, from `WARM_MODULES`: the reader's TeX
+  renderer `markdownMath.js` and the tutor's `tutorMath.js` (both with KaTeX's 259 KB script),
+  `importConverters.js` (HTML and EPUB upload), `backupTools.js` (backup, encrypted export and
+  the vault sync fold), `linkAudit.js` and `libraryRetrieval.js`. The list is their static
+  closure minus anything in `files` or the HTML. No budget.
+
+A route or warm module that does not produce its own lazy chunk fails the build. On 2026-09-29
+(issue #95) the entry script was 617,722 B (main before it: 716,654 B), leaving 132,278 B of
+headroom. The HTML loads 645,997 B of JavaScript in all (main: 727,141 B), because the bundler
+now preloads `review` and `fsrs` (17.8 KB) as chunks of their own. Install adds 42 files and
+680,539 B (main: 895,621 B), leaving 219,461 B of headroom, about 199 KB gzipped. Warm is 8
+files and 305,197 B, about 95 KB gzipped. `npm run size` prints these figures, and `audit:app`
+prints the same lines. The Reader's Markdown renderer (marked and DOMPurify, about 85 KB) is
+pinned in the entry with a side-effect import in `App.jsx`: the link check used to keep it
+there, and as a shared route chunk it would spend the install budget. Lectures, search data,
+Mermaid, fonts, the FSRS optimizer, and the WebLLM runtime stay on demand. Median install
+time, measured before the startup-bundle split, rose from 253 to 738 ms at 50 Mbps/10 ms (home
+Wi-Fi) and from 957 to 4,776 ms at 1.6 Mbps/150 ms. The entry and install files then came to
+about 1.60 MB and now come to about 1.30 MB, and registration waits for the load event, so
+first paint is unchanged.
+
+Warm tools never gate install or activation. After the first render, on every launch,
+`main.jsx` waits for an idle moment (`requestIdleCallback`, or 3 s where it is missing, as on
+iOS) and posts `{type: "WARM"}` to `registration.active`. The worker reads the route list its
+own install stored, fetches only the warm files its cache lacks (a tool used online was
+already cached on use), rejects non-OK and HTML answers as `fetchScripts` does, and logs a
+failure for the next launch to retry; concurrent requests share one pass, and a caller that
+passes a `MessagePort` gets `{type: "WARMED", cached, fetched, failed}`. When an update is
+waiting, `main.jsx` also posts `WARM` to `registration.waiting` after the first idle, and that
+worker fills its own cache from its own list. The update may take over at a launch taken
+offline, and activation deletes the cache that held the previous release's tools, so without
+this every warm tool would be missing until the next online launch. Install itself is
+unchanged: it never fetches a warm file. Each action loads its
+tool through `loadWarmTool` (`src/lib/warmTools.js`), which uses `recoverableImport` with the
+tool's chunk name. When the file cannot be downloaded (offline, or the server unreachable) the
+action shows the typed toast "This tool isn't saved on this device yet. Reconnect once, and it
+will work offline." instead of an error screen; a stale build the server can replace still
+gets its one bounded reload. Library retrieval rejects with that message inside
+`retrieveLibrarySources`, and both tutors fall back without library evidence. Markdown and text
+uploads, creating or leaving a vault's membership, and the device identity need no tool:
+`syncIdentity.js` keeps the localStorage helpers in the entry. Tutor math loads KaTeX with a
+plain `import()` from `ensureTutorMath()` (`tutorMarkdown.js`), started when either tutor
+mounts; until it resolves, math renders as its escaped TeX source in
+`<code class="ai-tutor__math-pending">`, and `useTutorMath` (a `useSyncExternalStore`
+subscription) re-renders the answers once it has loaded, with the same KaTeX output as before.
+A failed load leaves the source showing and retries on the next mount or `online` event; it
+never reloads. The reader's edited copies and uploads already showed plain Markdown until
+`markdownMath.js` loaded. Install
 validates the list's build and entry against the worker and HTML, fetches every route file
 before writing, and fails on any missing file or HTML answer, so the previous working worker
 remains; a failed install deletes only its own unused cache. A worker registered without a
@@ -931,7 +977,8 @@ build query (a legacy registration or the Vite dev server) cannot match a list a
 entry-only. Activation deletes only old Lumen shell caches and never WebLLM caches. The
 fetch handler neither answers nor caches `offline-routes.json`, so each cache keeps the list
 its install wrote. Optional-cache cleanup keeps every file named by the current build's list
-and by each cache's installed list.
+and by each cache's installed list, warm tools included: they are app code, and removing them
+would only download them again on the next launch.
 
 `/api/*` is never service-worker cached. Navigations are network-first with cached shell
 fallback. Same-origin static assets are cached on use. External image caching is bounded.
@@ -980,10 +1027,21 @@ plus localStorage preservation. With the service worker bypassed, it also covers
 in-shell offline, missing-file, and Storage-health cases, and asserts that the offline panel
 stays inside the single `#main-content` landmark and takes route focus when the learner
 returns to the failed screen. In a fresh tab it blocks only the Mermaid chunk of a lecture
-while online and allows at most one reload. `audit:visual` covers the cached
-path: it stops its own servers after a Home-only visit and opens every primary screen. It
-clears Chrome's HTTP cache after each stop, because the immutable assets would otherwise be
-answered from it and hide a worker that never serves its own cache.
+while online and allows at most one reload. Its warm-tool drills use a real worker and their
+own servers: after one idle with the tools warmed and the server stopped, backup export and
+import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor
+answer with `$x^2$`, an edited lecture with TeX, and every warm module work; with the warm
+files missing from the server (warming fails), each action shows the typed toast with no error
+screen or reload, a Markdown upload still imports, and math stays readable TeX source. An
+update drill republishes the same files as another build: that worker installs and waits,
+must fill its own cache with the warm tools, and after it takes over with the server stopped,
+backup export still works. A last check holds the Notebook and Settings chunks and asserts that
+route and dialog focus land as they did when both were in the startup bundle.
+`audit:visual` covers the cached path: it stops its own servers after a Home-only visit and
+opens every primary screen, the Notebook and Settings included, and checks that optional-cache
+cleanup keeps the warmed tools. It clears Chrome's HTTP cache after each stop, because the
+immutable assets would otherwise be answered from it and hide a worker that never serves its
+own cache.
 
 ### 10.3 Deployment invariants
 
@@ -1674,6 +1732,8 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).
+- Warm tools never gate install or activation, are protected from cleanup, and fail with the
+  typed offline message.
 - Repair deletes only Lumen app caches, not study data or model caches.
 
 ### Privacy/security
@@ -1697,6 +1757,17 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - [src/lib/boardSync.js](../../src/lib/boardSync.js) — board merge/rebase.
 - [src/lib/backup.js](../../src/lib/backup.js) — canonical backup, integrity, preflight.
 - [src/lib/storageBudget.js](../../src/lib/storageBudget.js) — 20 MiB/250-board aggregate gate.
+- [src/components/Settings.jsx](../../src/components/Settings.jsx) and
+  [src/components/Notebook.jsx](../../src/components/Notebook.jsx) — lazy install-tier screens;
+  [src/components/DocumentCard.jsx](../../src/components/DocumentCard.jsx) is shared with Home.
+- [src/lib/warmTools.js](../../src/lib/warmTools.js) — warm-tool loaders and the typed offline
+  message; [src/lib/backupTools.js](../../src/lib/backupTools.js) and
+  [src/lib/importConverters.js](../../src/lib/importConverters.js) group the tools;
+  [src/lib/syncIdentity.js](../../src/lib/syncIdentity.js) keeps device and vault identity in
+  the entry.
+- [vite.config.js](../../vite.config.js), [public/service-worker.js](../../public/service-worker.js)
+  and [scripts/size_report.mjs](../../scripts/size_report.mjs) — the three tiers, warming, and
+  `npm run size`.
 
 ### Content and learning
 
@@ -1721,7 +1792,9 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - [src/lib/conversationMemory.js](../../src/lib/conversationMemory.js) — complete-pair memory.
 - [src/lib/tutorGrounding.js](../../src/lib/tutorGrounding.js) — safe S-labelled context blocks.
 - [src/lib/aiProvenance.js](../../src/lib/aiProvenance.js) — durable AI draft/source materialization.
-- [src/lib/tutorMarkdown.js](../../src/lib/tutorMarkdown.js) — sanitized prose/citations; model HTML as text.
+- [src/lib/tutorMarkdown.js](../../src/lib/tutorMarkdown.js) — sanitized prose/citations; model HTML as text;
+  the KaTeX load store. [src/lib/tutorMath.js](../../src/lib/tutorMath.js) (warm) and
+  [src/hooks/useTutorMath.js](../../src/hooks/useTutorMath.js) load and subscribe to it.
 - [src/lib/untrustedMarkdown.js](../../src/lib/untrustedMarkdown.js) — shared untrusted rules
   (links, images, raw HTML) and the renderer for saved AI output.
 - [src/lib/markdown.js](../../src/lib/markdown.js) — shared Markdown extension points.

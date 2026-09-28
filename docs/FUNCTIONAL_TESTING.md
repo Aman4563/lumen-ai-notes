@@ -2690,3 +2690,106 @@ select measurements and 16 narrow fine-pointer screens,
 `audit:responsive` 478 layout and 367 control checks, `audit:a11y` 75 axe
 runs with the empty allowlist). Only docs and one source comment changed
 after that run; a rebuild gives the same startup and route byte counts.
+
+## Budget headroom and warm tools on 2026-09-29 (#95)
+
+Reproduced on main (a79411c), measured with the new `npm run size` pointed
+at that build (`LUMEN_DIST`): the startup entry script was 716,654 of
+750,000 bytes (33,346 headroom) and the install-tier route screens 895,621
+of 900,000 (4,379 headroom), so almost any feature would fail `npm run
+check`. The largest install file was KaTeX's 259,052-byte script, which only
+TeX in edited copies, uploads and tutor answers needs.
+
+- The build now has three tiers. `offline-routes.json` (version 2) keeps the
+  install list in `files` and adds `warm`: the reader's and the tutor's TeX
+  renderers with KaTeX, HTML/EPUB import, backup/encrypted export/sync fold,
+  the link check and library retrieval. Settings and the Notebook left the
+  startup bundle for the install tier. Measured the same way, the entry is
+  617,722 bytes (132,278 headroom), install is 680,539 bytes in 42 files
+  (219,461 headroom, about 199 KB gzipped), and warm is 305,197 bytes in 8
+  files (about 95 KB gzipped). The HTML loads 645,997 bytes of JavaScript in
+  all, against 727,141 on main: the bundler now preloads `review` and `fsrs`
+  (17.8 KB) as chunks of their own, and counted against 750,000 bytes that
+  total still leaves 104,003. `audit:app` prints the same lines.
+- `audit:app` fails on main's build with 15 findings: no version 2, no warm
+  list, KaTeX and markdownMath installed instead of warmed, none of the seven
+  warm modules listed, Settings and the Notebook missing from the route list,
+  and no `WARM` handler in the worker. It passes now.
+- `audit:chunks` gained three drills that use a real worker and their own
+  servers, and stop them.
+  - Warmed, then offline: after one idle with the server stopped (HTTP cache
+    cleared), backup export and import (to its review), encrypted export,
+    sync export, HTML and EPUB upload, the link check, a saved tutor answer
+    with `$x^2$` (drawn as KaTeX), an edited lecture with TeX, and every warm
+    module, library retrieval included, work. Against main's build it fails
+    at once: "the worker did not warm the tools after the first idle (0 of 0
+    cached)".
+  - Warming blocked: with the warm files missing from the server, the worker
+    reports each as failed. With the server stopped, every warm action shows
+    "This tool isn't saved on this device yet. Reconnect once, and it will
+    work offline." with no error screen, no reload and no recovery marker; a
+    Markdown upload still imports, tutor math reads `$x^2$` in
+    `.ai-tutor__math-pending`, and the edited lecture shows its TeX source.
+    Main has no warm list to block, and its tools are in the startup bundle,
+    so it has no such state.
+  - An update: a worker for another build installs from the same files and
+    waits. Activation deletes the cache that held the previous release's
+    warm tools, and on an iPhone an update usually takes over at the next
+    launch, which may be offline, so the waiting worker must save its own.
+    With the server stopped, the update takes over and backup export still
+    works. Found while building the warm tier: `main.jsx` warmed only the
+    active worker, and the drill failed with "the waiting update did not save
+    the warm tools in its own cache (0 of 8)". It now also warms a waiting
+    update after the first idle; install is unchanged.
+  - A fourth check holds the Notebook and Settings chunks for 1.5 s: route
+    focus still ends on the Notebook's `h1`, and Settings on its close
+    button. Against main it fails with "the Notebook was already loaded, so
+    its lazy route focus was not tested"; a build without
+    `LazyRouteHeading` fails with "route focus stayed on the main landmark
+    after the lazy Notebook rendered".
+- `audit:visual` now waits for the worker to warm, runs optional cleanup and
+  asserts the warm files survive. It opens the Notebook and Settings after a
+  Home-only visit with the server stopped, and again in a launch taken
+  offline (a reload from the cache), and evaluates the Settings and Notebook
+  modules from the cache. Against main's build it reports "the service worker
+  did not warm the tools after the first idle: no warm list", "optional
+  offline file cleanup removed warm tools: no warm list" and "route screens
+  did not load from the offline cache: Settings: not in the route list |
+  Notebook: not in the route list".
+- `tutorMarkdown.test.mjs` first renders before KaTeX loads: math is escaped
+  TeX source in a code span, `$a<b>c$` and a display `<img onerror>` stay
+  text, and a citation beside it still renders. On main the file does not
+  load (`ensureTutorMath` does not exist), and main's renderer returns
+  `<span class="katex">` for `$x^2$` as soon as the module loads. The KaTeX
+  tests now await `ensureTutorMath()`, and a new test compares the loaded
+  output with `katex.renderToString` for inline, display, single-dollar block
+  and inline display math. Ad hoc, 408 inputs (every string literal in the
+  tutor, phone, untrusted and export tests plus 15 math-heavy answers)
+  rendered through the block, inline and phone renderers of main and of this
+  branch after `ensureTutorMath()`: 1,224 renders, 102 of them with KaTeX, and
+  no output differed. `warmTools.test.mjs` covers the typed error for Chrome,
+  Firefox and Safari download failures, other errors keeping their text, and
+  the chunk name reaching chunk recovery.
+- Found while building it and fixed: moving the link check out of the entry
+  also moved marked and DOMPurify into a shared install chunk: a build
+  without the pin measures 84,818 more install bytes and 134,643 bytes of
+  headroom, so `App.jsx` pins the lecture renderer in the entry. The route list named a `katex.min-*.js` placeholder
+  that Vite deletes after the plugin ran, so the plugin now runs `post`. With
+  Settings lazy, `audit:workflow`, `audit:annotations`, `audit:ai-ui` and
+  `audit:responsive` clicked Settings controls before the chunk arrived, so
+  Settings and the Notebook now preload once the first render is idle and
+  render without a fallback once loaded. Those audits, and the first
+  settings-drawer pass of `audit:controls`, which follows a fresh page load,
+  now wait for Settings' content before they use or Tab through it: a longer
+  wait, not a weaker assertion. `audit:ai-ui` saw a retry sent late because
+  each retrieval went through the module loader again, so a loaded tool is
+  reused.
+
+Gate: `npm run check` passed (`audit:ai` 565/565, `audit:ai-eval` 27 cases,
+hit@1 0.913), with the entry at 617,722 and the install tier at 680,539
+bytes (budgets 750,000 and 900,000). The full `npm run check:browser`
+passed all 13 suites on the first attempt with no retries, at a load
+average of about 12–13. Before that run, `audit:chunks` also passed alone
+with `LUMEN_BROWSER_RETRIES=0`. Each failure quoted above was reproduced
+against main's build (`LUMEN_DIST` and `LUMEN_URL`) or against a scratch
+build without the named change.
