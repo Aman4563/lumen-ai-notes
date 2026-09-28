@@ -2,11 +2,11 @@
 
 > Prefer studying on iPhone? The repository now includes **Lumen AI Notes**, an
 > installable offline reading, narration, annotation, teaching, editing, and
-> whiteboard app. See the [app and iPhone installation guide](APP_GUIDE.md).
+> whiteboard app. See the [app and iPhone installation guide](docs/guides/APP_GUIDE.md).
 
 For maintainers taking over the current implementation, start with the
-[engineering handoff and current-state audit](ENGINEERING_HANDOFF.md), then use
-[the product requirement tracker](PRODUCT_REQUIREMENTS.md) as the status authority.
+[engineering handoff and current-state audit](docs/internal/ENGINEERING_HANDOFF.md), then use
+[the product requirement tracker](docs/internal/PRODUCT_REQUIREMENTS.md) as the status authority.
 
 This repository is a from-scratch, interview-oriented path through artificial
 intelligence and machine learning. It is designed for:

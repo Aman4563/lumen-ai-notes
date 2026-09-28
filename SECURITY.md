@@ -38,7 +38,8 @@ welcome for:
 - the local AI server (`server/`): authentication and learner pairing, origin
   and LAN exposure checks, request limits, web-search tooling;
 - rendering of model output: sanitization, citation integrity, links, images
-  and diagrams (see [ENGINEERING_HANDOFF.md](ENGINEERING_HANDOFF.md)
+  and diagrams (see
+  [docs/internal/ENGINEERING_HANDOFF.md](docs/internal/ENGINEERING_HANDOFF.md)
   section 18);
 - encrypted backups and cross-device sync;
 - the service worker and offline caches;
@@ -52,9 +53,10 @@ scanners without a demonstrated impact; and social engineering.
 
 ## Design references
 
-- [AI_SERVER.md](AI_SERVER.md): local AI server configuration, pairing and
-  LAN deployment.
-- [LOCAL_HTTPS.md](LOCAL_HTTPS.md): the local certificate authority and HTTPS
-  setup. Keep the CA private key offline and never commit keys or `.env`.
+- [docs/guides/AI_SERVER.md](docs/guides/AI_SERVER.md): local AI server
+  configuration, pairing and LAN deployment.
+- [docs/guides/LOCAL_HTTPS.md](docs/guides/LOCAL_HTTPS.md): the local
+  certificate authority and HTTPS setup. Keep the CA private key offline and
+  never commit keys or `.env`.
 - [docs/ENCRYPTED_BACKUP_DESIGN.md](docs/ENCRYPTED_BACKUP_DESIGN.md) and
   [docs/SYNC_DESIGN.md](docs/SYNC_DESIGN.md): backup encryption and sync.

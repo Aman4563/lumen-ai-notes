@@ -5,7 +5,7 @@
  * envelope (accepted fields, validation, and profile budget semantics). A
  * deployment that updates only one side previously produced a misleading
  * "Ready" state followed by opaque field-validation rejections (see the
- * 2026-09-01 `contextCitations` incident in ENGINEERING_HANDOFF.md §10.3).
+ * 2026-09-01 `contextCitations` incident in docs/internal/ENGINEERING_HANDOFF.md §10.3).
  *
  * The server publishes this value as `requestContract` in `GET /api/ai/config`
  * and `/api/health`, and requires it as the `contract` field of every

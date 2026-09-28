@@ -1,7 +1,7 @@
 # AI quality evaluation suite
 
 This directory holds the versioned evaluation corpus required by
-ENGINEERING_HANDOFF.md P0-4. Quality evidence is layered in three tiers with
+[ENGINEERING_HANDOFF.md](../docs/internal/ENGINEERING_HANDOFF.md) P0-4. Quality evidence is layered in three tiers with
 different determinism and hardware requirements. Only the first tier can gate
 releases automatically; the other two produce dated operator/device evidence.
 
@@ -63,5 +63,5 @@ output with the release evidence; this tier is deliberately not part of
 ## Tier 3 — physical-device gate (open)
 
 On-device Lite quality/latency on a trusted-HTTPS physical iPhone remains an
-open device gate (see PHONE_LOCAL_AI.md). Automated phone tests use mocked
+open device gate (see [PHONE_LOCAL_AI.md](../docs/guides/PHONE_LOCAL_AI.md)). Automated phone tests use mocked
 WebLLM boundaries and cannot substitute for it.

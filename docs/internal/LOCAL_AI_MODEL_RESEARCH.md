@@ -90,7 +90,7 @@ Sources:
 - [WebLLM 0.2.82 release](https://github.com/mlc-ai/web-llm/releases/tag/v0.2.82)
 - [Open ShapeTuple/WebGPU regression affecting 0.2.83 and 0.2.84](https://github.com/mlc-ai/web-llm/issues/844)
 - [Pinned Llama 3.2 1B q4f16 browser model revision](https://huggingface.co/mlc-ai/Llama-3.2-1B-Instruct-q4f16_1-MLC/tree/2a37b0a5ecb622d51ddc2fac74de0b95872affd7)
-- [Llama 3.2 Community License distributed with Lumen](./LICENSES/LLAMA_3_2_COMMUNITY_LICENSE.txt)
+- [Llama 3.2 Community License distributed with Lumen](../../LICENSES/LLAMA_3_2_COMMUNITY_LICENSE.txt)
 
 ## Why Apple Foundation Models is not the current PWA runtime
 

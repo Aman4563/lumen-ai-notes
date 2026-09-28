@@ -501,7 +501,7 @@ npm run check:live
 npm run audit:ai-live-search
 ```
 
-See [functional testing](docs/FUNCTIONAL_TESTING.md) for the real-model matrix,
+See [functional testing](../FUNCTIONAL_TESTING.md) for the real-model matrix,
 browser workflow coverage, service setup, and device/upstream limits. The
 browser gate starts its own isolated application server when `LUMEN_URL` is
 unset; it requires Chrome or `CHROME_PATH`.

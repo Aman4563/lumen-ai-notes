@@ -28,10 +28,13 @@ npm run preview    # serve dist/ on http://127.0.0.1:4173
 The Mac local AI tutor needs a local model server (Ollama). On-device Lite runs
 in the browser through WebLLM, and the rest of the app works without either.
 To develop against a local [Ollama](https://ollama.com) model, see
-[AI_SERVER.md](AI_SERVER.md) and run `npm run dev:ai` alongside `npm run dev`.
-No paid AI API is used or accepted. On-device Lite (WebLLM) is documented in
-[PHONE_LOCAL_AI.md](PHONE_LOCAL_AI.md). Never commit `.env`, anything under
-`.local/`, certificates or keys, or learner backups.
+[docs/guides/AI_SERVER.md](docs/guides/AI_SERVER.md) and run `npm run dev:ai`
+alongside `npm run dev`. No paid AI API is used or accepted. On-device Lite
+(WebLLM) is documented in
+[docs/guides/PHONE_LOCAL_AI.md](docs/guides/PHONE_LOCAL_AI.md). Never commit
+`.env`, anything under `.local/`, certificates or keys, or learner backups.
+[docs/README.md](docs/README.md) indexes the user guides, design notes and
+maintainer references.
 
 ## Workflow
 
@@ -76,8 +79,9 @@ so in the pull request.
 
 ## Constraints to respect
 
-- **Invariants.** [ENGINEERING_HANDOFF.md](ENGINEERING_HANDOFF.md) section 18
-  lists the data, AI, grounding, phone-model, rendering and privacy invariants
+- **Invariants.**
+  [docs/internal/ENGINEERING_HANDOFF.md](docs/internal/ENGINEERING_HANDOFF.md)
+  section 18 lists the data, AI, grounding, phone-model, rendering and privacy invariants
   every change must preserve (for example: never persist an incomplete AI
   answer as complete, citations resolve only to supplied evidence, API
   responses are never cached by the service worker).
@@ -110,8 +114,8 @@ so in the pull request.
 
 ## Tracking status
 
-[PRODUCT_REQUIREMENTS.md](PRODUCT_REQUIREMENTS.md) is the status authority.
-When a change ships or verifies a requirement, append a dated row to its
+[docs/internal/PRODUCT_REQUIREMENTS.md](docs/internal/PRODUCT_REQUIREMENTS.md)
+is the status authority. When a change ships or verifies a requirement, append a dated row to its
 verification log (never rewrite earlier rows), and add a short dated entry to
 docs/FUNCTIONAL_TESTING.md for bugs you reproduced and how they are now
 checked.
