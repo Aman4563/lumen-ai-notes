@@ -1370,3 +1370,107 @@ Evidence:
   715,643 bytes and route screens 891,828 bytes, unchanged by this
   server-only fix. `npm run check:browser` passed all 13 suites on the first
   attempt.
+
+## Bugs reproduced on 2026-09-28: default dropdowns (#92)
+
+Every dropdown was a browser-drawn `<select>` with its own per-screen skin.
+Against main (e2f7997), served the way `check:browser` serves a build:
+
+- At 393px touch, 12 of the 25 selects rendered under 16px, so iOS zooms on
+  focus: the Listen sheet's Language and Voice at 11.04px, the highlight
+  dialog's Purpose at 11.36px, the Teaching section picker at 11.2px, the
+  Organize dialog's Collection, the whiteboard page and both On-device
+  composer selects at 11.84px, Library Sort at 11.52px, the Mac tutor's Depth
+  at 12.8px, the tutor history setting at 13.12px and the practice Track at
+  13.76px. 17 were under 44px (the batch Collection 34px, the Teaching picker
+  36px, the Daily limits and interview strips 38px).
+- At 1280px the selects had nine heights (34–44px), four radii and
+  10.24–13.76px text. None set `appearance: none`, nine rules reserved room
+  for a chevron that was never drawn, and the Teaching picker hard-coded
+  white on navy under a light `color-scheme`.
+- On-device Answer length read "Standard · 640 t", and Library Sort listed
+  "Curriculum order" twice when there was no query.
+
+All 25 now use one control, `.ui-select` with `--sm` and `--block`, on the
+unchanged native element, so every audit's `page.select()` still works. It
+has `appearance: none`, a chevron drawn by two gradient strokes in
+`--select-icon`, a `--control-border` edge that reaches 3:1 on every paper
+surface, 44px and 16px text at 740px and below or on a coarse pointer, 40px
+and 14px on a desktop (34px and 13px compact), hover, the global focus ring,
+a dashed `--paper-3` disabled look, an invalid state, and the system control
+in forced colours. The Teaching island sets its own select tokens,
+`color-scheme: dark` and the navy islands' gold focus ring (the default blue
+ring measured 1.9:1 on the picker's navy). With a mouse in Chrome and Edge
+135+ or Safari 27, the customizable select (`appearance: base-select`) opens
+a themed picker; phones keep the native picker. Per-screen skins and the unused `.select` rules are
+gone. The verified plan's two traps are closed: `select` left `ai-tutor.css`'s
+`:is(.ai-tutor, .ai-tutor-sheet) … { font: inherit }` rule, which outranks the
+class and held the Mac tutor's Mode at 13.12px and Depth at 12.8px, and the
+picker's entry animation is written as `.ui-select:open::picker(select)`,
+which the production Lightning CSS minifier accepts.
+
+Found while building it:
+
+- The customizable select sizes to its value and never ellipsizes it, so a
+  long value in a narrow field ran over the chevron (the Listen sheet's
+  Language at 1280px). There the chevron moves to the picker icon, laid over
+  the end padding, and an overlong value fades out under it. That select also
+  sizes to its current value, so on a desktop an auto-width select changes
+  width when its value changes; this is how the customizable select works
+  (`field-sizing` does not change it) and is left as is.
+- Its picker is part of the page, so Escape in the open picker also reached
+  the dialog and sheet handlers on `window` and closed the Listen sheet with
+  it. A capture-phase listener in `src/main.jsx` leaves that Escape to the
+  picker.
+- At 16px, "Standard (640)" still clipped by 4px in the On-device composer's
+  half-width column. Depth and Answer length now share the row only when both
+  fit. "Session only (do not save)" became "Session only" (the setting's text
+  already says it stops saving), and network voices read "Network" (the
+  sheet's microcopy explains it).
+
+How it is checked:
+
+- `scripts/select_contract.mjs` measures every visible select: the shared
+  class, `appearance` none or base-select, the two-stroke chevron in
+  `--select-icon`, text, fill and edge on the theme tokens (or the dashed
+  `--paper-3` disabled look), and either 44px with 16px text on a phone or
+  one height, radius and text size per variant on a desktop (40px, 12px,
+  14px; compact 34px, 10px, 13px).
+- `audit:controls` seeds a profile so every select renders and measures 12
+  screens and dialogs (Library, Listen, the highlight dialog, Teaching,
+  Whiteboard, Notebook highlights and batch toolbar, Organize, the Review
+  strips and mistake filter, New card, Log mistake, Settings, On-device Lite)
+  in Paper, Night and Contrast at 393px touch and 1280px. Against main it
+  reports all 22 phone and 21 desktop selects, for example `selects/phone/
+  reader listen: select “Narration language”: not the shared .ui-select
+  control; browser-drawn (appearance auto); no themed chevron in
+  --select-icon; colours off the theme tokens (text --select-ink, fill
+  --select-bg, edge --control-border); 41px tall (needs 44px on a phone);
+  11.04px text, so iOS zooms on focus (needs 16px) [paper, dark, contrast]`.
+  The same measurement fails a select that lists a label twice (Library
+  Sort's "Curriculum order" against main; the Listen sheet's lists come from
+  the device's voices and are exempt) and, on the phone, an On-device
+  composer select whose value does not fit. With a mouse it also opens the
+  Language picker and presses Escape; that check fails against a build
+  without the guard ("Escape in the select picker also closed the Listen
+  sheet").
+- `audit:ai-ui` holds the Mac tutor's Mode select, the Options sheet's Depth
+  and the practice Track to the phone contract. It fails against main and
+  against this change with `select` put back in the font rule ("select
+  “Depth”: 12.8px text, so iOS zooms on focus").
+- `themeContrast.test.mjs` keeps `--control-border` and `--select-icon` at
+  3:1 on every paper surface in all four palettes, the select text and
+  checked-option pairs at 4.5:1, and the Teaching island's select tokens
+  readable on its navy.
+
+Not covered: headless Chrome does not paint native pickers, so Safari 27's
+picker on macOS and the native picker on an iPhone (no focus zoom) need a
+manual pass on devices.
+
+Gate: `npm run check` passed (`audit:ai` 547/547, `audit:ai-eval` 27 cases,
+hit@1 0.913). The startup entry is 715,972 bytes (main 715,643) and the route
+screens 891,667 bytes (main 891,828): the main stylesheet grew 2,589 bytes
+minified (823 gzip) and the lazy tutor stylesheets shrank 993 bytes.
+`npm run check:browser` passed all 13 suites on the first attempt, and
+`controls` and `ai-ui` passed again alone with retries off after the
+repeated-label check was scoped away from the device voice lists.

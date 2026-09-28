@@ -1613,6 +1613,9 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   profile wherever it appears; provenance survives edits. Only learner content uses the
   Reader renderer.
 - Rendered Mermaid SVG keeps no link targets.
+- Every `<select>` is the native element with the shared `.ui-select` class (44px and 16px
+  text on phones and touch screens); screens add layout rules only, never a select skin. An
+  open in-page picker keeps Escape to itself (`src/main.jsx`).
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).
