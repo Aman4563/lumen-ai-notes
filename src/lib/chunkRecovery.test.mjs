@@ -82,14 +82,72 @@ test("does not auto-reload offline or when a durable loop marker cannot be writt
   assert.equal(reloads, 0);
 });
 
-test("a successful recoverable import clears a prior recovery marker", async () => {
+// Since issue #96 any successful import clears a marker only once its
+// cooldown has passed; a marker still cooling down needs the chunk it names
+// (see "after a failed load of chunk A…" below).
+test("a successful recoverable import clears a prior recovery marker once its cooldown has passed", async () => {
   const storage = makeStorage();
   storage.setItem(CHUNK_RECOVERY_STORAGE_KEY, JSON.stringify({ attemptedAt: 123, asset: "old" }));
-  const recovery = createChunkRecovery({ storage });
+  const recovery = createChunkRecovery({ storage, now: () => 60_123 });
   const loaded = { default: () => null };
 
   assert.equal(await recovery.load(async () => loaded), loaded);
   assert.equal(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY), null);
+});
+
+// Issue #96 (NM1): with a lecture's Mermaid chunk missing online, the Reader
+// chunk loading after each reload cleared the marker, so the next Mermaid
+// failure reloaded again (113 navigations). Only the named chunk clears it.
+test("after a failed load of chunk A, a successful load of chunk B keeps the marker", async () => {
+  const storage = makeStorage();
+  let reloads = 0;
+  let currentTime = 50_000;
+  const page = () => createChunkRecovery({
+    storage,
+    now: () => currentTime,
+    isOnline: () => true,
+    reload: () => { reloads += 1; },
+  });
+  const missing = new TypeError("Failed to fetch dynamically imported module: http://lumen.test/assets/mermaid.core-CEnUSleV.js");
+
+  // The first failure spends the one reload and names its chunk.
+  assert.equal(page().schedule(missing), true);
+  assert.equal(reloads, 1);
+  assert.equal(JSON.parse(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY)).asset, "http://lumen.test/assets/mermaid.core-CEnUSleV.js");
+
+  // After the reload another chunk loads: the marker stays, so the same
+  // failure goes to the in-shell boundary instead of reloading again.
+  const reloaded = page();
+  const reader = { default: () => null };
+  assert.equal(await reloaded.load(async () => reader, "Reader"), reader);
+  assert.equal(await reloaded.load(async () => reader), reader, "an unnamed load cannot clear the marker either");
+  assert.notEqual(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY), null, "a successful load of another chunk cleared the marker");
+  assert.equal(reloaded.schedule(missing), false);
+  assert.equal(reloads, 1, "a persistently missing chunk reloaded the page a second time within the cooldown");
+
+  // A successful load of the chunk the marker names clears it.
+  assert.equal(await reloaded.load(async () => reader, "mermaid.core"), reader);
+  assert.equal(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY), null);
+
+  // So does any successful load once the cooldown has passed.
+  assert.equal(page().schedule(missing), true);
+  currentTime += 60_000;
+  assert.equal(await page().load(async () => reader, "Reader"), reader);
+  assert.equal(storage.getItem(CHUNK_RECOVERY_STORAGE_KEY), null);
+});
+
+test("a marker names its chunk from a fingerprinted JS or CSS path", async () => {
+  const loaded = { default: () => null };
+  const clears = async (asset, name) => {
+    const storage = makeStorage();
+    storage.setItem(CHUNK_RECOVERY_STORAGE_KEY, JSON.stringify({ attemptedAt: 1_000, asset }));
+    await createChunkRecovery({ storage, now: () => 1_500 }).load(async () => loaded, name);
+    return storage.getItem(CHUNK_RECOVERY_STORAGE_KEY) === null;
+  };
+  assert.equal(await clears("http://127.0.0.1:4173/assets/Whiteboard-C16sNM8-.js", "Whiteboard"), true, "a hash may contain a hyphen");
+  assert.equal(await clears("http://127.0.0.1:4173/assets/PhoneLocalAiTutor-D1AZHdDk.css", "PhoneLocalAiTutor"), true, "a screen's stylesheet belongs to its chunk");
+  assert.equal(await clears("/assets/PhoneLocalAiTutor-D1AZHdDk.css", "AiTutor"), false, "a name must match the whole chunk name");
+  assert.equal(await clears("unknown", "Reader"), false, "Safari's message names no file, so only the cooldown clears it");
 });
 
 test("a repeated stale failure rejects to the error boundary instead of reloading again", async () => {

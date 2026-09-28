@@ -161,7 +161,52 @@ try {
   await page.$eval(".settings-close", (button) => button.click());
   missingStorageHealth = false;
 
-  console.log("Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, and Settings kept backup export without Storage health.");
+  // Issue #96 (NM1): a lecture whose Mermaid chunk stays missing while the
+  // server answers. The marker names that chunk, so the Reader chunk loading
+  // after the one reload must not clear it; before the fix every reload
+  // re-armed the next and the tab looped (113 navigations measured). A new
+  // tab starts with its own sessionStorage, so no earlier marker applies.
+  const lecturePage = await browser.newPage();
+  await lecturePage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  await lecturePage.setBypassServiceWorker(true);
+  await lecturePage.setCacheEnabled(false);
+  await lecturePage.setRequestInterception(true);
+  let blockedMermaid = 0;
+  let documentLoads = 0;
+  let lastDocumentLoad = Date.now();
+  lecturePage.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === lecturePage.mainFrame()) {
+      documentLoads += 1;
+      lastDocumentLoad = Date.now();
+    }
+    if (/\/assets\/mermaid\.core-[^/]+\.js$/.test(new URL(request.url()).pathname)) {
+      blockedMermaid += 1;
+      void request.abort("failed");
+      return;
+    }
+    void request.continue();
+  });
+  const lectureId = encodeURIComponent("notes/part-01-foundations/01-ai-ml-mental-model.md");
+  await lecturePage.goto(new URL(`#/read/${lectureId}`, baseUrl).href, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+  // Settled: the diagram shows its failure and no document has loaded for 4 s.
+  let settled = false;
+  for (const giveUpAt = Date.now() + 30_000; Date.now() < giveUpAt;) {
+    const failed = await lecturePage.evaluate(() => Boolean(document.querySelector('.diagram-shell[data-diagram-status="error"]'))).catch(() => false);
+    if (failed && Date.now() - lastDocumentLoad > 4_000) {
+      settled = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const mermaidReloads = documentLoads - 1;
+  assert.ok(blockedMermaid >= 1, "the Mermaid chunk request was never made, so nothing was tested");
+  assert.ok(mermaidReloads <= 1, `a lecture whose Mermaid chunk is missing reloaded ${mermaidReloads} times within the cooldown (Mermaid blocked ${blockedMermaid} times)`);
+  assert.equal(settled, true, "a missing Mermaid chunk never settled on the diagram failure inside the Reader");
+  assert.equal(await lecturePage.$(".fatal-error"), null, "a missing Mermaid chunk replaced the whole app");
+  assert.ok(await lecturePage.$(".markdown-body h1"), "the lecture did not stay readable with its diagram unavailable");
+  await lecturePage.close();
+
+  console.log(`Chunk recovery audit passed: stale Whiteboard JS and on-device tutor CSS each recovered with local data preserved; offline and missing screens stayed inside the shell, Settings kept backup export without Storage health, and a lecture with a missing Mermaid chunk reloaded ${mermaidReloads} time(s), then showed the diagram failure in the Reader.`);
 } finally {
   await browser?.close().catch(() => {});
   await rm(profileDirectory, { recursive: true, force: true });

@@ -938,6 +938,19 @@ not the whiteboard/AI feature logic itself.
 it attempts at most one reload per tab/cooldown and requires a durable session marker to
 avoid loops. Before reloading it probes `/api/health` (never service-worker cached); an
 unreachable server gets no reload, because a reload would only boot the same cached shell.
+
+The marker (`{attemptedAt, asset}`) names the asset that failed. It is cleared only by a
+successful load of that asset's chunk, or once the 60 s cooldown has passed. Every
+`recoverableImport(loader, name)` passes its chunk name (the file name before the hash, such
+as `Reader` or `PhoneLocalAiTutor`), which is compared with the marker's asset path, so a
+screen's JS or extracted CSS is cleared by that screen loading. Any other chunk that loads
+after the reload leaves the marker in place. Before issue #96, every successful lazy load
+cleared it: with a lecture's Mermaid chunk missing while the server answered, the Reader chunk
+loading after each reload re-armed the next one, and the tab reloaded 113–144 times. A
+persistently missing chunk now reloads once and then reaches the in-shell failure (for
+Mermaid, the diagram's own diagnostic). Safari's `Importing a module script failed.` names
+no file, so its marker clears only with the cooldown. A new lazy screen must pass its chunk
+name to `recoverableImport`; without one, a successful load cannot clear an early marker.
 Repeated failure reaches an in-shell boundary around the view container: the top bar and
 navigation stay usable, navigation clears it, and it distinguishes offline, unreachable, and
 incomplete-build cases. A failed dynamic import stays failed for that document, so its
@@ -958,7 +971,8 @@ refills the cache. IndexedDB, localStorage, and WebLLM caches survive.
 plus localStorage preservation. With the service worker bypassed, it also covers the
 in-shell offline, missing-file, and Storage-health cases, and asserts that the offline panel
 stays inside the single `#main-content` landmark and takes route focus when the learner
-returns to the failed screen. `audit:visual` covers the cached
+returns to the failed screen. In a fresh tab it blocks only the Mermaid chunk of a lecture
+while online and allows at most one reload. `audit:visual` covers the cached
 path: it stops its own servers after a Home-only visit and opens every primary screen. It
 clears Chrome's HTTP cache after each stop, because the immutable assets would otherwise be
 answered from it and hide a worker that never serves its own cache.

@@ -55,6 +55,16 @@ const chunkAsset = (error) => {
   return message.match(/(?:https?:\/\/[^\s)]+)?\/assets\/[^\s)]+/i)?.[0] || "unknown";
 };
 
+// The chunk a fingerprinted asset belongs to: ".../assets/Reader-C41NECYq.js"
+// and ".../assets/PhoneLocalAiTutor-D1AZHdDk.css" name "Reader" and
+// "PhoneLocalAiTutor". Safari's "Importing a module script failed." names no
+// file, so its marker ("unknown") matches no chunk.
+const chunkNameOf = (asset) => String(asset || "")
+  .split(/[?#]/u)[0]
+  .split("/")
+  .pop()
+  .replace(/-[\w-]{8}\.(?:js|css)$/u, "");
+
 export const isStaleChunkError = (error) => {
   const message = errorMessage(error);
   return CHUNK_ERROR_PATTERNS.some((pattern) => pattern.test(message));
@@ -165,10 +175,18 @@ export const createChunkRecovery = ({
     return pendingRecovery;
   };
 
-  const load = async (loader) => {
+  // The marker is cleared only by a successful load of the chunk it names, or
+  // once its cooldown has passed. Any other chunk loading after the reload
+  // (the Reader, when a lecture's Mermaid chunk is the one missing) keeps it,
+  // so a file that stays missing reaches the in-shell boundary after one
+  // reload instead of reloading the page again and again.
+  const load = async (loader, name = "") => {
     try {
       const module = await loader();
-      if (!reloadScheduled) clearChunkRecoveryMarker(storage);
+      const marker = reloadScheduled ? null : readRecoveryMarker(storage);
+      if (marker && ((name && chunkNameOf(marker.asset) === name) || now() - marker.attemptedAt >= cooldownMs)) {
+        clearChunkRecoveryMarker(storage);
+      }
       return module;
     } catch (error) {
       if ((await recover(error)) || reloadScheduled) {
@@ -197,7 +215,9 @@ export const createChunkRecovery = ({
 };
 
 export const chunkRecovery = createChunkRecovery({ probe: () => probeAppServer() });
-export const recoverableImport = (loader) => chunkRecovery.load(loader);
+// `name` is the chunk's file name before its hash (the component's module
+// name), so a successful load can clear a marker left by that chunk.
+export const recoverableImport = (loader, name) => chunkRecovery.load(loader, name);
 
 const verifyApplicationShell = async ({ fetchImpl, location, now }) => {
   if (!fetchImpl || !location) throw new Error("A network check is unavailable in this browser.");
