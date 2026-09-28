@@ -8535,8 +8535,9 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
    11px or more. This block follows every unconditional narration rule, so it
    wins; the sleep chips' 40px phone rule once lost to their later 36px rule.
    The mini player's seven controls fit one row down to 320px: 44×44 with 2px
-   gaps from 356px, 40×44 with 1px gaps at 360px and below (7 × 40 + 6 × 1 =
-   286px of the 288px inside the bar at 320px). */
+   gaps above 360px (they fit from 356px, Contrast's 2px edge included),
+   40×44 with 1px gaps at 360px and below (7 × 40 + 6 × 1 = 286px of the 288px
+   inside the bar at 320px). */
 @media (max-width: 740px), (pointer: coarse) {
   .speech-sleep-row button,
   .speech-preset-row button,
