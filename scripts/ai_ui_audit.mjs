@@ -273,8 +273,8 @@ const attachDiagnostics = (page, label) => {
   });
 };
 
-const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData, streamFrom = null } = {}) => {
-  const calls = { config: [], respond: [], pair: [] };
+const installAiMocks = async (page, configFactory, { failFirstResponse = false, failFirstResponseCode = "AI_LOCAL_MODEL_ERROR", abortFirstResponse = false, pairResponder = null, responseDelayMs = 0, answerText = null, webSearchUnavailable = false, quiz = quizData, feedback = null, flashcards = flashcardData, streamFrom = null, blockLibraryRetrieval = false } = {}) => {
+  const calls = { config: [], respond: [], pair: [], blocked: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -393,6 +393,14 @@ const installAiMocks = async (page, configFactory, { failFirstResponse = false, 
           reply({ status: 200, contentType: "application/x-ndjson", headers: { "Cache-Control": "no-store", "X-Request-Id": response.requestId, "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` });
         } else reply(jsonResponse(response));
       }
+      return;
+    }
+    // Library retrieval is a warm tool (issue #95). Not saved on this device
+    // yet and offline: its file does not download and the chunk-recovery
+    // probe gets no answer, so the tool fails with its typed offline reason.
+    if (blockLibraryRetrieval && (/\/assets\/libraryRetrieval-[^/]+\.js$/.test(url.pathname) || url.searchParams.has("lumen-probe"))) {
+      calls.blocked.push(url.pathname);
+      void request.abort("internetdisconnected");
       return;
     }
     void request.continue();
@@ -547,6 +555,45 @@ const newAuditPage = async (label, configFactory, options) => {
   return { page, calls };
 };
 
+// Review round 2 (issue #95): library retrieval is a warm tool. When its
+// file is not on this device yet, the Mac tutor's stage says why, as
+// On-device Lite's status does, and the answer still arrives from the
+// attached lesson with no reload. LUMEN_AI_UI_CASES=library-unavailable runs
+// only this case.
+const LIBRARY_UNAVAILABLE_STAGE = "Library search is unavailable. This tool isn't saved on this device yet. Reconnect once, and it will work offline. Using the attached lesson, without the web…";
+const auditLibraryUnavailable = async () => {
+  const { context, page, calls } = await newIsolatedPage("library-unavailable", { mocks: { blockLibraryRetrieval: true } });
+  try {
+    // The worker's warm cache would otherwise serve the tool.
+    await page.setBypassServiceWorker(true);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    await page.evaluate(() => {
+      window.lumenLibraryDrill = true;
+      window.lumenStageLog = [];
+      const record = () => {
+        const text = document.querySelector(".ai-tutor__stream-status span")?.textContent || "";
+        if (text && window.lumenStageLog.at(-1) !== text) window.lumenStageLog.push(text);
+      };
+      window.lumenStageObserver = new MutationObserver(record);
+      window.lumenStageObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
+    await setComposerPrompt(page, "Explain evaluation leakage briefly.");
+    await page.locator(".ai-tutor__send").click();
+    await waitForAnswers(page, 1).catch(() => assert.fail("a Mac tutor question whose library search could not load did not finish"));
+    const stages = await page.evaluate(() => {
+      window.lumenStageObserver.disconnect();
+      return window.lumenStageLog;
+    });
+    assert.ok(stages.includes(LIBRARY_UNAVAILABLE_STAGE), `the Mac tutor's stage did not say why library search was unavailable: ${JSON.stringify(stages)}`);
+    assert.ok(calls.blocked.some((path) => /\/assets\/libraryRetrieval-/.test(path)), `the library search tool was never requested, so nothing was blocked: ${JSON.stringify(calls.blocked)}`);
+    assert.equal(calls.respond.length, 1, "the question was not sent once after library search failed");
+    assert.equal(await page.evaluate(() => window.lumenLibraryDrill === true), true, "a library search tool that could not load reloaded the page");
+  } finally {
+    await context.close().catch(() => {});
+  }
+};
+
 // Chat window fit (#93): the Mac tutor's conversation, question box and
 // dock against the viewport, the top bar and the bottom navigation, in
 // every state the audit of 2026-09-28 measured. Failures are collected so
@@ -601,7 +648,7 @@ const chatFitGeometry = () => {
   };
 };
 
-const chatFitOnly = Symbol("only the chat window fit checks");
+const selectedCasesOnly = Symbol("only the cases LUMEN_AI_UI_CASES selects");
 const auditChatFit = async () => {
   const failures = [];
   const expect = (ok, message, detail) => { if (!ok) failures.push(`${message}: ${JSON.stringify(detail)}`); };
@@ -1113,11 +1160,17 @@ try {
     args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check", "--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"],
   });
 
-  await auditChatFit();
+  if (process.env.LUMEN_AI_UI_CASES !== "library-unavailable") await auditChatFit();
   if (process.env.LUMEN_AI_UI_CASES === "chat-fit") {
     assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
     console.log("AI UI audit passed the chat window fit checks (LUMEN_AI_UI_CASES=chat-fit).");
-    throw chatFitOnly;
+    throw selectedCasesOnly;
+  }
+  await auditLibraryUnavailable();
+  if (process.env.LUMEN_AI_UI_CASES === "library-unavailable") {
+    assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
+    console.log("AI UI audit passed the library-unavailable check (LUMEN_AI_UI_CASES=library-unavailable).");
+    throw selectedCasesOnly;
   }
 
   const ready = await newAuditPage("ready", () => secureConfig);
@@ -3806,9 +3859,9 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: the chat window fit at wide, phone, landscape, 200% text, fallback and first-visit sizes with following on Send and the keyboard dock, canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, Work-through-with-tutor bridges from the mistake notebook and readiness checks, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: the chat window fit at wide, phone, landscape, 200% text, fallback and first-visit sizes with following on Send and the keyboard dock, a library search tool not yet on the device named in the stage, canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, Work-through-with-tutor bridges from the mistake notebook and readiness checks, and fail-closed states verified without a real model or search call.");
 } catch (error) {
-  if (error !== chatFitOnly) throw error;
+  if (error !== selectedCasesOnly) throw error;
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
