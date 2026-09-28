@@ -2236,10 +2236,11 @@ Deliberate limits, not bugs:
 - Landscape phones keep the composer in the page flow, as the Mac tutor
   does.
 - At 200% text the second meta button wraps, so the dock is 142–190 px. It
-  stays docked because it takes under 60% of the room.
+  stays docked because it takes under 60% of the room. (Fixed in the
+  review follow-up below.)
 - In the Contrast theme the mode label in a question bubble fails
   contrast (1.05:1), from the global `small` rule. It predates this change
-  and is not in the audited states. It is left for a follow-up.
+  and is not in the audited states. (Fixed in the review follow-up below.)
 - There is no streaming follow on On-device Lite: sending scrolls once, and
   Jump to latest brings back a streaming answer.
 
