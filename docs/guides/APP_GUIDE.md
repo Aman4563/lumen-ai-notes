@@ -265,8 +265,9 @@ the bottom navigation (with very large text on a small phone, where the dock wou
 cover the conversation, it stays at the end of the page instead). On a wider screen the
 tutor fits the window: the conversation and the evidence column scroll on their own
 above the question box (in a window too short for that, the page scrolls instead, as on
-a phone). A saved conversation opens at its latest turn, also when **Ask AI** brings an
-excerpt from the Reader. The question box starts empty, with the mode's suggested
+a phone). In the fitted window a long question grows the box only as far as the
+conversation can spare, and then the box scrolls. A saved conversation opens at its
+latest turn, also when **Ask AI** brings an excerpt from the Reader. The question box starts empty, with the mode's suggested
 question as its placeholder; **Use suggestion** (just its sparkle icon with very large
 text) puts it in the box. **Options** holds depth, answer length, web fallback and the
 privacy details, and names any setting you changed. With a keyboard, Enter sends and

@@ -2455,3 +2455,124 @@ runs). An earlier full run failed `audit:phone-ai-ui` (the setup change
 above) and `audit:responsive` (the resize switch above) on both attempts.
 Each was fixed and passed alone with `LUMEN_BROWSER_RETRIES=0` before the
 final run.
+
+## Second review follow-up on 2026-09-28: chat window fit (#93, #94)
+
+An independent re-verification of the follow-up above found four defects
+still open. The branch was first rebased onto main (57fb5cf: the themed
+select #92, and the docs moved to `docs/guides/` and `docs/internal/`).
+Lite's Depth and Answer length, which this branch moved into the Options
+sheet, carry `ui-select` there with main's labels ("Standard (640)"),
+since main removed their old skin. Reproduced against the rebased tip
+(3727c96) and fixed:
+
+- Mac tutor, wide column (1225×671, 1280×720, 1366×768, 1440×900), a
+  question typed key by key over the latest of five answers: from the
+  second line on, the conversation stopped 48, 96 and then 120 px short
+  of its end, with the end 97 px hidden, and it stayed there after the box
+  lost focus. `fitQuestionBox` measures the box by setting it to one line
+  for a moment. That layout made the conversation taller, the browser
+  clamped its scroll position, and the box's real height then left it
+  short. The clamp's own scroll event recorded "not at the end", so the
+  keep-at-end observer did nothing. The earlier check placed the whole
+  draft in one go, which never measures a shorter box, so it passed. Now
+  `fitQuestionBox` also takes the conversation. It puts the conversation
+  back where it was, or at its end if it was at its end, and returns the
+  position so the tutor treats that scroll as its own and not as the
+  learner returning to the end.
+- In the same column a 10-line draft shrank the conversation below its
+  minimum of min(260 px, 40% of the window): to 148 px at 1225×671,
+  197 px at 1280×720 and 245 px at 1366×768. `useTutorDock` now publishes
+  `--ai-field-max`: the box grows only by whole lines the conversation can
+  spare above its minimum, then scrolls inside. With the box at one line
+  the conversation is 266 px at 1225×671, 315 px at 1280×720, 363 px at
+  1366×768 and 495 px at 1440×900. With a long question the box is 1, 3,
+  5 and 6 lines (48, 96, 144 and 168 px), and the conversation is 268,
+  269, 269 and 377 px, its end in view. A draft still never switches the
+  column into page scrolling.
+- On-device Lite at 320×568 with 200% text: with a long question kept in
+  the box, after it lost focus and the page went back to its top, the dock
+  sat at 200–500 px against the navigation at 471 px, as it did for a
+  question put in the box without focus. Only typing had been fixed. The
+  undock rule left the box's growth out of its overlap test. That is still
+  so while the box has focus, since the page scrolls instead. Once the box
+  loses focus the growth counts, so near the top of the page that dock
+  stays in the page flow, and it docks again further down (163–463 px at
+  the page end). The rule is shared: the Mac tutor at 320×568 with 200%
+  text, a kept draft and the page at its top had its dock 4 px above the
+  navigation, where it keeps 8 px, and now stays in the flow there too.
+- On-device Lite at 1225×671, model loaded, nothing asked: the dock (top
+  541 px) cut the welcome heading (530–550 px) and hid its line
+  (556–576 px). With the model loaded, at 981 px and wider, the gaps
+  between the tutor's cards are 8 px (16 before). With a mouse, the mode
+  tabs and the dock's Options and Use suggestion are 36 px, as in the Mac
+  tutor's compact chrome; touch screens keep 44 px. The heading is now
+  479–499 px and its line 505–525 px, above the dock at 549 px. A first run
+  keeps its spacing: with the same compaction, the 1366×768 first run's
+  welcome heading (629–649 px) would have been newly cut by the dock at
+  646 px. As before, the first-run welcome waits under the download card
+  at these heights, and the dock does not cut it.
+
+Assertions changed on purpose:
+
+- `audit:phone-ai-ui` first open at 1280×720 required every control in the
+  Options sheet to be 44 px. After the rebase the sheet's selects are
+  main's themed select, 40 px on a desktop by the #92 contract (44 px on
+  phones and touch screens), so the rebased tip failed that check. A
+  desktop select now needs 40 px; buttons still need 44 px.
+- `audit:controls` measured Depth and Answer length in the old static
+  composer, which this branch removed, so it timed out waiting for them.
+  It now opens Options and measures them in the sheet (both in Quiz too,
+  with Answer length disabled).
+- The large-text dock comment in `audit:ai-ui` said a long draft never
+  undocks the Mac dock. It now says the draft never undocks it below the
+  top of the tutor. The check itself, a draft with the page at the latest
+  turn, is unchanged.
+
+Regression checks, each failing before the fix and passing after:
+
+- `audit:ai-ui` chat-fit: the long-question check types with real keys. It
+  places a 10-line draft in one go, types one more key, then types six
+  lines from an empty box (Shift+Enter) and leaves the box. After each step
+  it needs the conversation at its end, its end uncovered and the
+  conversation at or above its minimum. It runs at 1280×720, 1440×900,
+  1366×768, 1225×671, 1024×768 and 1280×720 at 200% text. Against the
+  rebased tip's build it failed 23 ways, at all four column sizes.
+- `src/lib/tutorDock.test.mjs`: `fitQuestionBox` keeps a conversation at
+  its end as the box grows, and leaves one read back where it was, both
+  well above the end and just above it. Both failed on the rebased tip's
+  source.
+- `audit:phone-ai-ui` chat-fit: the long-question check at 320×568 with
+  200% text also measures the kept question after the box loses focus and
+  again at the page top. It checks the dock is back above the navigation
+  at the page end, and adds a question put in the box without focus. The
+  wide check runs at 1024×768, 1225×671, 1280×720, 1366×768 and 1440×900,
+  loaded and on a first run. On a first run the download approval and
+  Download & load must be above the dock, and the dock must not cut the
+  welcome heading. Run from the rebased tip's source with its build as
+  `LUMEN_URL`, it failed 3 ways: two kept or placed drafts, and 1225×671
+  loaded.
+
+New coverage for the moved selects: `audit:responsive` checks every Depth
+and Answer length value in the Options sheet reads in full at each of its
+viewports, including 320×568 and 360×800 at 200% text. The narrow
+fine-pointer pass in `audit:controls` opens the sheet at 400 and 320 px
+with 150% and 200% text and checks that neither the sheet nor the page
+scrolls sideways and that both selects stay inside the sheet.
+
+Limits, recorded:
+
+- In a wide column with less than a line to spare (1225×671 on macOS
+  fonts), the question box stays one line and scrolls inside, so the
+  conversation keeps its minimum.
+- On-device Lite still has no streaming follow (4.6 KB of route budget is
+  left).
+
+Gate on the fixed tree: `npm run check` passed (`audit:ai` 550/550, AI
+eval 27 cases, hit@1 0.913). The startup entry is 715,912 bytes, the same
+as the rebased tip. The route screens are 895,361 bytes: 1,047 more than
+the rebased tip (894,314), 4,639 under the budget. `npm run check:browser`
+passed all 13 suites on the first attempt with no retries (`audit:ai-ui`
+193 s, `audit:phone-ai-ui` 59 s, `audit:controls` 144 select measurements
+and 16 narrow fine-pointer screens, `audit:responsive` 478 layout and 367
+control checks, `audit:a11y` 75 axe runs with the empty allowlist).
