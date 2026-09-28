@@ -50,7 +50,9 @@ Records of how specific subsystems work and why.
 ## Maintainer references
 
 Internal working documents for maintainers. They record requirement status,
-audits and decisions, and are not needed to use or contribute to the app.
+audits and decisions, and are not needed to use the app. Contributors need the
+invariants in section 18 of the engineering handoff and the verification log
+in the requirements tracker; see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 - [Engineering handoff](internal/ENGINEERING_HANDOFF.md): architecture,
   invariants (section 18) and operational notes.

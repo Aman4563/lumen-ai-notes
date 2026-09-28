@@ -14,8 +14,8 @@ never in a public issue.
 
 You need Node.js 26 to run the release gate, the same version CI uses
 (`.nvmrc`); on older versions the AI timeout and deadline tests are cancelled
-and `npm run check` fails. The app itself builds and runs on Node.js 20.19 or
-newer. You also need Google Chrome for the browser audits (or set
+and `npm run check` fails. The app itself builds and runs on Node.js 20.19+
+or 22.12+. You also need Google Chrome for the browser audits (or set
 `CHROME_PATH`) and Ruby for the curriculum audit.
 
 ```sh
