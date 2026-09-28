@@ -38,6 +38,16 @@ const missingRouteFiles = (page) => page.evaluate(async () => {
   return { files: files.length, missing };
 });
 
+// The warm tools (issue #95) that same list names, once the worker has
+// fetched them after the first idle.
+const missingWarmFiles = (page) => page.evaluate(async () => {
+  const list = await (await caches.match(new URL("./offline-routes.json", location.href).href))?.json();
+  const warm = Array.isArray(list?.warm) ? list.warm : [];
+  const missing = [];
+  for (const file of warm) if (!(await caches.match(new URL(file, location.href).href))) missing.push(file);
+  return { files: warm.length, missing };
+});
+
 const openControlledPage = async (url, errors) => {
   const page = await browser.newPage();
   await page.setViewport({ width: 402, height: 874, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
@@ -133,7 +143,9 @@ const serverStoppedChecks = async (readerId, readerTitle) => {
       const list = await (await caches.match(new URL("./offline-routes.json", location.href).href)).json();
       const failed = [];
       // Each module with the export the app renders from it.
-      const modules = [["Reader", "default"], ["markdownMath", "renderMarkdownWithMath"], ["Whiteboard", "default"], ["AiLearningStudio", "default"], ["AiTutor", "default"], ["PhoneLocalAiTutor", "default"], ["ReviewCenter", "default"], ["ReviewCenter", "ReviewCardDialog"], ["AssessmentDialog", "default"], ["StorageHealth", "default"], ["DeviceEvidence", "default"]];
+      // The reader's TeX renderer is a warm tool now (issue #95); audit:chunks
+      // loads it and the other warm modules from the cache after warming.
+      const modules = [["Reader", "default"], ["Whiteboard", "default"], ["AiLearningStudio", "default"], ["AiTutor", "default"], ["PhoneLocalAiTutor", "default"], ["ReviewCenter", "default"], ["ReviewCenter", "ReviewCardDialog"], ["AssessmentDialog", "default"], ["StorageHealth", "default"], ["DeviceEvidence", "default"]];
       for (const [name, exported] of modules) {
         const file = list.files.find((item) => item.startsWith(`assets/${name}-`) && item.endsWith(".js"));
         try {
@@ -341,6 +353,15 @@ try {
 
   const routeCache = await missingRouteFiles(page);
   assert(routeCache.files > 0 && routeCache.missing.length === 0, `service worker did not precache the route screens: ${routeCache.missing.join(", ") || "no route list"}`);
+  // Warm tools arrive after the first idle, not at install (issue #95).
+  const warmed = await page.waitForFunction(async () => {
+    const list = await (await caches.match(new URL("./offline-routes.json", location.href).href))?.json();
+    if (!Array.isArray(list?.warm) || !list.warm.length) return false;
+    for (const file of list.warm) if (!(await caches.match(new URL(file, location.href).href))) return false;
+    return true;
+  }, { timeout: 30_000, polling: 250 }).then(() => true, () => false);
+  const warmCache = await missingWarmFiles(page);
+  assert(warmed && warmCache.files > 0, `the service worker did not warm the tools after the first idle: ${warmCache.missing.join(", ") || "no warm list"}`);
 
   // "Remove optional offline files" drops visited lectures but keeps the
   // route screens, or every screen would be unavailable offline again.
@@ -356,6 +377,9 @@ try {
     assert(!(await page.evaluate((url) => caches.match(url).then(Boolean), lectureUrl)), "optional offline file cleanup kept the visited lecture");
     const afterCleanup = await missingRouteFiles(page);
     assert(afterCleanup.files > 0 && afterCleanup.missing.length === 0, `optional offline file cleanup removed route screens: ${afterCleanup.missing.join(", ") || "no route list"}`);
+    // Warm tools are app code: cleanup keeps them rather than downloading them again.
+    const warmAfterCleanup = await missingWarmFiles(page);
+    assert(warmAfterCleanup.files > 0 && warmAfterCleanup.missing.length === 0, `optional offline file cleanup removed warm tools: ${warmAfterCleanup.missing.join(", ") || "no warm list"}`);
   }
   await page.$eval(".settings-close", (button) => button.click());
 

@@ -9,11 +9,10 @@ const buildId = process.env.LUMEN_BUILD_ID?.trim() || `local-${Date.now().toStri
 // from the list below. Lecture bodies, the search corpus, Mermaid, the WebLLM
 // runtime, and fonts stay on-demand because they are dynamic imports or assets.
 // The review center (with its card editor) and the readiness check left the
-// startup bundle for its budget, and the reader's TeX renderer loads on first
-// math; all three are still app code every screen needs offline.
+// startup bundle for its budget; both are still app code every screen needs
+// offline.
 const OFFLINE_ROUTE_MODULES = [
   "src/components/Reader.jsx",
-  "src/lib/markdownMath.js",
   "src/components/Whiteboard.jsx",
   "src/components/AiLearningStudio.jsx",
   "src/components/AiTutor.jsx",
@@ -24,34 +23,64 @@ const OFFLINE_ROUTE_MODULES = [
   "src/components/DeviceEvidence.jsx",
 ];
 
+// Warm tools are app code a learner reaches only through an action: the TeX
+// renderers with KaTeX (edited copies, uploads and tutor answers), HTML and
+// EPUB upload, backup, encrypted export and vault sync, the link check, and
+// library retrieval for the tutors. They are in neither the startup bundle
+// nor the install tier. After the first idle of every launch, main.jsx asks
+// the active worker to fetch whichever of them its cache lacks, so each works
+// offline after one online visit without making installation larger.
+const WARM_MODULES = [
+  "src/lib/markdownMath.js",
+  "src/lib/tutorMath.js",
+  "src/lib/importConverters.js",
+  "src/lib/backupTools.js",
+  "src/lib/linkAudit.js",
+  "src/lib/libraryRetrieval.js",
+];
+
 const offlineRouteManifest = () => ({
   name: "lumen-offline-route-manifest",
   apply: "build",
-  generateBundle(_options, bundle) {
+  // After Vite's CSS plugin has dropped the placeholder JS of CSS-only chunks
+  // (KaTeX's stylesheet, shared by the tutors and a warm tool, is one) and
+  // handed their CSS to the importing chunks.
+  generateBundle: { order: "post", handler(_options, bundle) {
     const chunks = Object.values(bundle).filter((item) => item.type === "chunk");
     const byFile = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
     const entry = chunks.find((chunk) => chunk.isEntry);
     if (!entry) this.error("The offline route list needs the application entry chunk.");
-    const files = new Set();
-    const visit = (chunk) => {
-      if (!chunk || files.has(chunk.fileName)) return;
-      files.add(chunk.fileName);
-      chunk.viteMetadata?.importedCss?.forEach((css) => files.add(css));
-      chunk.imports.forEach((name) => visit(byFile.get(name)));
+    // A chunk with its static imports and their CSS.
+    const closure = (roots) => {
+      const files = new Set();
+      const visit = (chunk) => {
+        if (!chunk || files.has(chunk.fileName)) return;
+        files.add(chunk.fileName);
+        chunk.viteMetadata?.importedCss?.forEach((css) => files.add(css));
+        chunk.imports.forEach((name) => visit(byFile.get(name)));
+      };
+      roots.forEach(visit);
+      return files;
     };
-    for (const module of OFFLINE_ROUTE_MODULES) {
+    const lazyChunk = (module, tier) => {
       const chunk = chunks.find((item) => item.isDynamicEntry && item.facadeModuleId?.replaceAll("\\", "/").endsWith(`/${module}`));
-      // A renamed or inlined screen must fail the build, not silently drop
-      // out of the offline shell.
-      if (!chunk) this.error(`Offline route ${module} did not produce its own lazy chunk.`);
-      visit(chunk);
-    }
+      // A renamed or inlined screen or tool must fail the build, not silently
+      // drop out of the offline shell.
+      if (!chunk) this.error(`${tier} ${module} did not produce its own lazy chunk.`);
+      return chunk;
+    };
+    const files = closure(OFFLINE_ROUTE_MODULES.map((module) => lazyChunk(module, "Offline route")));
+    // The HTML already loads the entry and its static imports, and install
+    // caches every route file, so the warm list names only what neither has.
+    const shell = closure([entry]);
+    const warm = [...closure(WARM_MODULES.map((module) => lazyChunk(module, "Warm tool")))]
+      .filter((file) => !files.has(file) && !shell.has(file));
     this.emitFile({
       type: "asset",
       fileName: "offline-routes.json",
-      source: `${JSON.stringify({ version: 1, build: buildId, entry: entry.fileName, files: [...files].sort() }, null, 2)}\n`,
+      source: `${JSON.stringify({ version: 2, build: buildId, entry: entry.fileName, files: [...files].sort(), warm: warm.sort() }, null, 2)}\n`,
     });
-  },
+  } },
 });
 
 export default defineConfig({

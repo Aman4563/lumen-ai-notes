@@ -1,80 +1,36 @@
 import { mergeBoardVersions } from "./boardSync.js";
 import { mergeProfileVersions } from "./profileSync.js";
 import { normalizeBoardDocument } from "./db.js";
-import { createId } from "./id.js";
 
 /**
  * SYNC-001 v1 (issue #14): encrypted, account-free, file-based cross-device
  * sync per docs/SYNC_DESIGN.md. This module owns everything except the UI:
- * durable device identity, vault membership, the vault baseline (the last
- * successful merge result, kept in its OWN IndexedDB database so backups and
- * `getAllData` never see sync state), and the deterministic peer fold that
- * reuses the cross-tab merge machinery — no second merge algorithm.
+ * the vault baseline (the last successful merge result, kept in its OWN
+ * IndexedDB database so backups and `getAllData` never see sync state) and
+ * the deterministic peer fold that reuses the cross-tab merge machinery — no
+ * second merge algorithm. Durable device identity and vault membership live
+ * in `syncIdentity.js` (startup bundle, re-exported here); this module loads
+ * with the backup tools on first use (issue #95).
  *
  * Transport is the `lumen.backup.enc.v2` container (vaultId + deviceId in
  * the authenticated header). Each device writes only its own file,
  * `<deviceId>.lumenc`; peers' files are always the `remote` merge argument.
  */
-export const DEVICE_ID_STORAGE_KEY = "lumen-device-id-v1";
-export const VAULT_CONFIG_STORAGE_KEY = "lumen-sync-vault-v1";
+export {
+  DEVICE_ID_STORAGE_KEY,
+  VAULT_CONFIG_STORAGE_KEY,
+  adoptVaultConfig,
+  clearVaultConfig,
+  createVaultConfig,
+  getDeviceId,
+  readVaultConfig,
+  recordVaultSync,
+  syncFileNameFor,
+} from "./syncIdentity.js";
+
 const BASELINE_DATABASE = "lumen-sync-baseline-v1";
 const BASELINE_STORE = "baseline";
 const BASELINE_KEY = "current";
-
-/** Durable per-device identity — distinct from the per-tab writerId. */
-export const getDeviceId = (storage = globalThis.localStorage) => {
-  try {
-    const stored = String(storage.getItem(DEVICE_ID_STORAGE_KEY) || "");
-    if (/^[a-z0-9-]{8,80}$/i.test(stored)) return stored;
-    const fresh = createId();
-    storage.setItem(DEVICE_ID_STORAGE_KEY, fresh);
-    return fresh;
-  } catch {
-    // Private-mode storage failures degrade to a session-scoped identity.
-    return createId();
-  }
-};
-
-export const syncFileNameFor = (deviceId) => `${deviceId}.lumenc`;
-
-export const readVaultConfig = (storage = globalThis.localStorage) => {
-  try {
-    const parsed = JSON.parse(storage.getItem(VAULT_CONFIG_STORAGE_KEY) || "null");
-    if (!parsed || typeof parsed.vaultId !== "string" || parsed.vaultId.length < 8 || parsed.vaultId.length > 200) return null;
-    return {
-      vaultId: parsed.vaultId,
-      createdAt: String(parsed.createdAt || "").slice(0, 40),
-      lastSyncAt: String(parsed.lastSyncAt || "").slice(0, 40),
-    };
-  } catch {
-    return null;
-  }
-};
-
-const writeVaultConfig = (storage, config) => {
-  try {
-    storage.setItem(VAULT_CONFIG_STORAGE_KEY, JSON.stringify(config));
-  } catch { /* storage failure surfaces on the next read as "no vault" */ }
-  return config;
-};
-
-export const createVaultConfig = (storage = globalThis.localStorage, now = new Date()) =>
-  writeVaultConfig(storage, { vaultId: createId(), createdAt: now.toISOString(), lastSyncAt: "" });
-
-/** Joining via a peer's sync file adopts that file's vault id. */
-export const adoptVaultConfig = (vaultId, storage = globalThis.localStorage, now = new Date()) =>
-  writeVaultConfig(storage, { vaultId: String(vaultId).slice(0, 200), createdAt: now.toISOString(), lastSyncAt: "" });
-
-export const recordVaultSync = (storage = globalThis.localStorage, now = new Date()) => {
-  const config = readVaultConfig(storage);
-  return config ? writeVaultConfig(storage, { ...config, lastSyncAt: now.toISOString() }) : null;
-};
-
-export const clearVaultConfig = (storage = globalThis.localStorage) => {
-  try {
-    storage.removeItem(VAULT_CONFIG_STORAGE_KEY);
-  } catch { /* nothing to clear */ }
-};
 
 /**
  * Pre-decrypt admission check on a container header. Returns a typed refusal

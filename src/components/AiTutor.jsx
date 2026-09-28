@@ -38,6 +38,7 @@ import {
   aiClient,
 } from "../lib/aiClient";
 import { renderTutorInlineMarkdown, renderTutorMarkdown, tutorSpeechText } from "../lib/tutorMarkdown";
+import { useTutorMath } from "../hooks/useTutorMath.js";
 import { useScrollableRegions } from "../lib/useScrollableRegions.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { FINE_POINTER_QUERY, composerEnterAction, composerKeyHint, currentPlatform, shouldRecallLastQuestion } from "../lib/tutorKeyboard.js";
@@ -671,9 +672,10 @@ const profileLabel = (id) => RESPONSE_PROFILES.find((item) => item.id === id)?.l
  * citation controls as prose answers, handled by delegation.
  */
 const InlineRichText = ({ text, citationSources = [], webSources = [], onNavigateSource, className = "" }) => {
+  const math = useTutorMath();
   const markup = useMemo(
     () => ({ __html: renderTutorInlineMarkdown(text, citationSources, webSources) }),
-    [citationSources, text, webSources],
+    [citationSources, math, text, webSources], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const handleClick = useCallback((event) => {
     const citation = event.target.closest?.("[data-ai-citation]");
@@ -714,9 +716,10 @@ const copyPlainText = async (text) => {
 /** Sanitized, GFM-capable output that remains valid while a stream is partial. */
 const SafeResponseText = ({ text, citationSources, webSources, onNavigateSource, streaming = false }) => {
   const responseRef = useRef(null);
+  const math = useTutorMath();
   const html = useMemo(
     () => renderTutorMarkdown(text, citationSources, webSources),
-    [citationSources, text, webSources],
+    [citationSources, math, text, webSources], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // Keep React from replacing renderer-owned diagrams on unrelated updates.
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
@@ -1081,6 +1084,8 @@ export default function AiTutor({
   onClose,
   className = "",
 }) {
+  // KaTeX loads while the learner reads or types, not when the first answer arrives.
+  useTutorMath();
   const headingId = useId();
   const promptId = useId();
   const sendReasonId = useId();

@@ -27,6 +27,11 @@ export const selectUploadFiles = (files, existingCount, existingBytes = 0) => {
   };
 };
 
+// The upload loop picks a converter by name before it loads one, so these
+// stay beside the picker rules instead of in the lazily loaded converters.
+export const isHtmlFileName = (name) => /\.html?$/i.test(String(name || ""));
+export const isEpubFileName = (name) => /\.epub$/i.test(String(name || ""));
+
 export const utf8Bytes = (value) => new TextEncoder().encode(String(value || "")).byteLength;
 
 export const customDocumentBytes = (documents, excludingId = "") => (Array.isArray(documents) ? documents : [])

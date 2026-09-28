@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ensureTutorMath,
+  getTutorMathState,
   normalizeTutorMathDelimiters,
   renderTutorInlineMarkdownUnsanitized,
   renderTutorMarkdownUnsanitized,
+  subscribeTutorMath,
   tutorMarkdownPlainText,
   tutorSpeechText,
 } from "./tutorMarkdown.js";
@@ -18,6 +21,49 @@ const liveCitationAttributes = (html) => (html.match(/data-ai-citation="/gu) || 
 const APP_LIBRARY_CITATION = /<button class="ai-tutor__citation" type="button" data-ai-citation="S\d+" aria-label="Open citation \[S\d+\]: [^"]*">\[S\d+\]<\/button>/gu;
 // Every live tag other than the renderer's own citation buttons.
 const tagsBesideAppCitations = (html) => liveTags(html.replace(APP_LIBRARY_CITATION, ""));
+
+// KaTeX is a warm tool (issue #95). This test runs first, before anything
+// loads it: until then math is its own escaped TeX source in a code span.
+test("math reads as escaped TeX source until KaTeX loads, never as live markup", () => {
+  assert.equal(getTutorMathState(), "idle");
+  const result = render([
+    "Loss $x^2$ and $a<b>c$ [S1].",
+    "",
+    "$$",
+    "\\frac{1}{2}<img src=x onerror=\"alert(1)\">",
+    "$$",
+    "",
+    "Inline display $$y = mx$$ here.",
+  ].join("\n"));
+  assert.match(result, /<code class="ai-tutor__math-pending">\$x\^2\$<\/code>/u);
+  assert.match(result, /<code class="ai-tutor__math-pending">\$a&lt;b&gt;c\$<\/code>/u);
+  assert.match(result, /<div class="ai-tutor__scroll ai-tutor__scroll--math" data-scroll-label="Equation"><code class="ai-tutor__math-pending">\$\$\\frac\{1\}\{2\}&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;\$\$<\/code><\/div>/u);
+  assert.match(result, /<code class="ai-tutor__math-pending">\$\$y = mx\$\$<\/code>/u);
+  assert.doesNotMatch(result, /katex|<img|<span/u);
+  assert.equal(liveCitationAttributes(result), 1, "the citation beside pending math still renders");
+  const inline = renderTutorInlineMarkdownUnsanitized("Option with $\\hat{R}(f)$ <b>x</b>", sources, web);
+  assert.equal(inline, 'Option with <code class="ai-tutor__math-pending">$\\hat{R}(f)$</code> &lt;b&gt;x&lt;/b&gt;');
+  // Code keeps its dollars as code, as it does once KaTeX has loaded.
+  assert.match(render("`$x$` stays code"), /<code>\$x\$<\/code> stays code/u);
+});
+
+test("KaTeX loads on demand, tells subscribers, and draws what KaTeX draws", async () => {
+  const states = [];
+  const unsubscribe = subscribeTutorMath(() => states.push(getTutorMathState()));
+  await Promise.all([ensureTutorMath(), ensureTutorMath()]);
+  unsubscribe();
+  assert.deepEqual(states, ["loading", "ready"], "two callers share one load");
+  assert.equal(getTutorMathState(), "ready");
+  await ensureTutorMath();
+  const { default: katex } = await import("katex");
+  // The options the tutor has always passed to KaTeX.
+  const options = { throwOnError: false, trust: false, strict: "warn", maxExpand: 1_000, maxSize: 10, output: "htmlAndMathml", nonStandard: true };
+  assert.equal(render("Loss $x^2$."), `<p>Loss ${katex.renderToString("x^2", { ...options, displayMode: false })}.</p>\n`);
+  assert.equal(render("$$\n\\hat{w} = \\arg\\min_w\n$$"), `<div class="ai-tutor__scroll ai-tutor__scroll--math" data-scroll-label="Equation">${katex.renderToString("\\hat{w} = \\arg\\min_w", { ...options, displayMode: true })}</div>\n`);
+  assert.equal(render("$\nx\n$"), `${katex.renderToString("x", { ...options, displayMode: false })}\n`);
+  assert.equal(renderTutorInlineMarkdownUnsanitized("Pick $$y$$", sources, web), `Pick ${katex.renderToString("y", { ...options, displayMode: true })}`);
+  assert.doesNotMatch(render("Loss $x^2$."), /ai-tutor__math-pending/u);
+});
 
 test("renders known library and web citations as the renderer's own controls", () => {
   const result = render("Evidence [S1] and current facts [W1].");
@@ -207,7 +253,8 @@ test("keeps model links only to absolute web and mail addresses", () => {
   );
 });
 
-test("tutor answers never load an image: a remote image becomes a link", () => {
+test("tutor answers never load an image: a remote image becomes a link", async () => {
+  await ensureTutorMath();
   // An <img> fetches its source on render, which would send whatever the
   // model encoded in the URL to that host (issue #81).
   const remote = render('![Holdout curve](https://tracker.example/p.png?q=secret "t")');
@@ -264,7 +311,8 @@ test("keeps a bare line break and nothing else from model HTML", () => {
   assert.match(result, /&lt;br data-ai-citation=&quot;S1&quot;&gt;/);
 });
 
-test("still renders headings, math, tables, code, diagrams and links", () => {
+test("still renders headings, math, tables, code, diagrams and links", async () => {
+  await ensureTutorMath();
   const result = render([
     "## Holdout [S1]",
     "",
@@ -297,7 +345,8 @@ test("still renders headings, math, tables, code, diagrams and links", () => {
   assert.equal(liveCitationAttributes(result), 2, "the heading and table citations render; the code comment does not");
 });
 
-test("structured fields render math and citations but keep model HTML as text", () => {
+test("structured fields render math and citations but keep model HTML as text", async () => {
+  await ensureTutorMath();
   const result = renderTutorInlineMarkdownUnsanitized(
     'Option with $\\hat{R}(f)$ [S1] <button data-ai-citation="S1">forged</button> <img src=x onerror="alert(1)">\n\n**bold**',
     sources,

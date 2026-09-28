@@ -54,9 +54,11 @@ const webllmCacheUsage = async () => {
 };
 
 const ROUTE_LIST = "./offline-routes.json";
+// Warm tools are app code too: removing them would only download them again
+// on the next launch, and until then their actions would not work offline.
 const addRouteFiles = (protectedUrls, list) => {
   if (!Array.isArray(list?.files)) return;
-  list.files.forEach((file) => protectedUrls.add(new URL(file, location.href).href));
+  [...list.files, ...(Array.isArray(list.warm) ? list.warm : [])].forEach((file) => protectedUrls.add(new URL(file, location.href).href));
 };
 
 const removeOptionalCache = async () => {

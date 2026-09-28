@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { renderPhoneTutorInlineMarkdown } from "../lib/phoneTutorMarkdown.js";
+import { useTutorMath } from "../hooks/useTutorMath.js";
 import "../phone-tutor-results.css";
 
 // On-device Lite's quiz, flashcard and study-plan views. The tutor loads
@@ -14,7 +15,8 @@ import "../phone-tutor-results.css";
  * navigable [S#]/[W#] citation controls the prose surface produces.
  */
 const InlineFieldCitations = ({ text, sources = [], citations = [], onNavigateSource }) => {
-  const markup = useMemo(() => ({ __html: renderPhoneTutorInlineMarkdown(text, sources, citations) }), [citations, sources, text]);
+  const math = useTutorMath();
+  const markup = useMemo(() => ({ __html: renderPhoneTutorInlineMarkdown(text, sources, citations) }), [citations, math, sources, text]); // eslint-disable-line react-hooks/exhaustive-deps
   const handleClick = (event) => {
     const citationButton = event.target.closest?.("[data-ai-citation]");
     if (!citationButton) return;

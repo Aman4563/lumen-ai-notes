@@ -47,6 +47,7 @@ import { tutorMessageMarkdown } from "../lib/tutorExport.js";
 import { retrievalTraceCounts, shouldUseWebFallback } from "../lib/tutorGrounding.js";
 import { ANSWER_FOLLOW_UPS, topicQuestionFor, withoutCitationLabels } from "../lib/tutorFollowUps.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
+import { useTutorMath } from "../hooks/useTutorMath.js";
 import "../phone-local-ai-tutor.css";
 
 export const PHONE_TUTOR_MODES = Object.freeze([
@@ -288,9 +289,10 @@ export const sanitizePhoneCitations = (citations) => (Array.isArray(citations) ?
 
 const SafeResponse = ({ text, citations = [], sources = [], onNavigateSource, onCopy, streaming = false }) => {
   const responseRef = useRef(null);
+  const math = useTutorMath();
   const html = useMemo(
     () => renderPhoneTutorMarkdown(text, sources, citations),
-    [citations, sources, text],
+    [citations, math, sources, text], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const htmlMarkup = useMemo(() => ({ __html: html }), [html]);
   useMermaidDiagrams(responseRef, { contentKey: html, enabled: !streaming });
@@ -394,6 +396,8 @@ const outboundHistory = (history) => selectCompletedPhoneHistory(history, MAX_HI
 
 export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, onInsertConsumed, retrieveLibrary, engine: providedEngine, initialHistory = [], onHistoryChange, onNavigateSource, onCreateFlashcardDrafts, onSaveAnswerNote, onNotify, onInteractionChange, speech = null }) {
   const engine = useMemo(() => providedEngine || getPhoneLocalAiEngine(), [providedEngine]);
+  // KaTeX loads while the learner reads or types, not when the first answer arrives.
+  useTutorMath();
   const promptId = useId();
   const modeDescriptionId = useId();
   const keyHintId = useId();

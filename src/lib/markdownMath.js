@@ -4,7 +4,9 @@ import "katex/dist/katex.min.css";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
 
 // Lazy reader path for edited copies and uploads that contain TeX. Built-in
-// lectures never load this module (see hasTexMath in markdown.js).
+// lectures never load this module (see hasTexMath in markdown.js). It is a
+// warm tool (issue #95): the service worker fetches it with KaTeX after the
+// first idle, so it also works offline without being installed.
 const mathMarked = new Marked();
 mathMarked.use({ gfm: true, breaks: false, renderer: markdownRenderer });
 mathMarked.use(markedKatex({

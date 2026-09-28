@@ -74,14 +74,18 @@ const routeFiles = Array.isArray(routeList.files) ? routeList.files : [];
 assert(typeof routeList.build === "string" && routeList.build.length > 0, "the offline route list must name its build so the worker can reject a mismatched release");
 assert(routeList.entry === entryScript, `the offline route list entry (${routeList.entry}) must match the HTML entry (${entryScript})`);
 for (const file of routeFiles) assert(exists(file), `the offline route list references a missing file: ${file}`);
-for (const screen of ["Reader", "markdownMath", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "ReviewCenter", "AssessmentDialog", "StorageHealth", "DeviceEvidence"]) {
+// The reader's TeX renderer (markdownMath) moved to the warm tier with KaTeX
+// (issue #95).
+for (const screen of ["Reader", "Whiteboard", "AiLearningStudio", "AiTutor", "PhoneLocalAiTutor", "ReviewCenter", "AssessmentDialog", "StorageHealth", "DeviceEvidence"]) {
   assert(routeFiles.some((file) => file.startsWith(`assets/${screen}-`) && file.endsWith(".js")), `the offline route list omits the ${screen} screen`);
 }
 for (const screen of ["AiLearningStudio", "AiTutor", "PhoneLocalAiTutor"]) {
   assert(routeFiles.some((file) => file.startsWith(`assets/${screen}-`) && file.endsWith(".css")), `the offline route list omits the ${screen} stylesheet`);
 }
 assert(routeFiles.every((file) => /^assets\/[^/]+\.(?:js|css)$/.test(file)), "the offline route list may only name fingerprinted JS/CSS (fonts and images stay on demand)");
-const eagerContent = routeFiles.filter((file) => /\/(?:README|\d{2}-)|content-search|mermaid\.core|cytoscape|Diagram-|-definition-|interviewTracks|labs\.v1|fsrsOptimizer/.test(file));
+// Lecture bodies, the search corpus, diagrams and optimizer data stay on demand.
+const EAGER_CONTENT = /\/(?:README|\d{2}-)|content-search|mermaid\.core|cytoscape|Diagram-|-definition-|interviewTracks|labs\.v1|fsrsOptimizer/;
+const eagerContent = routeFiles.filter((file) => EAGER_CONTENT.test(file));
 assert(eagerContent.length === 0, `the offline route list eagerly caches content: ${eagerContent.join(", ")}`);
 const htmlFiles = new Set([...index.matchAll(/(?:src|href)="\.\/([^"#]+)"/g)].map((match) => match[1]));
 const installOnlyFiles = routeFiles.filter((file) => !htmlFiles.has(file) && exists(file));
@@ -91,6 +95,27 @@ assert(worker.includes("offline-routes.json"), "the service worker must precache
 assert(worker.includes("list?.build !== BUILD_ID"), "the service worker must reject a route list from a different build");
 assert(worker.includes("VERSIONED ? await readRouteList()"), "a build-specific service worker must require its route list; only an unversioned one may install entry-only");
 assert(worker.includes("htmlAssets.includes(routes.entry)"), "the service worker must reject a route list whose entry differs from the HTML");
+
+// Warm tools (issue #95): app code only an action needs (KaTeX and the TeX
+// renderers, uploads, backup and sync, the link check, library retrieval).
+// The worker fetches them after the first idle, never at install, so they
+// count toward neither budget and must not overlap the other tiers.
+const warmFiles = Array.isArray(routeList.warm) ? routeList.warm : [];
+assert(routeList.version === 2, `the offline route list must be version 2 with a warm list (found version ${routeList.version})`);
+assert(Array.isArray(routeList.warm) && warmFiles.length > 0, "the offline route list has no warm tool list");
+for (const file of warmFiles) assert(exists(file), `the warm tool list references a missing file: ${file}`);
+assert(warmFiles.every((file) => /^assets\/[^/]+\.(?:js|css)$/.test(file)), "the warm tool list may only name fingerprinted JS/CSS");
+const warmOverlap = warmFiles.filter((file) => routeFiles.includes(file) || htmlFiles.has(file));
+assert(warmOverlap.length === 0, `warm tools must not repeat install or startup files: ${warmOverlap.join(", ")}`);
+const eagerWarm = warmFiles.filter((file) => EAGER_CONTENT.test(file));
+assert(eagerWarm.length === 0, `the warm tool list eagerly caches content: ${eagerWarm.join(", ")}`);
+for (const tool of ["katex", "markdownMath", "tutorMath", "importConverters", "backupTools", "linkAudit", "libraryRetrieval"]) {
+  assert(warmFiles.some((file) => file.startsWith(`assets/${tool}-`) && file.endsWith(".js")), `the warm tool list omits ${tool}`);
+  assert(!routeFiles.some((file) => file.startsWith(`assets/${tool}-`) && file.endsWith(".js")), `${tool} is installed with the route screens instead of warmed`);
+}
+assert(!warmFiles.some((file) => installOnlyFiles.includes(file)), "install bytes must exclude warm tools");
+assert(worker.includes('event.data?.type === "WARM"'), "the service worker has no WARM handler for the warm tools");
+assert(worker.includes("cache.match(ROUTE_LIST_URL)") && worker.includes("list.warm"), "the WARM handler must read the route list its install stored");
 
 const searchChunk = scripts.find((path) => path.includes("content-search"));
 assert(searchChunk && statSync(resolve(dist, searchChunk)).size > 500_000, "the lazy full-text search corpus was not emitted separately");

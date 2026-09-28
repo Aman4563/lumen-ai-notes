@@ -32,9 +32,13 @@ export const measureBuild = (dist) => {
   ];
   const entryBytes = size(entryFile);
   const installBytes = total(installFiles);
+  // The budget counts the entry script; the HTML also preloads the chunks the
+  // bundler split out of it, so report everything startup parses as well.
+  const startupScripts = [...htmlFiles].filter((file) => /^assets\/.+\.js$/.test(file));
   return {
     version: list.version,
     entry: { file: entryFile, bytes: entryBytes, limit: ENTRY_BUDGET_BYTES, headroom: ENTRY_BUDGET_BYTES - entryBytes },
+    startup: { files: startupScripts, bytes: total(startupScripts) },
     install: { files: installFiles, bytes: installBytes, limit: INSTALL_BUDGET_BYTES, headroom: INSTALL_BUDGET_BYTES - installBytes },
     warm: { files: warmFiles, bytes: total(warmFiles) },
     largest: tiers.map((item) => ({ ...item, bytes: size(item.file) })).sort((left, right) => right.bytes - left.bytes).slice(0, 10),
@@ -46,6 +50,7 @@ const bytes = (value) => `${value.toLocaleString("en-US")} B`;
 /** The headroom lines both `npm run size` and the app audit print. */
 export const headroomLines = (measure) => [
   `Startup entry: ${bytes(measure.entry.bytes)} of ${bytes(measure.entry.limit)}; headroom ${bytes(measure.entry.headroom)} (${measure.entry.file})`,
+  `Startup JavaScript the HTML loads: ${bytes(measure.startup.bytes)} (the entry and ${measure.startup.files.length - 1} preloaded chunks)`,
   `Install route screens: ${bytes(measure.install.bytes)} of ${bytes(measure.install.limit)} in ${measure.install.files.length} files; headroom ${bytes(measure.install.headroom)}`,
   `Warm tools: ${bytes(measure.warm.bytes)} in ${measure.warm.files.length} files (fetched after the first idle; no budget)`,
 ];

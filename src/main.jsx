@@ -29,6 +29,16 @@ if (import.meta.env.PROD) {
       return;
     }
     const workerUrl = `${import.meta.env.BASE_URL}service-worker.js?build=${encodeURIComponent(__LUMEN_BUILD_ID__)}`;
+    // Warm tools (KaTeX, uploads, backup and sync, the link check, library
+    // retrieval) are not installed with the app. Once the first render is
+    // idle, on every launch, ask the active worker to fetch whichever of them
+    // it lacks. iOS Safari has no requestIdleCallback, so wait three seconds
+    // there. Failure only means a tool says it needs a connection.
+    const warmWhenIdle = () => navigator.serviceWorker.ready
+      .then((registration) => registration.active?.postMessage({ type: "WARM" }))
+      .catch(() => {});
+    if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(warmWhenIdle, { timeout: 10_000 });
+    else window.setTimeout(warmWhenIdle, 3_000);
     navigator.serviceWorker.register(workerUrl).then((registration) => {
       const announce = () => window.dispatchEvent(new CustomEvent("lumen:pwa-update", { detail: registration }));
       if (registration.waiting && navigator.serviceWorker.controller) announce();

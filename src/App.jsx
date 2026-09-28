@@ -60,15 +60,17 @@ import { useSpeech } from "./hooks/useSpeech";
 import { useWakeLock } from "./hooks/useWakeLock";
 import { pruneRecentSearches, pushRecentSearch, searchDocuments, SEARCH_RESULT_LIMIT } from "./lib/search";
 import { createId } from "./lib/id.js";
-import { customDocumentBytes, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
+import { customDocumentBytes, isEpubFileName, isHtmlFileName, MAX_CUSTOM_DOCUMENT_BYTES, selectUploadFiles, utf8Bytes } from "./lib/uploads.js";
 import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
-import { htmlToMarkdown, isHtmlFileName } from "./lib/htmlImport.js";
-import { describeEpubReport, importEpub, isEpubFileName } from "./lib/epubImport.js";
-import { auditLearnerLinks } from "./lib/linkAudit.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
-import { decryptBackupFile, encryptBackupJson, isEncryptedBackupFile, readEncryptedHeader } from "./lib/backupCrypto.js";
 import { mergeBoardVersions } from "./lib/boardSync.js";
-import { adoptVaultConfig, checkSyncHeader, clearSyncBaseline, clearVaultConfig, createVaultConfig, foldPeerSnapshots, getDeviceId, loadSyncBaseline, readVaultConfig, recordVaultSync, saveSyncBaseline, syncFileNameFor } from "./lib/syncVault.js";
+import { adoptVaultConfig, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
+// Actions load these tools on use; the service worker warms them (issue #95).
+import { loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
+// The lecture renderer (marked and DOMPurify, about 85 KB) stays in the
+// startup bundle, where the link check used to hold it: every lecture needs
+// it first, and as a shared route chunk it would spend the install budget.
+import "./lib/markdown.js";
 import { buildConceptMap } from "./lib/conceptMap.js";
 import { migrateItemsToFsrs } from "./lib/fsrs.js";
 import { MAX_ASSESSMENTS, MIN_ASSESSMENT_POOL, assessmentMistakeDrafts, buildAssessment, createAssessmentRecord, recommendationForAssessment, scoreAssessment } from "./lib/assessment.js";
@@ -77,12 +79,10 @@ import { createLibrarySearchClient } from "./lib/librarySearchClient.js";
 import { categoryForReviewItem, recordMistake, reinsertRecord, updateMistake } from "./lib/mistakes.js";
 import { masteryByPart, PART_MASTERY_STATES } from "./lib/mastery.js";
 import { actionableDueCount, buildDailySession, planPace, resumeTarget, SESSION_LENGTHS } from "./lib/plan.js";
-import { createBackup, createRecoverySnapshot, preflightBackup } from "./lib/backup.js";
 import { StorageBudgetError } from "./lib/storageBudget.js";
 import { aiClippingIds, isAiAuthoredClipping, isAiAuthoredReviewItem, materializeAiCardProvenance, materializeAiFlashcard, withAiDraftTag } from "./lib/aiProvenance.js";
 import { lectureLoadMessage, recoverableImport } from "./lib/chunkRecovery.js";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { retrieveLibrary } from "./lib/libraryRetrieval.js";
 import { downloadBlob } from "./lib/download.js";
 // Small and shared with the review center; kept separate so the notebook does
 // not pull the lazily loaded review center into the startup bundle.
@@ -1018,7 +1018,7 @@ function NotebookView({ profile, allDocuments, customDocuments, onOpen, onUpload
 
       <div className="notebook-search"><Search size={18} /><input value={notebookQuery} onChange={(event) => setNotebookQuery(event.target.value)} placeholder="Search notes, clippings, bookmarks, uploads, and mistakes…" aria-label="Search notebook" />{notebookQuery && <button onClick={() => setNotebookQuery("")} aria-label="Clear notebook search" type="button"><X size={16} /></button>}</div>
 
-      {(customDocuments.length > 0) && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Created and uploaded</span><h2>My lectures</h2></div><div className="notebook-heading-actions"><button className="button ghost" onClick={() => setLinkReport(onRunLinkAudit())} type="button"><Search size={15} /> Check links</button><button className={selectMode ? "button secondary" : "button ghost"} onClick={() => { setSelectMode((value) => !value); setSelectedDocIds([]); }} aria-pressed={selectMode} type="button"><CheckCircle2 size={15} /> {selectMode ? "Done selecting" : "Select"}</button></div></div>
+      {(customDocuments.length > 0) && <section className="notebook-section"><div className="section-heading"><div><span className="eyebrow">Created and uploaded</span><h2>My lectures</h2></div><div className="notebook-heading-actions"><button className="button ghost" onClick={async () => { const report = await onRunLinkAudit(); if (report) setLinkReport(report); }} type="button"><Search size={15} /> Check links</button><button className={selectMode ? "button secondary" : "button ghost"} onClick={() => { setSelectMode((value) => !value); setSelectedDocIds([]); }} aria-pressed={selectMode} type="button"><CheckCircle2 size={15} /> {selectMode ? "Done selecting" : "Select"}</button></div></div>
       {linkReport && <div className={linkReport.findings.length ? "link-report has-findings" : "link-report"} role="status">{linkReport.findings.length === 0 ? `Checked ${linkReport.scanned} document${linkReport.scanned === 1 ? "" : "s"} — every internal link opens.` : <>
         <strong>{linkReport.findings.length} broken link{linkReport.findings.length === 1 ? "" : "s"} across {linkReport.scanned} scanned document{linkReport.scanned === 1 ? "" : "s"}:</strong>
         <ul>{linkReport.findings.slice(0, 12).map((finding, index) => <li key={index}><button className="text-button" onClick={() => onOpen(finding.documentId)} type="button">{allDocuments.find((item) => item.id === finding.documentId)?.title || finding.documentId.split("/").at(-1)}</button> → <code>{finding.href}</code> <small>({finding.kind.replace(/-/g, " ")})</small></li>)}</ul>
@@ -2008,20 +2008,26 @@ export default function App() {
     setBuiltInSources((current) => current[id] ? current : { ...current, [id]: text });
     return text;
   }, [allDocumentMap]);
-  const retrieveLibrarySources = useCallback((query, options = {}) => retrieveLibrary(query, {
-    ...options,
-    documents: allDocuments,
-    edits: profileRef.current.edits,
-    personalNotes: profileRef.current.personalNotes,
-    selectedDocumentId: options.selectedDocumentId || currentDocument.id,
-    loadSearchIndex: loadDocumentSearchIndex,
-    loadSource: async (id) => {
-      const document = allDocumentMap.get(id);
-      if (!document) throw new Error("The requested library source is no longer available");
-      if (document.source === "custom") return document.raw || "";
-      return loadDocumentSource(id);
-    },
-  }), [allDocumentMap, allDocuments, currentDocument.id]);
+  const retrieveLibrarySources = useCallback(async (query, options = {}) => {
+    // Retrieval is a warm tool. The tutors only await this call and fall back
+    // without library evidence, so a module that is not on this device yet
+    // rejects here, carrying the typed offline message.
+    const { retrieveLibrary } = await loadLibraryRetrieval();
+    return retrieveLibrary(query, {
+      ...options,
+      documents: allDocuments,
+      edits: profileRef.current.edits,
+      personalNotes: profileRef.current.personalNotes,
+      selectedDocumentId: options.selectedDocumentId || currentDocument.id,
+      loadSearchIndex: loadDocumentSearchIndex,
+      loadSource: async (id) => {
+        const document = allDocumentMap.get(id);
+        if (!document) throw new Error("The requested library source is no longer available");
+        if (document.source === "custom") return document.raw || "";
+        return loadDocumentSource(id);
+      },
+    });
+  }, [allDocumentMap, allDocuments, currentDocument.id]);
   const setPersonalNote = (note) => setProfile((current) => ({ ...current, personalNotes: { ...current.personalNotes, [currentDocument.id]: note } }));
   const saveEdit = (raw) => {
     if (currentDocument.source === "custom") {
@@ -2163,6 +2169,11 @@ export default function App() {
     try {
       const uploaded = [];
       const bookSummaries = [];
+      // HTML and EPUB converters are a warm tool; Markdown and text never
+      // load them, so those uploads work offline from the first launch.
+      const { describeEpubReport, htmlToMarkdown, importEpub } = accepted.some((file) => isEpubFileName(file.name) || isHtmlFileName(file.name))
+        ? await loadImportConverters()
+        : {};
       for (const file of accepted) {
         const now = new Date().toISOString();
         if (isEpubFileName(file.name)) {
@@ -2242,7 +2253,7 @@ export default function App() {
       const cautions = rejected || duplicateCount || droppedForBudget;
       notify(`${budgeted.length} document${budgeted.length === 1 ? "" : "s"} imported${duplicateCount ? `; ${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped` : ""}${droppedForBudget ? `; ${droppedForBudget} over the 16 MB budget` : ""}${rejected ? `; ${rejected} rejected (invalid, over a limit, or beyond the backup-safe byte budget)` : ""}. ${bookSummaries.length ? `${bookSummaries.join(" · ")}. ` : ""}No existing notes were replaced.`, cautions ? "warning" : "success", cautions ? 6000 : undefined);
     } catch (error) {
-      notify(`Import failed: ${error.message}`, "error", 5000);
+      notify(warmToolFailureMessage(error, "Import failed: "), "error", 5000);
     }
   };
 
@@ -2437,7 +2448,15 @@ export default function App() {
     notify(`${selectedIds.length} document${selectedIds.length === 1 ? "" : "s"} moved to the trash.`);
   };
 
-  const runLinkAudit = useCallback(() => {
+  // Resolves the report, or null when the link check could not load.
+  const runLinkAudit = useCallback(async () => {
+    let auditLearnerLinks;
+    try {
+      ({ auditLearnerLinks } = await loadLinkAudit());
+    } catch (error) {
+      notify(warmToolFailureMessage(error, "The link check could not start: "), "error", 6000);
+      return null;
+    }
     const current = profileRef.current;
     const knownIds = new Set([...documents.map((document) => document.id), ...current.customDocuments.map((document) => document.id)]);
     const { findings, scanned } = auditLearnerLinks({
@@ -2446,7 +2465,7 @@ export default function App() {
       knownIds,
     });
     return { findings, scanned };
-  }, []);
+  }, [notify]);
 
   const manageCustomDocument = (id, changes) => {
     const existing = profileRef.current.customDocuments.find((doc) => doc.id === id);
@@ -3017,6 +3036,7 @@ export default function App() {
 
   const exportBackup = async (password) => {
     try {
+      const { createBackup, encryptBackupJson } = await loadBackupTools();
       const exportedAt = new Date().toISOString();
       const data = await getAllData();
       // Export a read-only three-way snapshot so concurrent work already
@@ -3078,7 +3098,7 @@ export default function App() {
       }
       notify(`Backup verified with ${result.envelope.integrity.algorithm}${password ? ", encrypted with AES-256-GCM," : ""} and downloaded.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
     } catch (error) {
-      notify(`Backup failed: ${error.message}`, "error", 5000);
+      notify(warmToolFailureMessage(error, "Backup failed: "), "error", 5000);
     }
   };
 
@@ -3095,6 +3115,15 @@ export default function App() {
 
   const leaveSyncVaultAction = useCallback(async () => {
     if (!window.confirm("Leave this sync vault? Your local data stays; only the vault membership and sync baseline are removed.")) return;
+    // Load the baseline store first, so an unavailable tool leaves the
+    // membership and its baseline together rather than half removed.
+    let clearSyncBaseline;
+    try {
+      ({ clearSyncBaseline } = await loadBackupTools());
+    } catch (error) {
+      notify(warmToolFailureMessage(error, "Could not leave the vault: "), "error", 6000);
+      return;
+    }
     clearVaultConfig();
     await clearSyncBaseline();
     setSyncVaultConfig(null);
@@ -3105,6 +3134,7 @@ export default function App() {
     const config = readVaultConfig();
     if (!config) return;
     try {
+      const { createBackup, encryptBackupJson } = await loadBackupTools();
       const exportedAt = new Date().toISOString();
       const deviceId = syncDeviceIdRef.current;
       const data = await getAllData();
@@ -3118,7 +3148,7 @@ export default function App() {
       downloadBlob(syncFileNameFor(deviceId), blobParts);
       notify(`Sync file exported as ${syncFileNameFor(deviceId)}. Keep every device's file together in one shared vault folder.`, "success", 7000);
     } catch (error) {
-      notify(`Sync export failed: ${error.message}`, "error", 6000);
+      notify(warmToolFailureMessage(error, "Sync export failed: "), "error", 6000);
     }
   };
 
@@ -3129,6 +3159,7 @@ export default function App() {
       return;
     }
     try {
+      const { checkSyncHeader, decryptBackupFile, foldPeerSnapshots, loadSyncBaseline, preflightBackup, readEncryptedHeader, saveSyncBaseline } = await loadBackupTools();
       const now = new Date().toISOString();
       const deviceId = syncDeviceIdRef.current;
       let config = readVaultConfig();
@@ -3208,7 +3239,7 @@ export default function App() {
       const conflictCount = folded.conflicts.length + commitConflicts.length;
       notify(`Merged ${peers.length} peer file${peers.length === 1 ? "" : "s"}${conflictCount ? `; ${conflictCount} conflict${conflictCount === 1 ? "" : "s"} recorded` : ""}${folded.replacementApplied ? "; a reset/restore from another device was applied" : ""}${skipped.length ? `; skipped — ${skipped.join(" · ")}` : ""}. Export your sync file now so peers see this state.`, skipped.length || conflictCount ? "warning" : "success", 9000);
     } catch (error) {
-      notify(`Sync import failed: ${error.message}`, "error", 8000);
+      notify(warmToolFailureMessage(error, "Sync import failed: "), "error", 8000);
     }
   };
 
@@ -3217,6 +3248,7 @@ export default function App() {
     event.target.value = "";
     if (!file) return;
     try {
+      const { isEncryptedBackupFile, preflightBackup } = await loadBackupTools();
       if (await isEncryptedBackupFile(file)) {
         setEncryptedImport({ file, fileName: file.name, error: "" });
         setSettingsOpen(false);
@@ -3226,7 +3258,7 @@ export default function App() {
       setBackupCandidate({ ...checked, fileName: file.name });
       setSettingsOpen(false);
     } catch (error) {
-      notify(`Could not import backup: ${error.message}`, "error", 6000);
+      notify(warmToolFailureMessage(error, "Could not import backup: "), "error", 6000);
     }
   };
 
@@ -3234,6 +3266,8 @@ export default function App() {
     const pending = encryptedImport;
     if (!pending) return;
     try {
+      // Loaded to reach this dialog; cached in memory for the decrypt.
+      const { decryptBackupFile, preflightBackup } = await loadBackupTools();
       const json = await decryptBackupFile(pending.file, password);
       const checked = await preflightBackup(json);
       setEncryptedImport(null);
@@ -3245,7 +3279,7 @@ export default function App() {
         return;
       }
       setEncryptedImport(null);
-      notify(`Could not import the encrypted backup: ${error.message}`, "error", 7000);
+      notify(warmToolFailureMessage(error, "Could not import the encrypted backup: "), "error", 7000);
     }
   };
 
@@ -3282,6 +3316,7 @@ export default function App() {
         return;
       }
 
+      const { createRecoverySnapshot } = await loadBackupTools();
       const recoveryAt = new Date().toISOString();
       // Finish any save that already crossed the debounce boundary, then fold
       // this tab's dirty profile into the latest durable revision before the
@@ -3336,7 +3371,7 @@ export default function App() {
       notify("Recovery file requested. Verify it is saved, then return to this dialog and confirm the restore. No local data has been replaced.", "warning", 9000);
     } catch (error) {
       setBackupBusy(false);
-      notify(`Restore failed before replacement completed: ${error.message}`, "error", 7000);
+      notify(warmToolFailureMessage(error, "Restore failed before replacement completed: "), "error", 7000);
     }
   };
 
