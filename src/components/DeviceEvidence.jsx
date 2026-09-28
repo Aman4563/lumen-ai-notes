@@ -49,6 +49,16 @@ const HUMAN_CHECKS = [
     criterion: "In a Private Browsing tab, and on a phone with storage nearly full, full-lecture narration advanced and a bookmark could be attempted without “Lumen could not render this screen”; a bookmark that could not be saved said so.",
   },
   {
+    id: "voice-platform-copy",
+    area: "Narration wording (AUDIO-001)",
+    criterion: "The Listen panel says Safari offers the voices built into iOS and that voices downloaded in Settings may not appear, and nothing tells you to install a voice to fix the list. Note whether an Enhanced or Premium voice downloaded in Settings → Accessibility → Spoken Content appears in the Voice list.",
+  },
+  {
+    id: "voiceover-narration-messages",
+    area: "VoiceOver (A11Y-001, AUDIO-001)",
+    criterion: "With VoiceOver on and the Listen panel closed, an interruption (a timer or Siri) and leaving Lumen mid-narration were each announced once and stayed in the player with Resume; the sleep timer's end was announced once. With the panel open, the sentences being read were not announced.",
+  },
+  {
     id: "voiceover-reader",
     area: "VoiceOver (A11Y-001)",
     criterion: "With VoiceOver on, the rotor navigates the Reader by headings, and lecture text reads in document order.",

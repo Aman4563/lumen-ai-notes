@@ -148,3 +148,30 @@ Safari does the same. Note the iOS version with each verdict.
    answer switches to rendered math once you move off it; note whether
    VoiceOver announces anything then. Headless Chrome checks DOM focus only,
    not VoiceOver's cursor or announcements.
+
+## Narration panel and player checks that need a device (issue #97)
+
+The browser audits check these with a mocked speech engine, an emulated
+iPhone user agent and the live-region DOM. They cannot hear VoiceOver or
+see Safari's real voice list. The `#/device-evidence` checklist records
+them as "Narration wording" (`voice-platform-copy`) and "VoiceOver"
+(`voiceover-narration-messages`); note the iOS version with each verdict.
+
+1. **The iOS wording and the voice list (NU13, NM8).** Open Listen on an
+   iPhone in Safari. The note under the panel must begin "Safari offers the
+   voices built into iOS; voices downloaded in Settings may not appear
+   here", and no message may tell you to install a voice. Then download an
+   Enhanced or Premium voice in Settings → Accessibility → Spoken Content →
+   Voices, return to Lumen, tap Refresh, and record whether that voice
+   appears in the Voice list. On a Mac, the same note must name macOS, not
+   iOS.
+2. **Messages with VoiceOver (ND4, NM9).** Turn VoiceOver on, start Full
+   lecture and let the panel close. Start a timer or ask Siri something to
+   interrupt narration, then switch to another app and back. Each time
+   VoiceOver must read the message once, and the player must keep it on its
+   second line with Resume. Arm a 10-minute sleep timer and let it run
+   out: the notification must be read once. Open the panel while a lecture
+   plays: VoiceOver must not read each sentence aloud over the voice.
+3. **Retry.** A real synthesis failure is hard to force. If one happens (for
+   example a network voice with the phone offline), the player must stay,
+   show the message, and Retry must replay the same sentence.
