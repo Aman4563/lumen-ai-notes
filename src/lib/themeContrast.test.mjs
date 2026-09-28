@@ -142,9 +142,10 @@ test("every custom property referenced by the app stylesheets is defined", () =>
   const defined = new Set(sheets.flatMap((sheet) => [...sheet.matchAll(/(--[\w-]+)\s*:/g)].map(([, name]) => name)));
   // Set at runtime from JavaScript: reader typography style props, whiteboard
   // swatches and landscape layout measurements (Whiteboard.jsx), each
-  // Mermaid diagram's readable width (mermaidDiagrams.js), and the height of
-  // the tutor's docked composer (AiTutor.jsx).
-  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space"]);
+  // Mermaid diagram's readable width (mermaidDiagrams.js), and the tutor's
+  // dock measurements: its height, the top bar, the bottom navigation, the
+  // keyboard offset and the wide-screen column's minimum (useTutorDock.js).
+  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space", "--ai-top", "--ai-nav-space", "--ai-dock-bottom", "--ai-column-min"]);
   const missing = [...new Set(sheets.flatMap((sheet) => [...sheet.matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name)))].filter((name) => !defined.has(name) && !runtime.has(name));
   assert.deepEqual(missing, [], `undefined custom properties: ${missing.join(", ")}`);
 });

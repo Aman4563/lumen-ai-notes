@@ -91,9 +91,9 @@ export async function auditViewportScrolling({ browser, baseUrl, artifactDirecto
       await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }));
       await settle();
     };
-    const inspect = async (surface, theme, { atTop = false, atBottom = false } = {}) => {
+    const inspect = async (surface, theme, { atTop = false, atBottom = false, atLatest = false } = {}) => {
       await settle();
-      const finding = await page.evaluate(({ atTop, atBottom }) => {
+      const finding = await page.evaluate(({ atTop, atBottom, atLatest }) => {
         const root = document.documentElement;
         const body = document.body;
         const main = document.querySelector(".app-main").getBoundingClientRect();
@@ -104,6 +104,15 @@ export async function auditViewportScrolling({ browser, baseUrl, artifactDirecto
         if (main.bottom < innerHeight - 2 || body.getBoundingClientRect().bottom < innerHeight - 2) problems.push("App ends above the viewport bottom");
         if (root.scrollWidth > innerWidth + 2) problems.push("Page extends horizontally beyond the viewport");
         if (atTop && scrollY > 1) problems.push("Section navigation retained the previous page scroll position");
+        // The tutor opens a saved conversation at its latest turn (#93), not
+        // at the previous page's scroll position: the conversation's end sits
+        // just above the question box, whether the page or the conversation
+        // scrolled to it.
+        if (atLatest) {
+          const end = document.querySelector(".ai-tutor__conversation-end")?.getBoundingClientRect();
+          const box = document.querySelector(".ai-tutor__composer")?.getBoundingClientRect();
+          if (!end || !box || end.bottom > box.top + 1 || end.bottom < box.top - 160) problems.push("Section navigation did not open the tutor at the latest turn");
+        }
         if (atBottom && Math.abs(scrollY + innerHeight - root.scrollHeight) > 2) problems.push("Page bottom is not reachable after resizing or collapsing details");
         const composer = document.querySelector(".ai-tutor__submit-row")?.getBoundingClientRect();
         if (atBottom && composer && (composer.bottom < 0 || composer.top > innerHeight)) problems.push("AI composer is outside the viewport at the page bottom");
@@ -118,7 +127,7 @@ export async function auditViewportScrolling({ browser, baseUrl, artifactDirecto
           if (field.top < top - 1 || field.bottom > bottom + 1) problems.push("AI question box is not visible above the bottom navigation");
         }
         return { problems, scrollY, viewportHeight: viewport?.height, bounds: { top: main.top, bottom: main.bottom }, width: innerWidth, height: innerHeight };
-      }, { atTop, atBottom });
+      }, { atTop, atBottom, atLatest });
       const result = { device, surface, theme, ok: finding.problems.length === 0, ...finding };
       results.push(result);
       if (!result.ok || (theme === "dark" && ["ai-bottom", "ai-resized-tall"].includes(surface))) {
@@ -142,7 +151,8 @@ export async function auditViewportScrolling({ browser, baseUrl, artifactDirecto
         await navigate("Library", ".library-page");
         await bottom();
         await navigate("AI Tutor", ".ai-tutor");
-        await inspect("ai-navigation", theme, { atTop: true });
+        await page.waitForSelector(".ai-tutor__message--assistant");
+        await inspect("ai-navigation", theme, { atLatest: true });
         await bottom();
         await inspect("ai-bottom", theme, { atBottom: true });
         // Expanding and collapsing details must leave the page bottom

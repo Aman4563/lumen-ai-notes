@@ -4831,6 +4831,69 @@ input[type="range"] {
   }
 }
 
+/* The Mac tutor's chat window fits the screen (#93). On-device Lite keeps
+   the page layout above until it has a dock of its own. Scroll anchoring is
+   off so it cannot move the page while an answer is followed. */
+.ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) { overflow-anchor: none; }
+
+@media (min-width: 981px) {
+  /* One column exactly as tall as the room under the top bar. When the
+     chrome would leave the conversation less than min(260px, 40% of the
+     screen), the column takes the height the tutor measured for that
+     (--ai-column-min) and the page scrolls instead. */
+  .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) {
+    display: flex;
+    flex-direction: column;
+    height: max(calc(100vh - var(--ai-top, 67px)), var(--ai-column-min, 0px));
+    height: max(calc(100dvh - var(--ai-top, 67px)), var(--ai-column-min, 0px));
+    padding-block: 6px;
+  }
+  .ai-learning-studio[data-ai-engine="mac-local"] .ai-engine-picker__options > button { min-height: 36px; padding-block: 3px; }
+  .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) > .ai-learning-studio {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  /* At the page end the dock stays where it docks, just above the
+     navigation, instead of rising and opening a band above it: the padding
+     is the dock's offset less the composer's margin and the card's border. */
+  .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) {
+    padding-bottom: calc(var(--ai-nav-space, calc(77px + env(safe-area-inset-bottom))) - 19px);
+  }
+}
+
+@media (max-width: 719px) {
+  .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) {
+    padding-bottom: calc(var(--ai-nav-space, calc(77px + env(safe-area-inset-bottom))) - 9px);
+  }
+}
+
+@media (max-width: 740px) {
+  .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) { padding-top: 10px; }
+}
+
+@media (max-width: 740px), (min-width: 981px) {
+  /* The page heading repeats the navigation and the tutor's own title; it
+     stays the page's heading for assistive technology. */
+  .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) > .page-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ai-learning-studio[data-ai-engine="mac-local"] { gap: 8px; }
+  .ai-learning-studio[data-ai-engine="mac-local"] > .ai-engine-picker { padding-block: 3px; }
+}
+
+/* While the on-screen keyboard is open for the question box. */
+html[data-ai-typing] .bottom-nav { visibility: hidden; }
+
 .settings-local-data {
   display: flex;
   gap: 14px;

@@ -10,7 +10,7 @@ import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { buildTrackRound, normalizeTrackBank } from "../src/lib/interviewTracks.js";
 import { createMistake } from "../src/lib/mistakes.js";
 import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
-import { HINT_PROMPT, NEXT_QUESTION_PROMPT } from "../src/lib/tutorSession.js";
+import { HINT_PROMPT, NEXT_QUESTION_PROMPT, SOCRATIC_START_PROMPT } from "../src/lib/tutorSession.js";
 import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
@@ -187,6 +187,18 @@ const withOptions = async (page, action) => {
   } finally {
     await closeOptions(page);
   }
+};
+
+// The question box starts empty (#93): the mode's suggested question is
+// its placeholder, and "Use suggestion" puts it in the box in one tap.
+const useSuggestion = async (page) => {
+  const placeholder = await page.$eval(".ai-tutor__composer textarea", (field) => field.placeholder);
+  await clickByText(page, ".ai-tutor__composer-meta button", "Use suggestion");
+  await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea").value.trim().length > 0, { timeout: 3_000 });
+  const value = await page.$eval(".ai-tutor__composer textarea", (field) => field.value);
+  assert.ok(placeholder.length > 20 && value.startsWith(placeholder), `Use suggestion did not put the mode's suggested question in the box: ${JSON.stringify({ placeholder, value })}`);
+  assert.equal(await page.$(".ai-tutor__composer-meta .ai-tutor__text-button[title]"), null, "Use suggestion stayed after filling the box");
+  return value;
 };
 
 // Phones pick the mode from a native select; wider screens show chips.
@@ -529,6 +541,348 @@ const newAuditPage = async (label, configFactory, options) => {
   return { page, calls };
 };
 
+// Chat window fit (#93): the Mac tutor's conversation, question box and
+// dock against the viewport, the top bar and the bottom navigation, in
+// every state the audit of 2026-09-28 measured. Failures are collected so
+// one run names every defect. LUMEN_AI_UI_CASES=chat-fit runs only these.
+const chatFitHistory = (pairs) => Array.from({ length: pairs }, (_, index) => {
+  const asked = Date.now() - (pairs - index) * 60_000;
+  const createdAt = new Date(asked).toISOString();
+  const answer = `## Answer ${index + 1}\n\n${Array.from({ length: 6 }, (_, paragraph) => `Paragraph ${paragraph + 1} of answer ${index + 1}: a final holdout stays honest only while no development choice can adapt to it; each extra look lets later choices fit its noise. [S1]`).join("\n\n")}`;
+  return [
+    { id: `fit-q${index}`, role: "user", content: `Question ${index + 1}: why does repeated holdout inspection leak information?`, mode: "explain", createdAt, requestId: null, data: null, citationSources: [], webSources: [], responseProfile: "balanced" },
+    { id: `fit-a${index}`, role: "assistant", content: answer, mode: "explain", createdAt: new Date(asked + 1_000).toISOString(), requestId: `fit-${index}`, data: null, citationSources: [], webSources: [], responseProfile: "balanced", durationMs: 1_000 },
+  ];
+}).flat();
+
+// Geometry of the tutor, read in the page.
+const chatFitGeometry = () => {
+  const box = (node) => {
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return { top: Math.round(rect.top), bottom: Math.round(rect.bottom), left: Math.round(rect.left), right: Math.round(rect.right), height: Math.round(rect.height) };
+  };
+  const nav = document.querySelector(".bottom-nav");
+  const navShown = Boolean(nav) && getComputedStyle(nav).display !== "none";
+  const conversation = document.querySelector(".ai-tutor__conversation");
+  const composer = document.querySelector(".ai-tutor__composer");
+  const context = document.querySelector(".ai-tutor__context");
+  const field = composer.querySelector("textarea");
+  const tabs = document.querySelector(".ai-tutor__mode-tabs");
+  return {
+    viewport: [innerWidth, innerHeight],
+    scrollY: Math.round(scrollY),
+    maxScroll: document.documentElement.scrollHeight - innerHeight,
+    sideways: document.documentElement.scrollWidth > innerWidth + 1,
+    topbar: Math.round(Math.max(0, document.querySelector(".app-topbar")?.getBoundingClientRect().bottom ?? 0)),
+    navTop: Math.round(navShown ? nav.getBoundingClientRect().top : innerHeight),
+    navHidden: navShown && getComputedStyle(nav).visibility === "hidden",
+    conversation: { ...box(conversation), scroller: getComputedStyle(conversation).overflowY !== "visible" && conversation.scrollHeight > conversation.clientHeight + 1, clientHeight: conversation.clientHeight, fromEnd: Math.round(conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight) },
+    workspace: box(document.querySelector(".ai-tutor__workspace")),
+    context: context ? { ...box(context), scrolls: getComputedStyle(context).overflowY !== "visible" } : null,
+    composer: { ...box(composer), position: getComputedStyle(composer).position },
+    field: box(field),
+    send: box(document.querySelector(".ai-tutor__send")),
+    end: box(document.querySelector(".ai-tutor__conversation-end")),
+    jump: box(document.querySelector(".ai-tutor__jump")),
+    lastStarter: box([...document.querySelectorAll(".ai-tutor__starter")].at(-1)),
+    tabs: tabs ? { ...box(tabs), outside: [...tabs.querySelectorAll("button")].filter((button) => { const rect = button.getBoundingClientRect(); return rect.right > tabs.getBoundingClientRect().right + 1 || rect.left < tabs.getBoundingClientRect().left - 1; }).length } : null,
+    value: field.value,
+    placeholder: field.placeholder,
+    heading: document.querySelector("main h1")?.textContent.trim() || "",
+  };
+};
+
+const chatFitOnly = Symbol("only the chat window fit checks");
+const auditChatFit = async () => {
+  const failures = [];
+  const expect = (ok, message, detail) => { if (!ok) failures.push(`${message}: ${JSON.stringify(detail)}`); };
+  const settle = (page) => page.evaluate(() => new Promise((resolve) => {
+    let frames = 0;
+    let last = "";
+    const started = performance.now();
+    const tick = () => {
+      const surface = document.querySelector(".ai-tutor__conversation");
+      const key = `${Math.round(scrollY)}:${Math.round(surface?.scrollTop ?? 0)}:${document.documentElement.scrollHeight}`;
+      frames = key === last ? frames + 1 : 0;
+      last = key;
+      if (frames >= 6 || performance.now() - started > 3_000) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }));
+  const geometry = async (page) => { await settle(page); return page.evaluate(chatFitGeometry); };
+  const inView = (g, rect) => Boolean(rect) && rect.top >= g.topbar - 1 && rect.bottom <= Math.min(g.navTop, g.viewport[1]) + 1;
+  const minConversation = (g) => Math.min(260, g.viewport[1] * 0.4) - 2;
+  const open = async (label, viewport, { pairs = 0, acknowledged = true, largeText = false, keyboard = false } = {}) => {
+    const context = await browser.createBrowserContext();
+    const page = await context.newPage();
+    await page.setViewport({ deviceScaleFactor: 1, ...viewport });
+    attachDiagnostics(page, `chat-fit-${label}`);
+    await page.evaluateOnNewDocument((ack, large, fakeKeyboard) => {
+      try { if (ack) localStorage.setItem("lumen.ai.local-disclosure-ack.v1", "acknowledged"); } catch { /* consent can still be given in the UI */ }
+      // 200% text from the first paint, as a browser text-size setting gives.
+      if (large) {
+        const enlarge = new MutationObserver(() => {
+          if (!document.documentElement) return;
+          document.documentElement.style.fontSize = "200%";
+          enlarge.disconnect();
+        });
+        enlarge.observe(document, { childList: true });
+      }
+      if (fakeKeyboard) {
+        // Headless Chrome has no on-screen keyboard: a stand-in visual
+        // viewport whose height the test shrinks as a keyboard would.
+        const viewport = new EventTarget();
+        window.__lumenKeyboard = 0;
+        Object.defineProperties(viewport, {
+          height: { get: () => innerHeight - window.__lumenKeyboard },
+          width: { get: () => innerWidth },
+          offsetTop: { get: () => 0 },
+          offsetLeft: { get: () => 0 },
+          scale: { get: () => 1 },
+        });
+        Object.defineProperty(window, "visualViewport", { configurable: true, get: () => viewport });
+      }
+    }, acknowledged, largeText, keyboard);
+    await installSlowStream(page);
+    await installAiMocks(page, () => secureConfig);
+    await page.goto(`${baseUrl}#/ai`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+    if (pairs) {
+      await patchStoredProfile(page, { aiTutorHistory: chatFitHistory(pairs) });
+      await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+      await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
+      await page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
+    }
+    return { context, page };
+  };
+  const send = async (page, prompt, paragraphs = 60) => {
+    await page.evaluate((count) => { window.__lumenAuditSlowStream = { paragraphs: count }; }, paragraphs);
+    await setComposerPrompt(page, prompt);
+    await page.$eval(".ai-tutor__send", (button) => button.click());
+    await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
+  };
+  // Stops the answer in progress (well after the double-tap guard).
+  const stop = async (page) => {
+    await page.$eval(".ai-tutor__send.is-stop", (button) => button.click()).catch(() => {});
+    await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 });
+  };
+  const pause = (page, ms) => page.evaluate((delay) => new Promise((resolve) => setTimeout(resolve, delay)), ms);
+  // Following trails each new delta by a frame: the answer is followed when
+  // its end comes back just above the dock (undocked, the navigation) or to
+  // the end of the conversation's own scroller, while it still streams.
+  const stillFollowing = (page) => page.waitForFunction(() => {
+    if (!document.querySelector(".ai-tutor__message--streaming") || document.querySelector(".ai-tutor__jump")) return false;
+    const surface = document.querySelector(".ai-tutor__conversation");
+    if (getComputedStyle(surface).overflowY !== "visible" && surface.scrollHeight > surface.clientHeight + 1) return surface.scrollHeight - surface.scrollTop - surface.clientHeight <= 60;
+    const nav = document.querySelector(".bottom-nav");
+    const composer = document.querySelector(".ai-tutor__composer");
+    const navTop = nav && getComputedStyle(nav).display !== "none" ? nav.getBoundingClientRect().top : innerHeight;
+    const edge = getComputedStyle(composer).position === "sticky" ? Math.min(navTop, composer.getBoundingClientRect().top) : navTop;
+    const gap = edge - document.querySelector(".ai-tutor__conversation-end").getBoundingClientRect().bottom;
+    return gap >= -2 && gap <= 90;
+  }, { timeout: 2_000, polling: "raf" }).then(() => true, () => false);
+  const toEnd = (page) => page.evaluate(() => {
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
+    const surface = document.querySelector(".ai-tutor__conversation");
+    surface.scrollTop = surface.scrollHeight;
+  });
+
+  // Wide screens (>=981px): one column as tall as the room under the top
+  // bar. With five saved answers the page does not scroll, the
+  // conversation is the one scroller, opens at its latest turn and is not
+  // covered by the composer, the evidence column leaves no dead band, and
+  // the mode tabs stay on screen. 1225x671 and 1024x768 fit with a few
+  // pixels to spare, so wider fonts elsewhere may tip them into the
+  // fallback instead: the page scrolls, the conversation keeps its minimum
+  // and is uncovered at the page end.
+  const wide = [
+    ["1280x720", { width: 1280, height: 720 }, true],
+    ["1366x768", { width: 1366, height: 768 }, true],
+    ["1180x820", { width: 1180, height: 820, isMobile: true, hasTouch: true }, true],
+    ["1225x671", { width: 1225, height: 671 }, false],
+    ["1024x768", { width: 1024, height: 768, isMobile: true, hasTouch: true }, false],
+  ];
+  for (const [name, viewport, fits] of wide) {
+    const { context, page } = await open(name, viewport, { pairs: 5 });
+    try {
+      const g = await geometry(page);
+      if (fits || g.maxScroll > 1) expect(g.maxScroll <= 1 || (!fits && g.conversation.clientHeight >= minConversation(g) && g.conversation.clientHeight <= minConversation(g) + 4), `${name}: the page scrolls as well as the conversation`, { maxScroll: g.maxScroll, conversation: g.conversation });
+      expect(g.conversation.scroller, `${name}: the conversation is not its own scroller`, g.conversation);
+      expect(g.conversation.clientHeight >= minConversation(g), `${name}: the conversation is a slit`, g.conversation);
+      expect(g.workspace.bottom - g.conversation.bottom <= 2, `${name}: a dead band sits under the conversation`, { workspace: g.workspace, conversation: g.conversation });
+      expect(!g.context || (g.context.scrolls && g.context.bottom <= g.workspace.bottom + 1), `${name}: the evidence column does not scroll on its own inside the workspace`, g.context);
+      expect(g.conversation.bottom <= g.composer.top + 1, `${name}: the composer covers the conversation`, { conversation: g.conversation, composer: g.composer });
+      expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen`, { field: g.field, send: g.send });
+      expect(g.conversation.fromEnd <= 2, `${name}: the saved conversation did not open at its latest turn`, g.conversation);
+      if (g.maxScroll > 1) {
+        await toEnd(page);
+        const fallback = await geometry(page);
+        expect(fallback.conversation.bottom <= fallback.composer.top + 1 && fallback.conversation.top >= fallback.topbar - 1, `${name}: at the page end the conversation is still covered`, { conversation: fallback.conversation, composer: fallback.composer, topbar: fallback.topbar });
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+      }
+      expect(g.tabs && g.tabs.outside === 0, `${name}: a mode tab is cut off`, g.tabs);
+      expect(!g.sideways && g.heading === "AI learning studio", `${name}: the page scrolls sideways or lost its heading`, { sideways: g.sideways, heading: g.heading });
+      // Taller chrome falls back to scrolling the page rather than
+      // squeezing the conversation: Grounding open in the 981-1079px band,
+      // the engine notes open.
+      if (name === "1024x768") await page.click(".ai-tutor__source-panel-toggle");
+      if (name === "1280x720") await page.click(".ai-engine-picker__note summary");
+      if (["1024x768", "1280x720"].includes(name)) {
+        const tall = await geometry(page);
+        const state = name === "1024x768" ? "Grounding open" : "engine notes open";
+        expect(tall.conversation.clientHeight >= minConversation(tall), `${name} ${state}: the conversation is a slit`, tall.conversation);
+        expect(inView(tall, tall.field) && inView(tall, tall.send), `${name} ${state}: the question box or Send is off screen`, { field: tall.field, send: tall.send });
+        await toEnd(page);
+        const end = await geometry(page);
+        expect(end.conversation.bottom <= end.composer.top + 1 && end.conversation.top >= end.topbar - 1, `${name} ${state}: at the page end the conversation is still covered`, { conversation: end.conversation, composer: end.composer, topbar: end.topbar });
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  // 200% text and a first visit (the local-model permission in the dock).
+  for (const [name, options] of [["1280x720 at 200% text", { pairs: 5, largeText: true }], ["1280x720 first visit", { acknowledged: false }]]) {
+    const { context, page } = await open(name, { width: 1280, height: 720 }, options);
+    try {
+      const g = await geometry(page);
+      expect(g.conversation.clientHeight >= minConversation(g), `${name}: the conversation is a slit`, g.conversation);
+      expect(g.workspace.bottom - g.conversation.bottom <= 2, `${name}: a dead band sits under the conversation`, { workspace: g.workspace, conversation: g.conversation });
+      expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen`, { field: g.field, send: g.send });
+      await toEnd(page);
+      const end = await geometry(page);
+      expect(end.conversation.bottom <= end.composer.top + 1 && end.conversation.top >= end.topbar - 1, `${name}: at the page end the conversation is still covered`, { conversation: end.conversation, composer: end.composer, topbar: end.topbar });
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Phones: the page is the one scroller. The dock sits on the measured
+  // navigation (larger text makes it taller), the box starts empty with the
+  // mode's suggestion as its placeholder, the welcome is not under the dock,
+  // a saved conversation opens at its latest turn above the dock, and at the
+  // page end the dock stays where it docks.
+  const phones = [
+    ["393x852", { width: 393, height: 852 }, {}],
+    ["375x667", { width: 375, height: 667 }, {}],
+    ["320x568", { width: 320, height: 568 }, {}],
+    ["393x852 at 200% text", { width: 393, height: 852 }, { largeText: true }],
+    ["320x568 at 200% text", { width: 320, height: 568 }, { largeText: true }],
+    ["393x852 first visit", { width: 393, height: 852 }, { acknowledged: false }],
+    ["820x1180", { width: 820, height: 1180 }, {}],
+  ];
+  for (const [name, size, options] of phones) {
+    const { context, page } = await open(name, { ...size, isMobile: true, hasTouch: true }, options);
+    try {
+      const g = await geometry(page);
+      expect(g.composer.position === "sticky" && g.composer.bottom <= g.navTop, `${name}: the docked composer overlaps the navigation`, { composer: g.composer, navTop: g.navTop });
+      expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen`, { field: g.field, send: g.send });
+      expect(g.value === "" && g.placeholder.startsWith("Explain the key ideas"), `${name}: the box did not start empty with the mode's suggestion as its placeholder`, { value: g.value, placeholder: g.placeholder });
+      expect(!g.conversation.scroller && !g.sideways, `${name}: a nested or sideways scroller`, { conversation: g.conversation, sideways: g.sideways });
+      if (name === "393x852") {
+        expect(g.composer.height <= 124, `${name}: the empty dock is taller than one line`, g.composer);
+        // The chrome above leaves the starts a few pixels to spare here,
+        // so a wider font may push the last one's bottom edge under the dock.
+        expect(g.lastStarter && g.lastStarter.bottom <= g.composer.top + 40, `${name}: the suggested starts sit behind the dock`, { lastStarter: g.lastStarter, composer: g.composer });
+      }
+      if (name === "393x852 first visit") expect(g.composer.height <= 190, `${name}: the first-visit dock is too tall`, g.composer);
+      await patchStoredProfile(page, { aiTutorHistory: chatFitHistory(5) });
+      await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+      await page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
+      const saved = await geometry(page);
+      expect(saved.scrollY > 0 && saved.end.bottom <= saved.composer.top + 1 && saved.end.bottom >= saved.composer.top - 120, `${name}: the saved conversation did not open at its latest turn above the dock`, { scrollY: saved.scrollY, end: saved.end, composer: saved.composer });
+      await toEnd(page);
+      const end = await geometry(page);
+      expect(end.end.bottom <= end.composer.top + 1, `${name}: at the page end the conversation is under the dock`, { end: end.end, composer: end.composer });
+      expect(end.composer.bottom <= end.navTop && end.navTop - end.composer.bottom <= 10, `${name}: at the page end the dock rose off the navigation or sank under it`, { composer: end.composer, navTop: end.navTop });
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Landscape phones (<=480px tall): the composer is not docked, so "Jump to
+  // latest" floats in view just above the navigation, and following keeps
+  // the newest lines above the navigation, not behind it.
+  {
+    const { context, page } = await open("852x393", { width: 852, height: 393, isMobile: true, hasTouch: true }, { pairs: 5 });
+    try {
+      const g = await geometry(page);
+      expect(g.scrollY > 0 && g.end.bottom <= g.navTop + 1 && g.end.bottom >= g.topbar, "852x393: the saved conversation did not open at its latest turn above the navigation", { scrollY: g.scrollY, end: g.end, navTop: g.navTop });
+      await toEnd(page);
+      await send(page, "Landscape check: stream a long answer.", 200);
+      await pause(page, 1_200);
+      if (!(await stillFollowing(page))) {
+        const following = await page.evaluate(chatFitGeometry);
+        expect(false, "852x393: following hid the newest lines behind the navigation", { end: following.end, navTop: following.navTop, jump: following.jump });
+      }
+      await page.evaluate(() => {
+        window.dispatchEvent(new WheelEvent("wheel", { deltaY: -600 }));
+        window.scrollBy({ top: -600, behavior: "instant" });
+      });
+      await page.waitForSelector(".ai-tutor__jump", { timeout: 3_000 }).catch(() => {});
+      const back = await page.evaluate(chatFitGeometry);
+      expect(back.jump && back.jump.top >= back.topbar - 1 && back.jump.bottom <= back.navTop + 1, "852x393: Jump to latest is off screen", { jump: back.jump, topbar: back.topbar, navTop: back.navTop });
+      await stop(page);
+      await toEnd(page);
+      const end = await geometry(page);
+      expect(end.composer.bottom <= end.navTop && inView(end, end.field), "852x393: at the page end the composer is under the navigation", { composer: end.composer, navTop: end.navTop });
+    } finally {
+      await context.close();
+    }
+  }
+
+  // Following on Send, repeated: scroll anchoring must not move the page or
+  // the conversation when a new turn is added at the end, which read as the
+  // learner scrolling back and left the answer streaming off screen.
+  // Each run is a fresh visit, where the race showed most.
+  for (const [name, viewport] of [["393x852", { width: 393, height: 852, isMobile: true, hasTouch: true }], ["1280x720", { width: 1280, height: 720 }]]) {
+    for (let run = 1; run <= 3; run += 1) {
+      const { context, page } = await open(`follow-${name}-${run}`, viewport, { pairs: 5 });
+      try {
+        // The race is timing-dependent, so the property that removes it is
+        // checked too: no scroll anchoring on the page or the conversation.
+        if (run === 1) {
+          const anchoring = await page.evaluate(() => [".ai-page", ".ai-tutor__conversation"].map((selector) => getComputedStyle(document.querySelector(selector)).overflowAnchor));
+          expect(anchoring.every((value) => value === "none"), `${name}: scroll anchoring can still move the tutor while it follows`, anchoring);
+        }
+        await toEnd(page);
+        await settle(page);
+        await send(page, `Follow check ${run}: stream a long answer.`, 200);
+        await pause(page, 1_200);
+        if (!(await stillFollowing(page))) {
+          const g = await page.evaluate(chatFitGeometry);
+          expect(false, `${name} run ${run}: the answer was not followed after Send`, { conversation: g.conversation, end: g.end, composer: g.composer, jump: g.jump, scrollY: g.scrollY });
+        }
+        await stop(page);
+      } finally {
+        await context.close();
+      }
+    }
+  }
+
+  // The on-screen keyboard (a stand-in visual viewport): while the question
+  // box has focus the dock rises above the keyboard and the navigation
+  // hides; both come back on blur.
+  {
+    const { context, page } = await open("keyboard", { width: 393, height: 852, isMobile: true, hasTouch: true }, { keyboard: true });
+    try {
+      await page.$eval(".ai-tutor__composer textarea", (field) => field.focus());
+      await page.evaluate(() => { window.__lumenKeyboard = 320; window.visualViewport.dispatchEvent(new Event("resize")); });
+      const typing = await geometry(page);
+      expect(typing.navHidden && Math.abs(typing.composer.bottom - (852 - 320 - 8)) <= 2, "the dock did not rise above the keyboard or the navigation stayed", { composer: typing.composer, navHidden: typing.navHidden });
+      await page.$eval(".ai-tutor__composer textarea", (field) => field.blur());
+      await page.evaluate(() => { window.__lumenKeyboard = 0; window.visualViewport.dispatchEvent(new Event("resize")); });
+      const done = await geometry(page);
+      expect(!done.navHidden && done.composer.bottom <= done.navTop && done.navTop - done.composer.bottom <= 10, "the dock or the navigation did not come back after typing", { composer: done.composer, navTop: done.navTop, navHidden: done.navHidden });
+    } finally {
+      await context.close();
+    }
+  }
+
+  assert.deepEqual(failures, [], `chat window fit (#93):\n${failures.join("\n")}`);
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -540,6 +894,13 @@ try {
     // viewports still emulate touch, which overrides this.
     args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check", "--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"],
   });
+
+  await auditChatFit();
+  if (process.env.LUMEN_AI_UI_CASES === "chat-fit") {
+    assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
+    console.log("AI UI audit passed the chat window fit checks (LUMEN_AI_UI_CASES=chat-fit).");
+    throw chatFitOnly;
+  }
 
   const ready = await newAuditPage("ready", () => secureConfig);
   const { page, calls } = ready;
@@ -783,6 +1144,9 @@ try {
   await page.waitForSelector(".ai-tutor__message--assistant", { timeout: 10_000 });
   await chooseMode(page, "Quiz");
   assert.equal(await activeMode(page), "Quiz");
+  // Choosing a mode no longer fills the box (#93); its suggestion does.
+  assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "", "choosing a mode filled the question box");
+  await useSuggestion(page);
   assert.equal(await page.$eval(sendSelector, (button) => button.disabled), false, "remembered local acknowledgement did not carry into a local-only follow-up");
   await page.$eval(sendSelector, (button) => button.click());
   await page.waitForSelector(".ai-tutor__quiz", { timeout: 10_000 });
@@ -1400,7 +1764,10 @@ try {
     await page.waitForSelector(".ai-tutor__connection--ready", { timeout: 10_000 });
     assert.match(await page.$eval(".ai-tutor__source-panel-toggle small", (node) => node.textContent), /Library first · all lessons/, "the Library-first summary implied an attached lesson");
     assert.match(await page.$eval(".ai-tutor__source--open", (node) => node.textContent), /Linear Regression/, "the open lesson was not shown in Library first");
-    assert.equal(await page.$eval(".ai-tutor__composer textarea", (field) => field.value), "Explain the key ideas in this lesson with a short example and one common mistake.");
+    // The box opens empty with Explain's suggestion as its placeholder
+    // (#93; it used to open holding it), and one tap puts it in the box.
+    assert.deepEqual(await page.$eval(".ai-tutor__composer textarea", (field) => [field.value, field.placeholder]), ["", "Explain the key ideas in this lesson with a short example and one common mistake."], "the box did not open empty with the mode's suggestion as its placeholder");
+    assert.equal(await useSuggestion(page), "Explain the key ideas in this lesson with a short example and one common mistake.");
     await page.$eval(sendSelector, (button) => button.click());
     await page.waitForFunction((count) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= count && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 }, turns + 1);
     const lessonContext = String(calls.respond.at(-1).body.context);
@@ -1545,6 +1912,7 @@ try {
     // Flashcards: success is reflected on the button; duplicates are reported
     // as already in Review, never as a failure.
     await chooseMode(page, "Flashcards");
+    await useSuggestion(page);
     await page.$eval(sendSelector, (button) => button.click());
     await waitForAnswers(answersBefore + 3);
     await page.waitForSelector(".ai-tutor__flashcards", { timeout: 8_000 });
@@ -2840,7 +3208,8 @@ try {
     assert.ok(reveal.history.length >= 4 && !reveal.history.some((message) => /\[[SW]\d+\]/.test(message.content)), "a reveal forgot the session or kept its citation labels");
     assert.deepEqual(await strip(), { status: "Socratic session · question 2 · Answer revealed", actions: ["Next question", "Wrap up"], suggested: [], named: true, live: false }, "the strip did not note the reveal");
     assert.match(await page.$$eval(".ai-tutor__message--assistant .ai-tutor__message-meta", (nodes) => nodes.at(-1).textContent), /Answer revealed/, "the revealed answer was not labelled");
-    assert.deepEqual(await composerCopy(), { placeholder: "Ask a question…", send: "Generate Socratic" }, "the box still asked for an answer after the reveal");
+    // An empty box's placeholder is the mode's suggested question (#93).
+    assert.deepEqual(await composerCopy(), { placeholder: SOCRATIC_START_PROMPT, send: "Generate Socratic" }, "the box still asked for an answer after the reveal");
 
     // Another mode leaves the session; coming back shows it again.
     await chooseMode(page, "Explain");
@@ -2879,7 +3248,7 @@ try {
     }));
     assert.match(recap.meta, /Session recap/, "the recap was not labelled");
     assert.ok(recap.actions.includes("Save to notes") && recap.actions.includes("Make flashcards"), `the recap offered no Save to notes or Make flashcards: ${recap.actions}`);
-    assert.deepEqual(await composerCopy(), { placeholder: "Ask a question…", send: "Generate Socratic" });
+    assert.deepEqual(await composerCopy(), { placeholder: SOCRATIC_START_PROMPT, send: "Generate Socratic" });
   } finally {
     await sessionScenario.context.close();
   }
@@ -3219,7 +3588,9 @@ try {
   await recovery.page.close();
 
   assert.deepEqual(runtimeErrors, [], `runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("AI UI audit passed: canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, Work-through-with-tutor bridges from the mistake notebook and readiness checks, and fail-closed states verified without a real model or search call.");
+  console.log("AI UI audit passed: the chat window fit at wide, phone, landscape, 200% text, fallback and first-visit sizes with following on Send and the keyboard dock, canonical fitted request bytes, request-contract handshake and version-skew fail-closed guidance, thinking-gated Deep profile, learner pairing gate with typed rejection, remembered local disclosure, one-request web authorization/retry, visible web states, sanitized evidence links, grounded citations including the exact personal-note deep link, model-authored HTML shown as text with no forged citation control, remote images shown as links that load nothing, same-host links as text, the saved answer and AI flashcards inert in the Notebook, the review dialog preview and the review deck, validated quiz, answer-to-note clipping, bounded persistence/clear, single-tab history integrity, tutor lifecycle, keyboard focus and announcements, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, the docked composer at five viewports, the request options sheet, jump to latest and answer ready, keyboard sending and Esc stop, staged grounded progress, one-tap follow-ups, suggested starts, quiz follow-through with answer checks and mistake saving, Listen, New topic with export and the three-hour context break, Socratic sessions with hint, reveal and wrap-up, rubric-graded interview practice, Work-through-with-tutor bridges from the mistake notebook and readiness checks, and fail-closed states verified without a real model or search call.");
+} catch (error) {
+  if (error !== chatFitOnly) throw error;
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
