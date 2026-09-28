@@ -67,6 +67,7 @@ const TEXT_PAIRS = [
   ["--coral-text", "--coral-soft"], ["--teal-text", "--teal-soft"], ["--ai-warn", "--gold-soft"],
   ["--accent-strong", "--accent-soft"], ["--on-primary", "--primary-bg"],
   ["--sidebar-ink", "--sidebar-bg"], ["--sidebar-ink-muted", "--sidebar-bg"], ["--sidebar-accent", "--sidebar-bg"],
+  ["--select-ink", "--select-bg"], ["--select-ink", "--select-bg-hover"], ["--select-ink", "--select-menu-bg"], ["--select-checked-ink", "--select-checked-bg"],
 ];
 
 for (const [theme, palette] of Object.entries(THEMES)) {
@@ -83,6 +84,17 @@ for (const [theme, palette] of Object.entries(THEMES)) {
     for (const [text, surface] of TEXT_PAIRS) {
       const value = ratio(resolve(palette, text), resolve(palette, surface));
       assert.ok(value >= 4.5, `${theme}: ${text} on ${surface} is ${value.toFixed(2)}:1`);
+    }
+  });
+
+  // Issue #92: the select's edge and its drawn chevron (the control's only
+  // arrow once appearance is none) stay visible on every paper surface.
+  test(`${theme}: the select edge and chevron keep 3:1 on every paper surface`, () => {
+    for (const token of ["--control-border", "--select-icon"]) {
+      for (const surface of SURFACES) {
+        const value = ratio(resolve(palette, token), resolve(palette, surface));
+        assert.ok(value >= 3, `${theme}: ${token} on ${surface} is ${value.toFixed(2)}:1`);
+      }
     }
   });
 
@@ -104,6 +116,20 @@ test("navy islands carry a focus ring that stays visible on their surface", () =
       const value = ratio(tokens["--focus-ring"], surface);
       assert.ok(value >= 3, `${label} islands: --focus-ring on ${surface} is ${value.toFixed(2)}:1`);
     }
+  }
+});
+
+test("the Teaching island's select, picker and focus ring stay visible on its navy", () => {
+  const island = declarations(blockAfter(css, "\n.teach-mode {"));
+  const ground = "#111a2c";
+  for (const [text, surface, minimum] of [
+    ["--select-ink", "--select-bg", 4.5], ["--select-ink", "--select-bg-hover", 4.5], ["--select-ink", "--select-menu-bg", 4.5],
+    ["--select-checked-ink", "--select-checked-bg", 4.5], ["--select-icon", "--select-bg", 3], ["--select-icon", "--select-bg-hover", 3],
+    ["--control-border", "--select-bg", 3], ["--control-border", ground, 3], ["--select-menu-edge", ground, 3],
+    ["--focus-ring", "--select-bg", 3], ["--focus-ring", "--select-checked-bg", 3], ["--focus-ring", "--focus-halo", 3], ["--focus-ring", ground, 3],
+  ]) {
+    const value = ratio(island[text], island[surface] || surface);
+    assert.ok(value >= minimum, `teaching island: ${text} on ${surface} is ${value.toFixed(2)}:1`);
   }
 });
 

@@ -14,6 +14,7 @@ import { HINT_PROMPT, NEXT_QUESTION_PROMPT } from "../src/lib/tutorSession.js";
 import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
+import { measureSelects, selectContractProblems } from "./select_contract.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -511,6 +512,15 @@ const setComposerPrompt = (page, value) => page.$eval(".ai-tutor__composer texta
 const waitForAnswers = (page, count) => page.waitForFunction((expected) => document.querySelectorAll(".ai-tutor__message--assistant:not(.ai-tutor__message--streaming)").length >= expected
   && !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 }, count);
 
+// Issue #92: every tutor select is the shared themed control, 44px with 16px
+// text on a phone (iOS never zooms), on the theme tokens.
+const assertThemedSelects = async (page, surface) => {
+  const records = await measureSelects(page);
+  assert.ok(records.length > 0, `${surface}: no visible select to measure`);
+  const problems = selectContractProblems(records, { surface, phone: true });
+  assert.deepEqual(problems, [], `${surface} selects broke the themed select contract:\n${problems.join("\n")}`);
+};
+
 const newAuditPage = async (label, configFactory, options) => {
   const page = await browser.newPage();
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
@@ -605,6 +615,7 @@ try {
       .map((node) => ({ name: (node.getAttribute("aria-label") || node.textContent || node.tagName).trim().slice(0, 40), height: Math.round(node.getBoundingClientRect().height) }))
       .filter((control) => control.height > 0 && control.height < 44));
     assert.deepEqual(undersizedSheetControls, [], `undersized options-sheet controls on a phone: ${JSON.stringify(undersizedSheetControls)}`);
+    await assertThemedSelects(page, "Mac tutor options sheet");
   });
   // Phone targets (TC-21): every tutor control on this 393px phone is at
   // least 44px tall, the source filter included. Inline citations extend
@@ -615,6 +626,7 @@ try {
     .map((node) => ({ name: (node.getAttribute("aria-label") || node.textContent || node.tagName).trim().slice(0, 40), height: Math.round(node.getBoundingClientRect().height) }))
     .filter((control) => control.height > 0 && control.height < 44));
   assert.deepEqual(undersizedTutorControls, [], `undersized Mac tutor controls on a phone: ${JSON.stringify(undersizedTutorControls)}`);
+  await assertThemedSelects(page, "Mac tutor");
   await clickByText(page, ".ai-tutor__source-modes button", "Library first");
 
   const sendSelector = ".ai-tutor__send";
@@ -2926,6 +2938,7 @@ try {
     assert.equal(calls.respond.length, 0, "choosing a practice question sent a request");
     const practiceTargets = await page.$$eval(".ai-tutor__practice button, .ai-tutor__practice select", (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)));
     assert.ok(practiceTargets.every((height) => height >= 44), `practice controls under 44px on a phone: ${practiceTargets}`);
+    await assertThemedSelects(page, "Mac tutor practice");
 
     // An answer that would crowd out the rubric is blocked, with the reason.
     await setPracticeAnswer("✓".repeat(2_400));

@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
+import { initialProfile, normalizeProfile } from "../src/lib/db.js";
+import { createMistake } from "../src/lib/mistakes.js";
+import { createReviewItem } from "../src/lib/review.js";
+import { measureSelectsInThemes, selectContractProblems } from "./select_contract.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -220,6 +224,177 @@ const auditDialog = async (page, label, {
   if (afterClose) await afterClose();
 };
 
+// Issue #92: every select is the one themed control. A seeded profile makes
+// each select-hosting screen render its selects (highlights, collections, an
+// FSRS scheduler, a mistake); each screen is measured in Paper, Night and
+// Contrast on a 393px touch phone and on a 1280px desktop.
+const selectDocumentId = "custom/select-contract";
+const selectProfile = normalizeProfile({
+  ...initialProfile,
+  settings: { ...initialProfile.settings, theme: "paper" },
+  customDocuments: [{
+    id: selectDocumentId,
+    title: "Select contract lecture",
+    raw: "# Select contract lecture\n\nA held-out split estimates how a model generalizes to data it has not seen.\n\nThe validation split chooses hyperparameters, and the test split stays untouched until the end.\n\n## Second section\n\nKeep every control on the theme.",
+    tags: ["audit"],
+    collectionId: "select-audit",
+  }],
+  collections: [{ id: "select-audit", name: "Audit collection" }],
+  annotations: [{ documentId: selectDocumentId, quote: "A held-out split estimates how a model generalizes", purpose: "definition" }],
+  reviewItems: [createReviewItem({ front: "What does the validation split choose?", back: "Hyperparameters, before the final test.", documentId: selectDocumentId })],
+  reviewSettings: { ...initialProfile.reviewSettings, scheduler: "fsrs" },
+  mistakes: [createMistake({ prompt: "What may the test split influence?", expected: "Nothing until choices are frozen.", category: "misconception", documentId: selectDocumentId })],
+});
+const SELECT_VIEWPORTS = [
+  ["phone", { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true }],
+  ["desktop", { width: 1280, height: 800, deviceScaleFactor: 1 }],
+];
+
+const auditThemedSelects = async () => {
+  let measured = 0;
+  for (const [viewportName, viewport] of SELECT_VIEWPORTS) {
+    const context = await browser.createBrowserContext();
+    const page = await context.newPage();
+    page.on("pageerror", (error) => runtimeErrors.push(`selects/${viewportName}: ${error.message}`));
+    page.on("dialog", (dialog) => dialog.dismiss());
+    await page.setViewport(viewport);
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+    await page.goto(`${baseUrl}#/home`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".welcome-block");
+    await page.evaluate((profile) => new Promise((resolve, reject) => {
+      const open = indexedDB.open("lumen-ai-notes", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const transaction = db.transaction("study-data", "readwrite");
+        transaction.objectStore("study-data").put(profile, "profile");
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => { db.close(); reject(transaction.error); };
+      };
+    }), selectProfile);
+    await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await page.waitForSelector(".welcome-block");
+
+    const phone = viewportName === "phone";
+    const check = async (surface, expected) => {
+      // Wait for the screen's selects (some load lazily), then measure.
+      await page.waitForFunction((count) => [...document.querySelectorAll("select")].filter((node) => node.getClientRects().length && !node.closest("[inert]")).length >= count, { timeout: 10_000 }, expected)
+        .catch(() => findings.push(`selects/${viewportName}/${surface}: expected at least ${expected} visible select(s)`));
+      const byTheme = await measureSelectsInThemes(page);
+      const grouped = new Map();
+      for (const [theme, records] of Object.entries(byTheme)) {
+        measured += records.length;
+        for (const problem of selectContractProblems(records, { surface: `selects/${viewportName}/${surface}`, phone })) grouped.set(problem, [...(grouped.get(problem) || []), theme]);
+      }
+      for (const [problem, themes] of grouped) findings.push(`${problem} [${themes.join(", ")}]`);
+    };
+    const navigate = async (hash, ready) => {
+      await page.evaluate((value) => { location.hash = value; }, hash);
+      await page.waitForSelector(ready, { timeout: 20_000 });
+    };
+    const closeWithEscape = async (selector) => {
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(selector, { hidden: true, timeout: 5_000 });
+    };
+
+    await navigate("#/library", ".library-page");
+    await check("library", 1);
+
+    await navigate(`#/read/${encodeURIComponent(selectDocumentId)}`, ".reader-view .markdown-body h1");
+    await openBySelector(page, '[aria-label="Listen"]');
+    await page.waitForSelector(".speech-popover");
+    await check("reader listen", 2);
+    const language = 'select[aria-label="Narration language"]';
+    if (await page.$eval(language, (select) => !select.disabled && getComputedStyle(select).appearance === "base-select")) {
+      // A mouse gets the in-page picker (customizable select); its Escape must
+      // close only the picker, never the Listen sheet around it.
+      await page.click(language);
+      const opened = await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, language).then(() => true, () => false);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction((selector) => !document.querySelector(selector)?.matches(":open"), { timeout: 2_000 }, language).catch(() => {});
+      const after = await page.evaluate((selector) => ({ sheetOpen: Boolean(document.querySelector(".speech-popover")), pickerOpen: Boolean(document.querySelector(selector)?.matches(":open")) }), language);
+      if (!opened) findings.push(`selects/${viewportName}/reader listen: clicking the language select did not open its picker`);
+      else if (!after.sheetOpen || after.pickerOpen) findings.push(`selects/${viewportName}/reader listen: Escape in the select picker ${after.sheetOpen ? "left the picker open" : "also closed the Listen sheet"}`);
+      if (!after.sheetOpen) await openBySelector(page, '[aria-label="Listen"]');
+    }
+    await page.waitForSelector(".speech-popover");
+    await page.$eval('.speech-popover button[aria-label^="Close"]', (button) => button.click());
+    await page.waitForSelector(".speech-popover", { hidden: true, timeout: 5_000 });
+    await page.$$eval(".markdown-body p", (paragraphs) => {
+      const range = document.createRange();
+      range.selectNodeContents(paragraphs.at(-2));
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll(".document-tools button")].some((node) => node.textContent.includes("Highlight selection")), { timeout: 5_000 });
+    await clickByText(page, ".document-tools button", "Highlight selection");
+    await page.waitForSelector(".annotation-dialog");
+    await check("highlight dialog", 1);
+    await closeWithEscape(".annotation-dialog");
+    await page.evaluate(() => getSelection().removeAllRanges());
+    await clickByText(page, ".document-tools button", "Teach");
+    await page.waitForSelector(".teach-mode");
+    await check("teaching mode", 1);
+    await page.$eval('[aria-label="Exit teaching mode"]', (button) => button.click());
+    await page.waitForSelector(".teach-mode", { hidden: true, timeout: 5_000 });
+
+    await navigate(`#/board/${encodeURIComponent(selectDocumentId)}`, ".board-canvas");
+    await check("whiteboard", 1);
+
+    await navigate("#/notebook", ".notebook-page");
+    await clickByText(page, ".notebook-heading-actions button", "Select");
+    await page.waitForSelector(".batch-check input");
+    await page.$eval(".batch-check input", (input) => input.click());
+    await page.waitForSelector(".batch-toolbar select");
+    await check("notebook (highlights, batch)", 2);
+    await clickByText(page, ".notebook-heading-actions button", "Done selecting");
+    await page.$eval('.notebook-row-actions [aria-label^="Organize "]', (button) => button.click());
+    await page.waitForSelector(".manage-doc-dialog");
+    await check("organize dialog", 1);
+    await closeWithEscape(".manage-doc-dialog");
+
+    await navigate("#/review", ".review-center-page");
+    await page.waitForSelector(".interview-track-strip select", { timeout: 15_000 });
+    await check("review (limits, tracks, mistakes)", 7);
+    await clickByText(page, ".review-center-page button", "New card");
+    await page.waitForSelector(".review-card-dialog");
+    await check("new card dialog", 1);
+    await closeWithEscape(".review-card-dialog");
+    await clickByText(page, ".mistake-controls button", "Log mistake");
+    await page.waitForSelector(".mistake-dialog");
+    await check("log mistake dialog", 1);
+    await closeWithEscape(".mistake-dialog");
+
+    await page.$eval('button[aria-label="Open settings"]', (button) => button.click());
+    await page.waitForSelector(".settings-drawer");
+    await check("settings", 1);
+    await closeWithEscape(".settings-drawer");
+
+    await navigate("#/ai", ".ai-learning-studio");
+    await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
+    await page.waitForSelector(".phone-tutor__composer select");
+    await check("on-device tutor", phone ? 3 : 2);
+    // The composer's Depth and Answer length show their whole value at 16px
+    // (Answer length once read “Standard · 640 t”).
+    const clipped = await page.$$eval(".phone-tutor__composer-head select", (selects) => {
+      const canvas = document.createElement("canvas").getContext("2d");
+      return selects.flatMap((select) => {
+        const style = getComputedStyle(select);
+        canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const text = select.selectedOptions[0]?.textContent || "";
+        const room = select.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
+        const needed = canvas.measureText(text).width;
+        return needed > room + 0.5 ? [`“${text}” needs ${Math.ceil(needed)}px of ${Math.floor(room)}px`] : [];
+      });
+    });
+    clipped.forEach((problem) => findings.push(`selects/${viewportName}/on-device tutor: the composer select clips its value: ${problem}`));
+    await context.close();
+  }
+  return measured;
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -377,9 +552,11 @@ try {
     { timeout: 2_000 },
   ).catch(() => findings.push("settings drawer: background regions remained inert after the final close"));
 
+  const selectsMeasured = await auditThemedSelects();
+
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
   assert.equal(findings.length, 0, `control quality failures:\n${findings.map((finding) => `- ${finding}`).join("\n")}`);
-  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; and opener focus-restore verified for all seven dialogs.`);
+  console.log(`Control audit passed: ${inspected} visible controls checked across home, library, reader, actions, teaching, whiteboard, notebook, review, and settings; dialog focus cycles verified (inert background, Tab trap and wrap, Shift+Tab wrap, Escape close, focus containment) for the reader actions menu, reader outline sheet, teaching mode, create-note dialog, review card dialog, settings drawer, and nested install sheet; opener focus-restore verified for all seven dialogs; and ${selectsMeasured} select measurements (Paper, Night and Contrast at 393px touch and 1280px) kept the themed select contract on every screen that hosts one.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
