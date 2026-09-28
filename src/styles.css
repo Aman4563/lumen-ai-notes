@@ -8514,7 +8514,7 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .fab { display: none !important; }
   body, .app-shell { background: #fff !important; color: #000 !important; }
   .app-main, .main-area { margin-left: 0 !important; }
-  .reader-scroll { overflow: visible !important; height: auto !important; max-height: none !important; }
+  .reader-scroll { overflow: visible !important; height: auto !important; max-height: none !important; padding-bottom: 0 !important; }
   .reader-view { display: block !important; height: auto !important; }
   .reader-layout { max-width: 100% !important; }
   .reader-main a { color: #000 !important; text-decoration: underline; }
