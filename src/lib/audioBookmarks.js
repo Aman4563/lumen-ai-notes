@@ -18,7 +18,8 @@ const storageFor = (storage) => (storage === undefined ? globalThis.localStorage
 const readAll = (storage) => {
   try {
     const parsed = JSON.parse(storageFor(storage).getItem(STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
+    // Entries that are not objects (a hand-edited or damaged store) are dropped.
+    return Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry === "object") : [];
   } catch {
     return [];
   }

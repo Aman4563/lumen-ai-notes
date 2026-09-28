@@ -112,9 +112,11 @@ test("a saved position relocates by snippet, then section, then the beginning", 
   const repeated = [...queue.slice(0, 7), queue[1], "The end."];
   assert.deepEqual(locatePosition({ ...at(1), index: 6 }, repeated, sectionStarts), { index: 7, how: "snippet" });
 
-  // The sentence itself was rewritten, but its section survives.
+  // The sentence itself was rewritten and the lecture's length changed, but
+  // its section survives.
   const rewritten = queue.map((chunk, index) => (index === 4 ? "Learned behaviour is estimated from labelled examples." : chunk));
-  assert.deepEqual(locatePosition(at(4), rewritten, sectionStarts), { index: 3, how: "section" });
+  const rewrittenAndGrown = [...rewritten.slice(0, 7), "A new closing thought.", rewritten[7]];
+  assert.deepEqual(locatePosition(at(4), rewrittenAndGrown, sectionStarts), { index: 3, how: "section" });
 
   // Neither the sentence nor its section is left: start over and say so.
   const unrelated = ["Different lecture.", "Different body.", "Different end."];
@@ -124,4 +126,21 @@ test("a saved position relocates by snippet, then section, then the beginning", 
   const shrunk = [queue[0], queue[3], queue[4]];
   assert.deepEqual(locatePosition(at(4), shrunk, [{ index: 1, label: sectionStarts[1].label }]), { index: 1, how: "section" });
   assert.deepEqual(locatePosition(at(4), shrunk, [], { allowLast: true }), { index: 2, how: "snippet" }, "a bookmark may play the closing sentence");
+});
+
+// A pronunciation override (or an edit in place) rewords the saved sentence
+// but keeps the queue's length and sections: the saved index still names it.
+test("a reworded sentence in a queue of the same length keeps its index", () => {
+  const at = (index) => ({ v: 2, index, total: queue.length, snippet: queue[index].slice(0, 60), section: sectionStarts.filter((start) => start.index <= index).at(-1).label });
+  const overridden = queue.map((chunk) => chunk.replace(/\bexamples\b/gu, "exam pulls"));
+  assert.notEqual(overridden[4], queue[4], "the override must touch the saved sentence");
+  assert.deepEqual(locatePosition(at(4), overridden, sectionStarts), { index: 4, how: "index" });
+  const rewritten = queue.map((chunk, index) => (index === 4 ? "Learned behaviour is estimated from labelled examples." : chunk));
+  assert.deepEqual(locatePosition(at(4), rewritten, sectionStarts), { index: 4, how: "index" }, "an edit in place resumes at the edited sentence");
+  // A different section at the saved index means the lecture moved on.
+  const renamed = sectionStarts.map((start) => (start.index === 3 ? { ...start, label: "2. Renamed section" } : start));
+  assert.deepEqual(locatePosition(at(4), overridden, renamed), { index: 0, how: "changed" });
+  // Never the last chunk, even at the same length.
+  assert.deepEqual(locatePosition({ ...at(7), snippet: "Reworded closing question." }, queue, sectionStarts), { index: 5, how: "section" });
+  assert.deepEqual(locatePosition({ ...at(7), snippet: "Reworded closing question." }, queue, sectionStarts, { allowLast: true }), { index: 7, how: "index" });
 });

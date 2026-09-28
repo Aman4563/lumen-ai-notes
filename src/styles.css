@@ -8337,9 +8337,11 @@ input[type="range"] {
 .danger-text { color: #b2543c; }
 
 /* Issue 17: audio bookmarks */
-.speech-bookmarks { display: grid; gap: 6px; margin-top: 13px; }
+/* One column no wider than the panel, so a long snippet ellipsizes instead
+   of widening the row and pushing Delete off a phone screen. */
+.speech-bookmarks { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 13px; }
 .speech-bookmarks-title { color: var(--ink-faint); font-size: 0.64rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
-.speech-bookmark-row { display: flex; align-items: center; gap: 6px; }
+.speech-bookmark-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .speech-bookmark-play { display: flex; flex: 1; align-items: center; gap: 7px; overflow: hidden; min-width: 0; padding: 7px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-2); color: var(--ink-soft); font-size: 0.7rem; text-align: left; }
 .speech-bookmark-play span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

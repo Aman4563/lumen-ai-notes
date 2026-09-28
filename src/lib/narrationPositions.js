@@ -68,11 +68,13 @@ export const clearPosition = (documentId, storage) => {
 /**
  * Finds a saved position in a freshly built queue. In order: the chunk at
  * `index` still starts with the snippet; the nearest chunk that starts with
- * it; the start of the saved section; otherwise the beginning, reported as
- * `changed`. A version 1 index has no snippet and is only bounds-checked.
- * Resume never lands on the last chunk (a finished lecture clears its
- * position, so one pointing there is stale); `allowLast` lets a bookmark on
- * the closing sentence play it.
+ * it; the saved `index` itself when the queue has the saved length and the
+ * same section there (the sentence was reworded in place, as a pronunciation
+ * override does); the start of the saved section; otherwise the beginning,
+ * reported as `changed`. A version 1 index has no snippet and is only
+ * bounds-checked. Resume never lands on the last chunk (a finished lecture
+ * clears its position, so one pointing there is stale); `allowLast` lets a
+ * bookmark on the closing sentence play it.
  */
 export const locatePosition = (position, queue, sectionStarts = [], { allowLast = false } = {}) => {
   const saved = position && typeof position === "object" ? normalizePosition(position) : null;
@@ -88,6 +90,8 @@ export const locatePosition = (position, queue, sectionStarts = [], { allowLast 
     if (matches(index) && (nearest < 0 || Math.abs(index - saved.index) < Math.abs(nearest - saved.index))) nearest = index;
   });
   if (nearest >= 0) return { index: nearest, how: "snippet" };
+  const sectionAt = (index) => sectionStarts.filter((start) => start.index <= index).at(-1)?.label || "";
+  if (saved.total === queue.length && usable(saved.index) && sectionAt(saved.index) === saved.section) return { index: saved.index, how: "index" };
   const section = saved.section ? sectionStarts.find((start) => start.label === saved.section) : null;
   if (section && usable(section.index)) return { index: section.index, how: "section" };
   return { index: 0, how: "changed" };

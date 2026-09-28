@@ -1728,9 +1728,9 @@ export default function App() {
       notify("Narration finished — that was the last chapter of this Part.", "success", 5000);
       return;
     }
+    // The Reader announces "Continuing narration" once the chapter plays.
     setAutoNarrateDocId(next.id);
     openDocument(next.id, { focus: false });
-    notify(`Continuing narration: ${next.title}`, "success", 4000);
   };
   const currentOriginalSource = currentDocument.source === "custom" ? currentDocument.raw : (builtInSources[currentDocument.id] || "");
   const reviewDueCount = actionableReviewCount(profile);

@@ -145,6 +145,10 @@ export function useSpeech({
   // Returns true only when an utterance was handed to the engine.
   const playIndex = useCallback((index, session) => {
     if (!supported || session !== sessionRef.current) return false;
+    // The sleep timer comes first: a deadline that passed during a lecture's
+    // last sentence ends narration there, and the playlist does not open
+    // the next chapter.
+    if (endIfSleepLapsed()) return false;
     const queue = queueRef.current;
     if (index >= queue.length) {
       // Natural completion only — stop() and the sleep timer never fire this.
@@ -153,7 +157,6 @@ export function useSpeech({
       onQueueCompleteRef.current?.({ label: completedLabel });
       return false;
     }
-    if (endIfSleepLapsed()) return false;
 
     clearResumeTimer();
     restartRequiredRef.current = false;
@@ -325,15 +328,25 @@ export function useSpeech({
     { label: "Voice preview" },
   ), [speak]);
 
+  // A deliberate tap on a paused player (Resume, Next, Previous or a section
+  // skip) after the sleep deadline passed during the pause re-arms the timer,
+  // so the tap is not ended at the next sentence boundary.
+  const rearmIfLapsed = useCallback(() => {
+    if (sleepMinutesRef.current && sleepDeadlineRef.current && Date.now() >= sleepDeadlineRef.current) {
+      sleepDeadlineRef.current = Date.now() + sleepMinutesRef.current * 60_000;
+    }
+  }, []);
+
   const seek = useCallback((index) => {
     if (!supported || !queueRef.current.length) return false;
     const nextIndex = Math.max(0, Math.min(queueRef.current.length - 1, index));
+    if (statusRef.current === "paused") rearmIfLapsed();
     clearResumeTimer();
     sessionRef.current += 1;
     cancelEngine();
     playAfterCancel(nextIndex, sessionRef.current);
     return true;
-  }, [cancelEngine, clearResumeTimer, playAfterCancel, supported]);
+  }, [cancelEngine, clearResumeTimer, playAfterCancel, rearmIfLapsed, supported]);
 
   const next = useCallback(() => seek(indexRef.current + 1), [seek]);
   const previous = useCallback(() => seek(indexRef.current - 1), [seek]);
@@ -341,11 +354,7 @@ export function useSpeech({
   const togglePause = useCallback(() => {
     if (!supported) return false;
     if (statusRef.current === "paused") {
-      // Resuming after the sleep deadline passed re-arms the timer, so the
-      // learner's tap is not ended at the next sentence boundary.
-      if (sleepMinutesRef.current && sleepDeadlineRef.current && Date.now() >= sleepDeadlineRef.current) {
-        sleepDeadlineRef.current = Date.now() + sleepMinutesRef.current * 60_000;
-      }
+      rearmIfLapsed();
       if (restartRequiredRef.current || typeof window.speechSynthesis.resume !== "function") {
         sessionRef.current += 1;
         cancelEngine();
@@ -386,7 +395,7 @@ export function useSpeech({
       }
     }
     return false;
-  }, [cancelEngine, playAfterCancel, supported, updateStatus]);
+  }, [cancelEngine, playAfterCancel, rearmIfLapsed, supported, updateStatus]);
 
   const suspendForBackground = useCallback(() => {
     if (!supported || !queueRef.current.length || !["speaking", "paused"].includes(statusRef.current)) return;

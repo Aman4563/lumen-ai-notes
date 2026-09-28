@@ -665,6 +665,12 @@ export default function Reader({
     language: settings.speechLanguage,
   });
 
+  // The lecture a full-lecture queue was started in. A route change renders
+  // this Reader with the next lecture one commit before the stop lands, so
+  // the position and bookmark code check it to never save one lecture's
+  // place under another.
+  const narratedDocumentRef = useRef("");
+
   const readSpeechTarget = () => {
     const target = speechTarget();
     if (!target.available) {
@@ -681,8 +687,10 @@ export default function Reader({
       resumed = locatePosition(saved, queue, sectionStarts);
       return resumed.index > 2 ? resumed.index : 0;
     } : undefined;
+    narratedDocumentRef.current = document.id;
     if (speech.speak(target.text, { label: target.label, sections: target.sections, resolveStart })) {
       if (resumed?.how === "changed") onNotify?.("This lecture changed since you stopped, so narration starts at the beginning.", "warning");
+      else if (resumed?.how === "section" && resumed.index > 2) onNotify?.(`This lecture changed since you stopped, so narration resumes at the start of “${saved.section}”.`, "warning");
       else if (resumed?.index > 2) onNotify?.("Narration resumed from your last position. Use Previous to go back.");
       // Move immediately to the compact player so the mobile settings sheet
       // does not cover the lecture or intercept its playback controls.
@@ -695,11 +703,16 @@ export default function Reader({
   // once the article DOM is in place. Same user-initiated session; the
   // foreground-safety rules (pagehide cancel, explicit resume) still apply.
   // `continueSession` keeps a running sleep timer's deadline: the playlist is
-  // the same listening session.
+  // the same listening session. The playlist is announced only once this
+  // chapter really plays; a sleep deadline that passed while it loaded ends
+  // narration instead.
   useEffect(() => {
     if (!autoNarrate) return;
     const target = speechTarget("document");
-    if (target.available) speech.speak(target.text, { label: target.label, sections: target.sections, continueSession: true });
+    narratedDocumentRef.current = document.id;
+    if (target.available && speech.speak(target.text, { label: target.label, sections: target.sections, continueSession: true })) {
+      onNotify?.(`Continuing narration: ${document.title}`, "success", 4000);
+    }
     onAutoNarrateHandled?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoNarrate, document.id]);
@@ -736,7 +749,7 @@ export default function Reader({
   // interrupted session can pick up where it left off (AUDIO-001). Storage
   // failures (a full or blocked store) are ignored: narration keeps playing.
   useEffect(() => {
-    if (speech.activeLabel !== "Full lecture" || !speech.progress.total) return;
+    if (speech.activeLabel !== "Full lecture" || !speech.progress.total || narratedDocumentRef.current !== document.id) return;
     if (speech.progress.current >= speech.progress.total - 1) {
       clearPosition(document.id);
       return;
@@ -851,7 +864,7 @@ export default function Reader({
   const [audioBookmarks, setAudioBookmarks] = useState(() => listAudioBookmarks(document.id));
   useEffect(() => setAudioBookmarks(listAudioBookmarks(document.id)), [document.id]);
   const bookmarkCurrentSentence = () => {
-    if (speech.activeLabel !== "Full lecture") return;
+    if (speech.activeLabel !== "Full lecture" || narratedDocumentRef.current !== document.id) return;
     const saved = addAudioBookmark({ documentId: document.id, index: speech.progress.current, total: speech.progress.total, snippet: speech.currentText.slice(0, 160), section: speech.sectionLabel });
     setAudioBookmarks(listAudioBookmarks(document.id));
     if (saved) onNotify?.("Sentence bookmarked — jump back to it from the narration panel.");
@@ -866,8 +879,10 @@ export default function Reader({
     }
     let located = null;
     const resolveStart = (queue, sectionStarts) => (located = locatePosition(bookmark, queue, sectionStarts, { allowLast: true })).index;
+    narratedDocumentRef.current = document.id;
     if (!speech.speak(target.text, { label: target.label, sections: target.sections, resolveStart })) return;
     if (located?.how === "changed") onNotify?.("This lecture changed since the bookmark was saved, so narration starts at the beginning.", "warning");
+    else if (located?.how === "section") onNotify?.(`This lecture changed since the bookmark was saved, so narration plays from the start of “${bookmark.section}”.`, "warning");
     setShowSpeech(false);
   };
   const deleteAudioBookmark = (id) => {

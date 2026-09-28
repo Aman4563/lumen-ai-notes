@@ -41,6 +41,11 @@ test("audio bookmarks save per document, dedupe per sentence, and stay bounded",
   const hostile = memoryStorage();
   hostile.setItem("lumen-audio-bookmarks-v1", "{not json");
   assert.deepEqual(listAudioBookmarks("doc-a", hostile), [], "corrupt storage degrades to empty");
+  // Entries that are not objects are dropped instead of throwing in the Reader.
+  hostile.setItem("lumen-audio-bookmarks-v1", JSON.stringify([null, 5, "x", { id: "ab-1", documentId: "doc-a", index: 4, snippet: "kept" }]));
+  assert.deepEqual(listAudioBookmarks("doc-a", hostile).map((entry) => entry.snippet), ["kept"], "corrupt entries degrade to the valid ones");
+  assert.ok(addAudioBookmark({ documentId: "doc-a", index: 7, total: 9, snippet: "new", section: "" }, hostile), "a store with corrupt entries still saves");
+  assert.equal(listAudioBookmarks("doc-a", hostile).length, 2);
 });
 
 // Issue #96 (AM9): where storage is blocked, reading the localStorage accessor
