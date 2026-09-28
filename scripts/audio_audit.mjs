@@ -26,6 +26,79 @@ const setRange = async (page, label, value) => page.$eval(`input[aria-label="${l
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }, value);
 
+// The iOS speech engine, mocked. `pending` mirrors speechSynthesis.pending.
+// `webkitLegacy` reproduces WebKit before 27, where cancel() of live speech
+// also removes an utterance queued by speak() in the same task ("cancel()
+// removed utterances queued by subsequent speak() calls", fixed in 27.0).
+// Date.now() runs `__lumenClockOffset` ms ahead so sleep-timer cases can move
+// the clock without waiting.
+const installSpeechMock = ({ webkitLegacy = false } = {}) => {
+  class TestUtterance {
+    constructor(text) {
+      this.text = text;
+      this.rate = 1;
+      this.pitch = 1;
+      this.volume = 1;
+      this.lang = "";
+      this.voice = null;
+    }
+  }
+  const realNow = Date.now.bind(Date);
+  window.__lumenClockOffset = 0;
+  Date.now = () => realNow() + window.__lumenClockOffset;
+  window.__lumenSpoken = [];
+  const listeners = new Map();
+  window.__lumenTestVoices = [
+    { name: "Samantha", lang: "en-US", voiceURI: "samantha-en-us", default: true, localService: true },
+    { name: "Rishi", lang: "en-IN", voiceURI: "rishi-en-in", default: false, localService: true },
+    { name: "Lekha", lang: "hi-IN", voiceURI: "lekha-hi-in", default: false, localService: true },
+    { name: "Example cloud voice", lang: "en-US", voiceURI: "cloud-en-us", default: false, localService: false },
+  ];
+  let dropInThisTask = false;
+  const synthesis = {
+    current: null,
+    paused: false,
+    speaking: false,
+    pending: false,
+    getVoices: () => window.__lumenTestVoices,
+    speak(utterance) {
+      if (dropInThisTask) {
+        window.__lumenSpoken.push({ text: utterance.text, dropped: true });
+        return;
+      }
+      this.current = utterance;
+      this.paused = false;
+      this.speaking = true;
+      this.pending = false;
+      window.__lumenSpoken.push({ text: utterance.text, voice: utterance.voice?.voiceURI || null });
+      utterance.onstart?.();
+    },
+    cancel() {
+      if (webkitLegacy && (this.speaking || this.pending)) {
+        dropInThisTask = true;
+        setTimeout(() => { dropInThisTask = false; }, 0);
+      }
+      this.current = null;
+      this.paused = false;
+      this.speaking = false;
+      this.pending = false;
+    },
+    pause() {
+      this.paused = true;
+      this.current?.onpause?.();
+    },
+    resume() {
+      this.paused = false;
+      this.current?.onresume?.();
+    },
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type); },
+    dispatch(type) { listeners.get(type)?.(); },
+  };
+  Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: TestUtterance });
+  Object.defineProperty(window, "speechSynthesis", { configurable: true, value: synthesis });
+};
+
 const readStoredProfile = (page) => page.evaluate(() => new Promise((resolve, reject) => {
   const request = indexedDB.open("lumen-ai-notes", 1);
   request.onerror = () => reject(request.error);
@@ -52,55 +125,7 @@ try {
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
-  await page.evaluateOnNewDocument(() => {
-    class TestUtterance {
-      constructor(text) {
-        this.text = text;
-        this.rate = 1;
-        this.pitch = 1;
-        this.volume = 1;
-        this.lang = "";
-        this.voice = null;
-      }
-    }
-    const listeners = new Map();
-    window.__lumenTestVoices = [
-      { name: "Samantha", lang: "en-US", voiceURI: "samantha-en-us", default: true, localService: true },
-      { name: "Rishi", lang: "en-IN", voiceURI: "rishi-en-in", default: false, localService: true },
-      { name: "Lekha", lang: "hi-IN", voiceURI: "lekha-hi-in", default: false, localService: true },
-      { name: "Example cloud voice", lang: "en-US", voiceURI: "cloud-en-us", default: false, localService: false },
-    ];
-    const synthesis = {
-      current: null,
-      paused: false,
-      speaking: false,
-      getVoices: () => window.__lumenTestVoices,
-      speak(utterance) {
-        this.current = utterance;
-        this.paused = false;
-        this.speaking = true;
-        utterance.onstart?.();
-      },
-      cancel() {
-        this.current = null;
-        this.paused = false;
-        this.speaking = false;
-      },
-      pause() {
-        this.paused = true;
-        this.current?.onpause?.();
-      },
-      resume() {
-        this.paused = false;
-        this.current?.onresume?.();
-      },
-      addEventListener(type, listener) { listeners.set(type, listener); },
-      removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type); },
-      dispatch(type) { listeners.get(type)?.(); },
-    };
-    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: TestUtterance });
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: synthesis });
-  });
+  await page.evaluateOnNewDocument(installSpeechMock, {});
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error" && !message.text().includes("Failed to load resource")) runtimeErrors.push(message.text());
@@ -360,7 +385,388 @@ try {
   await page.$eval('button[aria-label="Stop narration"]', (node) => node.click());
 
   assert.deepEqual(runtimeErrors, [], `audio runtime errors: ${runtimeErrors.join(" | ")}`);
-  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout.");
+
+  // Issue #96: narration state, queue and storage. Every case runs in its own
+  // browser context (fresh settings and storage), and failures are collected
+  // so one broken case cannot hide the others.
+  const issue96Failures = [];
+  const issue96Case = async (name, { webkitLegacy = false, prepare } = {}, run) => {
+    const context = await browser.createBrowserContext();
+    const casePage = await context.newPage();
+    const caseErrors = [];
+    try {
+      await casePage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+      await casePage.evaluateOnNewDocument(installSpeechMock, { webkitLegacy });
+      casePage.on("pageerror", (error) => caseErrors.push(error.message));
+      casePage.on("console", (message) => {
+        if (message.type() === "error" && !message.text().includes("Failed to load resource")) caseErrors.push(message.text());
+      });
+      await prepare?.(casePage);
+      await run(casePage);
+      assert.deepEqual(caseErrors, [], `runtime errors: ${caseErrors.join(" | ")}`);
+    } catch (error) {
+      issue96Failures.push(`${name}: ${String(error.message).split("\n")[0]}`);
+    } finally {
+      await context.close().catch(() => {});
+    }
+  };
+  const openLecture = async (casePage, id = documentId) => {
+    await casePage.goto(`${baseUrl}#/read/${encodeURIComponent(id)}`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+  };
+  const openPanel = async (casePage) => {
+    if (!(await casePage.$(".speech-popover"))) await casePage.$eval('button[aria-label="Listen"]', (node) => node.click());
+    await casePage.waitForSelector('.speech-popover[role="dialog"]', { timeout: 5_000 });
+  };
+  const chooseScope = async (casePage, label, status) => {
+    await clickByText(casePage, ".speech-scope-grid button", label);
+    await casePage.waitForFunction((text) => document.querySelector(".speech-target-status")?.textContent.toLowerCase().includes(text), { timeout: 5_000 }, status);
+  };
+  const waitForBar = (casePage, message) => casePage.waitForSelector('.audio-bar[aria-label="Narration controls"]', { timeout: 5_000 })
+    .catch(() => assert.fail(message));
+  const barPosition = (casePage) => casePage.$eval(".audio-label strong", (node) => {
+    const match = node.textContent.match(/(\d+)\/(\d+)/u);
+    return { current: Number(match?.[1] || 0), total: Number(match?.[2] || 0), text: node.textContent };
+  });
+  const waitForPosition = (casePage, current, message) => casePage.waitForFunction((expected) => {
+    const match = document.querySelector(".audio-label strong")?.textContent.match(/(\d+)\//u);
+    return Number(match?.[1]) === expected && Boolean(window.speechSynthesis.current);
+  }, { timeout: 5_000 }, current).catch(() => assert.fail(message));
+  // Speaks the whole queue by ending each utterance, and returns its text.
+  const speakQueue = async (casePage) => {
+    const { total } = await barPosition(casePage);
+    return casePage.evaluate(async (count) => {
+      const texts = [];
+      for (let index = 0; index < count; index += 1) {
+        const utterance = window.speechSynthesis.current;
+        if (!utterance) break;
+        texts.push(utterance.text);
+        utterance.onend?.();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      return texts;
+    }, total);
+  };
+  const shiftClock = (casePage, minutes) => casePage.evaluate((ms) => { window.__lumenClockOffset += ms; }, minutes * 60_000);
+  const armedChip = (casePage) => casePage.$eval('.speech-sleep-row button[aria-checked="true"]', (node) => node.textContent.trim());
+  const diagramsSettled = (casePage) => casePage.waitForFunction(() => !document.querySelector('.diagram-shell[data-diagram-status="pending"], .diagram-shell[data-diagram-status="rendering"]'), { timeout: 20_000 }).catch(() => {});
+  // Places `find(article)` so the reading line (Reader's band 18% down the
+  // viewport, 45–140 px) crosses it, and reports where both sit.
+  const placeOnReadingLine = (casePage, needle) => casePage.evaluate((text) => {
+    const scroller = document.querySelector(".reader-scroll");
+    const heading = [...document.querySelectorAll(".markdown-body h1, .markdown-body h2, .markdown-body h3")].find((node) => node.textContent.trim().startsWith(text));
+    const frame = scroller.getBoundingClientRect();
+    const line = frame.top + Math.min(140, Math.max(45, frame.height * 0.18));
+    scroller.scrollTop += heading.getBoundingClientRect().top - line + 4;
+    const box = heading.getBoundingClientRect();
+    return { line, top: box.top, bottom: box.bottom };
+  }, needle);
+
+  // ND1: a sleep timer survives the playlist advancing to the next chapter
+  // and still ends narration at its original deadline.
+  await issue96Case("sleep timer across auto-advance", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await casePage.$eval('.speech-autoadvance-row input[type="checkbox"]', (input) => { if (!input.checked) input.click(); });
+    await clickByText(casePage, ".speech-sleep-row button", "10 min");
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "full-lecture narration did not start");
+    await shiftClock(casePage, 5);
+    await casePage.evaluate(() => {
+      let guard = 5_000;
+      while (guard-- > 0) {
+        const utterance = window.speechSynthesis.current;
+        if (!utterance || !utterance.onend) break;
+        utterance.onend();
+        if (window.speechSynthesis.current === utterance) break;
+      }
+    });
+    await casePage.waitForFunction(() => window.location.hash.includes("02-problem-framing") && window.speechSynthesis.current?.text.length > 0, { timeout: 10_000 })
+      .catch(() => assert.fail("the playlist did not continue into chapter 2"));
+    await openPanel(casePage);
+    const chip = await armedChip(casePage);
+    assert.equal(chip, "10 min", `the sleep timer read “${chip}” after the playlist advanced`);
+    // Eleven minutes after the Read, six into chapter 2: the original
+    // deadline has passed, so the next sentence boundary ends narration.
+    await shiftClock(casePage, 6);
+    await casePage.evaluate(() => window.speechSynthesis.current.onend());
+    await casePage.waitForFunction(() => !document.querySelector(".audio-bar"), { timeout: 5_000 })
+      .catch(() => assert.fail("narration outlived the original sleep deadline after the playlist advanced"));
+    assert.match(await casePage.$eval(".speech-popover .speech-live", (node) => node.textContent), /sleep timer ended narration/u);
+    assert.equal(await armedChip(casePage), "Off", "an expired sleep timer must return to Off");
+  });
+
+  // NM2: a timer armed while idle counts from the Read, not from arming;
+  // resuming after the deadline has passed re-arms it.
+  await issue96Case("sleep timer armed while idle", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-sleep-row button", "10 min");
+    await shiftClock(casePage, 11);
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "a sleep timer armed while idle swallowed the next Read (no player, no utterance)");
+    assert.ok(await casePage.evaluate(() => window.speechSynthesis.current?.text.length > 0), "Read spoke nothing");
+    await shiftClock(casePage, 9);
+    await casePage.evaluate(() => window.speechSynthesis.current.onend());
+    await waitForPosition(casePage, 2, "the countdown ran from arming, not from the Read");
+    await casePage.$eval('button[aria-label="Pause narration"]', (node) => node.click());
+    await casePage.waitForSelector('button[aria-label="Resume narration"]');
+    await shiftClock(casePage, 5);
+    await casePage.$eval('button[aria-label="Resume narration"]', (node) => node.click());
+    await casePage.waitForSelector('button[aria-label="Pause narration"]');
+    await casePage.evaluate(() => window.speechSynthesis.current.onend());
+    await waitForPosition(casePage, 3, "resuming after the deadline did not re-arm the sleep timer");
+    await shiftClock(casePage, 11);
+    await casePage.evaluate(() => window.speechSynthesis.current.onend());
+    await casePage.waitForFunction(() => !document.querySelector(".audio-bar"), { timeout: 5_000 })
+      .catch(() => assert.fail("the re-armed sleep timer never ended narration"));
+  });
+
+  // ND2 and ND11 at measured scroll positions in chapter 1.
+  const readSectionAt = async (casePage, place) => {
+    await openLecture(casePage);
+    await diagramsSettled(casePage);
+    await place();
+    await openPanel(casePage);
+    await chooseScope(casePage, "Section", "current section");
+    await place();
+    await clickByText(casePage, ".speech-controls button", "Read current section");
+    await waitForBar(casePage, "section narration did not start");
+    return (await speakQueue(casePage)).join(" ");
+  };
+  await issue96Case("section at an H2", {}, async (casePage) => {
+    let placed;
+    const section = await readSectionAt(casePage, async () => { placed = await placeOnReadingLine(casePage, "5. Learning paradigms"); });
+    assert.ok(placed.top <= placed.line && placed.bottom >= placed.line, `the heading is not on the reading line: ${JSON.stringify(placed)}`);
+    assert.ok(section.startsWith("5. Learning paradigms"), `section narration started elsewhere: ${section.slice(0, 80)}`);
+    assert.match(section, /5\.7 Online, batch, and continual learning/u, `the section at an H2 stopped before its H3 subsections (${section.length} characters: “${section.slice(0, 80)}”)`);
+    assert.doesNotMatch(section, /6\. Task taxonomy/u, "the section ran into the next H2");
+  });
+  await issue96Case("section at the top of a chapter", {}, async (casePage) => {
+    const top = await readSectionAt(casePage, () => casePage.$eval(".reader-scroll", (node) => { node.scrollTop = 0; }));
+    assert.ok(top.startsWith("Chapter 1"), `the top of the chapter did not start at its title: ${top.slice(0, 80)}`);
+    assert.match(top, /An intelligent product observes some context/u, `the top of the chapter read only “${top}”`);
+    assert.doesNotMatch(top, /2\. Programmed rules versus learned behavior/u, "the introduction ran into the next section");
+  });
+  await issue96Case("sentence under the reading line", {}, async (casePage) => {
+    await openLecture(casePage);
+    await diagramsSettled(casePage);
+    // Put a line that holds only a paragraph's second sentence on the line.
+    const expected = await casePage.evaluate(() => {
+      const scroller = document.querySelector(".reader-scroll");
+      const frame = scroller.getBoundingClientRect();
+      const line = frame.top + Math.min(140, Math.max(45, frame.height * 0.18));
+      const segmenter = new Intl.Segmenter(undefined, { granularity: "sentence" });
+      const rawOffset = (raw, cleanOffset) => {
+        let index = 0;
+        let clean = 0;
+        while (index < raw.length && /\s/u.test(raw[index])) index += 1;
+        while (index < raw.length && clean < cleanOffset) {
+          if (/\s/u.test(raw[index])) while (index < raw.length && /\s/u.test(raw[index])) index += 1;
+          else index += 1;
+          clean += 1;
+        }
+        return index;
+      };
+      for (const paragraph of document.querySelectorAll(".markdown-body p")) {
+        if (paragraph.childNodes.length !== 1 || paragraph.firstChild.nodeType !== Node.TEXT_NODE) continue;
+        const node = paragraph.firstChild;
+        const clean = node.data.replace(/\s+/gu, " ").trim();
+        const sentences = [...segmenter.segment(clean)].map((part) => part.segment.trim()).filter(Boolean);
+        if (sentences.length < 2 || sentences[1].length > 170) continue;
+        const secondAt = clean.indexOf(sentences[1]);
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, rawOffset(node.data, secondAt));
+        const firstLines = [...range.getClientRects()].filter((box) => box.height > 0);
+        range.setStart(node, rawOffset(node.data, secondAt));
+        range.setEnd(node, rawOffset(node.data, secondAt + sentences[1].length));
+        const secondLines = [...range.getClientRects()].filter((box) => box.height > 0);
+        const lastFirst = Math.max(...firstLines.map((box) => box.top));
+        const own = secondLines.filter((box) => box.top > lastFirst + 1).at(-1);
+        if (!own) continue;
+        scroller.scrollTop += own.top + own.height / 2 - line;
+        return { sentence: sentences[1], first: sentences[0] };
+      }
+      return null;
+    });
+    assert.ok(expected, "no chapter 1 paragraph has a second sentence on its own line");
+    await openPanel(casePage);
+    await chooseScope(casePage, "Sentence", "current sentence");
+    await clickByText(casePage, ".speech-controls button", "Read current sentence");
+    await waitForBar(casePage, "sentence narration did not start");
+    const spoken = await casePage.evaluate(() => window.speechSynthesis.current?.text || "");
+    assert.equal(spoken, expected.sentence, `Sentence read “${spoken}” with the second sentence on the reading line`);
+  });
+
+  // ND9 / AM9: narration storage that throws never replaces the Reader.
+  // A full store throws on writes only; a blocked one on reads too.
+  const throwingStorage = (methods) => (casePage) => casePage.evaluateOnNewDocument((names) => {
+    const blocked = /^lumen-(?:narration-|audio-bookmarks)/u;
+    for (const method of names) {
+      const original = Storage.prototype[method];
+      Storage.prototype[method] = function guarded(key, ...rest) {
+        if (blocked.test(String(key))) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+        return original.call(this, key, ...rest);
+      };
+    }
+  }, methods);
+  const narrateWithoutStorage = async (casePage) => {
+    const crashed = () => casePage.evaluate(() => document.body.innerText.includes("could not render this screen"));
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await casePage.waitForFunction(() => document.querySelector(".audio-bar") || document.body.innerText.includes("could not render this screen"), { timeout: 5_000 }).catch(() => {});
+    assert.equal(await crashed(), false, "a storage failure replaced the Reader with “Lumen could not render this screen”");
+    await waitForBar(casePage, "full-lecture narration did not start while storage throws");
+    for (let step = 2; step <= 5; step += 1) {
+      await casePage.evaluate(() => window.speechSynthesis.current?.onend?.());
+      await waitForPosition(casePage, step, `narration did not advance to ${step} while storage throws`);
+    }
+    assert.equal(await crashed(), false, "a storage failure replaced the Reader with “Lumen could not render this screen”");
+    await casePage.$eval('button[aria-label="Bookmark this sentence"]', (node) => node.click());
+    await casePage.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("could not save the bookmark"), { timeout: 5_000 })
+      .catch(() => assert.fail("a bookmark that could not be stored was not reported"));
+    await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+    await openPanel(casePage);
+    assert.equal(await casePage.$(".speech-bookmarks"), null, "bookmarks must list as empty when storage throws");
+  };
+  await issue96Case("storage writes that throw", { prepare: throwingStorage(["setItem", "removeItem"]) }, narrateWithoutStorage);
+  await issue96Case("storage reads and writes that throw", { prepare: throwingStorage(["getItem", "setItem", "removeItem"]) }, narrateWithoutStorage);
+
+  // ND10: a chosen voice missing on this device is never overwritten.
+  await issue96Case("voice removed from the device", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await casePage.waitForFunction(() => document.querySelector(".speech-popover .popover-heading strong")?.textContent.includes("4 device voices"));
+    await casePage.select('select[aria-label="Narration voice"]', "rishi-en-in");
+    await casePage.waitForFunction(() => document.querySelector('select[aria-label="Narration voice"]')?.value === "rishi-en-in");
+    await delay(700);
+    assert.equal((await readStoredProfile(casePage)).settings.voiceURI, "rishi-en-in");
+    await casePage.evaluate(() => {
+      window.__lumenTestVoices = window.__lumenTestVoices.filter((voice) => voice.voiceURI !== "rishi-en-in");
+      window.speechSynthesis.dispatch("voiceschanged");
+    });
+    await casePage.waitForFunction(() => document.querySelector(".speech-popover .popover-heading strong")?.textContent.includes("3 device voices"));
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "narration did not start with the saved voice missing");
+    const voice = await casePage.evaluate(() => window.speechSynthesis.current?.voice?.voiceURI);
+    assert.ok(voice && voice !== "rishi-en-in", `another voice must play while the chosen one is missing, got ${voice}`);
+    await delay(700);
+    const stored = (await readStoredProfile(casePage)).settings.voiceURI;
+    assert.equal(stored, "rishi-en-in", `the missing voice was replaced in settings by ${stored}`);
+  });
+
+  // ND12: a bookmark plays the full lecture whatever the panel's target.
+  await issue96Case("bookmark with the Sentence target", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "full-lecture narration did not start");
+    for (let step = 2; step <= 5; step += 1) {
+      await casePage.$eval('button[aria-label="Next narration sentence"]', (node) => node.click());
+      await waitForPosition(casePage, step, `Next did not reach ${step}`);
+    }
+    await casePage.$eval('button[aria-label="Bookmark this sentence"]', (node) => node.click());
+    await casePage.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("bookmarked"), { timeout: 5_000 });
+    await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+    await openPanel(casePage);
+    await chooseScope(casePage, "Sentence", "current sentence");
+    await casePage.$eval(".speech-bookmarks .speech-bookmark-play", (node) => node.click());
+    await waitForBar(casePage, "a bookmark did not play with the Sentence target selected");
+    const position = await barPosition(casePage);
+    assert.ok(position.text.includes("Full lecture") && position.current === 5, `the bookmark played ${position.text}`);
+  });
+
+  // ND14: saved positions never land on the last chunk and relocate by
+  // snippet, then section.
+  const readFullWith = async (casePage, stored) => {
+    await casePage.evaluate((key, value) => localStorage.setItem(key, value), `lumen-narration-${documentId}`, stored);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "full-lecture narration did not start");
+    const position = await barPosition(casePage);
+    const spoken = await casePage.evaluate(() => window.speechSynthesis.current?.text || "");
+    await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+    return { ...position, spoken };
+  };
+  await issue96Case("a stored 9999", {}, async (casePage) => {
+    await openLecture(casePage);
+    const stale = await readFullWith(casePage, "9999");
+    assert.equal(stale.current, 1, `a stored 9999 resumed at ${stale.text}`);
+    await casePage.waitForFunction(() => [...document.querySelectorAll(".toast")].some((node) => node.textContent.includes("changed since you stopped")), { timeout: 5_000 })
+      .catch(() => assert.fail("a stale position did not say the lecture changed"));
+  });
+  await issue96Case("positions relocate after an edit", {}, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "full-lecture narration did not start");
+    const queue = await speakQueue(casePage);
+    assert.ok(queue.length > 20, `chapter 1 queued only ${queue.length} chunks`);
+    // Saved at index 3 before an edit moved that sentence to chunk 9.
+    const moved = await readFullWith(casePage, JSON.stringify({ v: 2, index: 3, total: queue.length - 6, snippet: queue[8].slice(0, 60), section: "" }));
+    assert.equal(moved.current, 9, `a snippet saved from chunk 9 resumed at ${moved.text}`);
+    // The sentence itself was rewritten; its section is still there.
+    const sectioned = await readFullWith(casePage, JSON.stringify({ v: 2, index: 40, total: queue.length + 4, snippet: "A sentence this lecture no longer has.", section: "5. Learning paradigms" }));
+    assert.ok(sectioned.spoken.startsWith("5. Learning paradigms"), `a position whose sentence is gone did not resume at its section: ${sectioned.spoken.slice(0, 60)}`);
+  });
+
+  // NM1: with the Mermaid chunk unavailable, the diagram's diagnostic (its
+  // message and raw source) is never narrated.
+  await issue96Case("Mermaid unavailable", {
+    prepare: async (casePage) => {
+      await casePage.setBypassServiceWorker(true);
+      await casePage.setCacheEnabled(false);
+      // Offline as far as the app can tell, so chunk recovery stays out of it.
+      await casePage.evaluateOnNewDocument(() => Object.defineProperty(Navigator.prototype, "onLine", { configurable: true, get: () => false }));
+      await casePage.setRequestInterception(true);
+      casePage.on("request", (request) => {
+        if (/\/assets\/mermaid\.core-/u.test(request.url()) || request.url().includes("/api/health")) void request.abort("failed");
+        else void request.continue();
+      });
+    },
+  }, async (casePage) => {
+    await openLecture(casePage);
+    await casePage.waitForSelector('.diagram-shell[data-diagram-status="error"]', { timeout: 20_000 })
+      .catch(() => assert.fail("the blocked Mermaid chunk did not produce the diagram failure"));
+    await openPanel(casePage);
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "full-lecture narration did not start");
+    const leaked = (await speakQueue(casePage)).filter((text) => /Mermaid module|Diagram renderer|flowchart TD|-->|Show Mermaid source|Retry diagram/u.test(text));
+    assert.deepEqual(leaked, [], "the diagram diagnostic was narrated");
+  });
+
+  // AM10: on WebKit before 27, Next, Previous and a re-read after a real
+  // cancel must still speak; the first Read stays inside the tap.
+  await issue96Case("WebKit before 27", { webkitLegacy: true }, async (casePage) => {
+    await openLecture(casePage);
+    await openPanel(casePage);
+    const first = await casePage.evaluate(() => {
+      [...document.querySelectorAll(".speech-controls button")].find((button) => button.textContent.includes("Read full lecture")).click();
+      return window.speechSynthesis.current?.text || "";
+    });
+    assert.ok(first, "the first utterance was not spoken inside the tap, which iOS needs to unlock audio");
+    await casePage.$eval('button[aria-label="Next narration sentence"]', (node) => node.click());
+    await waitForPosition(casePage, 2, "Next after a live cancel spoke nothing (the utterance was dropped)");
+    const second = await casePage.evaluate(() => window.speechSynthesis.current.text);
+    assert.notEqual(second, first);
+    // A queued utterance that has not started yet (pending) is live too.
+    await casePage.evaluate(() => {
+      window.speechSynthesis.speaking = false;
+      window.speechSynthesis.pending = true;
+    });
+    await casePage.$eval('button[aria-label="Next narration sentence"]', (node) => node.click());
+    await waitForPosition(casePage, 3, "Next while an utterance was pending spoke nothing");
+    await casePage.$eval('button[aria-label="Previous narration sentence"]', (node) => node.click());
+    await waitForPosition(casePage, 2, "Previous after a live cancel spoke nothing");
+    assert.equal(await casePage.evaluate(() => window.speechSynthesis.current.text), second, "Previous did not replay chunk 2");
+    const dropped = await casePage.evaluate(() => window.__lumenSpoken.filter((entry) => entry.dropped).map((entry) => entry.text.slice(0, 40)));
+    assert.deepEqual(dropped, [], "utterances were dropped after cancel()");
+  });
+
+  assert.deepEqual(issue96Failures, [], `issue #96 narration cases failed:\n- ${issue96Failures.join("\n- ")}`);
+  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

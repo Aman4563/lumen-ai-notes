@@ -10,7 +10,6 @@ import {
   speechErrorMessage,
   speechLanguages,
   speechPreviewText,
-  voiceMatchesLanguage,
 } from "../lib/speech.js";
 
 export { chunkSpeechText } from "../lib/speech.js";
@@ -31,7 +30,6 @@ export function useSpeech({
   pitch = 1,
   volume = 1,
   pronunciations = [],
-  onSettingsChange,
   onQueueComplete,
 }) {
   const supported = hasSpeechAPI();
@@ -53,8 +51,12 @@ export function useSpeech({
   const restartRequiredRef = useRef(false);
   const resumeTimerRef = useRef(null);
   const sectionStartsRef = useRef([]);
+  // Sleep timer (AUDIO-001): the armed length and, once a Read starts, its
+  // deadline. Stopping keeps both; expiry, Off, or unmount clear them.
   const sleepDeadlineRef = useRef(0);
+  const sleepMinutesRef = useRef(0);
   const [sleepMinutes, setSleepMinutes] = useState(0);
+  const liveCancelRef = useRef(false);
 
   configRef.current = { voiceURI, language: normalizeSpeechLanguage(language), rate, pitch, volume, pronunciations };
   voicesRef.current = voices;
@@ -77,15 +79,13 @@ export function useSpeech({
       const available = normalizeSpeechVoices(window.speechSynthesis.getVoices?.() || []);
       voicesRef.current = available;
       setVoices(available);
+      // A voice missing on this device is never written back: settings sync
+      // between devices with different voice lists, and selectSpeechVoice
+      // already falls back at speak time. Only a choice in the panel changes
+      // voiceURI.
       if (available.length) {
         clearTimeout(emptyTimer);
         setVoiceState("ready");
-        const config = configRef.current;
-        const matching = available.filter((voice) => voiceMatchesLanguage(voice, config.language));
-        const preferred = selectSpeechVoice(available, config);
-        if (preferred && (config.language === "auto" || matching.length) && preferred.voiceURI !== config.voiceURI) {
-          onSettingsChange?.({ voiceURI: preferred.voiceURI });
-        }
       }
       return available;
     };
@@ -110,7 +110,7 @@ export function useSpeech({
       window.speechSynthesis.removeEventListener?.("voiceschanged", load);
       refreshVoicesRef.current = () => {};
     };
-  }, [onSettingsChange, supported]);
+  }, [supported]);
 
   const clearResumeTimer = useCallback(() => {
     clearTimeout(resumeTimerRef.current);
@@ -131,25 +131,29 @@ export function useSpeech({
     updateStatus("idle");
   }, [clearResumeTimer, updateStatus]);
 
+  // Sleep timer (AUDIO-001): expire between sentences, never mid-utterance.
+  const endIfSleepLapsed = useCallback(() => {
+    if (!sleepDeadlineRef.current || Date.now() < sleepDeadlineRef.current) return false;
+    sleepDeadlineRef.current = 0;
+    sleepMinutesRef.current = 0;
+    setSleepMinutes(0);
+    finish();
+    setError("The sleep timer ended narration at a sentence boundary.");
+    return true;
+  }, [finish]);
+
+  // Returns true only when an utterance was handed to the engine.
   const playIndex = useCallback((index, session) => {
-    if (!supported || session !== sessionRef.current) return;
+    if (!supported || session !== sessionRef.current) return false;
     const queue = queueRef.current;
     if (index >= queue.length) {
       // Natural completion only — stop() and the sleep timer never fire this.
       const completedLabel = activeLabelRef.current;
       finish();
       onQueueCompleteRef.current?.({ label: completedLabel });
-      return;
+      return false;
     }
-
-    // Sleep timer (AUDIO-001): expire between sentences, never mid-utterance.
-    if (sleepDeadlineRef.current && Date.now() >= sleepDeadlineRef.current) {
-      sleepDeadlineRef.current = 0;
-      setSleepMinutes(0);
-      finish();
-      setError("The sleep timer ended narration at a sentence boundary.");
-      return;
-    }
+    if (endIfSleepLapsed()) return false;
 
     clearResumeTimer();
     restartRequiredRef.current = false;
@@ -199,23 +203,50 @@ export function useSpeech({
     };
     try {
       window.speechSynthesis.speak(utterance);
+      return true;
     } catch (speechError) {
       utteranceRef.current = null;
       updateStatus("error");
       setError(speechErrorMessage(speechError?.name || "synthesis-failed"));
+      return false;
     }
-  }, [clearResumeTimer, finish, supported, updateStatus]);
+  }, [clearResumeTimer, endIfSleepLapsed, finish, supported, updateStatus]);
+
+  // WebKit before 27 drops an utterance that speak() queues in the same task
+  // as a cancel() of live speech ("cancel() removed utterances queued by
+  // subsequent speak() calls", fixed in WebKit 27.0). Remember a real cancel
+  // until the task ends so the next utterance can wait for the next task.
+  const cancelEngine = useCallback(() => {
+    const synthesis = window.speechSynthesis;
+    if (synthesis.speaking || synthesis.pending) {
+      liveCancelRef.current = true;
+      setTimeout(() => { liveCancelRef.current = false; }, 0);
+    }
+    synthesis.cancel();
+  }, []);
+
+  // Plays `index` after cancelEngine(). Only after a real cancel does the
+  // utterance wait a task; the first speak stays inside the tap, which iOS
+  // needs to unlock audio. The session guard drops a superseded deferral.
+  // The status says "speaking" at once, as it would for an immediate speak,
+  // so callers that treat idle as "finished" (the tutor's Listen) do not
+  // end the reading they just started.
+  const playAfterCancel = useCallback((index, session) => {
+    if (!liveCancelRef.current) return playIndex(index, session);
+    indexRef.current = index;
+    updateStatus("speaking");
+    setTimeout(() => playIndex(index, session), 0);
+    return true;
+  }, [playIndex, updateStatus]);
 
   const stop = useCallback(() => {
     clearResumeTimer();
     sessionRef.current += 1;
-    if (supported) window.speechSynthesis.cancel();
+    if (supported) cancelEngine();
     utteranceRef.current = null;
     queueRef.current = [];
     indexRef.current = 0;
     sectionStartsRef.current = [];
-    sleepDeadlineRef.current = 0;
-    setSleepMinutes(0);
     restartRequiredRef.current = false;
     setCurrentText("");
     setActiveLabel("");
@@ -223,7 +254,7 @@ export function useSpeech({
     updateStatus(supported ? "idle" : "unsupported");
     setProgress({ current: 0, total: 0 });
     setError("");
-  }, [clearResumeTimer, supported, updateStatus]);
+  }, [cancelEngine, clearResumeTimer, supported, updateStatus]);
 
   const speak = useCallback((text, options = {}) => {
     if (!supported) {
@@ -256,7 +287,7 @@ export function useSpeech({
     }
     clearResumeTimer();
     sessionRef.current += 1;
-    window.speechSynthesis.cancel();
+    cancelEngine();
     queueRef.current = queue;
     sectionStartsRef.current = sectionStarts;
     indexRef.current = 0;
@@ -266,12 +297,23 @@ export function useSpeech({
       setError("There is no readable text in this target.");
       return false;
     }
+    // Every Read starts a fresh sleep countdown. A playlist continuing into
+    // the next chapter (`continueSession`) is the same listening session, so
+    // it keeps the running deadline and ends where that deadline falls.
+    if (sleepMinutesRef.current && !(options.continueSession && sleepDeadlineRef.current)) {
+      sleepDeadlineRef.current = Date.now() + sleepMinutesRef.current * 60_000;
+    }
+    if (endIfSleepLapsed()) return false;
     activeLabelRef.current = String(options.label || "Narration").slice(0, 80);
-    setActiveLabel(String(options.label || "Narration").slice(0, 80));
-    const startIndex = Number.isInteger(options.startIndex) ? Math.max(0, Math.min(queue.length - 1, options.startIndex)) : 0;
-    playIndex(startIndex, sessionRef.current);
-    return true;
-  }, [clearResumeTimer, finish, playIndex, supported, updateStatus]);
+    setActiveLabel(activeLabelRef.current);
+    // `resolveStart(queue, sectionStarts)` places the start in the queue as
+    // built here, after pronunciation overrides (saved positions).
+    const requested = typeof options.resolveStart === "function" ? options.resolveStart(queue, sectionStarts) : options.startIndex;
+    const startIndex = Number.isInteger(requested) ? Math.max(0, Math.min(queue.length - 1, requested)) : 0;
+    // True when the utterance was issued, or scheduled for the next task
+    // after a real cancel (see playAfterCancel).
+    return playAfterCancel(startIndex, sessionRef.current);
+  }, [cancelEngine, clearResumeTimer, endIfSleepLapsed, finish, playAfterCancel, supported, updateStatus]);
 
   const selectedVoice = useMemo(
     () => selectSpeechVoice(voices, { voiceURI, language }),
@@ -288,10 +330,10 @@ export function useSpeech({
     const nextIndex = Math.max(0, Math.min(queueRef.current.length - 1, index));
     clearResumeTimer();
     sessionRef.current += 1;
-    window.speechSynthesis.cancel();
-    playIndex(nextIndex, sessionRef.current);
+    cancelEngine();
+    playAfterCancel(nextIndex, sessionRef.current);
     return true;
-  }, [clearResumeTimer, playIndex, supported]);
+  }, [cancelEngine, clearResumeTimer, playAfterCancel, supported]);
 
   const next = useCallback(() => seek(indexRef.current + 1), [seek]);
   const previous = useCallback(() => seek(indexRef.current - 1), [seek]);
@@ -299,10 +341,15 @@ export function useSpeech({
   const togglePause = useCallback(() => {
     if (!supported) return false;
     if (statusRef.current === "paused") {
+      // Resuming after the sleep deadline passed re-arms the timer, so the
+      // learner's tap is not ended at the next sentence boundary.
+      if (sleepMinutesRef.current && sleepDeadlineRef.current && Date.now() >= sleepDeadlineRef.current) {
+        sleepDeadlineRef.current = Date.now() + sleepMinutesRef.current * 60_000;
+      }
       if (restartRequiredRef.current || typeof window.speechSynthesis.resume !== "function") {
         sessionRef.current += 1;
-        window.speechSynthesis.cancel();
-        playIndex(indexRef.current, sessionRef.current);
+        cancelEngine();
+        playAfterCancel(indexRef.current, sessionRef.current);
         return true;
       }
       try {
@@ -314,8 +361,8 @@ export function useSpeech({
         resumeTimerRef.current = setTimeout(() => {
           if (statusRef.current === "speaking" && window.speechSynthesis.paused === true) {
             sessionRef.current += 1;
-            window.speechSynthesis.cancel();
-            playIndex(indexRef.current, sessionRef.current);
+            cancelEngine();
+            playAfterCancel(indexRef.current, sessionRef.current);
           }
         }, 650);
         return true;
@@ -339,18 +386,18 @@ export function useSpeech({
       }
     }
     return false;
-  }, [playIndex, supported, updateStatus]);
+  }, [cancelEngine, playAfterCancel, supported, updateStatus]);
 
   const suspendForBackground = useCallback(() => {
     if (!supported || !queueRef.current.length || !["speaking", "paused"].includes(statusRef.current)) return;
     clearResumeTimer();
     sessionRef.current += 1;
-    window.speechSynthesis.cancel();
+    cancelEngine();
     utteranceRef.current = null;
     restartRequiredRef.current = true;
     updateStatus("paused");
     setError("Playback paused when Lumen left the foreground. Tap Resume to replay the current sentence; Lumen will not start audio in the background.");
-  }, [clearResumeTimer, supported, updateStatus]);
+  }, [cancelEngine, clearResumeTimer, supported, updateStatus]);
 
   useEffect(() => {
     if (!supported) return undefined;
@@ -368,6 +415,8 @@ export function useSpeech({
   useEffect(() => () => {
     clearResumeTimer();
     sessionRef.current += 1;
+    sleepDeadlineRef.current = 0;
+    sleepMinutesRef.current = 0;
     if (supported) window.speechSynthesis.cancel();
   }, [clearResumeTimer, supported]);
 
@@ -388,8 +437,12 @@ export function useSpeech({
 
   const startSleepTimer = useCallback((minutes) => {
     const value = [0, 10, 20, 30].includes(minutes) ? minutes : 0;
+    sleepMinutesRef.current = value;
     setSleepMinutes(value);
-    sleepDeadlineRef.current = value ? Date.now() + value * 60_000 : 0;
+    // Armed while listening, the countdown starts now; armed while idle, it
+    // starts with the next Read (speak sets the deadline).
+    const listening = statusRef.current === "speaking" || statusRef.current === "paused";
+    sleepDeadlineRef.current = value && listening ? Date.now() + value * 60_000 : 0;
   }, []);
 
   const languages = useMemo(() => speechLanguages(voices), [voices]);
@@ -426,6 +479,9 @@ export function useSpeech({
     nextSection,
     previousSection,
     hasSections: (queueRef.current.length > 0) && sectionStartsRef.current.length > 1,
+    // The label of the section being read (full-lecture queues), which saved
+    // positions use to find their place again.
+    sectionLabel: progress.total ? sectionStartsRef.current.filter((section) => section.index <= progress.current).at(-1)?.label || "" : "",
     sleepMinutes,
     startSleepTimer,
     canNext: progress.total > 0 && progress.current < progress.total - 1,

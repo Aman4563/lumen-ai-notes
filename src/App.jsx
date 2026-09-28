@@ -1708,7 +1708,6 @@ export default function App() {
     rate: profile.settings.speechRate,
     pitch: profile.settings.speechPitch,
     volume: profile.settings.speechVolume,
-    onSettingsChange: updateSettings,
     onQueueComplete: ({ label }) => {
       if (label !== "Full lecture") return;
       if (profileRef.current.settings.narrationAutoAdvance !== true) return;

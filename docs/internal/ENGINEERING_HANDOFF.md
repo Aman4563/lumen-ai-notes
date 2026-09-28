@@ -834,6 +834,31 @@ Narration uses browser `SpeechSynthesis`; there is no server audio provider. It 
 - explicit foreground/background interruption handling and Safari resume fallback;
 - actionable empty-voice and unsupported states.
 
+Narration state rules (issue #96), which later narration work builds on:
+
+- Sleep timer: `stop()` keeps it. Every Read (`speak`) starts a fresh countdown, except
+  `{ continueSession: true }` (the playlist's next chapter), which keeps the running
+  deadline. A timer armed while idle starts counting at the next Read. Resuming after the
+  deadline has passed re-arms it. It is cleared only by expiry, Off, or unmount, and
+  `speak()` returns false when nothing was issued.
+- Section scope: a section ends at the next heading whose level is at most
+  max(its level, 2), so an H2 includes its H3s and an H1 reads its introduction; a heading
+  with no body continues through the next section. Sentence scope reads the sentence whose
+  Range boxes cross the reading line (`sentenceIndexAt`). Nothing inside `.diagram-shell`
+  (a diagram's failure message and raw source) is narrated.
+- Positions: resume positions (`src/lib/narrationPositions.js`) and audio bookmarks store
+  `{v: 2, index, total, snippet, section}` in localStorage, resolved inside `try`, so a
+  blocked or full store never breaks the Reader. `locatePosition` finds the chunk at
+  `index` that still starts with the 60-character snippet, then the nearest chunk that does,
+  then the section start, and otherwise starts over with a notice. Resume never lands on
+  the last chunk. Version 1 integers are bounds-checked. Bookmarks play the full lecture
+  whatever the panel's target.
+- Voices: a missing voice is never written back to settings (they sync between devices
+  with different voice lists); `selectSpeechVoice` falls back at speak time.
+- WebKit before 27 drops a `speak()` queued in the same task as a `cancel()` of live speech.
+  After such a cancel, the next utterance waits one task (session-guarded); the first
+  Read stays synchronous inside the tap so iOS unlocks audio.
+
 The browser/OS controls which voices exist and whether a labeled voice truly remains
 offline. Physical-iPhone enumeration, Bluetooth/audio routing, phone calls/backgrounding,
 precise persisted resume, spoken-sentence highlighting, heading skip, bookmarks, sleep
