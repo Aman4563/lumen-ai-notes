@@ -40,11 +40,19 @@ const activeMode = (page) => page.evaluate(() => {
   return (select ? select.selectedOptions[0]?.textContent : document.querySelector(".phone-tutor__mode-tabs button[aria-pressed='true']")?.textContent)?.trim() || "";
 });
 
+// The sheet slides in for 200ms. Its controls are measured once it has:
+// mid-slide under load a 44px button once read 43.99997px.
+const sheetSettled = (page) => page.evaluate(() => {
+  const running = document.querySelector(".tutor-sheet__scrim")?.getAnimations({ subtree: true }) || [];
+  return Promise.race([Promise.all(running.map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+});
+
 // Depth, Answer length and the web fallback live in the Options sheet
 // (#94): one tap opens it, Done closes it.
 const withOptions = async (page, action) => {
   await page.click(".phone-tutor__options");
   await page.waitForSelector(".tutor-sheet .phone-tutor__search-toggle input");
+  await sheetSettled(page);
   const result = await action();
   await page.click(".tutor-sheet__done");
   await page.waitForSelector(".tutor-sheet", { hidden: true });
@@ -112,6 +120,15 @@ const liteGeometry = () => {
     // The engine card's controls in Tab order, by where they are drawn.
     cardOrder: [...document.querySelectorAll(".phone-local-ai :is(summary, input, button, select, a[href])")].filter((node) => !node.disabled && node.checkVisibility()).map((node) => Math.round(node.getBoundingClientRect().top)),
     page: page ? { overflow: page.scrollHeight - page.clientHeight, anchor: getComputedStyle(page).overflowAnchor } : null,
+    conversation: box(document.querySelector(".phone-tutor__conversation")),
+    // The tutor's text and controls drawn under the question box.
+    covered: (() => {
+      const dock = composer.getBoundingClientRect();
+      return [...document.querySelectorAll(".phone-tutor *")].filter((node) => !composer.contains(node) && !node.closest(".phone-tutor__jump") && (!node.children.length || node.matches("button, select, summary, label, a")) && node.checkVisibility()).filter((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && rect.bottom > dock.top + 1 && rect.top < dock.bottom - 1 && rect.right > dock.left + 1 && rect.left < dock.right - 1;
+      }).map((node) => `${node.tagName.toLowerCase()} “${node.textContent.replace(/\s+/g, " ").trim().slice(0, 24)}”`);
+    })(),
   };
 };
 
@@ -138,6 +155,13 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
   // above it (the dock keeps an 8px gap) rather than risen off it.
   const docked = (g, { rests = true } = {}) => g.composer.position === "sticky" && g.composer.bottom <= g.navTop && (!rests || g.navTop - g.composer.bottom <= 10);
   const toEnd = (page) => page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }));
+  // Wide screens, nothing asked yet, at the top of the page: the question
+  // box covers none of the tutor and waits in the page flow right under the
+  // welcome, not below an empty conversation's reserved height.
+  const waitsUnderWelcome = (g, name) => {
+    expect(!g.covered.length, `${name}: the question box covers the tutor at the top of the page`, { covered: g.covered, composer: g.composer });
+    expect(g.composer.position !== "sticky" && g.conversation && g.composer.top - g.conversation.bottom <= 24, `${name}: with nothing asked the question box is not in the page flow right under the welcome`, { composer: g.composer, conversation: g.conversation });
+  };
   const open = async (label, url, viewport, { largeText = false, keyboard = false, blockResults = false } = {}) => {
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
@@ -181,12 +205,15 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
     return { context, page };
   };
 
-  // First open, before the model is downloaded, in the app: the question box
-  // and Send are on screen, docked just above the navigation and one line
-  // tall; the engine card keeps its details behind a disclosure; Options
-  // opens in one tap on Depth, Answer length and the web fallback; and at
-  // the page end the dock covers none of the conversation. Wide screens keep
-  // a page that grows with the tutor rather than the Mac tutor's column.
+  // First open, before the model is downloaded, in the app: on phones the
+  // question box and Send are on screen, docked just above the navigation
+  // and one line tall; the engine card keeps its details behind a
+  // disclosure; Options opens in one tap on Depth, Answer length and the web
+  // fallback; and at the page end the dock covers none of the conversation.
+  // Wide screens keep a page that grows with the tutor rather than the Mac
+  // tutor's column, and until the first question the box waits in it,
+  // covering nothing, right under the welcome (docked, it cut the mode tabs
+  // at 1280x720).
   const firstOpen = [
     ["320x568", { width: 320, height: 568 }],
     ["375x667", { width: 375, height: 667 }],
@@ -201,17 +228,21 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
     const { context, page } = await open(`lite-first-${name}`, `${appUrl}#/ai`, viewport, options);
     try {
       const g = await geometry(page);
-      expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen at first open`, { field: g.field, send: g.send, topbar: g.topbar, navTop: g.navTop });
+      if (phone) expect(inView(g, g.field) && inView(g, g.send), `${name}: the question box or Send is off screen at first open`, { field: g.field, send: g.send, topbar: g.topbar, navTop: g.navTop });
       // A first-run card without the download approval (no WebGPU, as on
       // Linux CI) can leave a page no taller than the screen.
-      expect(phone ? docked(g, { rests: g.maxScroll > 1 }) : g.composer.position === "sticky", `${name}: the question box is not docked${phone ? " just above the navigation" : ""}`, { composer: g.composer, navTop: g.navTop });
+      if (phone) expect(docked(g, { rests: g.maxScroll > 1 }), `${name}: the question box is not docked just above the navigation`, { composer: g.composer, navTop: g.navTop });
+      else waitsUnderWelcome(g, name);
       if (phone && !options.largeText) expect(g.composer.height <= 124, `${name}: the docked composer is taller than about 120px`, g.composer);
       expect(!g.cardDetailsShown, `${name}: the engine card shows its model facts and privacy notes at first open`, g.card);
       expect(g.cardOrder.every((top, index) => index === 0 || top >= g.cardOrder[index - 1] - 4), `${name}: Tab moves back up the engine card`, g.cardOrder);
       expect(!g.sideways, `${name}: the page scrolls sideways`, g.viewport);
       if (!phone) expect(g.page && g.page.overflow <= 1, `${name}: the tutor overflows a fixed-height page`, g.page);
-      expect(inView(g, g.options), `${name}: Options is off screen`, g.options);
-      if (g.options) {
+      // On a wide screen Options is with the box, in the page flow.
+      if (!phone) await toEnd(page);
+      const reach = phone ? g : await geometry(page);
+      expect(inView(reach, reach.options), `${name}: Options is off screen`, reach.options);
+      if (reach.options) {
         await page.click(".phone-tutor__options");
         const sheet = await page.waitForSelector(".tutor-sheet", { timeout: 3_000 }).then(() => page.evaluate(async (wide) => {
           const panel = document.querySelector(".tutor-sheet");
@@ -240,6 +271,7 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       const end = await geometry(page);
       expect(end.end.bottom <= end.composer.top + 1, `${name}: at the page end the conversation is under the dock`, { end: end.end, composer: end.composer });
       if (phone) expect(docked(end, { rests: end.maxScroll > 1 }), `${name}: at the page end the dock rose off the navigation or sank under it`, { composer: end.composer, navTop: end.navTop });
+      else expect(inView(end, end.field) && inView(end, end.send), `${name}: at the page end the question box or Send is off screen`, { field: end.field, send: end.send });
     } catch (error) {
       failures.push(`${name}: ${error.message.split("\n")[0]}`);
     } finally {
@@ -297,6 +329,7 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
     ["393x852 at 200% text", { width: 393, height: 852 }, { largeText: true }],
     ["852x393", { width: 852, height: 393 }],
     ["1280x720", { width: 1280, height: 720 }],
+    ["1280x609", { width: 1280, height: 609 }],
   ];
   for (const [name, viewport, options = {}] of latest) {
     const { context, page } = await open(`lite-latest-${name}`, `${fixtureUrl}/__phone-ai-audit?shell&loaded&history=5`, viewport, options);
@@ -306,6 +339,8 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       const edge = g.composer.position === "sticky" ? Math.min(g.composer.top, g.navTop) : g.navTop;
       expect(g.scrollY > 0 && g.end.bottom <= edge + 1 && g.end.bottom >= edge - 120, `${name}: the conversation did not open at its latest turn above the dock`, { scrollY: g.scrollY, end: g.end, composer: g.composer, navTop: g.navTop });
       expect(g.page?.anchor === "none", `${name}: scroll anchoring can still move the page`, g.page);
+      // A conversation docks the box on a wide screen too.
+      if (viewport.width >= 981) expect(g.composer.position === "sticky", `${name}: with a conversation the question box is not docked`, g.composer);
       // An answer's actions wrap rather than widen the page into a zoom-out.
       expect(g.viewport[0] === viewport.width, `${name}: an answer's actions widen the page`, g.viewport);
       await toEnd(page);
@@ -388,12 +423,14 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
     }
   }
 
-  // Wide screens, nothing asked yet, at the top of the page. With the model
-  // loaded the welcome is above the dock (at 1225x671 the dock once cut its
-  // heading, 51px over it). On a first run the download approval and
-  // Download & load are above the dock, and the dock does not cut the
-  // welcome, which may wait below it.
-  const wideSizes = [["1024x768", { width: 1024, height: 768 }], ["1225x671", { width: 1225, height: 671 }], ["1280x720", { width: 1280, height: 720 }], ["1366x768", { width: 1366, height: 768 }], ["1440x900", { width: 1440, height: 900 }]];
+  // Wide screens, nothing asked yet, at the top of the page: the question
+  // box covers none of the tutor and waits in the page flow right under the
+  // welcome, and is on screen at the page end. The welcome and, on a first
+  // run, the download approval and Download & load are above it. Docked, the
+  // box once cut the welcome's heading (1225x671; 1280x609, the room a
+  // 1280x720 screen leaves Chrome; 1024x640, 1280x640), covered Download &
+  // load (1280x609, 1024x640, 1280x640) and cut the mode tabs (1280x720).
+  const wideSizes = [["1024x768", { width: 1024, height: 768 }], ["1225x671", { width: 1225, height: 671 }], ["1280x720", { width: 1280, height: 720 }], ["1366x768", { width: 1366, height: 768 }], ["1440x900", { width: 1440, height: 900 }], ["1280x609", { width: 1280, height: 609 }], ["1024x640", { width: 1024, height: 640 }], ["1280x640", { width: 1280, height: 640 }]];
   for (const [name, viewport] of wideSizes) {
     for (const loaded of [true, false]) {
       const state = loaded ? "loaded" : "first run";
@@ -415,11 +452,37 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
           expect(approval.every((bottom) => bottom !== null && bottom <= g.composer.top + 1), `${name} first run: the dock covers the download approval or Download & load`, { approval, composer: g.composer });
           expect(heading && (g.welcomeText.bottom <= g.composer.top + 1 || heading.top >= g.composer.top - 1), `${name} first run: the dock cuts the welcome`, { heading, welcome: g.welcomeText, composer: g.composer });
         }
+        waitsUnderWelcome(g, `${name} ${state}`);
+        await toEnd(page);
+        const end = await geometry(page);
+        expect(inView(end, end.field) && inView(end, end.send), `${name} ${state}: at the page end the question box or Send is off screen`, { field: end.field, send: end.send });
       } catch (error) {
         failures.push(`${name} ${state}: ${error.message.split("\n")[0]}`);
       } finally {
         await context.close();
       }
+    }
+  }
+
+  // The first question docks the box on a wide screen: the question shows
+  // above the dock, and so does the end of its answer at the page end.
+  for (const [name, viewport] of [["1280x609", { width: 1280, height: 609 }], ["1440x900", { width: 1440, height: 900 }]]) {
+    const { context, page } = await open(`lite-wide-send-${name}`, `${fixtureUrl}/__phone-ai-audit?shell&loaded`, viewport);
+    try {
+      await useSuggestion(page);
+      await page.evaluate(() => { window.__PHONE_AI_AUDIT__.slowNextGeneration = 20; });
+      await page.click(".phone-tutor__composer button[type='submit']");
+      await page.waitForSelector(".phone-tutor__message.is-user", { timeout: 5_000 });
+      const sent = await geometry(page);
+      expect(sent.composer.position === "sticky" && sent.question && sent.question.top >= sent.topbar - 1 && sent.question.bottom <= sent.composer.top + 1, `${name}: the first question did not dock the box with the question above it`, { question: sent.question, composer: sent.composer });
+      await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming") && document.querySelector(".phone-tutor__message.is-assistant"), { timeout: 15_000 });
+      await toEnd(page);
+      const end = await geometry(page);
+      expect(end.composer.position === "sticky" && end.end.bottom <= end.composer.top + 1 && inView(end, end.field), `${name}: after the first answer the dock covers its end or the box is off screen`, { end: end.end, composer: end.composer, field: end.field });
+    } catch (error) {
+      failures.push(`${name} first question: ${error.message.split("\n")[0]}`);
+    } finally {
+      await context.close();
     }
   }
 

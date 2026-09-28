@@ -153,8 +153,10 @@ export function useTutorDock({ composerRef, fieldRef, conversationRef, minConver
       else delete root.dataset.aiTyping;
       measure();
     };
+    // The card too: a first question can dock a box that waited in the page
+    // flow without resizing it.
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
-    for (const node of [composer, conversationRef?.current, document.querySelector(".bottom-nav")]) if (node) observer?.observe(node);
+    for (const node of [composer, composer.parentElement, conversationRef?.current, document.querySelector(".bottom-nav")]) if (node) observer?.observe(node);
     window.addEventListener("resize", onResize);
     window.addEventListener("scroll", schedule, { passive: true });
     field?.addEventListener("focus", onViewport);

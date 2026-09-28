@@ -652,8 +652,9 @@ export default function PhoneLocalAiTutor({ sources = [], insertPrompt = null, o
   useEffect(() => { cancelModelRelease(engine); }, [engine]);
 
   // A docked box is already in view, so it is focused in place. In the page
-  // flow (large text, a short landscape screen) it is revealed and kept in
-  // view while the device panel above it settles.
+  // flow (large text, a short landscape screen, a wide screen before the
+  // first question) it is revealed and kept in view while the device panel
+  // above it settles.
   const focusPrompt = () => {
     const field = promptFieldRef.current;
     if (field?.form && getComputedStyle(field.form).position === "sticky") field.focus({ preventScroll: true });

@@ -267,12 +267,15 @@
   .phone-tutor__composer { position: relative; bottom: auto; }
 }
 
-/* Wide screens, model loaded: the chrome above the conversation folds up
-   as the Mac tutor's does, so the welcome clears the dock in a short window
-   (1225x671). A first run keeps its spacing, where the dock would otherwise
-   newly cut the welcome under the download approval (1366x768). Touch
-   screens keep 44px targets. */
+/* Wide screens, nothing asked yet: the question box waits in the page flow
+   right under the welcome, and docks with the first question. Docked over
+   the top of the page it cut the mode tabs (1280x720), the welcome (1280x609,
+   1024x640) or covered Download & load. Once the model is loaded the chrome
+   above folds up as the Mac tutor's does, so the box is on screen in a
+   short window; a first run keeps its spacing. Touch keeps 44px targets. */
 @media (min-width: 981px) {
+  .phone-tutor:has(.phone-tutor__welcome) .phone-tutor__composer { position: relative; bottom: auto; }
+  .phone-tutor__conversation:has(> .phone-tutor__welcome) { min-height: 0; }
   .phone-tutor.is-loaded { gap: 8px; }
   .is-loaded .phone-tutor__mode-tabs { gap: 6px; padding-block: 0; }
   .is-loaded .phone-tutor__mode-description { margin-top: -4px; }

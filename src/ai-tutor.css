@@ -272,8 +272,12 @@
   font-size: 0.85rem;
 }
 
+/* One column below 1080px, as wide as the card: an implicit column took the
+   Grounding toggle's unwrapped width (313px at 320px with 200% text), so the
+   card clipped the conversation and its suggested starts. */
 .ai-tutor__workspace {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 340px;
   border-block: 1px solid var(--line, rgba(23, 32, 53, 0.1));
 }

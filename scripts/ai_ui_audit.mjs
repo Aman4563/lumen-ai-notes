@@ -168,10 +168,16 @@ const clickByText = async (page, selector, text) => {
 // Depth, response profile, web fallback and privacy live in the Request
 // options sheet (issue #57); the question box, Send and the armed-web badge
 // stay in the sticky composer.
+// Its controls are measured once the sheet has slid in (200ms): mid-slide
+// under load a 44px control can read a fraction short.
 const openOptions = async (page) => {
   if (await page.$(".tutor-sheet")) return;
   await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
   await page.waitForSelector(".tutor-sheet .ai-tutor__web-search input", { timeout: 5_000 });
+  await page.evaluate(() => {
+    const running = document.querySelector(".tutor-sheet__scrim")?.getAnimations({ subtree: true }) || [];
+    return Promise.race([Promise.all(running.map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+  });
 };
 
 const closeOptions = async (page) => {
@@ -616,7 +622,7 @@ const auditChatFit = async () => {
   const geometry = async (page) => { await settle(page); return page.evaluate(chatFitGeometry); };
   const inView = (g, rect) => Boolean(rect) && rect.top >= g.topbar - 1 && rect.bottom <= Math.min(g.navTop, g.viewport[1]) + 1;
   const minConversation = (g) => Math.min(260, g.viewport[1] * 0.4) - 2;
-  const open = async (label, viewport, { pairs = 0, acknowledged = true, largeText = false, keyboard = false, config = secureConfig } = {}) => {
+  const open = async (label, viewport, { pairs = 0, acknowledged = true, largeText = false, textSize = largeText ? "200%" : "", keyboard = false, config = secureConfig } = {}) => {
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
     await page.setViewport({ deviceScaleFactor: 1, ...viewport });
@@ -627,7 +633,7 @@ const auditChatFit = async () => {
       if (large) {
         const enlarge = new MutationObserver(() => {
           if (!document.documentElement) return;
-          document.documentElement.style.fontSize = "200%";
+          document.documentElement.style.fontSize = large;
           enlarge.disconnect();
         });
         enlarge.observe(document, { childList: true });
@@ -646,7 +652,7 @@ const auditChatFit = async () => {
         });
         Object.defineProperty(window, "visualViewport", { configurable: true, get: () => viewport });
       }
-    }, acknowledged, largeText, keyboard);
+    }, acknowledged, textSize, keyboard);
     await installSlowStream(page);
     await installAiMocks(page, () => config);
     const settled = config === secureConfig ? ".ai-tutor__connection--ready" : ".ai-tutor__connection:not(.ai-tutor__connection--checking)";
@@ -1034,6 +1040,61 @@ const auditChatFit = async () => {
       expect(!done.navHidden && done.composer.bottom <= done.navTop && done.navTop - done.composer.bottom <= 10, "the dock or the navigation did not come back after typing", { composer: done.composer, navTop: done.navTop, navHidden: done.navHidden });
     } finally {
       await context.close();
+    }
+  }
+
+  // Narrow windows with large text, with touch and with a mouse, in every
+  // theme: nothing in the tutor's card runs past its edge, which clips. The
+  // Grounding toggle's unwrapped width once set the card's one column to
+  // 313px at 320px with 200% text, 27px wider than the card, so the
+  // suggested starts lost their right border and padding.
+  for (const [width, height, textSize] of [[320, 568, "200%"], [320, 568, "150%"], [400, 800, "200%"]]) {
+    for (const touch of [true, false]) {
+      const name = `${width}x${height} at ${textSize} text with ${touch ? "touch" : "a mouse"}`;
+      const { context, page } = await open(`narrow-${width}-${textSize}-${touch ? "touch" : "mouse"}`, { width, height, isMobile: touch, hasTouch: touch }, { textSize });
+      try {
+        await page.waitForSelector(".ai-tutor__starter", { timeout: 10_000 });
+        const themes = await page.evaluate(async () => {
+          const card = document.querySelector(".ai-tutor");
+          // Whatever a scroller or a clipping box inside the card holds is
+          // that box's to show; visually hidden text is clipped on purpose.
+          const clippedInside = (node) => {
+            for (let box = node; box && box !== card; box = box.parentElement) {
+              const style = getComputedStyle(box);
+              if (style.clipPath !== "none" || style.clip !== "auto" || (box !== node && style.overflowX !== "visible")) return true;
+            }
+            return false;
+          };
+          const result = {};
+          for (const theme of ["paper", "dark", "contrast"]) {
+            document.documentElement.dataset.theme = theme;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const edge = card.getBoundingClientRect();
+            const style = getComputedStyle(card);
+            const left = edge.left + Number.parseFloat(style.borderLeftWidth);
+            const right = edge.right - Number.parseFloat(style.borderRightWidth);
+            const past = [...card.querySelectorAll("*")].filter((node) => {
+              const rect = node.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 && (rect.right > right + 0.5 || rect.left < left - 0.5) && node.checkVisibility() && !clippedInside(node);
+            });
+            result[theme] = {
+              pointer: matchMedia("(pointer: fine)").matches ? "fine" : "coarse",
+              sideways: document.documentElement.scrollWidth - innerWidth,
+              past: past.filter((node) => !past.includes(node.parentElement)).map((node) => `${node.tagName.toLowerCase()}.${(node.getAttribute("class") || "").split(" ")[0]} ${Math.round(node.getBoundingClientRect().left)}–${Math.round(node.getBoundingClientRect().right)}px`),
+              card: `${Math.round(left)}–${Math.round(right)}px`,
+            };
+          }
+          return result;
+        });
+        for (const [theme, state] of Object.entries(themes)) {
+          expect(state.pointer === (touch ? "coarse" : "fine"), `${name} (${theme}): the page did not get the pointer it was meant to test`, state.pointer);
+          expect(!state.past.length && state.sideways <= 1, `${name} (${theme}): the tutor's card clips what it holds or the page scrolls sideways`, state);
+        }
+      } catch (error) {
+        failures.push(`${name}: ${error.message.split("\n")[0]}`);
+      } finally {
+        await context.close();
+      }
     }
   }
 
