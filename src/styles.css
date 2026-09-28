@@ -4831,10 +4831,11 @@ input[type="range"] {
   }
 }
 
-/* The Mac tutor's chat window fits the screen (#93). On-device Lite keeps
-   the page layout above until it has a dock of its own. Scroll anchoring is
-   off so it cannot move the page while an answer is followed. */
-.ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) { overflow-anchor: none; }
+/* The tutors' chat windows fit the screen: the Mac tutor's (#93) and
+   On-device Lite's (#94), which keeps its page layout on wide screens.
+   Scroll anchoring is off so it cannot move the page while an answer is
+   followed or the latest turn is kept in view. */
+.ai-page:has(> .ai-learning-studio) { overflow-anchor: none; }
 
 @media (min-width: 981px) {
   /* One column exactly as tall as the room under the top bar. When the
@@ -4871,13 +4872,36 @@ input[type="range"] {
   }
 }
 
-@media (max-width: 740px) {
-  .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) { padding-top: 10px; }
+@media (max-width: 980px) {
+  /* On-device Lite's dock is the tutor's last child, with no card around
+     it: the page ends on the dock's own offset. */
+  .ai-page:has(> .ai-learning-studio[data-ai-engine="phone-local"]) {
+    padding-bottom: var(--ai-nav-space, calc(77px + env(safe-area-inset-bottom)));
+  }
 }
 
-@media (max-width: 740px), (min-width: 981px) {
-  /* The page heading repeats the navigation and the tutor's own title; it
-     stays the page's heading for assistive technology. */
+@media (max-width: 740px) {
+  .ai-page:has(> .ai-learning-studio) { padding-top: 10px; }
+}
+
+/* The page heading repeats the navigation and the tutor's own title; it
+   stays the page's heading for assistive technology. Hidden on phones for
+   both engines, and in the Mac tutor's wide-screen column. */
+@media (max-width: 740px) {
+  .ai-page:has(> .ai-learning-studio) > .page-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ai-learning-studio { gap: 8px; }
+  .ai-learning-studio > .ai-engine-picker { padding-block: 3px; }
+}
+
+@media (min-width: 981px) {
   .ai-page:has(> .ai-learning-studio[data-ai-engine="mac-local"]) > .page-title {
     position: absolute;
     width: 1px;

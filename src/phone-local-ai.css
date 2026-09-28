@@ -1,7 +1,11 @@
+/* A heading row with the disclosure's summary beside it; everything else,
+   the opened disclosure included, takes a full row below. */
 .phone-local-ai {
   display: grid;
-  gap: 14px;
-  padding: 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 8px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   color: var(--ink);
@@ -9,12 +13,18 @@
   box-shadow: var(--shadow-sm);
 }
 
-.phone-local-ai-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.phone-local-ai-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
 /* Grid and flex items default to their content's minimum width; at large
    text sizes the badge, facts and selects must be allowed to shrink or wrap
    instead of widening the tutor past a 360px phone. */
 .phone-local-ai > *, .phone-local-ai-heading > span:nth-child(2) { min-width: 0; }
-.phone-local-ai-heading > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
+.phone-local-ai > * { grid-column: 1 / -1; }
+.phone-local-ai > .phone-local-ai-heading { grid-column: 1; }
+.phone-local-ai-more:not([open]) { grid-column: 2; grid-row: 1; }
+.phone-local-ai-more > :not(summary) { margin-top: 12px; }
+.phone-local-ai-more > summary { display: flex; align-items: center; width: max-content; min-height: 44px; margin-left: auto; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); font-size: .8rem; font-weight: 700; list-style: none; cursor: pointer; }
+.phone-local-ai-more > summary::-webkit-details-marker { display: none; }
+.phone-local-ai-heading > span:nth-child(2) { display: grid; flex: 1 1 8em; gap: 2px; min-width: 0; }
 .phone-local-ai-heading small { color: var(--ink-soft); font-size: .78rem; }
 .phone-local-ai-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; color: var(--teal); background: var(--teal-soft); }
 .phone-local-ai-badge { flex: none; margin-left: auto; white-space: nowrap; overflow-wrap: normal; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--gold) 32%, var(--line)); border-radius: 999px; font-size: .72rem; font-weight: 750; color: color-mix(in srgb, var(--gold) 45%, var(--ink)); background: var(--gold-soft); }
@@ -31,7 +41,7 @@
 .phone-local-ai-consent { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--teal) 44%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--teal-soft) 72%, var(--paper)); cursor: pointer; }
 .phone-local-ai-consent input { width: 20px; height: 20px; margin: 1px 0 0; flex: 0 0 auto; }
 .phone-local-ai-consent span { display: grid; gap: 4px; }
-.phone-local-ai-consent small { color: var(--ink-soft); line-height: 1.45; }
+.phone-local-ai-consent small { color: var(--ink-soft); font-size: .75rem; line-height: 1.4; }
 .phone-local-ai-progress { display: grid; gap: 7px; }
 .phone-local-ai-progress > div { display: flex; justify-content: space-between; gap: 12px; font-size: .78rem; }
 .phone-local-ai-progress progress { width: 100%; height: 10px; accent-color: var(--teal); }
@@ -44,7 +54,8 @@
 .phone-local-ai-privacy code { padding: 1px 4px; border-radius: 4px; color: var(--ink); background: var(--paper-3); }
 
 @media (max-width: 480px) {
-  .phone-local-ai { padding: 14px; }
+  /* The tutor's header shows the same mark just above. */
+  .phone-local-ai-icon { display: none; }
   .phone-local-ai-facts { grid-template-columns: 1fr; }
   .phone-local-ai-actions { display: grid; grid-template-columns: 1fr; }
   .phone-local-ai-actions .button { justify-content: center; width: 100%; }
@@ -54,6 +65,3 @@
   .phone-local-ai .spin { animation: none; }
 }
 
-/* 44px touch targets for the disclosure rows. */
-.phone-local-ai-message > summary { margin-block: -11px; padding-block: 14px; cursor: pointer; }
-.phone-local-ai-message[open] > summary { margin-bottom: 0; }

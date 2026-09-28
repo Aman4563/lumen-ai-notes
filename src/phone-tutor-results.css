@@ -1,0 +1,33 @@
+/* On-device Lite's quiz, flashcard and study-plan views (PhoneTutorResults),
+   loaded off the offline shell. */
+.phone-tutor__quiz, .phone-tutor__flashcards, .phone-tutor__plan { display: grid; gap: 11px; }
+.phone-tutor__quiz > h4, .phone-tutor__plan > h4 { margin: 0; }
+.phone-tutor__quiz > p, .phone-tutor__plan > p { margin: 0; color: var(--ink-soft); }
+.phone-tutor__quiz fieldset { display: grid; gap: 8px; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.phone-tutor__quiz legend { padding: 0 5px; font-weight: 750; }
+.phone-tutor__quiz fieldset > label { display: flex; align-items: flex-start; gap: 9px; min-height: 44px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+.phone-tutor__quiz fieldset > label.is-correct { border-color: color-mix(in srgb, var(--teal) 62%, var(--line)); background: var(--teal-soft); }
+.phone-tutor__quiz fieldset > label.is-incorrect { border-color: color-mix(in srgb, var(--coral) 62%, var(--line)); background: var(--coral-soft); }
+.phone-tutor__quiz fieldset > button, .phone-tutor__flashcards button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper); cursor: pointer; }
+.phone-tutor__quiz-feedback { padding: 10px; border-radius: 10px; background: var(--teal-soft); }
+.phone-tutor__quiz-feedback p { margin: 5px 0 0; }
+.phone-tutor__flashcard-head { display: flex; align-items: center; justify-content: space-between; }
+.phone-tutor__flashcards article { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.phone-tutor__flashcards article > label { display: flex; align-items: center; gap: 8px; font-size: .72rem; }
+.phone-tutor__flashcards article > small, .phone-tutor__card-answer small { color: var(--ink-soft); font-size: .67rem; font-weight: 800; text-transform: uppercase; }
+.phone-tutor__flashcards article p { margin: 0; line-height: 1.5; }
+.phone-tutor__card-answer { display: grid; gap: 7px; padding: 10px; border-radius: 9px; background: var(--teal-soft); }
+.phone-tutor__tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.phone-tutor__tags span { padding: 4px 7px; border-radius: 999px; background: var(--paper-3); font-size: .66rem; }
+.phone-tutor__save-status { margin: 0; font-size: .75rem; }
+.phone-tutor__save-status.is-error { color: color-mix(in srgb, var(--coral) 45%, var(--ink)); }
+.phone-tutor__plan > ol { display: grid; gap: 10px; margin: 0; padding-left: 24px; }
+.phone-tutor__plan > ol > li { padding: 11px; border: 1px solid var(--line); border-radius: 11px; }
+.phone-tutor__plan h5 { margin: 0; font-size: .88rem; }
+.phone-tutor__plan li > small { color: var(--ink-soft); }
+.phone-tutor__plan li > p { margin: 7px 0; }
+.phone-tutor__plan li > ul { padding-left: 20px; }
+.phone-tutor__cautions { padding: 11px; border-radius: 11px; background: var(--gold-soft); }
+.phone-tutor__cautions ul { margin-bottom: 0; padding-left: 20px; }
+.phone-tutor__inline-md .katex { font-size: 1.05em; }
+.phone-tutor__option-mark { display: block; margin-top: 4px; font-size: .72rem; font-weight: 750; }

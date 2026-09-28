@@ -128,7 +128,7 @@
 
 .phone-tutor__working, .phone-tutor__request-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 11px 12px; border-radius: 12px; background: var(--teal-soft); font-size: .78rem; }
 .phone-tutor__working span { display: inline-flex; align-items: center; gap: 8px; }
-.phone-tutor__working button, .phone-tutor__request-state button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper); cursor: pointer; }
+.phone-tutor__working button, .phone-tutor__request-state button, .phone-tutor__empty button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper); cursor: pointer; }
 .phone-tutor__request-state.is-error { color: color-mix(in srgb, var(--coral) 45%, var(--ink)); background: var(--coral-soft); }
 .phone-tutor__request-state.is-declined, .phone-tutor__request-state.is-cancelled { color: color-mix(in srgb, var(--gold) 45%, var(--ink)); background: var(--gold-soft); }
 
@@ -155,46 +155,17 @@
 .phone-tutor__search-toggle > span { display: grid; gap: 3px; }
 .phone-tutor__search-toggle strong { font-size: .82rem; }
 .phone-tutor__search-toggle small { color: var(--ink-soft); font-size: .72rem; line-height: 1.4; }
-.phone-tutor__prompt-label { font-size: .8rem; font-weight: 750; }
-.phone-tutor__composer textarea { width: 100%; min-height: 112px; padding: 12px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--paper-2); line-height: 1.5; }
-.phone-tutor__composer-foot { display: flex; justify-content: space-between; gap: 10px; color: var(--ink-soft); font-size: .7rem; }
-.phone-tutor__send-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.phone-tutor__send-row > div { display: grid; gap: 3px; }
-.phone-tutor__send-row strong { font-size: .76rem; }
-.phone-tutor__send-row small { color: var(--ink-soft); font-size: .7rem; }
+.phone-tutor__ask { display: flex; align-items: flex-end; gap: 8px; }
+.phone-tutor__composer textarea { display: block; flex: 1 1 auto; width: 100%; min-height: 46px; max-height: min(35svh, calc(6 * 1.5em + 24px)); padding: 11px 13px; overflow-y: auto; resize: none; border: 1px solid var(--line-strong); border-radius: 14px; color: var(--ink); background: var(--paper-2); line-height: 1.5; }
+.phone-tutor__composer textarea::placeholder { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.phone-tutor__send { flex: 0 0 auto; min-height: 46px; }
+.phone-tutor__composer-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--ink-soft); font-size: .7rem; }
+.phone-tutor__composer-meta button { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 6px 11px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: transparent; font-size: .8rem; font-weight: 720; cursor: pointer; }
+.phone-tutor__count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.phone-tutor__sheet-note { margin: 0; color: var(--ink-soft); font-size: .75rem; line-height: 1.45; }
 .phone-tutor__primary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 10px 14px; border-radius: 11px; color: #fff; background: var(--navy); font-weight: 750; cursor: pointer; }
 .phone-tutor button:disabled { opacity: .48; cursor: not-allowed; }
 .phone-tutor__disabled-reason { margin: 0; color: var(--ink-soft); font-size: .72rem; }
-
-.phone-tutor__quiz, .phone-tutor__flashcards, .phone-tutor__plan { display: grid; gap: 11px; }
-.phone-tutor__quiz > h4, .phone-tutor__plan > h4 { margin: 0; }
-.phone-tutor__quiz > p, .phone-tutor__plan > p { margin: 0; color: var(--ink-soft); }
-.phone-tutor__quiz fieldset { display: grid; gap: 8px; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
-.phone-tutor__quiz legend { padding: 0 5px; font-weight: 750; }
-.phone-tutor__quiz fieldset > label { display: flex; align-items: flex-start; gap: 9px; min-height: 44px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
-.phone-tutor__quiz fieldset > label.is-correct { border-color: color-mix(in srgb, var(--teal) 62%, var(--line)); background: var(--teal-soft); }
-.phone-tutor__quiz fieldset > label.is-incorrect { border-color: color-mix(in srgb, var(--coral) 62%, var(--line)); background: var(--coral-soft); }
-.phone-tutor__quiz fieldset > button, .phone-tutor__flashcards button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper); cursor: pointer; }
-.phone-tutor__quiz-feedback { padding: 10px; border-radius: 10px; background: var(--teal-soft); }
-.phone-tutor__quiz-feedback p { margin: 5px 0 0; }
-.phone-tutor__flashcard-head { display: flex; align-items: center; justify-content: space-between; }
-.phone-tutor__flashcards article { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
-.phone-tutor__flashcards article > label { display: flex; align-items: center; gap: 8px; font-size: .72rem; }
-.phone-tutor__flashcards article > small, .phone-tutor__card-answer small { color: var(--ink-soft); font-size: .67rem; font-weight: 800; text-transform: uppercase; }
-.phone-tutor__flashcards article p { margin: 0; line-height: 1.5; }
-.phone-tutor__card-answer { display: grid; gap: 7px; padding: 10px; border-radius: 9px; background: var(--teal-soft); }
-.phone-tutor__tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.phone-tutor__tags span { padding: 4px 7px; border-radius: 999px; background: var(--paper-3); font-size: .66rem; }
-.phone-tutor__save-status { margin: 0; font-size: .75rem; }
-.phone-tutor__save-status.is-error { color: color-mix(in srgb, var(--coral) 45%, var(--ink)); }
-.phone-tutor__plan > ol { display: grid; gap: 10px; margin: 0; padding-left: 24px; }
-.phone-tutor__plan > ol > li { padding: 11px; border: 1px solid var(--line); border-radius: 11px; }
-.phone-tutor__plan h5 { margin: 0; font-size: .88rem; }
-.phone-tutor__plan li > small { color: var(--ink-soft); }
-.phone-tutor__plan li > p { margin: 7px 0; }
-.phone-tutor__plan li > ul { padding-left: 20px; }
-.phone-tutor__cautions { padding: 11px; border-radius: 11px; background: var(--gold-soft); }
-.phone-tutor__cautions ul { margin-bottom: 0; padding-left: 20px; }
 
 @media (max-width: 860px) {
   /* minmax(0, …): a plain 1fr track grows to its widest word, which overflows
@@ -216,7 +187,6 @@
   .phone-tutor__message-meta { align-items: flex-start; }
   .phone-tutor__message-meta > span { display: grid; gap: 1px; }
   .phone-tutor__message-actions { flex: 0 0 auto; }
-  .phone-tutor__composer-foot { display: grid; }
   .phone-tutor__working, .phone-tutor__request-state { align-items: stretch; flex-direction: column; }
   .phone-tutor__search-consent > div:last-child { display: grid; }
   .phone-tutor__search-consent button { width: 100%; }
@@ -259,12 +229,34 @@
 /* KaTeX's hidden MathML copy must not become an invisible, focusable scroller. */
 .phone-tutor .katex-mathml math[display="block"] { display: inline; width: auto; margin: 0; padding: 0; overflow: visible; border: 0; background: none; }
 
-.phone-tutor__inline-md .katex { font-size: 1.05em; }
-.phone-tutor__option-mark { display: block; margin-top: 4px; font-size: .72rem; font-weight: 750; }
 
 /* The observed end of the conversation, and the pill that jumps to it. */
 .phone-tutor__conversation-end { height: 1px; }
-.phone-tutor__jump { position: fixed; z-index: 40; bottom: calc(92px + env(safe-area-inset-bottom)); left: 50%; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 16px; border: 1px solid color-mix(in srgb, var(--teal) 60%, #000); border-radius: 999px; color: #fff; background: color-mix(in srgb, var(--teal) 62%, #000); box-shadow: var(--shadow-lg); font-size: .82rem; font-weight: 780; white-space: nowrap; cursor: pointer; transform: translateX(-50%); }
+.phone-tutor__jump { position: fixed; z-index: 40; bottom: calc(max(var(--ai-composer-space, 0px), var(--ai-nav-space, 0px)) + 10px); left: 50%; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 16px; border: 1px solid color-mix(in srgb, var(--teal) 60%, #000); border-radius: 999px; color: #fff; background: color-mix(in srgb, var(--teal) 62%, #000); box-shadow: var(--shadow-lg); font-size: .82rem; font-weight: 780; white-space: nowrap; cursor: pointer; transform: translateX(-50%); }
 .phone-tutor__jump:focus-visible, .phone-tutor__message:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 7px var(--focus-halo); }
-@media (min-width: 981px) { .phone-tutor__jump { bottom: 24px; } }
 @media (forced-colors: active) { .phone-tutor__jump { border: 2px solid ButtonText; } }
+
+/* The composer is a dock at the bottom of the viewport while the tutor is
+   on screen (#94): just above the bottom navigation or an on-screen
+   keyboard, as useTutorDock measures them (the jump pill above sits on the
+   same measurements). A dock that would crowd the screen stays in the page
+   flow (data-dock="off"), as it does on a short landscape phone. */
+.phone-tutor__composer { position: sticky; z-index: 6; bottom: var(--ai-dock-bottom, max(12px, env(safe-area-inset-bottom))); gap: 6px; padding: 10px 12px 8px; border-color: var(--line-strong); border-radius: 18px; box-shadow: 0 -6px 24px color-mix(in srgb, var(--ink) 10%, transparent); }
+.phone-tutor__composer[data-dock="off"] { position: relative; bottom: auto; }
+
+@media (max-width: 980px) {
+  .phone-tutor__composer { bottom: var(--ai-dock-bottom, var(--ai-nav-space, calc(77px + env(safe-area-inset-bottom)))); }
+  .phone-tutor__conversation { min-height: 0; }
+  .phone-tutor__welcome { min-height: 0; padding: 16px 12px; }
+  .phone-tutor__welcome > svg { display: none; }
+}
+
+@media (max-width: 980px) and (max-height: 480px) {
+  .phone-tutor__composer { position: relative; bottom: auto; }
+}
+
+@media (max-width: 719px) {
+  .phone-tutor__send-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .phone-tutor__header { padding: 10px 12px; }
+  .phone-tutor__identity > span { width: 36px; height: 36px; border-radius: 11px; }
+}

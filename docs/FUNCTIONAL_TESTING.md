@@ -710,8 +710,9 @@ suites on the first attempt (`audit:ai-ui` 109 s, `audit:responsive` 434
 layout and 367 control checks, `audit:a11y` 57 axe runs).
 
 Still open: hiding the bottom navigation while typing (needs a physical
-iPhone); a docked composer, a session strip, interview practice and quiz
-follow-through on On-device Lite; titled multi-topic threads (designed in
+iPhone); a session strip, interview practice and quiz follow-through on
+On-device Lite (its docked composer landed with #94 on 2026-09-28); titled
+multi-topic threads (designed in
 `docs/TUTOR_THREADS_DESIGN.md`); and the server-side Socratic prompt fixes
 (#58) seen live: a first reply that praises a "previous answer" the learner
 never gave, a hint request answered as "your hint", and a mistake explained
@@ -2112,3 +2113,155 @@ Evidence:
   machine, needed one retry of `audit:phone-ai-ui` (Lite's Jump to latest
   timing; Lite's code and styles are untouched here) and hit the pairing
   failure described above.
+
+## Bugs reproduced on 2026-09-28: On-device Lite's question box is below the fold (#94)
+
+The 2026-09-28 chat-window audit found that On-device Lite had no sizing
+model at any screen size. The new chat-fit checks in `audit:phone-ai-ui`
+(`LUMEN_PHONE_AI_UI_CASES=chat-fit` runs them alone) collect every failure
+before they report. They open the app itself (`LUMEN_URL` when set) for
+the first open, before any model download. For a loaded model and an
+earlier conversation they use the fixture, which now renders the tutor
+inside the app's top bar, page, engine picker and bottom navigation
+(`?shell`, `?loaded`, `?history=N`). Against main (e2f7997, with
+`LUMEN_URL` on its build) they failed 56 ways:
+
+- First open at 320×568, 375×667, 393×852, 430×932, both 200% text sizes
+  and 1280×720: the top of the question box was 1,019–4,944 px below the
+  fold. It sat in a static form 432–634 px tall (955 and 1,226 px at
+  200% text), holding the Depth and Answer length selects, the web
+  toggle, a label, a four-row box, a footer and the send text.
+- There was no dock or Options control: at the page end the static form
+  ended 31 px above the navigation (3 px at 200% text) and moved with the
+  page.
+- The engine card showed its copy, five model facts and both privacy
+  notes above the chat. That made it 986–1,266 px on phones, 2,725 and
+  3,323 px at 200% text and 645 px at 1280×720. With the model loaded it
+  was still 816 px at 393×852.
+- A conversation from earlier in the session opened at its oldest turn
+  (393×852, 320×568, 393×852 at 200% text, 852×393, 1280×720), and the
+  tutor's page kept scroll anchoring on.
+- A question sent at 393×852 was not shown above the composer.
+- A stand-in on-screen keyboard neither moved the form nor hid the
+  navigation.
+
+Fix:
+
+- The composer is a dock like the Mac tutor's, measured by the same
+  `useTutorDock` hook. It is sticky just above the bottom navigation
+  (`--ai-nav-space`), or above an on-screen keyboard with the navigation
+  hidden, and at `max(12px, safe area)` from the bottom on wide screens.
+  It holds a one-line question box that grows to about six lines, with
+  Send (its label visually hidden below 720 px), and a row with Options,
+  "Use suggestion" and the character count. It stays in the page flow
+  where it would crowd the screen and on landscape phones up to 480 px
+  tall. It is 118 px at 320–430 px wide.
+- Depth, Answer length and the web fallback moved into an "Options"
+  `TutorSheet`. Their labels, disabled rules and markup did not change.
+  The send notes (streaming or structured output, retrieval at send time
+  or the pre-fit source characters) moved into the sheet. The Options
+  button reads "web on" while the fallback is allowed.
+- The box starts empty, with the mode's question as its one-line
+  placeholder and "Use suggestion" once the model is loaded. Switching
+  modes clears an unedited suggestion. The reason Send is off is linked
+  from Send and drawn once there is text in the box.
+- The engine card keeps only what the next step needs. On first run that
+  is the badge, the download approval (its full wording) and Download &
+  load, 324 px at 393×852. Once the model is loaded it is one line (the
+  model and its size, 710 MB), 72 px, with Manage. Details or Manage open
+  the copy, the facts, device notes, the privacy notes, and Release memory
+  and Clear model files. The disclosure's summary sits beside the heading
+  and takes its own row when opened. The card's icon is hidden up to
+  480 px, since the tutor header shows the same mark just above.
+- A conversation from earlier in the session opens at its latest turn,
+  just above the dock, and stays there while the card and the answers
+  settle, until the learner scrolls. A question from another screen is
+  focused in the box instead, in place when the box is docked.
+- A question sent from the dock is scrolled into view above it, with its
+  progress and Cancel (one scroll; answers are not followed as they
+  stream, and Jump to latest remains).
+- Jump to latest sits 10 px above the dock or the navigation, whichever
+  is higher. The "at the latest" check and the jump itself allow for the
+  dock.
+- Page rules, in styles.css like #93's: scroll anchoring is off on the
+  tutors' page for both engines. On phones up to 740 px the page heading
+  is visually hidden and the engine picker compact for both engines
+  (#93 did this for the Mac tutor only). Lite's page-end padding is the
+  dock's offset, so the dock does not rise at the page end.
+- Wide screens keep On-device Lite's page layout: the page grows with the
+  tutor (the Mac tutor's fixed-height column stays scoped to the Mac
+  engine), and the dock keeps the box on screen.
+- `TutorSheet`'s head and foot are plain boxes. As `header` and `footer`
+  under `body` they made a second banner landmark: with Lite's Options
+  open, axe reported `landmark-no-duplicate-banner` and `landmark-unique`
+  in all three themes at both widths. `audit:a11y` now opens On-device
+  Lite, its Options sheet and the card's details in every theme and width
+  (18 more axe runs). It fails six times each way with the old sheet.
+
+Budget: the quiz, flashcard and study-plan views, and their styles, moved
+to a lazily loaded `PhoneTutorResults` chunk (6,499 bytes of script and
+2,770 of CSS). The tutor loads it when the model loads, when a structured
+mode is chosen, or when the conversation holds a structured answer. The
+Mac tutor's quiz views already load this way. Like the WebLLM runtime,
+the chunk is cached by the service worker on that first online use, so a
+model that can run offline finds it there. If it cannot load, the answer
+shows "This view could not load" with Try again. Route screens are 892,595
+bytes: 7,405 under the budget, 767 more than main and 4,187 fewer than
+#93's tip.
+
+Behaviour changed on purpose, with its assertions updated. The main
+`audit:phone-ai-ui` flow no longer finds the Explain question in the box
+after the model loads. It now asserts that Send is off with an empty box,
+then taps Use suggestion, and does the same after switching to Flashcards.
+The web toggle, the Answer length select and their checks are reached
+through Options (`withOptions`). Send is `.phone-tutor__send`, since the
+send row now holds the box. The checks and their messages are unchanged,
+and the moved selects are also measured at 44 px inside the sheet.
+
+Deliberate limits, not bugs:
+
+- At 375×667 and 320×568, and on first run at 393×852, the welcome starts
+  under the dock at the page top. The page scrolls to it. The first-run
+  card leaves no room, since the download approval keeps its full wording.
+  The checks assert that the box and Send are in view and that the dock
+  sits on the navigation there. With the model loaded at 393×852 the
+  welcome must clear the dock (27 px spare here; the check allows 40 px
+  for wider fonts).
+- On a page shorter than the screen (a loaded model and no conversation
+  at 393×852) the dock rests just under the conversation, 29 px above the
+  navigation instead of 8.
+- Landscape phones keep the composer in the page flow, as the Mac tutor
+  does.
+- At 200% text the second meta button wraps, so the dock is 142–190 px. It
+  stays docked because it takes under 60% of the room.
+- In the Contrast theme the mode label in a question bubble fails
+  contrast (1.05:1), from the global `small` rule. It predates this change
+  and is not in the audited states. It is left for a follow-up.
+- There is no streaming follow on On-device Lite: sending scrolls once, and
+  Jump to latest brings back a streaming answer.
+
+Evidence:
+
+- The chat-fit checks pass on this branch against the Vite app, its
+  production build (`LUMEN_URL`) and the gate's server, and fail on main
+  as described.
+- On first open at 320×568, 375×667, 393×852, 430×932, both 200% text
+  sizes and 1280×720 they check that:
+  - the box and Send are in view;
+  - the dock sits on the navigation (sticky on wide screens), one line
+    tall;
+  - the card's facts and privacy notes are hidden;
+  - there is no sideways scroll, and no overflow out of the page on wide
+    screens;
+  - one tap on Options shows Depth, Answer length and the web fallback,
+    in view and at 44 px or more;
+  - at the page end the conversation clears the dock and the dock sits on
+    the navigation.
+- With a loaded model at 393×852 they check the one-line card with
+  Manage, Manage's two 44 px actions, the welcome clear of the dock, a sent
+  question shown above the dock, and Jump to latest above the dock.
+- With five earlier turns at 393×852, 320×568, 393×852 at 200% text,
+  852×393 and 1280×720 they check opening at the latest turn above the
+  dock (the navigation in landscape), scroll anchoring off, and the page
+  end.
+- The stand-in keyboard runs at 393×852.

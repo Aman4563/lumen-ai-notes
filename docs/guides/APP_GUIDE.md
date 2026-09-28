@@ -250,6 +250,15 @@ On-device Lite settings, model facts, and tutor controls use the same
 paper/dark/system surface, text, border, and accent tokens as the rest of Lumen.
 The first large model-download approval is remembered for that exact artifact
 until **Clear model files**; it is distinct from the per-query web approval above.
+Before the model is loaded, the On-device Lite card shows the download approval
+and **Download & load** (or **Load model**), with the model facts and privacy notes
+under **Details**. Once the model is loaded, the card is one line (the model and its
+size) and **Manage** holds the details with **Release memory** and **Clear model
+files**. Its question box docks like the Mac tutor's, starts empty with the mode's
+suggested question as its placeholder (**Use suggestion** puts it in the box), and
+**Options** holds depth, answer length and the web fallback (the button reads "web
+on" while the fallback is allowed). A conversation from earlier in the session opens
+at its latest turn.
 
 On a phone the Mac tutor is one scrolling page, with the question box docked above
 the bottom navigation (with very large text on a small phone, where the dock would
