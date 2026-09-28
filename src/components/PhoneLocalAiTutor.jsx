@@ -16,7 +16,6 @@ import {
   RotateCcw,
   Search,
   Send,
-  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Square,

@@ -1,11 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  Archive,
   ArrowRight,
   BookMarked,
   BookOpen,
-  Bookmark,
   Brain,
   BrainCircuit,
   Check,
@@ -16,7 +14,6 @@ import {
   Keyboard,
   FileEdit,
   Flame,
-  Pin,
   FilePlus2,
   GraduationCap,
   Home,
@@ -34,7 +31,6 @@ import {
   Search,
   Star,
   Settings,
-  Share,
   ShieldCheck,
   Sparkles,
   WifiOff,
