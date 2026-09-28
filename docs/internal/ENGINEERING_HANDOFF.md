@@ -929,11 +929,11 @@ names two of them:
   closure minus anything in `files` or the HTML. No budget.
 
 A route or warm module that does not produce its own lazy chunk fails the build. On 2026-09-29
-(issue #95) the entry script was 617,722 B (main before it: 716,654 B), leaving 132,278 B of
-headroom. The HTML loads 645,997 B of JavaScript in all (main: 727,141 B), because the bundler
-now preloads `review` and `fsrs` (17.8 KB) as chunks of their own. Install adds 42 files and
-680,539 B (main: 895,621 B), leaving 219,461 B of headroom, about 199 KB gzipped. Warm is 8
-files and 305,197 B, about 95 KB gzipped. `npm run size` prints these figures, and `audit:app`
+(issue #95, after its review fixes) the entry script was 618,604 B (main before it: 716,654 B),
+leaving 131,396 B of headroom. The HTML loads 646,879 B of JavaScript in all (main: 727,141 B),
+because the bundler now preloads `review` and `fsrs` (17.8 KB) as chunks of their own. Install
+adds 42 files and 681,139 B (main: 895,621 B), leaving 218,861 B of headroom, about 199 KB
+gzipped. Warm is 8 files and 305,006 B, about 96 KB gzipped. `npm run size` prints these figures, and `audit:app`
 prints the same lines. The Reader's Markdown renderer (marked and DOMPurify, about 85 KB) is
 pinned in the entry with a side-effect import in `App.jsx`: the link check used to keep it
 there, and as a shared route chunk it would spend the install budget. Lectures, search data,
@@ -957,19 +957,33 @@ this every warm tool would be missing until the next online launch. Install itse
 unchanged: it never fetches a warm file. Each action loads its
 tool through `loadWarmTool` (`src/lib/warmTools.js`), which uses `recoverableImport` with the
 tool's chunk name. When the file cannot be downloaded (offline, or the server unreachable) the
-action shows the typed toast "This tool isn't saved on this device yet. Reconnect once, and it
-will work offline." instead of an error screen; a stale build the server can replace still
-gets its one bounded reload. Library retrieval rejects with that message inside
-`retrieveLibrarySources`, and both tutors fall back without library evidence. Markdown and text
-uploads, creating or leaving a vault's membership, and the device identity need no tool:
-`syncIdentity.js` keeps the localStorage helpers in the entry. Tutor math loads KaTeX with a
-plain `import()` from `ensureTutorMath()` (`tutorMarkdown.js`), started when either tutor
-mounts; until it resolves, math renders as its escaped TeX source in
-`<code class="ai-tutor__math-pending">`, and `useTutorMath` (a `useSyncExternalStore`
-subscription) re-renders the answers once it has loaded, with the same KaTeX output as before.
-A failed load leaves the source showing and retries on the next mount or `online` event; it
-never reloads. The reader's edited copies and uploads already showed plain Markdown until
-`markdownMath.js` loaded. Install
+action's toast names the action, then gives the typed reason "This tool isn't saved on this
+device yet. Reconnect once, and it will work offline." (for example "Backup failed: This tool
+isn't saved…"), instead of an error screen. A stale build the server can replace still gets its
+one bounded reload; when the server answers but still lacks the file (after that reload, or
+within its cooldown), the reason is the error screen's stale wording instead: "Lumen needs fresh
+app files: this tool belongs to a different or incomplete Lumen build. Your notes and progress
+are safe. Reload Lumen while connected to the Lumen server." `loadWarmTool` tells the two apart
+with the probe chunk recovery just ran for that failure, or its own `probeAppServer()` call
+when the cooldown skipped it. Library retrieval rejects with that typed error inside
+`retrieveLibrarySources`; both tutors fall back without library evidence and add the reason to
+their status line. Markdown and text uploads need no tool, also beside HTML or EPUB files in
+the same selection: when the converters cannot load, the Markdown and text files still import
+and each HTML or EPUB file is listed as not imported, with the reason. Creating or leaving a
+vault's membership and the device identity need no tool either: `syncIdentity.js` keeps the
+localStorage helpers and the sync-baseline delete (`clearSyncBaseline`) in the entry. Tutor
+math loads KaTeX with a plain `import()` from `ensureTutorMath()` (`tutorMarkdown.js`),
+started when either tutor mounts; until it resolves, math renders as its escaped TeX source in
+`<code class="ai-tutor__math-pending">`, with the same delimiters and span choices as
+marked-katex-extension (its `start()` is copied, quirk included), and `useTutorMathFor` (a
+`useSyncExternalStore` subscription) re-renders each answer once it has loaded, with the same
+KaTeX output as before. An answer that holds keyboard focus keeps its TeX source until focus
+leaves it, because drawing replaces its markup and would drop focus to the page. A failed load
+leaves the source showing and retries on the next mount or `online` event; it never reloads,
+also when the server answers without the file: `ensureTutorMath` marks the failed import's
+error with `exemptFromChunkRecovery`, and the `vite:preloadError` listener, which recovers one
+task after the event, skips a marked error. The reader's edited copies and uploads already
+showed plain Markdown until `markdownMath.js` loaded. Install
 validates the list's build and entry against the worker and HTML, fetches every route file
 before writing, and fails on any missing file or HTML answer, so the previous working worker
 remains; a failed install deletes only its own unused cache. A worker registered without a
@@ -1031,12 +1045,19 @@ while online and allows at most one reload. Its warm-tool drills use a real work
 own servers: after one idle with the tools warmed and the server stopped, backup export and
 import, encrypted export, sync export, HTML and EPUB upload, the link check, a saved tutor
 answer with `$x^2$`, an edited lecture with TeX, and every warm module work; with the warm
-files missing from the server (warming fails), each action shows the typed toast with no error
-screen or reload, a Markdown upload still imports, and math stays readable TeX source. An
-update drill republishes the same files as another build: that worker installs and waits,
-must fill its own cache with the warm tools, and after it takes over with the server stopped,
-backup export still works. A last check holds the Notebook and Settings chunks and asserts that
-route and dialog focus land as they did when both were in the startup bundle.
+files missing from the server (warming fails), each action shows its own prefix and the typed
+reason with no error screen or reload, a vault can still be left, a Markdown upload still
+imports (also chosen together with an HTML page, which is listed as not imported), and math
+stays readable TeX source. With the server kept up but the warm files missing, a saved answer's
+math never reloads the page, and backup export gets one bounded reload, then says the app files
+need refreshing. With KaTeX held, a focused link in a saved answer keeps focus when KaTeX
+arrives, and that answer draws its math once focus leaves. An update drill republishes the same
+files as another build: that worker installs and waits, must fill its own cache with the warm
+tools, and after it takes over with the server stopped, backup export still works. A last check
+holds the Notebook and Settings chunks until each screen has opened, asserts that each shows
+its loading state, and that route and dialog focus land as they did when both were in the
+startup bundle; another fails the Settings chunk and checks that the drawer keeps one h1 (the
+error title is an h2 there). `LUMEN_CHUNK_DRILLS=name,…` runs only the named drills.
 `audit:visual` covers the cached path: it stops its own servers after a Home-only visit and
 opens every primary screen, the Notebook and Settings included, and checks that optional-cache
 cleanup keeps the warmed tools. It clears Chrome's HTTP cache after each stop, because the
@@ -1733,7 +1754,8 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - API responses are never service-worker cached.
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).
 - Warm tools never gate install or activation, are protected from cleanup, and fail with the
-  typed offline message.
+  typed offline message (or, when the server answers without the file, the fresh-app-files
+  message) after the action's own name. Tutor math, an enhancement, never reloads the page.
 - Repair deletes only Lumen app caches, not study data or model caches.
 
 ### Privacy/security
@@ -1761,10 +1783,10 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   [src/components/Notebook.jsx](../../src/components/Notebook.jsx) — lazy install-tier screens;
   [src/components/DocumentCard.jsx](../../src/components/DocumentCard.jsx) is shared with Home.
 - [src/lib/warmTools.js](../../src/lib/warmTools.js) — warm-tool loaders and the typed offline
-  message; [src/lib/backupTools.js](../../src/lib/backupTools.js) and
+  and fresh-app-files messages; [src/lib/backupTools.js](../../src/lib/backupTools.js) and
   [src/lib/importConverters.js](../../src/lib/importConverters.js) group the tools;
-  [src/lib/syncIdentity.js](../../src/lib/syncIdentity.js) keeps device and vault identity in
-  the entry.
+  [src/lib/syncIdentity.js](../../src/lib/syncIdentity.js) keeps device and vault identity,
+  and the sync-baseline delete, in the entry.
 - [vite.config.js](../../vite.config.js), [public/service-worker.js](../../public/service-worker.js)
   and [scripts/size_report.mjs](../../scripts/size_report.mjs) — the three tiers, warming, and
   `npm run size`.

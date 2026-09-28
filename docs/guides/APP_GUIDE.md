@@ -161,12 +161,20 @@ also responsive on iPad and desktop.
 - Select an important passage and choose **Clip selection** to collect it in the
   Notebook's Clippings section.
 
-Markdown and text uploads work offline from the first launch. HTML and EPUB
-uploads, backup, sync, the link check and math rendering use tools Lumen saves
-a few seconds after its first online launch. If you go offline before that,
-such an action says "This tool isn't saved on this device yet. Reconnect
-once, and it will work offline.", and math shows its TeX source until the
-renderer is saved.
+Markdown and text uploads work offline from the first launch, and so does
+leaving a sync vault. HTML and EPUB uploads, backup, sync export and import,
+the link check, library search in the tutors, and math rendering use tools
+Lumen saves a few seconds after its first online launch. If you go offline
+before that, such an action names itself and says "This tool isn't saved on
+this device yet. Reconnect once, and it will work offline." (for example
+"Backup failed: This tool isn't saved…"). When you upload Markdown or text
+files together with HTML or EPUB files, the Markdown and text files still
+import, and the notification lists each HTML or EPUB file that was not
+imported. Math shows its TeX source until the renderer is saved; the page never
+reloads for it, and an answer you are reading with the keyboard or VoiceOver
+switches to rendered math once focus leaves it. If Lumen's server is running but
+is missing one of these tools, the action says Lumen needs fresh app files
+instead: reload Lumen while connected to the server.
 
 Uploaded and created documents are stored on that device. They become searchable
 and receive the same reader, narration, teaching, editing, and whiteboard tools as

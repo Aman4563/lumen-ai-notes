@@ -2793,3 +2793,104 @@ average of about 12–13. Before that run, `audit:chunks` also passed alone
 with `LUMEN_BROWSER_RETRIES=0`. Each failure quoted above was reproduced
 against main's build (`LUMEN_DIST` and `LUMEN_URL`) or against a scratch
 build without the named change.
+
+## Budget headroom and warm tools: review follow-up on 2026-09-29 (#95)
+
+A review of the branch build (e936ad4) found these problems. Each was
+reproduced against that build (served with `LUMEN_URL`, its route list read
+with `LUMEN_DIST`) and is fixed with a check that fails there. The new
+`LUMEN_CHUNK_DRILLS=name,…` runs single `audit:chunks` drills, which is how
+each failure below was read on its own.
+
+- **A mixed upload imported nothing.** With the converters not saved yet,
+  choosing a Markdown note together with an HTML page aborted the whole
+  selection with the offline toast, so the note was lost too. The Markdown
+  and text files now import, and each HTML or EPUB file is listed as "…was
+  not imported — This tool isn't saved on this device yet…" in the summary.
+  The warming-blocked drill uploads a fresh Markdown note with the HTML page;
+  on e936ad4 it saw only the offline toast.
+- **Leaving a vault needed the backup tools.** Leaving loaded the backup
+  bundle for the baseline delete, so it failed offline before warming,
+  unlike on main. `clearSyncBaseline` (one IndexedDB delete) moved to
+  `syncIdentity.js` in the entry, and leaving is main's code again. The
+  warming-blocked drill leaves a vault; on e936ad4 the toast read "This tool
+  isn't saved on this device yet…".
+- **The typed toast dropped the action's name.** The alert read only "This
+  tool isn't saved…", so after "Leave this sync vault?" or Export backup a
+  screen-reader user heard no action. Every toast now keeps its prefix, for
+  example "Backup failed: This tool isn't saved…". The warming-blocked drill
+  expects each action's own prefix; `warmTools.test.mjs` changed that
+  assertion on purpose.
+- **A reachable server was described as offline.** With the server up but a
+  warm file missing from its build, the first Export backup spent the
+  bounded reload and the second said "Reconnect once" although the device
+  was connected. `loadWarmTool` now uses the probe chunk recovery ran for the
+  failure, or probes itself within the cooldown, and a reachable server gets
+  the error screen's stale wording: "Lumen needs fresh app files: this tool
+  belongs to a different or incomplete Lumen build…". The new `warm-stale`
+  drill keeps the server up without the warm files: one bounded reload
+  naming `backupTools`, then that toast, with no second reload. On e936ad4
+  the second press read "This tool isn't saved…". Unit tests cover offline,
+  unreachable, reachable and a probe that throws.
+- **A missing KaTeX file reloaded the page.** Tutor math uses a plain
+  `import()`, but Vite reports its failure through `vite:preloadError`, and
+  chunk recovery reloaded the page when the server answered, against the
+  code comment and the handoff. It could repeat after the cooldown on a
+  tutor remount or an `online` event, while the learner typed. The failed
+  import's error is now marked with `exemptFromChunkRecovery`, and the
+  listener recovers one task after the event, when the mark is in place; the
+  mark follows the error object, so Safari's nameless message works too. The
+  new `math-reload` drill opens a saved answer on a reachable server without
+  the warm files and waits 4 s: on e936ad4 the page reloaded with a marker
+  naming `tutorMath-D4WRs17h.js`. A unit test dispatches the event the way
+  Vite does and checks that another chunk's failure still reloads.
+- **KaTeX arriving dropped focus to the page.** Drawing math replaces an
+  answer's markup, so a focused link or `[S#]` button inside it was removed
+  and focus fell to `<body>`, for example when Wi-Fi returned after an
+  offline first launch. `useTutorMathFor` keeps an answer's TeX source while
+  focus is inside it and draws once focus leaves; answers without focus draw
+  at once. The new `math-focus` drill holds the warm files, focuses a link in
+  a saved answer, releases them, and checks that another answer drew KaTeX,
+  focus stayed on the link, and the focused answer draws after focus moves
+  on. On e936ad4 focus ended on BODY.
+- **Pending math could mark different spans than KaTeX.** The pending
+  renderer returned the true offset from `start()`, while
+  marked-katex-extension returns the index into the text left after an
+  unmatched `$`, so with a stray `$$` ("price $$ then $x$") the spans moved
+  when KaTeX arrived. The pending `start()` now copies upstream, quirk
+  included. A unit test renders ten inputs before the load and, after it,
+  with KaTeX's output swapped for the pending markup: they must match. On
+  e936ad4, 4 of 10 differed.
+- **Library search failures said only "unavailable".** Retrieval rejects
+  with the typed error, but both tutors showed a generic line. The Mac
+  tutor's stage and On-device Lite's status now add the reason ("Library
+  search was unavailable. This tool isn't saved on this device yet…").
+  `phone_ai_ui_audit` makes the fixture's retrieval reject with the typed
+  error and records the status line; on e936ad4 it read "Library search was
+  unavailable. Generating locally with no web egress…".
+- **A Settings chunk failure put a second h1 in the drawer.** The error
+  panel now takes `headingLevel={2}` inside the Settings dialog, with the
+  same size. The new `settings-error` drill fails the chunk and the probe
+  and checks that the drawer's only h1 is "Settings"; on e936ad4 it found
+  ["Settings", "Lumen’s server cannot be reached"].
+- **The lazy Settings focus check never tested the loading state** (a test
+  defect; the product was right). It held the chunk 1.5 s from its request,
+  and the idle preload asked for it about 150 ms after start, so Settings
+  had usually loaded before the drawer opened (a replay of the old hold: 0
+  of 5 runs saw the loading state), and it read focus before the drawer's
+  requestAnimationFrame focus, which failed about 1 run in 5 under load. The
+  Notebook and Settings chunks are now held until each screen has opened;
+  the check asserts the loading state, waits for focus on the close button,
+  releases the chunk, and checks focus again. It passed 5 of 5 times at a
+  load average of about 12, and on e936ad4, where the product was already
+  right.
+
+Budgets after these fixes (`npm run size`): entry 618,604 bytes (131,396
+headroom), install 681,139 bytes in 42 files (218,861 headroom), warm
+305,006 bytes in 8 files. The baseline delete, the stale-build wording and
+the per-file upload report cost 882 entry bytes; the focus-aware math hook
+lives in the tutor chunks.
+
+Gate: `npm run check` passed (`audit:ai` 570/570, `audit:ai-eval` 27 cases,
+hit@1 0.913). The full `npm run check:browser` passed all 13 suites on the
+first attempt with no retries, at a load average of about 12.

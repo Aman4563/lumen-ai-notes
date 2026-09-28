@@ -118,8 +118,11 @@ Safari does the same. Note the iOS version with each verdict.
    files from the app cache:
    `caches.match("./offline-routes.json").then((r) => r.json()).then(async (l) => { for (const key of await caches.keys()) { const cache = await caches.open(key); for (const f of l.warm) await cache.delete(new URL(f, location.href).href); } })`.
    Turn on Airplane Mode and relaunch from the Home Screen. Export a backup:
-   the toast must read "This tool isn't saved on this device yet. Reconnect
-   once, and it will work offline." with no error screen and no reload. A
+   the toast must read "Backup failed: This tool isn't saved on this device
+   yet. Reconnect once, and it will work offline." with no error screen and
+   no reload. Upload a Markdown note and an HTML page together: the note
+   imports and the toast lists the page as not imported. Leave a sync vault:
+   it must work. A
    saved tutor answer shows `$x^2$` as source text. Settings and the Notebook
    still open, because they are installed with the app. If the export works
    instead, Safari answered the file from its HTTP cache (the assets are
@@ -135,3 +138,13 @@ Safari does the same. Note the iOS version with each verdict.
    Step 1's console check must read every file. If the export shows the
    "isn't saved on this device yet" toast, note whether the update had
    already appeared before you closed the app.
+5. **Math arriving while VoiceOver reads an answer.** Repeat step 3's cache
+   removal, turn on Airplane Mode and relaunch, and open a saved tutor answer
+   with `$x^2$` and a link, in the Mac tutor and in On-device Lite. Turn on
+   VoiceOver and move its cursor onto the link. Turn Airplane Mode off: when
+   the math renderer arrives, VoiceOver must stay on the link and must not
+   start reading the answers again (On-device Lite's message list is a polite
+   live region, and drawing the math replaces an answer's markup). The
+   answer switches to rendered math once you move off it; note whether
+   VoiceOver announces anything then. Headless Chrome checks DOM focus only,
+   not VoiceOver's cursor or announcements.
