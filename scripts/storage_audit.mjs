@@ -138,6 +138,19 @@ failOpen = false;
 await retryDb.setData("retry-key", { ok: true });
 assert.deepEqual(await retryDb.getData("retry-key"), { ok: true }, "a rejected database-open promise must reset so a later call can recover");
 
+// Issue #139 review: getData() reads a blocked database as "nothing saved",
+// so Settings says study data is saved only after this positive check.
+failOpen = true;
+const blockedDb = await import("../src/lib/db.js?storage-audit-probe");
+assert.equal(await blockedDb.checkStudyDataStorage(), false, "a database that will not open is not saving study data");
+failOpen = false;
+failTransactions = true;
+assert.equal(await db.checkStudyDataStorage(), false, "a failing readwrite transaction is not saving study data");
+failTransactions = false;
+const keysBeforeProbe = [...backing.keys()];
+assert.equal(await db.checkStudyDataStorage(), true, "a working database takes the probe write");
+assert.deepEqual([...backing.keys()], keysBeforeProbe, "the study-data probe leaves no record behind");
+
 await db.setData("board:removed-by-restore", { pages: ["private old work"] });
 failTransactions = true;
 await db.replaceAllData({ profile: { revision: "restored", notes: ["imported"] } });
@@ -226,4 +239,4 @@ assert.equal(backing.get("profile").raw.length, shrunkLegacyLength);
 await db.deleteData("profile");
 assert.equal(backing.has("profile"), false, "legacy oversized state must always be removable");
 
-console.log("Storage audit passed: recovery, generation fencing, aggregate byte/board budgets, fallback parity, the in-memory journal with Web Storage blocked, hidden ledger metadata, and legacy shrink/delete verified.");
+console.log("Storage audit passed: recovery, generation fencing, aggregate byte/board budgets, fallback parity, the in-memory journal with Web Storage blocked, the study-data write probe, hidden ledger metadata, and legacy shrink/delete verified.");

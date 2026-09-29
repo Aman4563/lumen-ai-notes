@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertTriangle, Brain, BrainCircuit, Check, CircleUserRound, Contrast, Download, Import, Keyboard, Moon, Palette, RefreshCw, RotateCcw, Share, Smartphone, Sparkles, Sun, Trash2, Volume2, Wifi, WifiOff } from "lucide-react";
 import ErrorBoundary from "./ErrorBoundary";
 import { recoverableImport } from "../lib/chunkRecovery.js";
+import { checkStudyDataStorage } from "../lib/db.js";
 import { checkDeviceStorage, deviceStorageSaves, subscribeDeviceStorage } from "../lib/safeStorage.js";
 import { syncFileNameFor } from "../lib/syncIdentity.js";
 
@@ -16,24 +17,21 @@ const THEME_KEY_STEPS = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -
 // last only until Lumen closes. The notice stays visible on every open but is
 // announced once per visit, politely, so reopening Settings does not repeat it.
 const STORAGE_NOTICE_TITLE = "This browser is not saving preferences on this device";
-const STORAGE_NOTICE_DETAIL = "Choices such as the AI engine, the reader panel and recent searches last until Lumen closes.";
+const STORAGE_NOTICE_DETAIL = "Choices such as the tutor engine, recent searches and an unsent tutor question last until Lumen closes, and cross-device sync is off.";
 const STORAGE_NOTICE_STUDY_DATA = "Notes, progress and reviews are saved separately and are not affected.";
+const SYNC_STORAGE_WARNING = "Sync needs this browser to save settings on this device. Without that, a vault would be forgotten when Lumen closes and each visit would write a new sync file, so creating or joining a vault is off.";
+// The announcement goes into a status region that is already on screen and
+// empty, a moment after Settings opens, and leaves it again once read, so
+// reading the page line by line never meets the notice twice.
+const STORAGE_ANNOUNCE_DELAY_MS = 250;
+const STORAGE_ANNOUNCE_CLEAR_MS = 5_000;
 let storageNoticeAnnounced = false;
 
-function DeviceStorageNotice({ studyDataSaving }) {
-  const [announcement, setAnnouncement] = useState("");
-  const detail = studyDataSaving ? `${STORAGE_NOTICE_DETAIL} ${STORAGE_NOTICE_STUDY_DATA}` : STORAGE_NOTICE_DETAIL;
-  useEffect(() => {
-    if (storageNoticeAnnounced) return;
-    storageNoticeAnnounced = true;
-    // Filled after mount so the polite region changes and is announced.
-    setAnnouncement(`${STORAGE_NOTICE_TITLE}. ${detail}`);
-  }, [detail]);
+function DeviceStorageNotice({ detail }) {
   return (
     <div className="settings-storage-notice">
       <AlertTriangle size={19} aria-hidden="true" />
       <div><strong>{STORAGE_NOTICE_TITLE}</strong><span>{detail}</span></div>
-      <p className="visually-hidden" role="status">{announcement}</p>
     </div>
   );
 }
@@ -55,14 +53,42 @@ export default function SettingsView({ settings, backupMeta, aiHistoryCount, onC
     themeButtonsRef.current[target]?.focus();
   };
   const storageSaves = useSyncExternalStore(subscribeDeviceStorage, deviceStorageSaves, deviceStorageSaves);
-  // A probe write catches a store that nothing has touched yet this visit.
-  useEffect(() => { checkDeviceStorage(); }, []);
+  // A probe write catches a store that nothing has touched yet this visit, and
+  // clears a failure that has passed, before the first paint.
+  useLayoutEffect(() => { checkDeviceStorage(); }, []);
+  // Study data is said to be saved only after IndexedDB really took a write:
+  // Save status starts as "saved", and a blocked database reads as empty.
+  const [studyDataCheck, setStudyDataCheck] = useState("pending");
+  useEffect(() => {
+    if (storageSaves) return undefined;
+    let active = true;
+    checkStudyDataStorage().then((saves) => { if (active) setStudyDataCheck(saves ? "saving" : "failed"); });
+    return () => { active = false; };
+  }, [storageSaves]);
+  const noticeDetail = studyDataCheck === "saving" && saveStatus !== "error" ? `${STORAGE_NOTICE_DETAIL} ${STORAGE_NOTICE_STUDY_DATA}` : STORAGE_NOTICE_DETAIL;
+  const noticeText = storageSaves ? "" : `${STORAGE_NOTICE_TITLE}. ${noticeDetail}`;
+  const [announced, setAnnounced] = useState("");
+  useEffect(() => {
+    if (!noticeText || studyDataCheck === "pending" || storageNoticeAnnounced) return undefined;
+    const timer = setTimeout(() => {
+      storageNoticeAnnounced = true;
+      setAnnounced(noticeText);
+    }, STORAGE_ANNOUNCE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [noticeText, studyDataCheck]);
+  useEffect(() => {
+    if (!announced) return undefined;
+    const timer = setTimeout(() => setAnnounced(""), STORAGE_ANNOUNCE_CLEAR_MS);
+    return () => clearTimeout(timer);
+  }, [announced]);
   const fontScaleLabel = `${Math.round(settings.fontScale * 100)}%`;
   const lineHeightLabel = String(settings.lineHeight);
   return (
     <div className="page settings-page">
       <p className="settings-intro">Appearance, reading comfort, narration, AI, backups, storage, and iPhone installation.</p>
-      {!storageSaves && <DeviceStorageNotice studyDataSaving={saveStatus !== "error"} />}
+      {/* A notice that changed since it was announced (a save failed) is never left behind here. */}
+      <p className="visually-hidden settings-storage-announcer" role="status">{announced && announced === noticeText ? announced : ""}</p>
+      {!storageSaves && <DeviceStorageNotice detail={noticeDetail} />}
       <section className="settings-card" aria-labelledby="settings-appearance-title">
         <div className="settings-card-heading"><Palette size={21} aria-hidden="true" /><div><h2 id="settings-appearance-title">Appearance and reading</h2><span>Choose a reading atmosphere and comfortable text.</span></div></div>
         <div className="theme-choices" role="radiogroup" aria-label="Theme">
@@ -121,12 +147,13 @@ export default function SettingsView({ settings, backupMeta, aiHistoryCount, onC
         <div className="settings-card-heading"><RefreshCw size={21} aria-hidden="true" /><div><h2 id="settings-sync-title">Cross-device sync</h2><span>Encrypted, account-free vault sync through files you control.</span></div></div>
         <input ref={syncImportRef} type="file" accept=".lumenc" multiple hidden onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; if (files.length) onSyncImport(files, syncPassphrase); }} />
         {!cryptoAvailable && <p className="inline-warning">Sync needs WebCrypto in a secure (HTTPS) context. There is no weak-crypto fallback.</p>}
+        {!storageSaves && <p className="inline-warning sync-storage-warning">{SYNC_STORAGE_WARNING}</p>}
         {!syncVault && <p className="microcopy">Each device in a vault writes one encrypted file into a folder you share however you like — iCloud Drive, Syncthing, a USB stick. One passphrase per vault, entered on each device and never stored. Create a vault here, or pick a peer's <code>.lumenc</code> sync file to join theirs.</p>}
         {syncVault && <p className="microcopy sync-status-line">Vault <code>{syncVault.vaultId.slice(0, 8)}…</code> · this device <code>{syncDeviceId.slice(0, 8)}…</code> · last sync {syncVault.lastSyncAt ? new Date(syncVault.lastSyncAt).toLocaleString() : "never"}. Your file is <code>{syncFileNameFor(syncDeviceId)}</code>; each device only ever writes its own.</p>}
         <label className="backup-password-field"><span>Vault passphrase <small>never stored — needed for every export and import</small></span><input className="text-input" type="password" value={syncPassphrase} minLength={8} maxLength={128} onChange={(event) => setSyncPassphrase(event.target.value)} placeholder={syncVault ? "Required for export and import" : "Required to create or join a vault"} disabled={!cryptoAvailable} autoComplete="off" aria-label="Sync vault passphrase" /></label>
         {!syncVault && <div className="settings-action-row">
-          <button className="button secondary" onClick={onCreateSyncVault} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><RefreshCw size={16} /> Create sync vault</button>
-          <button className="button ghost" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Import size={16} /> Join via a peer's file</button>
+          <button className="button secondary" onClick={onCreateSyncVault} disabled={!cryptoAvailable || !storageSaves || syncPassphrase.length < 8} type="button"><RefreshCw size={16} /> Create sync vault</button>
+          <button className="button ghost" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || !storageSaves || syncPassphrase.length < 8} type="button"><Import size={16} /> Join via a peer's file</button>
         </div>}
         {syncVault && <div className="settings-action-row">
           <button className="button secondary" onClick={() => onSyncExport(syncPassphrase)} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Download size={17} /> Export my sync file</button>

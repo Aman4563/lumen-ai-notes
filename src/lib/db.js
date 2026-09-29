@@ -809,6 +809,27 @@ export const getStorageBudgetSummary = async () => {
   };
 };
 
+const STUDY_DATA_PROBE_KEY = "__lumenStudyDataProbe";
+
+/**
+ * Whether IndexedDB, where study data lives, takes a write right now: one
+ * readwrite transaction adds and removes a probe record and must commit.
+ * Nothing is left behind and it never throws. getData() treats a blocked
+ * database as "nothing saved yet", so Settings needs this positive check
+ * before it says study data is being saved (issue #139).
+ */
+export const checkStudyDataStorage = async () => {
+  try {
+    await withStore("readwrite", (store) => {
+      store.put(1, STUDY_DATA_PROBE_KEY);
+      return store.delete(STUDY_DATA_PROBE_KEY);
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const replaceAllData = async (entries) => {
   const safeEntries = publicEntries(entries);
   const fallback = readFallback();
