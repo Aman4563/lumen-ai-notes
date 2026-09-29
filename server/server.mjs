@@ -834,6 +834,25 @@ const serveStatic = async (request, response, pathname, distDirectory) => {
   return true;
 };
 
+// Browsers open connections before they need them (preconnect) and park
+// them. Node times such a connection out after headersTimeout and reports it
+// here, and whatever is written to it is read as the answer to the request
+// the browser later sends on it: a lazily loaded app file once came back as
+// "400 Bad Request" this way and chunk recovery reloaded the page (#138). A
+// connection that never sent a byte is closed silently, which browsers retry
+// on another connection; a request that stalled part-way gets Node's own 408
+// (431 for oversized headers), and only malformed input gets 400.
+export const answerClientError = (error, socket) => {
+  if (!socket.writable || socket.bytesRead === 0 || error?.code === "ECONNRESET") {
+    socket.destroy();
+    return;
+  }
+  const status = error?.code === "ERR_HTTP_REQUEST_TIMEOUT" ? "408 Request Timeout"
+    : error?.code === "HPE_HEADER_OVERFLOW" ? "431 Request Header Fields Too Large"
+      : "400 Bad Request";
+  socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
+};
+
 export const createApplicationServer = ({
   env = process.env,
   fetchImpl = globalThis.fetch,
@@ -1115,9 +1134,7 @@ export const createApplicationServer = ({
   server.requestTimeout = Math.max(config.bodyReadTimeoutMs + 1_000, 15_000);
   server.keepAliveTimeout = 5_000;
   server.maxRequestsPerSocket = 100;
-  server.on("clientError", (_error, socket) => {
-    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-  });
+  server.on("clientError", answerClientError);
   return { server, config, transport: tlsOptions ? "https" : "http" };
 };
 

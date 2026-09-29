@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -130,6 +131,36 @@ test("disabled local AI remains healthy and never calls a service", async () => 
   assert.equal(response.status, 503);
   assert.equal(body.error.code, "AI_UNAVAILABLE");
   assert.equal(serviceCalls, 0);
+});
+
+// Issue #138: a browser parks preconnected sockets; Node times one out and
+// the old handler wrote "400 Bad Request" into it, which the browser read as
+// the answer to its next request (a lazy chunk, so chunk recovery reloaded
+// the page). Short timeouts stand in for the 15 s header timeout.
+test("a connection that never sent a request is closed silently, not answered with a status the browser would take for its next response", async () => {
+  const { server } = createApplicationServer({ env: { HOST: "127.0.0.1", PORT: "0", AI_ENABLED: "false" }, logger: silentLogger, distDirectory: fixtureDistDirectory });
+  server.headersTimeout = 300;
+  server.connectionsCheckingInterval = 100;
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  runningServers.add(server);
+  const { port } = server.address();
+  const exchange = (payload) => new Promise((resolve) => {
+    const socket = connect(port, "127.0.0.1");
+    let received = "";
+    socket.on("data", (chunk) => { received += chunk.toString("latin1"); });
+    socket.on("error", () => {});
+    socket.on("close", () => resolve(received));
+    if (payload) socket.write(payload);
+  });
+  const [unused, stalled, malformed] = await Promise.all([
+    exchange(""),
+    exchange("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n"),
+    exchange("NOT-HTTP\r\n\r\n"),
+  ]);
+  assert.equal(unused, "", "an unused (preconnected) connection was answered instead of closed");
+  assert.match(stalled, /^HTTP\/1\.1 408 Request Timeout\r\n/, "a request that stalled mid-headers did not get Node's 408");
+  assert.match(malformed, /^HTTP\/1\.1 400 Bad Request\r\n/, "malformed input no longer gets 400");
 });
 
 test("disabled LAN profile exposes only read-only diagnostics without an origin allowlist", async () => {
