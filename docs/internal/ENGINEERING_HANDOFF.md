@@ -1337,7 +1337,8 @@ request on that connection and read the 400 as its answer.
 **Fix:** `answerClientError` in `server/server.mjs` closes a connection that never sent a
 byte without writing anything (browsers retry on a new connection). A request that stalled
 part-way gets Node's 408 (431 for oversized headers), and malformed input keeps 400.
-`server/ai/server.test.mjs` covers all three.
+`server/ai/server.test.mjs` covers all three, and the idle and stalled cases over TLS too:
+a finished handshake does not count toward the socket's `bytesRead`.
 
 ## 13. Requirement reconciliation performed for this handoff
 
