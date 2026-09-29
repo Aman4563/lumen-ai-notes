@@ -627,7 +627,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
         if (loadedDocumentRef.current === targetDocumentId && (!sequence || sequence === saveSequenceRef.current)) {
           setSaveStatus("error");
           notify?.(error instanceof StorageBudgetError
-            ? `${error.message} This board change remains visible only in the current tab until you reduce local data.`
+            ? `${error.message} This board change remains visible only in the current tab until ${error.code === "BUDGET_STATE_UNAVAILABLE" ? "storage access recovers" : "you reduce local data"}.`
             : "Whiteboard changes could not be saved. Keep this tab open and retry after checking browser storage.", "error", 9000);
         }
       });

@@ -49,7 +49,7 @@ import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, do
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { mergeBoardVersions } from "./lib/boardSync.js";
 import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
-import { durableLocalStorage, safeLocalStorage } from "./lib/safeStorage.js";
+import { deviceStorageSaves, durableLocalStorage, safeLocalStorage } from "./lib/safeStorage.js";
 // Actions load these tools on use; the service worker warms them (issue #95).
 import { isWarmToolUnavailable, loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
 // The lecture renderer (marked and DOMPurify, about 85 KB) stays in the
@@ -1155,8 +1155,10 @@ export default function App() {
   }, [notify]);
 
   const reportPersistenceError = useCallback((error) => {
+    // Storage that is unavailable (blocked, not full) is not helped by
+    // reducing local data; a backup keeps the change instead.
     const message = error instanceof StorageBudgetError
-      ? `${error.message} The current unsaved change remains visible in this tab; reduce local data before closing or reloading.`
+      ? `${error.message} The current unsaved change remains visible in this tab; ${error.code === "BUDGET_STATE_UNAVAILABLE" ? "export a backup" : "reduce local data"} before closing or reloading.`
       : "Changes could not be saved to this browser. Keep this tab open and retry after checking available storage.";
     if (lastPersistenceErrorRef.current === message) return;
     lastPersistenceErrorRef.current = message;
@@ -2865,9 +2867,11 @@ export default function App() {
   }, [notify]);
 
   const exportBackup = async (password) => {
+    let exportedAt;
+    let result;
     try {
       const { createBackup, encryptBackupJson } = await loadBackupTools();
-      const exportedAt = new Date().toISOString();
+      exportedAt = new Date().toISOString();
       const data = await getAllData();
       // Export a read-only three-way snapshot so concurrent work already
       // committed by another tab is included without claiming success early.
@@ -2879,7 +2883,7 @@ export default function App() {
       );
       data.profile = snapshotMerge.profile;
       reportSyncConflicts(snapshotMerge.conflicts);
-      const result = await createBackup(data, { exportedAt, secureContext: window.isSecureContext });
+      result = await createBackup(data, { exportedAt, secureContext: window.isSecureContext });
       if (password) {
         // Transport wrapper only: the plaintext is the exact canonical JSON
         // above, so preflight and integrity behave identically after decrypt.
@@ -2888,7 +2892,13 @@ export default function App() {
       } else {
         downloadText(`lumen-notes-backup-${exportedAt.slice(0, 10)}.json`, result.json);
       }
+    } catch (error) {
+      notify(warmToolFailureMessage(error, "Backup failed: "), "error", 5000);
+      return;
+    }
 
+    const downloaded = `Backup verified with ${result.envelope.integrity.algorithm}${password ? ", encrypted with AES-256-GCM," : ""} and downloaded.`;
+    try {
       // Only a successfully created and triggered download earns export
       // metadata. Commit it atomically against the latest cross-tab profile.
       const localAtCommit = profileRef.current;
@@ -2926,9 +2936,11 @@ export default function App() {
         setProfile(rebased.profile);
         reportSyncConflicts(rebased.conflicts);
       }
-      notify(`Backup verified with ${result.envelope.integrity.algorithm}${password ? ", encrypted with AES-256-GCM," : ""} and downloaded.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
-    } catch (error) {
-      notify(warmToolFailureMessage(error, "Backup failed: "), "error", 5000);
+      notify(`${downloaded}${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
+    } catch {
+      // The file is already downloaded and valid. Only its export date could
+      // not be recorded, for example while this browser blocks site storage.
+      notify(`${downloaded} This browser could not record the export date, so Last export is unchanged.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, "warning", 9000);
     }
   };
 
@@ -2940,6 +2952,12 @@ export default function App() {
   const createSyncVaultAction = useCallback(() => {
     const config = createVaultConfig();
     setSyncVaultConfig(config);
+    // Settings turns creation off where storage fails; a write refused now
+    // (a full store) must not be reported as a lasting vault.
+    if (!deviceStorageSaves()) {
+      notify("Sync vault created for this visit only: this browser is not saving settings on this device, so the vault is forgotten when Lumen closes.", "warning", 9000);
+      return;
+    }
     notify("Sync vault created. Choose a strong passphrase, export your sync file, and share the vault folder between your devices.", "success", 7000);
   }, [notify]);
 
