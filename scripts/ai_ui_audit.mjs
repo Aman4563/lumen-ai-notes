@@ -459,11 +459,13 @@ const startScriptedServer = async () => {
 };
 
 // An in-page stream that delivers deltas over time, armed per request with
-// window.__lumenAuditSlowStream = { paragraphs, phases, holdAfter }. It checks
-// following, scrolling back, Stop and Esc without a real model. After a
-// phase named in `holdAfter` the stream waits until the audit sets
-// window.__lumenAuditRelease[phase], so a step the audit reads stays on
-// screen until it has been read, however slow the machine (#138).
+// window.__lumenAuditSlowStream = { paragraphs, phases, holdAfter,
+// holdComplete }. It checks following, scrolling back, Stop and Esc without a
+// real model. After a phase named in `holdAfter`, and with `holdComplete`
+// before it completes, the stream waits until the audit sets
+// window.__lumenAuditRelease[phase] (or .complete), so a state the audit
+// reads stays on screen until it has been read, however slow the machine
+// (#138). A Stop still ends a held stream at once.
 const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
@@ -495,6 +497,11 @@ const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
           await new Promise((resolve) => setTimeout(resolve, 60));
           if (init.signal?.aborted) return;
           send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
+        }
+        if (slow.holdComplete) {
+          const deadline = Date.now() + 60_000;
+          while (!window.__lumenAuditRelease?.complete && !init.signal?.aborted && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+          if (init.signal?.aborted) return;
         }
         send({ type: "complete", requestId: response.requestId, response });
         try { controller.close(); } catch { /* aborted */ }
@@ -2342,7 +2349,12 @@ try {
     // pulled back, during or after it (TFEAT-08). "Jump to latest" is offered
     // meanwhile, and "Answer ready" once it lands out of view.
     await setPrompt("Keyboard check: stream this answer slowly.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = true; });
+    // The answer completes only once "Jump to latest" has been read: its
+    // 1.5 s of text once ended inside the windows below (#138).
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 40, holdComplete: true };
+    });
     await page.$eval(sendSelector, (button) => button.click());
     await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
     // The learner scrolls the page back to the top (a wheel gesture, then the
@@ -2361,6 +2373,7 @@ try {
     await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.trim() === "Jump to latest" || !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 }).catch(() => {});
     assert.equal(await pillText(), "Jump to latest", "no Jump to latest was offered while the learner read elsewhere");
     assert.deepEqual(await page.$eval(".ai-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the jump pill was a live region or too small to tap");
+    await page.evaluate(() => { window.__lumenAuditRelease.complete = true; });
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
@@ -2456,7 +2469,11 @@ try {
     // streams slowly so the Stop cannot race its completion on a busy host.
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await setPrompt("Keyboard check: stop this one.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 40 }; });
+    // Held open until Stop ends it, so Stop never races the completion.
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 40, holdComplete: true };
+    });
     await page.$eval(sendSelector, (button) => button.focus());
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => /Stop generating/.test(document.activeElement?.textContent || ""), { timeout: 3_000 });
@@ -2581,9 +2598,23 @@ try {
       await setLayoutPrompt(Array.from({ length: 8 }, (_, line) => `Line ${line + 1} of a long draft about ridge and lasso penalties.`).join("\n"));
       await checkLayout("long draft");
       await setLayoutPrompt("Layout check: why does repeated holdout inspection leak information?");
-      // A double tap on Send must not land on the Stop it turns into.
-      await page.click(".ai-tutor__send");
-      await page.click(".ai-tutor__send");
+      // A double tap on Send must not land on the Stop it turns into. The
+      // app ignores a Stop tap within 500 ms of the request starting. Two
+      // page.click calls are two sets of round trips, which a loaded runner
+      // spaced past that guard, so the second tap was a real Stop (#138).
+      // Both taps' mouse events go out together, as a learner's do.
+      const sendTarget = await page.$eval(".ai-tutor__send", (button) => {
+        button.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+        const box = button.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      });
+      const tapSession = await page.createCDPSession();
+      try {
+        await tapSession.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...sendTarget });
+        await Promise.all([1, 2].flatMap((clickCount) => ["mousePressed", "mouseReleased"].map((type) => tapSession.send("Input.dispatchMouseEvent", { type, ...sendTarget, button: "left", clickCount }))));
+      } finally {
+        await tapSession.detach();
+      }
       await page.waitForSelector(".ai-tutor__message--streaming", { timeout: 5_000 });
       await checkLayout("streaming");
       await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 10_000 });
@@ -2756,7 +2787,12 @@ try {
     await chooseMode(page, "Explain");
 
     await setKeysPrompt("Keyboard stop: stream this one.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 60 }; });
+    // Held open until Escape ends it: whether Escape in the sheet left the
+    // answer running must not depend on how fast 2.3 s of text arrives.
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 60, holdComplete: true };
+    });
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
     await page.$eval(".ai-tutor__options-toggle", (button) => button.click());

@@ -201,8 +201,9 @@ The server now closes a connection that never sent a request when its 15 s
 header timeout ends, instead of writing `400 Bad Request` into it. Chrome
 read that 400 as the answer to the next request it sent on the connection,
 so a lazily loaded file failed and chunk recovery reloaded the page. The
-server test and `audit:review` cover Chrome; only a real iPhone shows that
-Safari retries a request on a connection the server closed.
+server tests cover idle plain and TLS connections (a finished handshake is
+not a request), and `audit:review` covers Chrome; only a real iPhone shows
+that Safari retries a request on a connection the server closed.
 
 1. **A lazy file after an idle minute.** Serve the app over HTTPS on the LAN
    (section 1) and open `#/review` in Safari on the iPhone. Create one card,
