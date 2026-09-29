@@ -1,8 +1,9 @@
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
+import { pollValue } from "./audit_waits.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -53,6 +54,9 @@ const readProfile = (page) => page.evaluate(() => new Promise((resolve, reject) 
     get.onerror = () => reject(get.error);
   };
 }));
+// The profile is saved on a debounce: read it once the save of the last
+// action has landed instead of sleeping a guessed time first (#138).
+const savedProfile = (page, landed) => pollValue(() => readProfile(page), landed);
 
 try {
   browser = await puppeteer.launch({
@@ -184,8 +188,7 @@ try {
   await clickByText(page, ".review-deck-tools button", "Show active");
   await page.waitForSelector(".review-deck-card");
 
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const stored = await readProfile(page);
+  const stored = await savedProfile(page, (profile) => profile.reviewItems[0].front.endsWith("[edited]") && profile.reviewItems[0].archived === false);
   assert.equal(stored.version, 4);
   assert.equal(stored.reviewItems.length, 1);
   assert.equal(stored.reviewItems[0].repetitions, 1);
@@ -221,8 +224,7 @@ try {
   await page.type(".mistake-card textarea", "Only validation data may steer choices; the test split stays untouched.");
   // The field commits on blur so per-keystroke profile writes cannot drop keys.
   await page.$eval(".mistake-card textarea", (node) => node.blur());
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const withMistake = await readProfile(page);
+  const withMistake = await savedProfile(page, (profile) => profile.mistakes[0].correction.includes("stays untouched"));
   assert.equal(withMistake.mistakes.length, 1);
   assert.equal(withMistake.mistakes[0].occurrences, 1);
   assert.ok(withMistake.mistakes[0].correction.includes("stays untouched"), "the correction was not persisted");
@@ -265,8 +267,9 @@ try {
   await clickByText(page, ".mistake-card button", "Schedule corrective review");
   await page.waitForFunction(() => [...document.querySelectorAll(".review-deck-card")].some((card) => card.textContent.includes("Which split tunes hyperparameters?")), { timeout: 5_000 })
     .catch(() => assert.fail("an unlinked mistake did not create a corrective card"));
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const relinked = await readProfile(page);
+  // Wait for the new card itself: the stored profile from before the delete
+  // also has a card with this prompt, linked to the mistake.
+  const relinked = await savedProfile(page, (profile) => profile.reviewItems.some((item) => item.front === "Which split tunes hyperparameters?" && item.tags.includes("mistake")));
   const correctiveCard = relinked.reviewItems.find((item) => item.front === "Which split tunes hyperparameters?");
   assert.ok(correctiveCard.tags.includes("mistake"), "the corrective card must carry the mistake tag");
   assert.equal(relinked.mistakes[0].reviewItemId, correctiveCard.id, "the mistake must back-link to its new corrective card");
@@ -495,8 +498,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Import failed"), { timeout: 5_000 })
     .catch(() => assert.fail("a malformed card file did not surface an import error"));
   assert.equal(await deckCount(), cardsBefore + 2, "duplicate and malformed imports must not grow the deck");
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const imported = (await readProfile(page)).reviewItems.filter((item) => item.front.startsWith("Imported:"));
+  const imported = (await savedProfile(page, (profile) => profile.reviewItems.filter((item) => item.front.startsWith("Imported:")).length === 2)).reviewItems.filter((item) => item.front.startsWith("Imported:"));
   assert.equal(imported.length, 2, "both imported cards must persist");
   assert.ok(imported.every((item) => item.reviewCount === 0 && item.tags.includes("imported")), "imported cards start fresh and keep their tags");
 
@@ -519,9 +521,8 @@ try {
   await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Adaptive scheduling enabled"), { timeout: 5_000 })
     .catch(() => assert.fail("enabling FSRS did not confirm the calibration"));
   await page.waitForSelector('select[aria-label="Target retention"]', { timeout: 5_000 });
-  await new Promise((resolve) => setTimeout(resolve, 700));
   await assertLimitsStripReadable("FSRS");
-  const fsrsProfile = await readProfile(page);
+  const fsrsProfile = await savedProfile(page, (profile) => profile.reviewSettings.scheduler === "fsrs" && profile.reviewItems.some((item) => item.reviewCount > 0 && item.stability > 0));
   assert.equal(fsrsProfile.reviewSettings.scheduler, "fsrs");
   const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
   assert.ok(seasoned, "a reviewed card must exist for the migration check");
@@ -540,12 +541,24 @@ try {
   await page.select('select[aria-label="Target retention"]', "0.9");
 
   // Issue #16: calibration refuses honestly on a thin history instead of
-  // overfitting a handful of grades (successful fits are unit-tested).
+  // overfitting a handful of grades (successful fits are unit-tested). The
+  // refusal waits on the optimizer's lazily loaded chunk; if it does not
+  // come, say what the page shows (#138: a server-written 400 once failed
+  // that chunk and chunk recovery reloaded the page under the audit).
+  const documentBeforeCalibrate = await page.evaluate(() => performance.timeOrigin);
   await clickByText(page, ".review-calibrate button", "Calibrate from my history");
-  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Calibration needs at least 50 spaced reviews"), { timeout: 5_000 })
-    .catch(() => assert.fail("thin-history calibration did not refuse with the typed reason"));
+  const refused = await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Calibration needs at least 50 spaced reviews"), { timeout: 10_000 }).then(() => true, () => false);
+  if (!refused) {
+    const shown = await page.evaluate((before) => ({
+      toast: document.querySelector(".toast")?.textContent || null,
+      reloaded: performance.timeOrigin !== before,
+      chunkRecovery: sessionStorage.getItem("lumen:chunk-recovery-v1"),
+      visibility: document.visibilityState,
+    }), documentBeforeCalibrate).catch((error) => ({ unreadable: error.message }));
+    assert.fail(`thin-history calibration did not refuse with the typed reason: ${JSON.stringify({ ...shown, load: loadavg()[0].toFixed(1) })}`);
+  }
   await page.select('select[aria-label="Scheduling algorithm"]', "sm2");
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await page.waitForFunction(() => document.querySelector('select[aria-label="Scheduling algorithm"]')?.value === "sm2" && !document.querySelector('select[aria-label="Target retention"]'), { timeout: 10_000 });
 
   // Issue #10: an authored track round runs through the interview timers,
   // and a worksheet lab check logs a miss into the notebook.
@@ -573,11 +586,14 @@ try {
   await page.waitForSelector(".review-center-page");
   await page.waitForFunction(() => [...document.querySelectorAll(".mistake-card")].some((card) => card.textContent.includes("Code")), { timeout: 5_000 })
     .catch(() => assert.fail("the lab miss did not land as a code-category mistake"));
+  // The next step leaves the page and edits the stored profile directly, so
+  // the miss is stored, deleted, and the deletion stored before it does.
+  await savedProfile(page, (profile) => profile.mistakes.some((mistake) => mistake.category === "code"));
   await page.evaluate(() => {
     const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("Code"));
     card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
   });
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await savedProfile(page, (profile) => !profile.mistakes.some((mistake) => mistake.category === "code"));
 
   // Issue #54 (REV-19/REV-11): burst typing into a clipping note keeps every
   // character with several clippings, and a deleted clipping can be undone.
@@ -613,15 +629,13 @@ try {
   await page.keyboard.type(burst, { delay: 0 });
   assert.equal(await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] textarea', (node) => node.value), burst, "burst typing dropped characters from the clipping note");
   await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] textarea', (node) => node.blur());
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  assert.equal((await readProfile(page)).clippings.find((clip) => clip.id === "audit-clip-1")?.note, burst, "the clipping note must persist in full");
+  assert.equal((await savedProfile(page, (profile) => profile.clippings.find((clip) => clip.id === "audit-clip-1").note === burst)).clippings.find((clip) => clip.id === "audit-clip-1")?.note, burst, "the clipping note must persist in full");
   await page.$eval('.clipping-card[data-clipping-id="audit-clip-1"] button[aria-label="Delete clipping"]', (node) => node.click());
   await page.waitForFunction(() => !document.querySelector('.clipping-card[data-clipping-id="audit-clip-1"]') && document.querySelector(".undo-strip"), { timeout: 5_000 });
   assert.ok(await page.evaluate(() => document.querySelector(".clipping-grid")?.firstElementChild?.classList.contains("undo-strip")), "the clipping Undo strip must take the deleted card's place");
   await clickByText(page, ".undo-strip button", "Undo");
   await page.waitForSelector('.clipping-card[data-clipping-id="audit-clip-1"]', { timeout: 5_000 });
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const restoredClippings = (await readProfile(page)).clippings;
+  const restoredClippings = (await savedProfile(page, (profile) => profile.clippings.length === 2)).clippings;
   assert.deepEqual(restoredClippings.map((clip) => clip.id), ["audit-clip-1", "audit-clip-2"], "Undo must restore the clipping in its original place");
   assert.equal(restoredClippings[0].note, burst, "the restored clipping keeps its note");
 
