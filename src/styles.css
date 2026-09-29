@@ -8579,7 +8579,8 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .speech-bookmark-play { min-height: 44px; }
   .speech-autoadvance-row .setting-toggle { min-height: 44px; }
   .speech-popover .popover-heading .icon-button.small,
-  .speech-bookmark-row .icon-button.small { width: 44px; height: 44px; }
+  .speech-bookmark-row .icon-button.small,
+  .speech-controls .icon-button { width: 44px; height: 44px; }
   .speech-scope-fieldset legend,
   .speech-choice-grid label > span,
   .speech-range-grid label > span,
