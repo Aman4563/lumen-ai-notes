@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { connect as connectTls } from "node:tls";
 
 import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
 import { createApplicationServer, silentLogger } from "../server.mjs";
@@ -161,6 +163,41 @@ test("a connection that never sent a request is closed silently, not answered wi
   assert.equal(unused, "", "an unused (preconnected) connection was answered instead of closed");
   assert.match(stalled, /^HTTP\/1\.1 408 Request Timeout\r\n/, "a request that stalled mid-headers did not get Node's 408");
   assert.match(malformed, /^HTTP\/1\.1 400 Bad Request\r\n/, "malformed input no longer gets 400");
+});
+
+// The same over TLS, the transport an iPhone uses on the LAN: a preconnect
+// finishes its handshake and then sends nothing, and the handshake must not
+// count as request bytes. The certificate is a throwaway made for the test.
+test("a TLS connection that finished its handshake but sent no request is closed silently too", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "lumen-server-test-tls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const certFile = join(directory, "cert.pem");
+  const keyFile = join(directory, "key.pem");
+  try {
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", keyFile, "-out", certFile, "-subj", "/CN=127.0.0.1", "-days", "1"], { stdio: "ignore" });
+  } catch {
+    t.skip("openssl is not available to make a test certificate");
+    return;
+  }
+  const { server, transport } = createApplicationServer({ env: { HOST: "127.0.0.1", PORT: "0", AI_ENABLED: "false", TLS_CERT_FILE: certFile, TLS_KEY_FILE: keyFile }, logger: silentLogger, distDirectory: fixtureDistDirectory });
+  assert.equal(transport, "https");
+  server.headersTimeout = 300;
+  server.connectionsCheckingInterval = 100;
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  runningServers.add(server);
+  const { port } = server.address();
+  const exchange = (payload) => new Promise((resolve) => {
+    const socket = connectTls({ port, host: "127.0.0.1", rejectUnauthorized: false });
+    let received = "";
+    socket.on("data", (chunk) => { received += chunk.toString("latin1"); });
+    socket.on("error", () => {});
+    socket.on("close", () => resolve(received));
+    socket.once("secureConnect", () => { if (payload) socket.write(payload); });
+  });
+  const [unused, stalled] = await Promise.all([exchange(""), exchange("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n")]);
+  assert.equal(unused, "", "an unused TLS connection was answered instead of closed");
+  assert.match(stalled, /^HTTP\/1\.1 408 Request Timeout\r\n/, "a TLS request that stalled mid-headers did not get Node's 408");
 });
 
 test("disabled LAN profile exposes only read-only diagnostics without an origin allowlist", async () => {
