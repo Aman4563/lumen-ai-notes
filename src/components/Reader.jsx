@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { scrollBehavior } from "../lib/motion.js";
 import {
   AlertCircle,
@@ -144,6 +144,8 @@ export default function Reader({
   onAskAi,
   onNotify,
 }) {
+  const audioBarRef = useRef(null);
+  const playControlRef = useRef({ node: null, focused: false });
   const scrollRef = useRef(null);
   const articleRef = useRef(null);
   const panelRef = useRef(null);
@@ -757,6 +759,95 @@ export default function Reader({
     writePosition(document.id, { index: speech.progress.current, total: speech.progress.total, snippet: speech.currentText, section: speech.sectionLabel });
   }, [document.id, speech.activeLabel, speech.progress, speech.currentText, speech.sectionLabel]);
 
+  // The mini player floats over the end of the lecture (issue #97, ND8). Up
+  // to 980px wide it sits a small gap above the bottom navigation, which
+  // larger text makes taller: --audio-bar-nav-space is the room the
+  // navigation takes (unset while it is hidden) and the stylesheet adds the
+  // gap. --audio-bar-space is the part of the reading area the player covers
+  // (its height plus its bottom offset): toasts and the selection toolbar
+  // keep clear of it. --audio-bar-end-space is the lecture's end space while
+  // the player shows (.has-player): the last card (Next) ends 16px above the
+  // player. Where the strip between the reader toolbar and the player is too
+  // short for the card (phone landscape at large text), the card fills it
+  // instead: at the toolbar if it fits, else centred on the strip, so its
+  // centre stays visible and tappable. All live on the root, where toasts
+  // read them.
+  const playerVisible = speech.status === "speaking" || speech.status === "paused" || speech.canRetry;
+  useLayoutEffect(() => {
+    const bar = audioBarRef.current;
+    const scroller = scrollRef.current;
+    if (!playerVisible || !bar) return undefined;
+    const root = window.document.documentElement;
+    const nav = window.document.querySelector(".bottom-nav");
+    const toolbar = scroller?.parentElement?.querySelector(".reader-toolbar");
+    const pagination = scroller?.querySelector(".document-pagination");
+    const measure = () => {
+      if (nav?.isConnected && getComputedStyle(nav).display !== "none") root.style.setProperty("--audio-bar-nav-space", `${Math.ceil(window.innerHeight - nav.getBoundingClientRect().top)}px`);
+      else root.style.removeProperty("--audio-bar-nav-space");
+      // Read after the offset above is applied: the bar may have moved.
+      const barTop = bar.getBoundingClientRect().top;
+      const frame = scroller?.getBoundingClientRect();
+      root.style.setProperty("--audio-bar-space", `${Math.max(0, Math.ceil((frame?.bottom ?? window.innerHeight) - barTop))}px`);
+      const cards = pagination?.querySelectorAll("button");
+      const card = cards?.[cards.length - 1];
+      const layout = card?.closest(".reader-layout");
+      if (!frame || !card || !layout) {
+        root.style.removeProperty("--audio-bar-end-space");
+        return;
+      }
+      const box = card.getBoundingClientRect();
+      const top = Math.max(frame.top, toolbar?.getBoundingClientRect().bottom ?? frame.top);
+      const middle = (top + barTop) / 2;
+      const cardBottom = Math.max(barTop - 16, Math.min(top + box.height, middle + box.height / 2));
+      // Whatever scrolls after the card besides the end space itself (none
+      // today), so the card lands where it should at the end of the scroll.
+      const endSpace = Number.parseFloat(getComputedStyle(layout).paddingBottom) || 0;
+      const after = scroller.scrollHeight - scroller.scrollTop - (box.bottom - frame.top - scroller.clientTop) - endSpace;
+      const viewBottom = frame.top + scroller.clientTop + scroller.clientHeight;
+      root.style.setProperty("--audio-bar-end-space", `${Math.max(0, Math.ceil(viewBottom - cardBottom - Math.max(0, after)))}px`);
+    };
+    measure();
+    // The bar grows with a message; the navigation, the toolbar (so the
+    // reading area) and the cards grow with the text size.
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    for (const node of [bar, nav, scroller, pagination]) if (node) observer?.observe(node);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      root.style.removeProperty("--audio-bar-space");
+      root.style.removeProperty("--audio-bar-nav-space");
+      root.style.removeProperty("--audio-bar-end-space");
+    };
+  }, [playerVisible]);
+
+  // The player leaves when narration ends (Stop, or the end of the queue).
+  // Keyboard focus that was on it goes to Listen instead of the page.
+  const attachAudioBar = useCallback((node) => {
+    if (node) {
+      audioBarRef.current = node;
+      return;
+    }
+    const bar = audioBarRef.current;
+    audioBarRef.current = null;
+    if (bar?.contains(window.document.activeElement)) queueMicrotask(() => listenButtonRef.current?.focus({ preventScroll: true }));
+  }, []);
+
+  // The play control moves between Pause/Resume and Retry (by Stop) when a
+  // sentence fails or is retried; keyboard focus follows it instead of
+  // dropping to the page. Only a swap within one commit moves focus.
+  const playControl = (node) => {
+    const state = playControlRef.current;
+    if (node) {
+      if (state.focused && node !== state.node) node.focus({ preventScroll: true });
+      state.node = node;
+      state.focused = false;
+    } else if (state.node && state.node === window.document.activeElement) {
+      state.focused = true;
+      queueMicrotask(() => { state.focused = false; });
+    }
+  };
+
   const share = async () => {
     const payload = { title: document.title, text: `${document.title} — Lumen AI Notes`, url: window.location.href };
     try {
@@ -941,7 +1032,9 @@ export default function Reader({
 
   const hasEdit = source !== originalSource;
   const complete = progress >= 0.96;
-  const playerVisible = speech.status === "speaking" || speech.status === "paused";
+  // Messages stay in the player until the next sentence plays; the sleep
+  // timer's is a toast, because it ends the session and the player with it.
+  const playerNotice = speech.notice?.code === "sleep-ended" ? null : speech.notice;
   const minutesLeft = document.minutes > 2 && scrollPosition > 0.02 && scrollPosition < 0.96 ? Math.max(1, Math.ceil(document.minutes * (1 - scrollPosition))) : 0;
   const selectionToolsVisible = Boolean(selectedText) && !(editing && !previewEdit) && !annotationDraft && !showActions && !historyOpen && !teaching && !showSpeech && !showDisplay && !(narrow && drawer);
   const panelOpenInline = !narrow && Boolean(drawer);
@@ -954,7 +1047,7 @@ export default function Reader({
   const widthControlUseful = !widthRoom || widthRoom.available > widthRoom.focused + 8;
 
   return (
-    <section className="reader-view">
+    <section className={playerVisible ? "reader-view has-player" : "reader-view"}>
       <div className="reading-progress" aria-hidden="true"><span style={{ width: `${Math.round((scrollPosition || 0) * 100)}%` }} /></div>
       <header className="reader-toolbar">
         <div className="reader-crumb">
@@ -1131,7 +1224,10 @@ export default function Reader({
           {speech.supported && <button onClick={listenToSelection} type="button"><Volume2 size={18} /><span>Listen</span></button>}
         </div>
       )}
-      {playerVisible && <div className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button><button className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button><button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong><span>{speech.currentText}</span></div>{speech.activeLabel === "Full lecture" && <button className="icon-button" onClick={bookmarkCurrentSentence} aria-label="Bookmark this sentence" title="Bookmark this sentence" type="button"><BookmarkPlus size={17} /></button>}<button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
+      {/* A failed sentence keeps the player (issue #97): its message is the
+          second line and Retry, beside Stop, replays that sentence. Retry
+          takes the place of Pause, so the bar keeps seven controls. */}
+      {playerVisible && <div ref={attachAudioBar} className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button>{!speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button>}<button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong>{playerNotice ? <span className="audio-message">{playerNotice.message}</span> : <span>{speech.currentText}</span>}</div>{speech.activeLabel === "Full lecture" && <button className="icon-button" onClick={bookmarkCurrentSentence} aria-label="Bookmark this sentence" title="Bookmark this sentence" type="button"><BookmarkPlus size={17} /></button>}{speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} aria-label="Retry narration" title="Retry narration" type="button"><RotateCcw size={18} /></button>}<button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
       {teaching && <TeachingMode title={document.title} source={source} onClose={() => setTeaching(false)} speech={speech} />}
       <AnnotationDialog draft={annotationDraft} onClose={() => setAnnotationDraft(null)} onSave={saveAnnotation} />
     </section>

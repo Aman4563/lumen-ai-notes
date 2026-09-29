@@ -100,6 +100,7 @@ import {
   readPracticeState,
   writePracticeState,
 } from "../lib/tutorPractice.js";
+import { TUTOR_SPEECH_LABEL } from "../lib/speech.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import "../ai-tutor.css";
 
@@ -231,9 +232,6 @@ const RESPONSE_PROFILES = Object.freeze([
 ]);
 
 const MAX_SELECTED_SOURCES = 8;
-// The app's one speech session is labelled so the tutor can tell its own
-// reading from a lecture's (TFEAT-09).
-const TUTOR_SPEECH_LABEL = "Tutor answer";
 // Of the eight Library-first passages, a request about the open lesson
 // reserves most for that lesson; the rest still come from the whole library.
 const OPEN_LESSON_RESERVED_PASSAGES = 6;

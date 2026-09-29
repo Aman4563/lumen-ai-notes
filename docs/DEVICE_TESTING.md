@@ -148,3 +148,49 @@ Safari does the same. Note the iOS version with each verdict.
    answer switches to rendered math once you move off it; note whether
    VoiceOver announces anything then. Headless Chrome checks DOM focus only,
    not VoiceOver's cursor or announcements.
+
+## Narration panel and player checks that need a device (issue #97)
+
+The browser audits check these with a mocked speech engine, an emulated
+iPhone user agent and the live-region DOM. They cannot hear VoiceOver or
+see Safari's real voice list. The `#/device-evidence` checklist records
+them as "Narration wording" (`voice-platform-copy`) and "VoiceOver"
+(`voiceover-narration-messages`); note the iOS version with each verdict.
+
+1. **The iOS wording and the voice list (NU13, NM8).** Open Listen on an
+   iPhone in Safari. The note under the panel must begin "Safari offers the
+   voices built into iOS; voices downloaded in Settings may not appear
+   here", and no message may tell you to install a voice. Then download an
+   Enhanced or Premium voice in Settings → Accessibility → Spoken Content →
+   Voices, return to Lumen, tap Refresh, and record whether that voice
+   appears in the Voice list. On a Mac, the same note must name macOS, not
+   iOS.
+2. **Messages with VoiceOver (ND4, NM9).** Turn VoiceOver on, start Full
+   lecture and let the panel close. Start a timer or ask Siri something to
+   interrupt narration, then switch to another app and back. Each time
+   VoiceOver must read the message once, and the player must keep it on its
+   second line with Resume. Arm a 10-minute sleep timer and let it run
+   out: the notification must be read once. Open the panel while a lecture
+   plays: VoiceOver must not read each sentence aloud over the voice. Open
+   Settings (and, separately, the menu) while a lecture plays and interrupt it
+   the same way: VoiceOver must still read the message once, and closing
+   Settings must not read it again.
+3. **Retry.** A real synthesis failure is hard to force. If one happens (for
+   example a network voice with the phone offline), the player must stay,
+   show the message, and Retry must replay the same sentence.
+4. **The player in landscape and at large text.** Turn the iPhone to
+   landscape while a lecture plays, then set Settings → Display & Brightness →
+   Text Size (or Accessibility → Larger Text) to its largest step. The player
+   must sit above the bottom navigation with every button fully tappable, stay
+   below the reader toolbar, and at the end of the lecture the Next card must
+   scroll clear of both. Where the space between the toolbar and the player is
+   shorter than the card (an iPhone SE or 8 turned sideways), the card must
+   fill that space and a tap on it must open the next lecture; notched iPhones
+   add a home-indicator inset in landscape that the headless audits do not
+   emulate. Switch to another app and back: the background message must show
+   its first lines without pushing the player off the screen.
+5. **A message after leaving the lecture.** Start Full lecture, go Back to the
+   Library while it plays, then switch to another app and back. The
+   notification must not mention Resume or Retry (that screen has neither)
+   and must say to open the lecture to listen again; with VoiceOver on it must
+   be read once.

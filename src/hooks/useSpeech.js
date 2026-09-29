@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SPEECH_TEXT_LIMIT,
+  TUTOR_SPEECH_LABEL,
   applyPronunciations,
   chunkSpeechText,
   groupSpeechVoices,
   normalizeSpeechLanguage,
   normalizeSpeechVoices,
   selectSpeechVoice,
+  speechCopy,
   speechErrorMessage,
   speechLanguages,
+  speechPlatform,
   speechPreviewText,
 } from "../lib/speech.js";
 
@@ -31,8 +34,11 @@ export function useSpeech({
   volume = 1,
   pronunciations = [],
   onQueueComplete,
+  onNotice,
 }) {
   const supported = hasSpeechAPI();
+  const platform = useMemo(() => speechPlatform(globalThis.navigator), []);
+  const copy = speechCopy(platform);
   const [voices, setVoices] = useState([]);
   const [voiceState, setVoiceState] = useState(supported ? "loading" : "unsupported");
   const [status, setStatus] = useState(supported ? "idle" : "unsupported");
@@ -40,6 +46,16 @@ export function useSpeech({
   const [currentText, setCurrentText] = useState("");
   const [activeLabel, setActiveLabel] = useState("");
   const [error, setError] = useState("");
+  // The latest message for the learner (issue #97): a fresh object per event,
+  // so the same message twice is announced twice and a re-render never
+  // announces it again. Codes: `background`, `interrupted`, `error` and
+  // `sleep-ended`. `error` keeps the same text for the panel. `label` names
+  // the reading it is about (App routes a tutor's own notices differently).
+  // `plain` is the message without the control it names (Retry, Resume), for
+  // a screen that shows neither: App's toast once the learner has left the
+  // Reader, where no player or Listen panel is on screen.
+  const [notice, setNotice] = useState(null);
+  const noticeIdRef = useRef(0);
   const queueRef = useRef([]);
   const indexRef = useRef(0);
   const utteranceRef = useRef(null);
@@ -63,7 +79,22 @@ export function useSpeech({
   statusRef.current = status;
   const onQueueCompleteRef = useRef(null);
   onQueueCompleteRef.current = onQueueComplete;
+  const onNoticeRef = useRef(null);
+  onNoticeRef.current = onNotice;
   const activeLabelRef = useRef("");
+
+  const report = useCallback((code, message, plain = message) => {
+    noticeIdRef.current += 1;
+    const next = { id: noticeIdRef.current, code, message, plain, severity: code === "error" ? "error" : code === "sleep-ended" ? "info" : "warning", label: activeLabelRef.current };
+    setError(message);
+    setNotice(next);
+    onNoticeRef.current?.(next);
+  }, []);
+
+  const clearMessages = useCallback(() => {
+    setError("");
+    setNotice(null);
+  }, []);
 
   const updateStatus = useCallback((nextStatus) => {
     statusRef.current = nextStatus;
@@ -138,9 +169,9 @@ export function useSpeech({
     sleepMinutesRef.current = 0;
     setSleepMinutes(0);
     finish();
-    setError("The sleep timer ended narration at a sentence boundary.");
+    report("sleep-ended", "The sleep timer ended narration at a sentence boundary.");
     return true;
-  }, [finish]);
+  }, [finish, report]);
 
   // Returns true only when an utterance was handed to the engine.
   const playIndex = useCallback((index, session) => {
@@ -176,7 +207,7 @@ export function useSpeech({
     setCurrentText(text);
     setProgress({ current: index, total: queue.length });
     updateStatus("speaking");
-    setError("");
+    clearMessages();
 
     utterance.onstart = () => {
       if (session === sessionRef.current) updateStatus("speaking");
@@ -198,11 +229,13 @@ export function useSpeech({
       if (event.error === "interrupted") {
         restartRequiredRef.current = true;
         updateStatus("paused");
-        setError("Narration was interrupted. Tap Resume to replay the current sentence safely.");
+        report("interrupted", "Narration was interrupted. Tap Resume to replay the current sentence safely.", "Narration was interrupted.");
         return;
       }
+      // The queue and index stay, so Retry can replay this sentence. A
+      // tutor's reading has no Retry control, so its message names none.
       updateStatus("error");
-      setError(speechErrorMessage(event.error));
+      report("error", speechErrorMessage(event.error, platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }), speechErrorMessage(event.error, platform));
     };
     try {
       window.speechSynthesis.speak(utterance);
@@ -210,10 +243,10 @@ export function useSpeech({
     } catch (speechError) {
       utteranceRef.current = null;
       updateStatus("error");
-      setError(speechErrorMessage(speechError?.name || "synthesis-failed"));
+      report("error", speechErrorMessage(speechError?.name || "synthesis-failed", platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }), speechErrorMessage(speechError?.name || "synthesis-failed", platform));
       return false;
     }
-  }, [clearResumeTimer, endIfSleepLapsed, finish, supported, updateStatus]);
+  }, [clearMessages, clearResumeTimer, endIfSleepLapsed, finish, platform, report, supported, updateStatus]);
 
   // WebKit before 27 drops an utterance that speak() queues in the same task
   // as a cancel() of live speech ("cancel() removed utterances queued by
@@ -256,19 +289,22 @@ export function useSpeech({
     activeLabelRef.current = "";
     updateStatus(supported ? "idle" : "unsupported");
     setProgress({ current: 0, total: 0 });
-    setError("");
-  }, [cancelEngine, clearResumeTimer, supported, updateStatus]);
+    clearMessages();
+  }, [cancelEngine, clearMessages, clearResumeTimer, supported, updateStatus]);
 
   const speak = useCallback((text, options = {}) => {
     if (!supported) {
       updateStatus("unsupported");
-      setError("Narration is unavailable because this browser does not expose the Web Speech API. Use current Safari on iPhone or another supported browser.");
+      report("error", copy.unsupported);
       return false;
     }
     const raw = String(text || "");
     if (raw.length > SPEECH_TEXT_LIMIT) {
+      // Nothing is queued for this target, so the reading it replaces ends
+      // too: the player never offers Retry for a queue the learner left.
+      stop();
       updateStatus("error");
-      setError(speechErrorMessage("text-too-long"));
+      report("error", speechErrorMessage("text-too-long", platform));
       return false;
     }
     const config = configRef.current;
@@ -297,7 +333,7 @@ export function useSpeech({
     restartRequiredRef.current = false;
     if (!queue.length) {
       finish();
-      setError("There is no readable text in this target.");
+      report("error", "There is no readable text in this target.");
       return false;
     }
     // Every Read starts a fresh sleep countdown. A playlist continuing into
@@ -316,7 +352,7 @@ export function useSpeech({
     // True when the utterance was issued, or scheduled for the next task
     // after a real cancel (see playAfterCancel).
     return playAfterCancel(startIndex, sessionRef.current);
-  }, [cancelEngine, clearResumeTimer, endIfSleepLapsed, finish, playAfterCancel, supported, updateStatus]);
+  }, [cancelEngine, clearResumeTimer, copy, endIfSleepLapsed, finish, platform, playAfterCancel, report, stop, supported, updateStatus]);
 
   const selectedVoice = useMemo(
     () => selectSpeechVoice(voices, { voiceURI, language }),
@@ -328,9 +364,10 @@ export function useSpeech({
     { label: "Voice preview" },
   ), [speak]);
 
-  // A deliberate tap on a paused player (Resume, Next, Previous or a section
-  // skip) after the sleep deadline passed during the pause re-arms the timer,
-  // so the tap is not ended at the next sentence boundary.
+  // A deliberate tap on a paused or failed player (Resume, Retry, Next,
+  // Previous or a section skip) after the sleep deadline passed while it
+  // waited re-arms the timer, so the tap is not ended at the next sentence
+  // boundary.
   const rearmIfLapsed = useCallback(() => {
     if (sleepMinutesRef.current && sleepDeadlineRef.current && Date.now() >= sleepDeadlineRef.current) {
       sleepDeadlineRef.current = Date.now() + sleepMinutesRef.current * 60_000;
@@ -340,7 +377,7 @@ export function useSpeech({
   const seek = useCallback((index) => {
     if (!supported || !queueRef.current.length) return false;
     const nextIndex = Math.max(0, Math.min(queueRef.current.length - 1, index));
-    if (statusRef.current === "paused") rearmIfLapsed();
+    if (statusRef.current === "paused" || statusRef.current === "error") rearmIfLapsed();
     clearResumeTimer();
     sessionRef.current += 1;
     cancelEngine();
@@ -353,6 +390,19 @@ export function useSpeech({
 
   const togglePause = useCallback(() => {
     if (!supported) return false;
+    // Retry (issue #97): a failed utterance leaves its queue and index, so
+    // replay the sentence that failed. A failure before anything was queued
+    // (a target over the length limit) has nothing to replay: playing index
+    // 0 of an empty queue would count as finishing it and start a playlist.
+    if (statusRef.current === "error") {
+      if (indexRef.current >= queueRef.current.length) return false;
+      rearmIfLapsed();
+      clearResumeTimer();
+      sessionRef.current += 1;
+      cancelEngine();
+      playAfterCancel(indexRef.current, sessionRef.current);
+      return true;
+    }
     if (statusRef.current === "paused") {
       rearmIfLapsed();
       if (restartRequiredRef.current || typeof window.speechSynthesis.resume !== "function") {
@@ -377,13 +427,13 @@ export function useSpeech({
         return true;
       } catch {
         restartRequiredRef.current = true;
-        setError("Resume is not supported reliably by this iOS voice. Tap Resume once more to replay the current sentence.");
+        report("interrupted", copy.resumeFailed);
         return false;
       }
     }
     if (statusRef.current === "speaking") {
       if (typeof window.speechSynthesis.pause !== "function") {
-        setError("This browser cannot pause narration. Stop playback or move by sentence instead.");
+        report("error", "This browser cannot pause narration. Stop playback or move by sentence instead.");
         return false;
       }
       try {
@@ -391,22 +441,25 @@ export function useSpeech({
         updateStatus("paused");
         return true;
       } catch {
-        setError("This iOS voice could not be paused. Stop playback or move by sentence instead.");
+        report("error", copy.pauseFailed);
       }
     }
     return false;
-  }, [cancelEngine, playAfterCancel, rearmIfLapsed, supported, updateStatus]);
+  }, [cancelEngine, clearResumeTimer, copy, playAfterCancel, rearmIfLapsed, report, supported, updateStatus]);
 
   const suspendForBackground = useCallback(() => {
     if (!supported || !queueRef.current.length || !["speaking", "paused"].includes(statusRef.current)) return;
+    // Leaving the foreground fires pagehide and visibilitychange; the second
+    // finds narration already waiting for a Resume tap and says nothing new.
+    if (statusRef.current === "paused" && restartRequiredRef.current && !utteranceRef.current) return;
     clearResumeTimer();
     sessionRef.current += 1;
     cancelEngine();
     utteranceRef.current = null;
     restartRequiredRef.current = true;
     updateStatus("paused");
-    setError("Playback paused when Lumen left the foreground. Tap Resume to replay the current sentence; Lumen will not start audio in the background.");
-  }, [cancelEngine, clearResumeTimer, supported, updateStatus]);
+    report("background", "Playback paused when Lumen left the foreground. Tap Resume to replay the current sentence; Lumen will not start audio in the background.", "Playback paused when Lumen left the foreground. Lumen will not start audio in the background.");
+  }, [cancelEngine, clearResumeTimer, report, supported, updateStatus]);
 
   useEffect(() => {
     if (!supported) return undefined;
@@ -458,12 +511,12 @@ export function useSpeech({
   const voiceGroups = useMemo(() => groupSpeechVoices(voices, language), [language, voices]);
   const matchingVoiceCount = voiceGroups.reduce((count, group) => count + group.voices.length, 0);
   const availabilityReason = useMemo(() => {
-    if (!supported) return "Web Speech is unavailable in this browser. Open Lumen in current Safari on iPhone; no server audio fallback is used.";
-    if (voiceState === "loading") return "Asking iOS for its installed voice list…";
-    if (voiceState === "empty") return "iOS has not reported any voices. Refresh the list, then install a voice in Settings → Accessibility → Spoken Content → Voices if needed.";
-    if (!matchingVoiceCount) return "No reported voice matches this language. Choose All languages or install another iOS voice.";
+    if (!supported) return copy.unsupported;
+    if (voiceState === "loading") return copy.loading;
+    if (voiceState === "empty") return copy.empty;
+    if (!matchingVoiceCount) return copy.noMatch;
     return "";
-  }, [matchingVoiceCount, supported, voiceState]);
+  }, [copy, matchingVoiceCount, supported, voiceState]);
 
   return {
     voices,
@@ -478,6 +531,9 @@ export function useSpeech({
     currentText,
     activeLabel,
     error,
+    notice,
+    platform,
+    copy,
     speak,
     preview,
     stop,
@@ -493,6 +549,8 @@ export function useSpeech({
     sectionLabel: progress.total ? sectionStartsRef.current.filter((section) => section.index <= progress.current).at(-1)?.label || "" : "",
     sleepMinutes,
     startSleepTimer,
+    // A failed utterance whose queue is intact: Retry replays that sentence.
+    canRetry: status === "error" && progress.total > 0,
     canNext: progress.total > 0 && progress.current < progress.total - 1,
     canPrevious: progress.total > 0 && progress.current > 0,
     canPause: supported && typeof window.speechSynthesis.pause === "function" && typeof window.speechSynthesis.resume === "function",

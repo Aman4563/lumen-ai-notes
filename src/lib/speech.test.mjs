@@ -12,8 +12,9 @@ import {
   splitSpeechSentences,
   voiceMatchesLanguage,
 } from "./speech.js";
-// A namespace import, so a helper this file tests but an older build lacks
+// Namespace imports, so a helper this file tests but an older build lacks
 // fails its own test instead of the whole file.
+import * as speech from "./speech.js";
 import * as speechContent from "./speechContent.js";
 
 const { buildSpeechTarget, currentSpeechBlock } = speechContent;
@@ -173,4 +174,73 @@ test("a diagram's failure diagnostic is never narrated", () => {
 test("speech errors explain actionable offline and size failures", () => {
   assert.match(speechErrorMessage("network"), /On device/u);
   assert.match(speechErrorMessage("text-too-long"), /Sentence, Section, or Selection/u);
+});
+
+// Issue #97: narration names the platform the learner is on.
+const agents = {
+  iPhone: { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", platform: "iPhone", maxTouchPoints: 5 },
+  // iPadOS asks for desktop sites as a Mac; its touch points give it away.
+  iPad: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", platform: "MacIntel", maxTouchPoints: 5 },
+  macChrome: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36", platform: "MacIntel", maxTouchPoints: 0 },
+  // Chrome's phone emulation on a Mac reports one touch point.
+  macEmulatingTouch: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36", platform: "MacIntel", maxTouchPoints: 1 },
+  windows: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0", platform: "Win32", maxTouchPoints: 0 },
+  android: { userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36", platform: "Linux armv8l", maxTouchPoints: 5 },
+  linux: { userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36", platform: "Linux x86_64", maxTouchPoints: 0 },
+};
+
+test("speechPlatform tells iOS, iPadOS, Mac, Windows and Android apart", () => {
+  assert.equal(typeof speech.speechPlatform, "function", "speech.js has no speechPlatform");
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(agents).map(([name, nav]) => [name, speech.speechPlatform(nav)])),
+    { iPhone: "ios", iPad: "ios", macChrome: "mac", macEmulatingTouch: "mac", windows: "windows", android: "android", linux: "other" },
+  );
+  assert.equal(speech.speechPlatform(null), "other");
+  assert.equal(speech.speechPlatform({}), "other");
+});
+
+test("narration copy names iOS only on iOS and never sends learners to download voices", () => {
+  assert.ok(speech.SPEECH_COPY, "speech.js has no SPEECH_COPY table");
+  const fields = Object.keys(speech.SPEECH_COPY.ios).sort();
+  for (const platform of ["ios", "mac", "windows", "android", "other"]) {
+    const copy = speech.speechCopy(platform);
+    assert.deepEqual(Object.keys(copy).sort(), fields, `${platform} copy is missing a message`);
+    const wording = [...Object.values(copy), ...["not-allowed", "language-unavailable", "voice-unavailable", "synthesis-failed"].map((code) => speech.speechErrorMessage(code, platform))].join(" ");
+    // Safari exposes only built-in voices, so installing one in Spoken
+    // Content cannot fix an empty or missing list (NM8).
+    assert.doesNotMatch(wording, /install|Spoken Content/iu, `${platform} copy suggests installing a voice`);
+    if (platform !== "ios") assert.doesNotMatch(wording, /\biOS\b|iPhone|iPad/u, `${platform} copy names iOS`);
+    // The microcopy names the voice labels the list shows (issue #92).
+    assert.match(copy.microcopy, /“On device”.*voices marked “Network”/u);
+  }
+  assert.match(speech.speechCopy("ios").microcopy, /^Safari offers the voices built into iOS; voices downloaded in Settings may not appear here\./u);
+  assert.match(speech.speechCopy("mac").microcopy, /^Voices come from macOS and this browser\./u);
+  assert.match(speech.speechCopy("windows").microcopy, /^Voices come from this device and browser\./u);
+  assert.equal(speech.speechCopy("unknown"), speech.speechCopy("other"));
+  // Messages that are the same everywhere keep their advice.
+  assert.match(speech.speechErrorMessage("network", "mac"), /On device/u);
+  assert.match(speech.speechErrorMessage("not-allowed", "ios"), /iPhone or iPad/u);
+});
+
+// A failed sentence keeps the player with Retry beside Stop (issue #97), and
+// there is no Play control to tap: where Retry exists the messages name it, a
+// tutor's reading (no Retry) gets none, and the default says what failed in
+// words before the engine's code.
+test("narration errors name the Retry control only where it exists", () => {
+  for (const platform of ["ios", "mac", "windows", "android", "other"]) {
+    for (const code of ["not-allowed", "synthesis-failed", "audio-hardware", ""]) {
+      const withRetry = speech.speechErrorMessage(code, platform, { retry: true });
+      const withoutRetry = speech.speechErrorMessage(code, platform);
+      for (const message of [withRetry, withoutRetry]) assert.doesNotMatch(message, /\bPlay\b/u, `${platform}: “${message}” names a Play control`);
+      assert.match(withRetry, /\bTap Retry\b/u, `${platform}: “${withRetry}” does not name Retry`);
+      assert.doesNotMatch(withoutRetry, /\bRetry\b/u, `${platform}: “${withoutRetry}” names Retry where there is none`);
+    }
+  }
+  assert.equal(speech.speechErrorMessage("synthesis-failed", "other", { retry: true }), "This sentence could not be spoken (synthesis failed). Tap Retry to try it again.");
+  assert.equal(speech.speechErrorMessage(""), "This sentence could not be spoken.");
+});
+
+test("narration speed shows as chosen: 1.25×, not 1.3×", () => {
+  assert.equal(typeof speech.formatSpeechRate, "function", "speech.js has no formatSpeechRate");
+  assert.deepEqual([1.25, 1, 0.8, 0.6, 1.6, 1.05, "1.35", Number.NaN].map(speech.formatSpeechRate), ["1.25×", "1×", "0.8×", "0.6×", "1.6×", "1.05×", "1.35×", "1×"]);
 });

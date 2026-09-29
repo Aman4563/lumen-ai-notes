@@ -40,6 +40,7 @@ import { documentMap, documents, guides, loadDocumentSearchIndex, loadDocumentSo
 import { deleteData, getAllData, getData, initialProfile, normalizeProfile, replaceAllData, updateData } from "./lib/db";
 import { isProfileReplacementNewer, mergeProfileVersions, prepareProfileReplacement, profilePayloadEqual, PROFILE_REPLACEMENT_EVENT, PROFILE_SYNC_CHANNEL, PROFILE_SYNC_SIGNAL_KEY } from "./lib/profileSync.js";
 import { useSpeech } from "./hooks/useSpeech";
+import { TUTOR_SPEECH_LABEL } from "./lib/speech.js";
 import { useWakeLock } from "./hooks/useWakeLock";
 import { pruneRecentSearches, pushRecentSearch, searchDocuments, SEARCH_RESULT_LIMIT } from "./lib/search";
 import { createId } from "./lib/id.js";
@@ -210,7 +211,9 @@ function Toast({ toast, onClose }) {
   if (!toast) return null;
   const kind = TOAST_ICONS[toast.kind] ? toast.kind : "success";
   const Icon = TOAST_ICONS[kind];
-  return <div className={`toast ${kind}`} onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(false); }}><Icon size={17} aria-hidden="true" /><span>{TOAST_PREFIXES[kind] && <span className="visually-hidden">{TOAST_PREFIXES[kind]}</span>}{toast.message}</span><button onClick={() => closeRef.current()} aria-label="Dismiss notification" type="button"><X size={15} /></button></div>;
+  // A named region, so the toast is inside a landmark like the rest of the
+  // page (axe "region"); ToastAnnouncer, not this element, announces it.
+  return <div className={`toast ${kind}`} role="region" aria-label="Notification" onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(false); }}><Icon size={17} aria-hidden="true" /><span>{TOAST_PREFIXES[kind] && <span className="visually-hidden">{TOAST_PREFIXES[kind]}</span>}{toast.message}</span><button onClick={() => closeRef.current()} aria-label="Dismiss notification" type="button"><X size={15} /></button></div>;
 }
 
 /**
@@ -224,6 +227,20 @@ function ToastAnnouncer({ toast }) {
   return <>
     <div className="visually-hidden toast-live toast-live--polite" role="status" aria-live="polite" aria-atomic="true">{toast && kind !== "error" && <span key={toast.id}>{text}</span>}</div>
     <div className="visually-hidden toast-live toast-live--assertive" role="alert" aria-live="assertive" aria-atomic="true">{toast && kind === "error" && <span key={toast.id}>{text}</span>}</div>
+  </>;
+}
+
+/**
+ * Narration messages (issue #97): the same persistent, initially empty
+ * regions, at the shell level beside ToastAnnouncer. A message about audio
+ * that keeps playing is announced even while Settings, the phone menu or a
+ * Reader dialog hides the page behind it. Errors use the alert region; a
+ * background or interruption notice is polite. Each notice is announced once.
+ */
+function NarrationAnnouncer({ notice }) {
+  return <>
+    <div className="narration-live visually-hidden" role="status" aria-live="polite" aria-atomic="true">{notice && notice.severity !== "error" && <span key={notice.id}>{notice.message}</span>}</div>
+    <div className="narration-live visually-hidden" role="alert" aria-live="assertive" aria-atomic="true">{notice?.severity === "error" && <span key={notice.id}>{notice.message}</span>}</div>
   </>;
 }
 
@@ -1462,6 +1479,7 @@ export default function App() {
   // the opt-in setting is on, continue into the next chapter of the same Part.
   const autoAdvanceNarrationRef = useRef(null);
   const [autoNarrateDocId, setAutoNarrateDocId] = useState("");
+  const [narrationNoticeId, setNarrationNoticeId] = useState(0);
   const speech = useSpeech({
     pronunciations: profile.settings.pronunciations,
     voiceURI: profile.settings.voiceURI,
@@ -1473,6 +1491,20 @@ export default function App() {
       if (label !== "Full lecture") return;
       if (profileRef.current.settings.narrationAutoAdvance !== true) return;
       autoAdvanceNarrationRef.current?.();
+    },
+    // Where a narration message goes (issue #97), decided once, when it
+    // arrives. The sleep timer ends the session and the player with it, so
+    // its notice is a toast on whichever screen is open. In the Reader the
+    // player shows the message and NarrationAnnouncer reads it. A lecture
+    // still playing after the learner left the Reader has no player there, so
+    // its message is a toast. That screen has no Retry or Resume, and opening
+    // the lecture again starts a fresh session (Listen resumes a full lecture
+    // from its saved sentence), so the toast names no control, only where to
+    // go. A tutor shows its own reading's messages.
+    onNotice: (notice) => {
+      if (notice.code === "sleep-ended") notify(notice.message, "info", 8000);
+      else if (view === "reader") setNarrationNoticeId(notice.id);
+      else if (notice.label !== TUTOR_SPEECH_LABEL) notify(`${notice.plain} Open the lecture to listen again.`, notice.severity === "error" ? "error" : "warning");
     },
   });
   const wakeLock = useWakeLock(profile.settings.keepScreenAwake && (view === "reader" || view === "board"));
@@ -3276,6 +3308,7 @@ export default function App() {
       {updateRegistration && <div className="update-banner" role="status" inert={appModalOpen} aria-hidden={hiddenBehindModal}><Sparkles size={18} /><span>A new Lumen version is ready.</span><button className="button primary" onClick={applyUpdate} type="button">Update now</button><button className="icon-button small" onClick={() => setUpdateRegistration(null)} aria-label="Dismiss update" type="button"><X size={16} /></button></div>}
       <Toast toast={toast} onClose={dismissToast} />
       <ToastAnnouncer toast={toast} />
+      <NarrationAnnouncer notice={speech.notice?.id === narrationNoticeId ? speech.notice : null} />
     </div>
   );
 }

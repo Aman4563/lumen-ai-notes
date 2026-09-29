@@ -52,13 +52,35 @@ export default function TeachingMode({ title, source, onClose, speech }) {
     return () => clearInterval(timer);
   }, [timerStarted]);
 
-  // Inert background, Exit-first focus, Tab wrap over the controls that are
-  // actually rendered (phone hides some), Escape, and focus restore.
+  // Inert background, focus on the narration control (so Space narrates, as
+  // a presenter expects), Tab wrap over the controls that are actually
+  // rendered (phone hides some), Escape, and focus restore. The control's
+  // name changes with its state, so it is found by a stable attribute.
   useModalDialog(true, rootRef, {
     onClose: close,
     background: TEACHING_BACKGROUND,
-    initialFocus: (root) => root.querySelector('button[aria-label="Exit teaching mode"]'),
+    initialFocus: (root) => root.querySelector("[data-teach-narrate]"),
   });
+
+  // One persistent control narrates, pauses and resumes (issue #97, NM3):
+  // swapping elements dropped focus, and Space on a focused button then did
+  // nothing, or on Exit left Teaching Mode. On a failed sentence it is Retry,
+  // which replays that sentence.
+  const narrateRef = useRef(null);
+  const narrating = speech.status === "speaking" || speech.status === "paused" || speech.canRetry;
+  const message = speech.notice && speech.notice.code !== "sleep-ended" ? speech.notice : null;
+  const narrate = () => {
+    if (narrating) speech.togglePause();
+    else speech.speak(plainTextFromMarkdown(current.markdown), { label: `Teaching section ${index + 1}` });
+  };
+  // Stop leaves once narration ends (tapped or finished); focus that was on
+  // it returns to the narration control. A stable callback, so re-renders
+  // (the timer ticks every second) do not detach it.
+  const stopButtonRef = useRef(null);
+  const trackStopButton = useCallback((node) => {
+    if (node) stopButtonRef.current = node;
+    else if (stopButtonRef.current === document.activeElement) queueMicrotask(() => narrateRef.current?.focus({ preventScroll: true }));
+  }, []);
 
   useEffect(() => {
     const handleKey = (event) => {
@@ -68,14 +90,14 @@ export default function TeachingMode({ title, source, onClose, speech }) {
       if (event.key === "ArrowRight" || event.key === "PageDown") move(1);
       else if (event.key === "ArrowLeft" || event.key === "PageUp") move(-1);
       else if (event.key === " " && event.target === document.body) {
+        // After a tap on the slide focus is on the page; Space still narrates.
         event.preventDefault();
-        if (speech.status === "speaking" || speech.status === "paused") speech.togglePause();
-        else speech.speak(plainTextFromMarkdown(current.markdown), { label: `Teaching section ${index + 1}` });
+        narrate();
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [current.markdown, index, move, speech]);
+  });
 
   const canFullscreen = Boolean(document.documentElement.requestFullscreen);
 
@@ -100,22 +122,17 @@ export default function TeachingMode({ title, source, onClose, speech }) {
         <button className="round-control" onClick={() => move(-1)} disabled={index === 0} aria-label="Previous section" type="button">
           <ChevronLeft size={24} />
         </button>
-        {speech.status === "speaking" || speech.status === "paused" ? (
-          <>
-            <button className="round-control primary" onClick={speech.togglePause} aria-label={speech.status === "paused" ? "Resume" : "Pause"} type="button">
-              {speech.status === "paused" ? <Play size={24} fill="currentColor" /> : <Pause size={24} fill="currentColor" />}
-            </button>
-            <button className="round-control" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={20} fill="currentColor" /></button>
-          </>
-        ) : (
-          <button className="round-control primary" onClick={() => speech.speak(plainTextFromMarkdown(current.markdown), { label: `Teaching section ${index + 1}` })} aria-label="Narrate this section" type="button">
-            <Play size={24} fill="currentColor" />
-          </button>
-        )}
+        <button ref={narrateRef} className="round-control primary" onClick={narrate} aria-label={speech.status === "speaking" ? "Pause narration" : speech.canRetry ? "Retry narration" : narrating ? "Resume narration" : "Narrate this section"} data-teach-narrate="" type="button">
+          {speech.status === "speaking" ? <Pause size={24} fill="currentColor" /> : speech.canRetry ? <RotateCcw size={22} /> : <Play size={24} fill="currentColor" />}
+        </button>
+        {narrating && <button ref={trackStopButton} className="round-control" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={20} fill="currentColor" /></button>}
         <button className="round-control" onClick={() => move(1)} disabled={index === sections.length - 1} aria-label="Next section" type="button">
           <ChevronRight size={24} />
         </button>
         </div>
+        {/* The player is under the slide, so a narration message shows here;
+            NarrationAnnouncer (App) reads it (issue #97). */}
+        {message && <p className="teach-narration-message">{message.message}</p>}
         <div className="teach-section-progress" role="progressbar" aria-label="Teaching progress" aria-valuemin={1} aria-valuemax={sections.length} aria-valuenow={index + 1} aria-valuetext={`Section ${index + 1} of ${sections.length}`}><span style={{ width: `${((index + 1) / sections.length) * 100}%` }} /></div>
       </footer>
       {printReady && (
