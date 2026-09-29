@@ -377,6 +377,17 @@ is no account, analytics SDK, ad SDK, remote database, or automatic cloud sync.
 Deleting the site data or the installed PWA can delete work that has not been
 exported, so make periodic backups.
 
+Some browsers block site storage (a privacy setting such as Safari's **Block
+All Cookies**, a managed-device policy, or a full device). Lumen still opens
+every screen. Small per-device choices, such as the tutor engine, whether the
+reader panel is open, recent searches and an unsent tutor question, then last
+only until Lumen closes, and **Settings** says "This browser is not saving
+preferences on this device". Narration positions and audio bookmarks are not
+kept; a bookmark says it could not be saved. Notes, progress, reviews and
+whiteboards use a separate store and are still saved; if the browser blocks
+that store too, the save status under **Settings → Backup and transfer**
+reads "error", so export a backup before closing Lumen.
+
 ## Updating the curriculum or interface
 
 Edit files in `notes/` or `src/`, then run:

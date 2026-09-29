@@ -18,7 +18,8 @@ to disable retries when diagnosing.
 The browser suites cover reading/editing, narration controls, annotations and
 relocation, reviews and mistakes, imports, whiteboards and exports, backup and
 restore, cross-tab sync, search, keyboard focus, mobile layouts, AI consent and
-recovery, phone model lifecycle, diagrams, and stale application assets.
+recovery, phone model lifecycle, diagrams, stale application assets, and
+blocked or full browser storage.
 Synthetic speech/WebGPU fixtures check application behavior; they do not prove
 audible output or GPU compatibility on a physical iPhone.
 
@@ -3328,3 +3329,96 @@ with no budget raised. The full `npm run check:browser` passed all 13
 suites on the first attempt with no retries (`a11y` 114 axe runs with the
 empty allowlist, 7 screen states; `responsive` 478 checks) at a load
 average of about 27–30; `mermaid` passed first time.
+
+## Bugs reproduced on 2026-09-29: blocked Web Storage (#139)
+
+Against main (0c69d18, and again at 01c7a89 after the read-aloud fixes #144
+merged), built into a scratch directory and served the way `check:browser`
+serves a build:
+
+- With `window.localStorage` and `window.sessionStorage` getters that throw
+  a SecurityError, as storage blocked by Safari's Block All Cookies, a
+  managed policy or a sandboxed frame does, every route showed "Lumen could
+  not render this screen": Home, Library, a lecture, Review, Notebook, the
+  whiteboard, the AI studio and device evidence, each loaded fresh at
+  393×852. A stack captured in the throwing getter named `readVaultConfig`
+  in `syncIdentity.js`: its `storage = globalThis.localStorage` default
+  parameter is evaluated before the function's `try`, and App calls it in
+  its first render. `getDeviceId`, the tutor's quiz and practice state
+  (`sessionStorage`) and the On-device Lite engine had the same default.
+- With `getItem` and `removeItem` throwing a SecurityError and `setItem` a
+  QuotaExceededError, the routes rendered, but the tutor engine choice reset
+  to Mac local on a route change: nothing kept a preference the browser
+  refused.
+- `src/` held 29 direct `localStorage`/`sessionStorage` references in 13
+  files, each guarded (or not) its own way.
+
+`src/lib/safeStorage.js` is now the only code that names either store. It
+looks the store up inside `try` on every call and never throws. Preferences
+(the engine choice, the reader panel, recent searches, the local-model
+disclosure, tutor drafts, quiz and practice state, device and vault
+identity) use a store that keeps a refused change in memory for the visit.
+Download consent and its revocation, the chunk-recovery marker, narration
+positions, audio bookmarks, the IndexedDB fallback journal and the cross-tab
+signals use a durable store with no memory copy that returns `false` for a
+refused write, so each keeps its fail-closed behaviour (#96's bookmarks still
+report "could not save the bookmark" and list as empty). Once a localStorage
+access fails, or a probe write when Settings opens is refused, Settings shows
+"This browser is not saving preferences on this device", adding that notes,
+progress and reviews are saved separately unless the save status is
+"error". The notice uses the tested `--ai-warn` on `--gold-soft` pair and is
+announced once per visit through a polite status region filled after mount.
+
+How each is now checked:
+
+- `src/lib/safeStorage.test.mjs` (part of `audit:ai`, so `npm run check`)
+  covers the helper: a throwing accessor, a refusing store, injected and
+  missing stores, the probe, and when a memory copy is and is not used. Its
+  last case strips comments from every `src/` source and fails on any
+  `localStorage` or `sessionStorage` outside the helper; on main's sources it
+  lists all 29 references with file and line.
+- `audit:storage-blocked`, a new `check:browser` suite, loads every route
+  fresh at 393×852 and 1280×800 with the throwing accessor and then with the
+  refusing store. It searches the library and sees the recent search kept,
+  plays full-lecture narration through three sentences and bookmarks one (the
+  toast says it could not be saved), creates and grades a review card, draws
+  a whiteboard arrow and waits for IndexedDB to hold it, gets a Mac tutor
+  answer after acknowledging the disclosure in the page, opens On-device
+  Lite, and checks that the engine choice and an unsent Mac draft survive an
+  engine switch and a route change. In Settings the notice must show, be
+  announced once and not again on reopening, fit a 320 px phone at 200%
+  text, and pass axe in Paper, Night and Contrast while a theme change still
+  saves. A working-storage case must show no notice and keep the engine
+  choice across a reload. On main: "#/home showed “Lumen could not render
+  this screen” (SecurityError: The operation is insecure.)" for the throwing
+  accessor and "the engine choice reset on a route change" for the refusing
+  store, at both sizes.
+- `audit:storage` gains a case with IndexedDB failing and Web Storage
+  refusing reads and writes: a save must reject as "Persistent browser
+  storage is unavailable" and a read in the same session must still return it
+  from the in-memory journal. Main passes it (its read threw into the
+  journal's `catch`). A first version of this branch passed `undefined` as
+  the "refused read" value, which selects the parameter's `null` default, so
+  the journal read as empty; the case failed there with `undefined` instead of
+  the saved record, and the journal now passes a Symbol.
+- #96's checks are unchanged and pass: `narrationPositions.test.mjs`,
+  `audioBookmarks.test.mjs`, and `audit:audio`'s throwing-storage cases.
+
+Found and not fixed here: at 320 px with 200% text, Settings on main already
+scrolls sideways by 9 px, because the backup password and sync passphrase
+fields and their labels are wider than the drawer. The storage notice fits,
+so the new audit measures the notice itself.
+
+Budgets (`npm run size`, rebased onto 01c7a89): entry 622,803 bytes (main
+622,935), the HTML loads 652,136 bytes of JavaScript (main 651,210; the
+helper is one shared preloaded chunk), install 689,334 bytes in 41 files
+(main 688,842), warm unchanged at 305,006. No budget changed.
+
+Gate on the rebased branch: `npm run check` passed (`audit:ai` 590/590,
+`audit:ai-eval` 27 cases, hit@1 0.913). The full `npm run check:browser`
+passed all 14 suites (`storage-blocked` 72 s, `a11y` 114 axe runs with the
+empty allowlist) at a load average of 26–105 from other work on the
+machine. `workflow` passed only on retry: its first attempt timed out after
+30 s waiting for `.reader-view` after opening an uploaded note (visual took
+30 minutes in the same run). Rerun alone twice with `LUMEN_BROWSER_RETRIES=0` it
+passed both times (364 s and 67 s) at a load average of 80–128.

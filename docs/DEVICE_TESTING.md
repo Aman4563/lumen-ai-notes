@@ -87,11 +87,35 @@ note the iOS version with each verdict.
    stop. The Reader must never show "Lumen could not render this screen".
    Narration keeps playing, and a bookmark that could not be saved says so
    instead of claiming it was saved. Record whether resume and bookmarks
-   persisted in each mode. This step covers storage that fails on write. Do
-   not use Settings → Safari → Block All Cookies for it: with storage blocked
-   outright, reading `localStorage` itself throws, and Lumen currently fails
-   at startup, before narration runs, on main as well. That is a separate
-   app-shell issue.
+   persisted in each mode. This step covers storage that fails on write.
+   Storage blocked outright (Block All Cookies), where reading `localStorage`
+   itself throws, is covered by the next section.
+
+## Blocked storage checks that need a device (issue #139)
+
+`audit:storage-blocked` loads every route in Chrome with a throwing
+`localStorage`/`sessionStorage` accessor and with a store whose writes throw
+`QuotaExceededError` and reads `SecurityError`. Only an iPhone shows what
+Safari's own blocking does. Note the iOS version and whether Lumen ran in a
+Safari tab or from the Home Screen, and add the verdict to the device
+evidence report in issue #7.
+
+1. **Every screen with storage blocked.** Turn on Settings → Apps → Safari →
+   Block All Cookies (Settings → Safari on iOS 17 and earlier) and open
+   Lumen. Visit Home, Library (search for "gradient"), a lecture (start Full
+   lecture from Listen and bookmark a sentence), Review (add and grade a
+   card), Notebook, the whiteboard (draw an arrow), the AI tutor (Mac local,
+   then On-device Lite) and Settings. No screen may show "Lumen could not
+   render this screen". The bookmark must say it could not be saved.
+2. **The Settings notice.** Settings must show "This browser is not saving
+   preferences on this device". With VoiceOver on, opening Settings reads it
+   once; closing and reopening Settings must not read it again. Record the
+   "Save status" under Backup and transfer: if Safari also blocked IndexedDB,
+   it reads "error" and the notice leaves out its sentence about study data.
+3. **Preferences last the visit only.** Switch the tutor to On-device Lite,
+   go Home and back: it stays. Reload: it is back on Mac local. Turn Block
+   All Cookies off and reload: the notice is gone, and a switched engine
+   survives a reload again.
 
 ## Offline tools that need a device (issue #95)
 

@@ -56,7 +56,7 @@ Run both parts before asking for review:
 ```sh
 npm run check           # curriculum, unit, scale, storage, backup, AI/data suites,
                         # retrieval evaluation, production build and app audit
-npm run check:browser   # 13 browser suites against an isolated server
+npm run check:browser   # 14 browser suites against an isolated server
 ```
 
 `npm run check:release` runs both in order. `check:browser` starts its own

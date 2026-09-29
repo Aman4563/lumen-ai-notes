@@ -262,6 +262,22 @@ session products remain Backlog even though the curriculum contains related pros
 - a localStorage fallback journal and an in-memory emergency fallback;
 - an internal budget ledger and authoritative replacement snapshots.
 
+Web Storage is touched only through `src/lib/safeStorage.js` (issue #139), which looks the
+store up inside `try` on every call and never throws: where a browser blocks site storage,
+reading `localStorage` itself throws a SecurityError, and a full store throws a
+QuotaExceededError on write. `safeLocalStorage`/`safeSessionStorage` keep a refused change in
+memory for the session (the engine choice, reader panel, recent searches, the local-model
+disclosure, tutor drafts, quiz and practice state, device and vault identity).
+`durableLocalStorage`/`durableSessionStorage` have no memory copy and return `false` for a
+refused write; download consent and its revocation, the chunk-recovery marker, narration
+positions and audio bookmarks, the fallback journal and the cross-tab signals use them.
+`getItem(key, unavailable)` tells a refused read from a missing key when `unavailable` is a
+sentinel such as a Symbol (not `undefined`, which selects the null default); the journal then
+returns its in-memory copy, as `audit:storage` checks. Once any localStorage access fails, or Settings' probe write is refused,
+Settings shows "This browser is not saving preferences on this device", announced once per
+visit. `src/lib/safeStorage.test.mjs` fails if any other file in `src/` names either store;
+`audit:storage-blocked` loads every route with a throwing accessor and with a refusing store.
+
 The profile contains progress, reading positions, bookmarks, notes, clips, annotations,
 review data, backup metadata, Mac tutor history/tombstones, edits, custom documents,
 recents, last document, and user settings. Boards are separate records.
@@ -853,11 +869,12 @@ Narration state rules (issue #96), which later narration work builds on:
   Range boxes cross the reading line (`sentenceIndexAt`). Nothing inside `.diagram-shell`
   (a diagram's failure message and raw source) is narrated.
 - Positions: resume positions (`src/lib/narrationPositions.js`) and audio bookmarks store
-  `{v: 2, index, total, snippet, section}` in localStorage, resolved inside `try`, so a
-  blocked or full store never breaks the Reader. `locatePosition` finds the chunk at
-  `index` that still starts with the 60-character snippet, then the nearest chunk that does,
-  then `index` itself when the queue has the saved length and the same section there (a
-  pronunciation override or an edit in place rewords the sentence), then the section start
+  `{v: 2, index, total, snippet, section}` in localStorage through `safeStorage.js`'s durable
+  store, so a blocked or full store never breaks the Reader and a refused write reads as
+  none. `locatePosition` finds the chunk at `index` that still starts with the 60-character
+  snippet, then the nearest chunk that does, then `index` itself when the queue has the saved
+  length and the same section there (a pronunciation override or an edit in place rewords
+  the sentence), then the section start
   (announced as such), and otherwise starts over with a notice. Resume never lands on the
   last chunk. Version 1 integers are bounds-checked. Bookmarks play the full lecture
   whatever the panel's target. The Reader writes a position or bookmark only for the lecture
@@ -1770,6 +1787,10 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   and scale x and y uniformly.
 - Backup preflight and recovery snapshot precede destructive replacement.
 - Failures remain visible; never claim data/cache deletion before post-check succeeds.
+- Web Storage goes only through `src/lib/safeStorage.js`; no default parameter or module
+  scope names `localStorage`/`sessionStorage`. Anything that must know a write landed
+  (consent, revocation, the chunk-recovery marker) uses the durable store, never the
+  session-memory one.
 
 ### AI input/output
 
@@ -1850,6 +1871,8 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - [src/lib/boardSync.js](../../src/lib/boardSync.js) — board merge/rebase.
 - [src/lib/backup.js](../../src/lib/backup.js) — canonical backup, integrity, preflight.
 - [src/lib/storageBudget.js](../../src/lib/storageBudget.js) — 20 MiB/250-board aggregate gate.
+- [src/lib/safeStorage.js](../../src/lib/safeStorage.js) — the only Web Storage access: session
+  and durable stores that never throw, and the device status behind Settings' notice.
 - [src/components/Settings.jsx](../../src/components/Settings.jsx) and
   [src/components/Notebook.jsx](../../src/components/Notebook.jsx) — lazy install-tier screens;
   [src/components/DocumentCard.jsx](../../src/components/DocumentCard.jsx) is shared with Home.
