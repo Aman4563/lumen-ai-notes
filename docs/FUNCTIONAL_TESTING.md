@@ -3364,10 +3364,10 @@ signals use a durable store with no memory copy that returns `false` for a
 refused write, so each keeps its fail-closed behaviour (#96's bookmarks still
 report "could not save the bookmark" and list as empty). Once a localStorage
 access fails, or a probe write when Settings opens is refused, Settings shows
-"This browser is not saving preferences on this device", adding that notes,
-progress and reviews are saved separately unless the save status is
-"error". The notice uses the tested `--ai-warn` on `--gold-soft` pair and is
-announced once per visit through a polite status region filled after mount.
+"This browser is not saving preferences on this device". The notice uses the
+tested `--ai-warn` on `--gold-soft` pair and is announced once per visit.
+(The review follow-up below changed when it says study data is saved and how
+it is announced.)
 
 How each is now checked:
 
@@ -3422,3 +3422,114 @@ machine. `workflow` passed only on retry: its first attempt timed out after
 30 s waiting for `.reader-view` after opening an uploaded note (visual took
 30 minutes in the same run). Rerun alone twice with `LUMEN_BROWSER_RETRIES=0` it
 passed both times (364 s and 67 s) at a load average of 80–128.
+
+## Review follow-up on 2026-09-29: blocked Web Storage (#139)
+
+Reproduced against this branch's first version (da0c279), built into a
+scratch directory and served the way `check:browser` serves a build:
+
+- Under Chrome's own cookie blocking, set in a fresh profile
+  (`default_content_setting_values.cookies = 2`, not an injected mock),
+  `localStorage` throws a SecurityError and `indexedDB.open` fails with
+  UnknownError. Opening Settings before any change showed the notice with
+  "Notes, progress and reviews are saved separately and are not affected."
+  and "Save status: saved", although nothing could be saved; the first change
+  then failed with "Lumen cannot safely measure the existing workspace while
+  durable storage is unavailable…". Save status starts as "saved", and
+  `getData()` reads a blocked database as empty, so neither said anything
+  about IndexedDB.
+- In the same mode Export backup downloaded a valid backup, but the toast
+  said "Backup failed: …": the export-date commit after the download shared
+  the export's `catch`. The failed save advised "reduce local data", which
+  cannot help storage that is blocked rather than full.
+- A sync vault created with storage blocked lasted the visit, was gone after
+  a reload, and a new device id was minted each visit; nothing said so.
+- The notice's status region was inserted already filled in one frame
+  (Settings is preloaded, so the click's effect committed before a frame),
+  repeated the notice in the accessibility tree, and kept the study-data
+  sentence after the visible notice dropped it.
+- One refused large localStorage write (the fallback journal over the quota)
+  kept the notice up for the visit while small preferences still saved: the
+  probe returned early once any failure was recorded.
+- The notice named "the AI engine" and "the reader panel"; the screen says
+  "Tutor engine", and phones never save the reader panel.
+- `audit:storage-blocked` reached its routes with hash-only `page.goto`
+  calls, which stay in one document, so only the first route of each case was
+  an entry point. Its working-storage control never reloaded: with
+  `Storage.prototype.setItem` replaced by a no-op, its engine assertion still
+  passed.
+- The chunk-recovery fix for a throwing `sessionStorage` accessor had no
+  check.
+
+What changed:
+
+- Settings runs `checkStudyDataStorage()` from `db.js`, a readwrite
+  IndexedDB transaction that adds and removes a probe record, and says study
+  data is saved only after it commits and while Save status is not "error".
+- The status region is always rendered, empty; the notice goes in 250 ms
+  after the checks and leaves 5 s later, and a notice that changed is never
+  left there.
+- `checkDeviceStorage()` always probes, so a failure that has passed clears.
+- While settings are not saved, the sync card says sync needs this browser
+  to save settings, Create sync vault and Join via a peer's file stay off,
+  and the notice says cross-device sync is off. A vault created as its write
+  is refused says it lasts this visit only.
+- A failure after the backup download is a warning: "Backup verified with
+  SHA-256 and downloaded. This browser could not record the export date, so
+  Last export is unchanged." A `BUDGET_STATE_UNAVAILABLE` save error advises
+  exporting a backup; the whiteboard's says the change stays until storage
+  access recovers.
+- The notice reads "Choices such as the tutor engine, recent searches and an
+  unsent tutor question last until Lumen closes, and cross-device sync is
+  off."
+
+How each is now checked:
+
+- `audit:storage-blocked`: `open()` leaves through `about:blank` and asserts
+  that a marker set on the previous document is gone. A per-frame sampler
+  started before Open settings requires the region that carries the notice
+  to have been on screen empty in an earlier frame, and the region must
+  empty again after the axe runs. With IndexedDB working the notice must say
+  study data is saved; with a passphrase entered the sync card must warn and
+  keep Create and Join off. A new case under Chrome's cookie blocking, at
+  393×852 and 1280×800, first proves storage really is blocked, opens
+  Settings before any change and requires no study-data sentence, requires
+  sync off, loads every route as a new document at phone size, exports a
+  backup and requires the file and a toast that says "downloaded" and not
+  "Backup failed", then changes the theme and requires a toast that advises a
+  backup (not reducing data), Save status "error" and still no study-data
+  sentence. The working-storage control reloads for real, reads
+  `lumen.ai.engine.v1` from `localStorage`, and requires Create and Join to
+  work with a passphrase.
+  On da0c279 every case fails: "the storage notice went into a status region
+  that was never on screen empty, so it may not be announced" (throwing
+  accessor at both sizes, refusing store and blocked site data at desktop),
+  "the storage notice stayed in a status region after it was announced"
+  (refusing store at phone), and "with IndexedDB blocked as well, Settings
+  said study data is saved" (blocked site data at phone). With those
+  assertions removed in scratch copies, the next ones fail there too: "the
+  sync card let a vault be created or joined" in all six cases, then "a
+  backup that downloaded was reported as “Error: Backup failed: …”", then
+  "blocked storage was reported as full". With `setItem` a no-op, the new
+  control fails with "the engine choice never reached localStorage"; the old
+  control's engine assertion passed. On main (01c7a89) every blocked case,
+  Chrome's cookie blocking included, fails with "#/home showed “Lumen could
+  not render this screen”", and the refusing store with "the engine choice
+  reset on a route change".
+- `src/lib/safeStorage.test.mjs`: "a refused large write marks the status
+  false only until a probe succeeds"; on da0c279 it fails with "the probe
+  runs although an earlier access failed".
+- `src/lib/chunkRecovery.test.mjs`: with a throwing `sessionStorage` getter
+  and the default store, and with a store whose `setItem` returns `false`
+  while an old marker still reads back, `schedule()` must return false with
+  no reload. On main both return true and reload once.
+- `audit:storage`: `checkStudyDataStorage()` is false when the database will
+  not open or a transaction fails, true otherwise, and leaves no record.
+
+Found and not fixed here: under Chrome's cookie blocking, Storage health
+shows the browser's own message "Failed to execute 'keys' on 'CacheStorage':
+An attempt was made to break through the security policy of the user agent."
+That wording predates this branch; it is reachable now that the app runs in
+this mode.
+
+GATE_PLACEHOLDER
