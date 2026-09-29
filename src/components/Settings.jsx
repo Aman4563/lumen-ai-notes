@@ -1,7 +1,8 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertTriangle, Brain, BrainCircuit, Check, CircleUserRound, Contrast, Download, Import, Keyboard, Moon, Palette, RefreshCw, RotateCcw, Share, Smartphone, Sparkles, Sun, Trash2, Volume2, Wifi, WifiOff } from "lucide-react";
 import ErrorBoundary from "./ErrorBoundary";
 import { recoverableImport } from "../lib/chunkRecovery.js";
+import { checkDeviceStorage, deviceStorageSaves, subscribeDeviceStorage } from "../lib/safeStorage.js";
 import { syncFileNameFor } from "../lib/syncIdentity.js";
 
 // Settings. It left the startup bundle for its budget (issue #95) and is an
@@ -10,6 +11,32 @@ const StorageHealth = lazy(() => recoverableImport(() => import("./StorageHealth
 
 const THEME_CHOICES = [{ id: "system", label: "System", icon: CircleUserRound }, { id: "paper", label: "Paper", icon: Sun }, { id: "dark", label: "Night", icon: Moon }, { id: "contrast", label: "Contrast", icon: Contrast }];
 const THEME_KEY_STEPS = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+
+// Issue #139: where the browser refuses Web Storage, per-device preferences
+// last only until Lumen closes. The notice stays visible on every open but is
+// announced once per visit, politely, so reopening Settings does not repeat it.
+const STORAGE_NOTICE_TITLE = "This browser is not saving preferences on this device";
+const STORAGE_NOTICE_DETAIL = "Choices such as the AI engine, the reader panel and recent searches last until Lumen closes.";
+const STORAGE_NOTICE_STUDY_DATA = "Notes, progress and reviews are saved separately and are not affected.";
+let storageNoticeAnnounced = false;
+
+function DeviceStorageNotice({ studyDataSaving }) {
+  const [announcement, setAnnouncement] = useState("");
+  const detail = studyDataSaving ? `${STORAGE_NOTICE_DETAIL} ${STORAGE_NOTICE_STUDY_DATA}` : STORAGE_NOTICE_DETAIL;
+  useEffect(() => {
+    if (storageNoticeAnnounced) return;
+    storageNoticeAnnounced = true;
+    // Filled after mount so the polite region changes and is announced.
+    setAnnouncement(`${STORAGE_NOTICE_TITLE}. ${detail}`);
+  }, [detail]);
+  return (
+    <div className="settings-storage-notice">
+      <AlertTriangle size={19} aria-hidden="true" />
+      <div><strong>{STORAGE_NOTICE_TITLE}</strong><span>{detail}</span></div>
+      <p className="visually-hidden" role="status">{announcement}</p>
+    </div>
+  );
+}
 
 export default function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onShowShortcuts, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage, syncVault, syncDeviceId, onCreateSyncVault, onLeaveSyncVault, onSyncExport, onSyncImport }) {
   const importRef = useRef(null);
@@ -27,11 +54,15 @@ export default function SettingsView({ settings, backupMeta, aiHistoryCount, onC
     onSettingsChange({ theme: THEME_CHOICES[target].id });
     themeButtonsRef.current[target]?.focus();
   };
+  const storageSaves = useSyncExternalStore(subscribeDeviceStorage, deviceStorageSaves, deviceStorageSaves);
+  // A probe write catches a store that nothing has touched yet this visit.
+  useEffect(() => { checkDeviceStorage(); }, []);
   const fontScaleLabel = `${Math.round(settings.fontScale * 100)}%`;
   const lineHeightLabel = String(settings.lineHeight);
   return (
     <div className="page settings-page">
       <p className="settings-intro">Appearance, reading comfort, narration, AI, backups, storage, and iPhone installation.</p>
+      {!storageSaves && <DeviceStorageNotice studyDataSaving={saveStatus !== "error"} />}
       <section className="settings-card" aria-labelledby="settings-appearance-title">
         <div className="settings-card-heading"><Palette size={21} aria-hidden="true" /><div><h2 id="settings-appearance-title">Appearance and reading</h2><span>Choose a reading atmosphere and comfortable text.</span></div></div>
         <div className="theme-choices" role="radiogroup" aria-label="Theme">

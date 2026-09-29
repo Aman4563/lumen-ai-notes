@@ -64,7 +64,7 @@ const SURFACES = ["--paper", "--paper-2", "--paper-3"];
 const TEXT_TOKENS = ["--ink", "--ink-soft", "--ink-faint", "--coral-text", "--teal-text", "--danger", "--ai-warn", "--accent"];
 const TEXT_PAIRS = [
   ["--ink-faint", "--coral-soft"], ["--ink-faint", "--teal-soft"], ["--ink-faint", "--gold-soft"], ["--ink-faint", "--violet-soft"],
-  ["--coral-text", "--coral-soft"], ["--teal-text", "--teal-soft"], ["--ai-warn", "--gold-soft"],
+  ["--coral-text", "--coral-soft"], ["--teal-text", "--teal-soft"], ["--ai-warn", "--gold-soft"], ["--ink", "--gold-soft"],
   ["--accent-strong", "--accent-soft"], ["--on-primary", "--primary-bg"],
   ["--sidebar-ink", "--sidebar-bg"], ["--sidebar-ink-muted", "--sidebar-bg"], ["--sidebar-accent", "--sidebar-bg"],
   ["--select-ink", "--select-bg"], ["--select-ink", "--select-bg-hover"], ["--select-ink", "--select-menu-bg"], ["--select-checked-ink", "--select-checked-bg"],
