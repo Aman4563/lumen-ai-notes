@@ -459,8 +459,11 @@ const startScriptedServer = async () => {
 };
 
 // An in-page stream that delivers deltas over time, armed per request with
-// window.__lumenAuditSlowStream = { paragraphs, phases }. It checks
-// following, scrolling back, Stop and Esc without a real model.
+// window.__lumenAuditSlowStream = { paragraphs, phases, holdAfter }. It checks
+// following, scrolling back, Stop and Esc without a real model. After a
+// phase named in `holdAfter` the stream waits until the audit sets
+// window.__lumenAuditRelease[phase], so a step the audit reads stays on
+// screen until it has been read, however slow the machine (#138).
 const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
@@ -482,6 +485,10 @@ const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
           await new Promise((resolve) => setTimeout(resolve, slow.phaseDelayMs || 400));
           if (init.signal?.aborted) return;
           send({ type: "phase", requestId: response.requestId, phase, message });
+          if (slow.holdAfter?.includes(phase)) {
+            const deadline = Date.now() + 60_000;
+            while (!window.__lumenAuditRelease?.[phase] && !init.signal?.aborted && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
         }
         const pieces = text.match(/[\s\S]{1,120}/g);
         for (let index = 0; index < pieces.length; index += 1) {
@@ -2774,6 +2781,7 @@ try {
     });
     await setKeysPrompt("Progress check: explain the bias-variance trade-off from my notes.");
     await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
       window.__lumenAuditSlowStream = {
         paragraphs: 8,
         phaseDelayMs: 700,
@@ -2782,6 +2790,9 @@ try {
           ["generating", "Generating the answer with the local model."],
           ["validating", "Checking completion and grounding before finalizing the answer."],
         ],
+        // Each step below is read before the stream moves past it, not
+        // within the 700 ms before the next phase (#138).
+        holdAfter: ["generating", "validating"],
       };
     });
     await page.keyboard.press("Enter");
@@ -2793,7 +2804,9 @@ try {
     const waitingCopy = await page.$eval(".ai-tutor__message--streaming", (node) => node.textContent);
     assert.doesNotMatch(waitingCopy, /Preparing your answer and checking sources/, "a waiting line repeated the progress steps");
     assert.doesNotMatch(waitingCopy, /egress/i, "the waiting state used pipeline jargon");
+    await page.evaluate(() => { window.__lumenAuditRelease.generating = true; });
     await page.waitForFunction(() => document.querySelector(".ai-tutor__progress li.is-active")?.textContent.includes("Checking citations"), { timeout: 8_000 }).catch(() => assert.fail("the validating phase did not activate Checking citations"));
+    await page.evaluate(() => { window.__lumenAuditRelease.validating = true; });
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     const progressAnnouncements = [...new Set(await page.evaluate(() => window.__lumenAuditAnnouncements))].filter(Boolean);
     assert.ok(progressAnnouncements.some((text) => /^Found \d+ passages?\. Drafting the answer…$/.test(text)), `drafting was not announced: ${JSON.stringify(progressAnnouncements)}`);
