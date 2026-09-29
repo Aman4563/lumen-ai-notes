@@ -742,9 +742,16 @@ try {
   assert.equal(await page.$eval(sendButtonSelector, (button) => button.disabled), true, "an empty question box armed Send");
   await useSuggestion(page);
   assert.equal(await page.$eval(sendButtonSelector, (button) => button.disabled), false, "loaded local model did not enable a valid prompt");
+  // The fixture holds the answer after its first token until the streaming
+  // state below has been read, instead of for 120 ms (#138).
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.holdNextStream = true; });
   await page.click(sendButtonSelector);
   // A model "##" heading renders as h4 below the per-message heading.
   await page.waitForSelector(".phone-tutor__message.is-streaming .phone-tutor__safe-response h4.ai-tutor__md-h2");
+  await page.evaluate(() => {
+    window.__PHONE_AI_AUDIT__.holdNextStream = false;
+    window.__PHONE_AI_AUDIT__.releaseStream?.();
+  });
   await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant")].some((node) => node.textContent.includes("negative loss gradient")));
   assert.ok(await page.$(".phone-tutor__message.is-assistant .katex-display"), "display LaTeX was not rendered through KaTeX");
   assert.ok(await page.$(".phone-tutor__message.is-assistant table"), "GFM table was not rendered");
@@ -912,10 +919,18 @@ try {
   await page.waitForSelector(".phone-tutor__search-consent");
   assert.match(await page.$eval(".phone-tutor__search-consent", (node) => node.textContent), /Safari 26 WebGPU release notes/, "a valid local-planner query was not preferred on the fresh retry");
   assert.deepEqual(await page.evaluate(() => window.__PHONE_AI_AUDIT__.searchDecisions), [{ searchId: "audit-search-1", consent: false }], "retry reused the declined proposal instead of creating a fresh approval");
+  // The answer is held after its first token until the controls have been
+  // read: the fixture's 150 ms of generation once ended first (#138).
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.holdNextStream = true; });
   await clickByText(page, ".phone-tutor__search-consent button", "Send this query");
   await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.searchRequests === 1);
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__search-consent") && document.querySelector(".phone-local-ai-actions button")?.disabled, { timeout: 5_000 }).catch(() => {});
   assert.equal(await page.$(".phone-tutor__search-consent"), null, "consumed search-consent card remained tappable while its query was already in flight");
   assert.equal(await page.$eval(".phone-local-ai-actions button", (buttons) => buttons.disabled), true, "model lifecycle controls stayed enabled during generation");
+  await page.evaluate(() => {
+    window.__PHONE_AI_AUDIT__.holdNextStream = false;
+    window.__PHONE_AI_AUDIT__.releaseStream?.();
+  });
   await page.waitForSelector(".phone-tutor__web-sources a");
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.searchRequests), 1, "approved query was not searched exactly once");
   assert.equal(await page.$eval(".phone-tutor__web-sources a", (anchor) => anchor.getAttribute("href")), "https://developer.apple.com/documentation/safari-release-notes/safari-26-release-notes");
