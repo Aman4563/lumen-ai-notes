@@ -1788,7 +1788,9 @@ try {
       const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
       let text = walker.nextNode();
       while (text && !text.textContent.includes(label)) text = walker.nextNode();
-      text.parentElement.scrollIntoView({ block: "center" });
+      // The page scrolls smoothly; hit-test where the text ends up, not
+      // mid-scroll under the top bar (#138).
+      text.parentElement.scrollIntoView({ block: "center", behavior: "instant" });
       const range = document.createRange();
       range.setStart(text, text.textContent.indexOf(label));
       range.setEnd(text, text.textContent.indexOf(label) + label.length);
@@ -2340,11 +2342,15 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 800));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "streaming pulled the page back after the learner scrolled away");
     const pillText = () => page.$eval(".ai-tutor__jump", (node) => node.textContent.trim()).catch(() => "");
+    // The window above only proves nothing pulled the page back; the pill
+    // itself is awaited, not assumed to have rendered within it (#138).
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.trim() === "Jump to latest" || !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 }).catch(() => {});
     assert.equal(await pillText(), "Jump to latest", "no Jump to latest was offered while the learner read elsewhere");
     assert.deepEqual(await page.$eval(".ai-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the jump pill was a live region or too small to tap");
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.trim() === "Answer ready", { timeout: 5_000 }).catch(() => {});
     assert.equal(await pillText(), "Answer ready", "a finished answer out of view was not offered");
     // From the keyboard, the pill takes focus to the new answer.
     await page.$eval(".ai-tutor__jump", (button) => button.focus());
@@ -3347,7 +3353,10 @@ try {
     assert.equal(afterBreak.conversationSummary, "", "turns before the break were summarised");
 
     // After a long break the next question starts fresh; the divider sits
-    // at the end until it is asked.
+    // at the end until it is asked. Patch only once the app has stored the
+    // answer above, or its save (or the reload's flush) can land over the
+    // patch (#138).
+    await waitForStoredHistory(page, 6);
     await patchStoredProfile(page, { aiTutorHistory: [
       turn("old-q", "user", "Yesterday: how does linear regression work?", 300),
       turn("old-a", "assistant", "Linear regression fits a line by least squares.", 299),
