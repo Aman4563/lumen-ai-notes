@@ -1,4 +1,5 @@
 import { createId } from "./id.js";
+import { safeLocalStorage } from "./safeStorage.js";
 
 /**
  * SYNC-001 device identity and vault membership. Settings renders these on
@@ -12,8 +13,11 @@ export const VAULT_CONFIG_STORAGE_KEY = "lumen-sync-vault-v1";
 // The sync baseline lives in its own IndexedDB database (see syncVault.js).
 export const SYNC_BASELINE_DATABASE = "lumen-sync-baseline-v1";
 
-/** Durable per-device identity — distinct from the per-tab writerId. */
-export const getDeviceId = (storage = globalThis.localStorage) => {
+/**
+ * Durable per-device identity — distinct from the per-tab writerId. Where the
+ * browser will not store it, the id holds for this session (safeStorage.js).
+ */
+export const getDeviceId = (storage = safeLocalStorage) => {
   try {
     const stored = String(storage.getItem(DEVICE_ID_STORAGE_KEY) || "");
     if (/^[a-z0-9-]{8,80}$/i.test(stored)) return stored;
@@ -28,7 +32,7 @@ export const getDeviceId = (storage = globalThis.localStorage) => {
 
 export const syncFileNameFor = (deviceId) => `${deviceId}.lumenc`;
 
-export const readVaultConfig = (storage = globalThis.localStorage) => {
+export const readVaultConfig = (storage = safeLocalStorage) => {
   try {
     const parsed = JSON.parse(storage.getItem(VAULT_CONFIG_STORAGE_KEY) || "null");
     if (!parsed || typeof parsed.vaultId !== "string" || parsed.vaultId.length < 8 || parsed.vaultId.length > 200) return null;
@@ -45,23 +49,23 @@ export const readVaultConfig = (storage = globalThis.localStorage) => {
 const writeVaultConfig = (storage, config) => {
   try {
     storage.setItem(VAULT_CONFIG_STORAGE_KEY, JSON.stringify(config));
-  } catch { /* storage failure surfaces on the next read as "no vault" */ }
+  } catch { /* an injected store that throws reads as "no vault" next time */ }
   return config;
 };
 
-export const createVaultConfig = (storage = globalThis.localStorage, now = new Date()) =>
+export const createVaultConfig = (storage = safeLocalStorage, now = new Date()) =>
   writeVaultConfig(storage, { vaultId: createId(), createdAt: now.toISOString(), lastSyncAt: "" });
 
 /** Joining via a peer's sync file adopts that file's vault id. */
-export const adoptVaultConfig = (vaultId, storage = globalThis.localStorage, now = new Date()) =>
+export const adoptVaultConfig = (vaultId, storage = safeLocalStorage, now = new Date()) =>
   writeVaultConfig(storage, { vaultId: String(vaultId).slice(0, 200), createdAt: now.toISOString(), lastSyncAt: "" });
 
-export const recordVaultSync = (storage = globalThis.localStorage, now = new Date()) => {
+export const recordVaultSync = (storage = safeLocalStorage, now = new Date()) => {
   const config = readVaultConfig(storage);
   return config ? writeVaultConfig(storage, { ...config, lastSyncAt: now.toISOString() }) : null;
 };
 
-export const clearVaultConfig = (storage = globalThis.localStorage) => {
+export const clearVaultConfig = (storage = safeLocalStorage) => {
   try {
     storage.removeItem(VAULT_CONFIG_STORAGE_KEY);
   } catch { /* nothing to clear */ }

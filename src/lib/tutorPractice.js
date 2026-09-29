@@ -1,3 +1,4 @@
+import { safeSessionStorage } from "./safeStorage.js";
 import { withoutCitationLabels } from "./tutorFollowUps.js";
 
 /**
@@ -56,7 +57,7 @@ export const normalizePracticeState = (value) => {
   };
 };
 
-export const readPracticeState = (storage = globalThis.sessionStorage) => {
+export const readPracticeState = (storage = safeSessionStorage) => {
   try {
     return normalizePracticeState(JSON.parse(storage?.getItem(PRACTICE_STATE_KEY) || "{}"));
   } catch {
@@ -64,7 +65,7 @@ export const readPracticeState = (storage = globalThis.sessionStorage) => {
   }
 };
 
-export const writePracticeState = (state, storage = globalThis.sessionStorage) => {
+export const writePracticeState = (state, storage = safeSessionStorage) => {
   try {
     storage?.setItem(PRACTICE_STATE_KEY, JSON.stringify(normalizePracticeState(state)));
   } catch {

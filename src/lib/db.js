@@ -13,6 +13,7 @@ import {
   summarizeOwnedData,
   summarizeOwnedRecordBytes,
 } from "./storageBudget.js";
+import { durableLocalStorage } from "./safeStorage.js";
 
 const DB_NAME = "lumen-ai-notes";
 const DB_VERSION = 1;
@@ -109,9 +110,14 @@ const visibleFallbackEntries = (entries) => Object.fromEntries(
   }),
 );
 
+// Returned only when the browser refused the read, never for a missing key.
+const UNREADABLE = Symbol("unreadable journal");
+
 const readFallback = () => {
   try {
-    const parsed = JSON.parse(localStorage.getItem(FALLBACK_KEY) || "{}");
+    const stored = durableLocalStorage.getItem(FALLBACK_KEY, UNREADABLE);
+    if (stored === UNREADABLE) return memoryFallback;
+    const parsed = JSON.parse(stored || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : memoryFallback;
   } catch {
     return memoryFallback;
@@ -121,10 +127,10 @@ const readFallback = () => {
 const writeFallback = (value) => {
   memoryFallback = value;
   try {
-    localStorage.setItem(FALLBACK_KEY, JSON.stringify(value));
-    return true;
+    // A refused write returns false; the in-memory copy above still keeps
+    // the current session usable.
+    return durableLocalStorage.setItem(FALLBACK_KEY, JSON.stringify(value));
   } catch {
-    // The in-memory copy still keeps the current session usable.
     return false;
   }
 };

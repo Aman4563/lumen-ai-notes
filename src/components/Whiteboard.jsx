@@ -73,6 +73,7 @@ import {
   mergeBoardVersions,
 } from "../lib/boardSync.js";
 import { PROFILE_REPLACEMENT_EVENT } from "../lib/profileSync.js";
+import { durableLocalStorage } from "../lib/safeStorage.js";
 import { StorageBudgetError } from "../lib/storageBudget.js";
 
 const inks = [
@@ -759,7 +760,8 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
         at: Date.now(),
       };
       try { channel?.postMessage(signal); } catch { /* storage event remains available */ }
-      try { localStorage.setItem(BOARD_SYNC_SIGNAL_KEY, JSON.stringify(signal)); } catch { /* IndexedDB remains authoritative */ }
+      // Without storage the BroadcastChannel carries the signal; IndexedDB remains authoritative.
+      durableLocalStorage.setItem(BOARD_SYNC_SIGNAL_KEY, JSON.stringify(signal));
     };
     return () => {
       active = false;

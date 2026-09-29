@@ -55,6 +55,7 @@ import { applyAnnotationHighlights, captureTextAnchor, resolveTextAnchor } from 
 import { copyText } from "../lib/clipboard.js";
 import { buildSpeechTarget } from "../lib/speechContent.js";
 import { useModalDialog, visibleFocusables } from "../hooks/useModalDialog.js";
+import { safeLocalStorage } from "../lib/safeStorage.js";
 import AnnotationDialog from "./AnnotationDialog";
 import NarrationPanel from "./NarrationPanel";
 import TeachingMode from "./TeachingMode";
@@ -75,13 +76,10 @@ const DIALOG_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reade
 const DRAWER_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-toolbar", ".document-tools", ".document-pagination", ".reader-view > .audio-bar", ".reader-view > .selection-toolbar"];
 
 const isNarrowViewport = () => window.matchMedia?.(NARROW_QUERY).matches ?? window.innerWidth <= 980;
+// Without storage the choice lasts this session, then falls back to the width rule.
 const readPanelPreference = () => {
-  try {
-    const stored = localStorage.getItem(PANEL_PREFERENCE_KEY);
-    if (stored === "open" || stored === "closed") return stored === "open";
-  } catch {
-    // Storage can be unavailable in private browsing; fall back to the width rule.
-  }
+  const stored = safeLocalStorage.getItem(PANEL_PREFERENCE_KEY);
+  if (stored === "open" || stored === "closed") return stored === "open";
   return window.innerWidth >= PANEL_DEFAULT_OPEN_MIN_WIDTH;
 };
 const initialDrawer = () => (!isNarrowViewport() && readPanelPreference() ? "outline" : null);
@@ -624,11 +622,7 @@ export default function Reader({
       setShowDisplay(false);
       return;
     }
-    try {
-      localStorage.setItem(PANEL_PREFERENCE_KEY, next ? "open" : "closed");
-    } catch {
-      // The panel still toggles for this visit without storage.
-    }
+    safeLocalStorage.setItem(PANEL_PREFERENCE_KEY, next ? "open" : "closed");
   };
 
   const scrollToHeading = (id) => {

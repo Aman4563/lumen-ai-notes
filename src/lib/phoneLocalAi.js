@@ -4,6 +4,7 @@ import {
   STRUCTURED_TASKS,
   validateStructuredAiResult,
 } from "../../server/ai/contracts.mjs";
+import { durableLocalStorage, guardStorage } from "./safeStorage.js";
 
 export const PHONE_LOCAL_MODEL = Object.freeze({
   id: "Llama-3.2-1B-Instruct-q4f16_1-MLC",
@@ -1128,7 +1129,7 @@ export class PhoneLocalAiEngine {
     workerFactory = defaultWorkerFactory,
     searchClient = createSameOriginLocalSearchClient(),
     environment = globalThis,
-    storage = globalThis.localStorage,
+    storage = durableLocalStorage,
     now = () => Date.now(),
     createId = makeId,
     unloadGraceMs = MODEL_UNLOAD_GRACE_MS,
@@ -1138,7 +1139,10 @@ export class PhoneLocalAiEngine {
     this.workerFactory = workerFactory;
     this.searchClient = searchClient;
     this.environment = environment;
-    this.storage = storage;
+    // Consent and its revocation must really be stored (issue #139): the
+    // durable store keeps no memory copy and reports a refused change as
+    // `false`; an injected store is guarded the same way and never throws.
+    this.storage = storage === durableLocalStorage ? storage : guardStorage(storage);
     this.now = now;
     this.createId = createId;
     this.artifactVerifier = artifactVerifier;
@@ -1213,8 +1217,7 @@ export class PhoneLocalAiEngine {
   _advanceModelRevocation() {
     const revocation = `${this.now()}-${this.createId()}`;
     try {
-      if (typeof this.storage?.setItem !== "function" || typeof this.storage?.getItem !== "function") throw new Error("Storage is unavailable");
-      this.storage.setItem(MODEL_REVOCATION_KEY, revocation);
+      if (!this.storage.setItem(MODEL_REVOCATION_KEY, revocation)) throw new Error("Storage refused the revocation");
       if (readModelRevocation(this.storage) !== revocation) throw new Error("Revocation could not be verified");
       return revocation;
     } catch (error) {
@@ -1226,8 +1229,7 @@ export class PhoneLocalAiEngine {
 
   grantDownloadConsent() {
     try {
-      if (typeof this.storage?.setItem !== "function" || typeof this.storage?.getItem !== "function") throw new Error("Storage is unavailable");
-      this.storage.setItem(CONSENT_KEY, JSON.stringify({
+      const stored = this.storage.setItem(CONSENT_KEY, JSON.stringify({
         version: DOWNLOAD_CONSENT_VERSION,
         modelId: PHONE_LOCAL_MODEL.id,
         modelRevision: PHONE_LOCAL_MODEL.modelRevision,
@@ -1236,6 +1238,7 @@ export class PhoneLocalAiEngine {
         downloadIdentity: DOWNLOAD_IDENTITY,
         acceptedAt: new Date(this.now()).toISOString(),
       }));
+      if (!stored) throw new Error("Storage refused the consent");
       if (!readConsent(this.storage)) throw new Error("Stored consent could not be verified");
     } catch (error) {
       throw new PhoneLocalAiError("LOCAL_AI_CONSENT_NOT_SAVED", "Download consent could not be stored on this device.", { cause: error });
@@ -1244,8 +1247,8 @@ export class PhoneLocalAiEngine {
 
   revokeDownloadConsent() {
     try {
-      if (typeof this.storage?.removeItem !== "function" || typeof this.storage?.getItem !== "function") throw new Error("Storage is unavailable");
-      [CONSENT_KEY, ...LEGACY_CONSENT_KEYS].forEach((key) => this.storage.removeItem(key));
+      const refused = [CONSENT_KEY, ...LEGACY_CONSENT_KEYS].map((key) => this.storage.removeItem(key)).includes(false);
+      if (refused) throw new Error("Storage refused to remove the consent");
       if ([CONSENT_KEY, ...LEGACY_CONSENT_KEYS].some((key) => this.storage.getItem(key) !== null)) {
         throw new Error("Consent remained after deletion");
       }

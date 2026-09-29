@@ -49,6 +49,7 @@ import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, do
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { mergeBoardVersions } from "./lib/boardSync.js";
 import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
+import { durableLocalStorage, safeLocalStorage } from "./lib/safeStorage.js";
 // Actions load these tools on use; the service worker warms them (issue #95).
 import { isWarmToolUnavailable, loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
 // The lecture renderer (marked and DOMPurify, about 85 KB) stays in the
@@ -721,7 +722,7 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   const [recentSearches, setRecentSearches] = useState(() => {
     try {
       // Pruning on load clears the per-keystroke prefixes older builds stored.
-      return pruneRecentSearches(JSON.parse(globalThis.localStorage?.getItem("lumen.library.recent-searches") || "[]"));
+      return pruneRecentSearches(JSON.parse(safeLocalStorage.getItem("lumen.library.recent-searches") || "[]"));
     } catch {
       return [];
     }
@@ -801,7 +802,8 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   const saveRecentSearches = useCallback((update) => setRecentSearches((current) => {
     const next = update(current);
     if (next.length === current.length && next.every((entry, index) => entry === current[index])) return current;
-    try { globalThis.localStorage?.setItem("lumen.library.recent-searches", JSON.stringify(next)); } catch { /* device-local convenience only */ }
+    // A device-local convenience: without storage it lasts this session.
+    safeLocalStorage.setItem("lumen.library.recent-searches", JSON.stringify(next));
     return next;
   }), []);
   // Recents record committed searches only — Enter, leaving the field,
@@ -1291,7 +1293,8 @@ export default function App() {
         at: Date.now(),
       };
       try { channel?.postMessage(signal); } catch { /* storage event remains available */ }
-      try { localStorage.setItem(PROFILE_SYNC_SIGNAL_KEY, JSON.stringify(signal)); } catch { /* IndexedDB remains authoritative */ }
+      // Without storage the BroadcastChannel carries the signal; IndexedDB remains authoritative.
+      durableLocalStorage.setItem(PROFILE_SYNC_SIGNAL_KEY, JSON.stringify(signal));
     };
 
     return () => {

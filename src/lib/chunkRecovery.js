@@ -1,3 +1,5 @@
+import { durableSessionStorage } from "./safeStorage.js";
+
 const RECOVERY_STORAGE_KEY = "lumen:chunk-recovery-v1";
 const RECOVERY_COOLDOWN_MS = 60_000;
 const SERVER_PROBE_TIMEOUT_MS = 4_000;
@@ -18,13 +20,9 @@ const errorMessage = (error) => {
   return [error?.name, error?.message].filter(Boolean).join(": ");
 };
 
-const browserStorage = () => {
-  try {
-    return globalThis.window?.sessionStorage;
-  } catch {
-    return undefined;
-  }
-};
+// The recovery marker must survive the reload it guards, so it uses the
+// durable store: no memory copy, and a refused write reports false.
+const browserStorage = () => durableSessionStorage;
 
 const browserOnline = () => globalThis.navigator?.onLine !== false;
 
@@ -41,7 +39,7 @@ const readRecoveryMarker = (storage) => {
 
 const writeRecoveryMarker = (storage, marker) => {
   try {
-    storage?.setItem(RECOVERY_STORAGE_KEY, JSON.stringify(marker));
+    if (storage?.setItem(RECOVERY_STORAGE_KEY, JSON.stringify(marker)) === false) return false;
     return storage?.getItem(RECOVERY_STORAGE_KEY) !== null;
   } catch {
     // Reloading without a durable, tab-scoped marker can create a refresh loop
