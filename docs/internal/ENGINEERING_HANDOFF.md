@@ -885,7 +885,10 @@ Narration panel and player rules (issue #97), which #100–#103 build on:
   now in `speech.js`) keeps its own display. The panel's `.speech-live` shows text but is
   not a live region: spoken sentences are never announced. `speechErrorMessage(code,
   platform, { retry })` names Retry for a blocked or failed sentence only where Retry
-  exists (not a tutor's reading), and no message names a Play control.
+  exists (not a tutor's reading), and no message names a Play control. Each notice also
+  carries `plain`, the message without the Retry or Resume it names; the toast after
+  leaving the Reader is `plain` plus "Open the lecture to listen again.", because that
+  screen has neither control and opening the lecture stops the old session.
 - Player: it shows while speaking, paused, or failed with its queue intact (`canRetry`).
   In the failed state Retry takes Pause's slot, beside Stop, and `togglePause` replays
   `indexRef.current`; it never plays an empty queue (index 0 of an empty queue would
@@ -894,19 +897,30 @@ Narration panel and player rules (issue #97), which #100–#103 build on:
   under the slide). A target over 500,000 characters stops the reading it replaces.
   Keyboard focus follows the play control when it swaps, and returns to Listen when the
   player leaves. A message wraps to at most three lines (two on phones, one on screens
-  320px tall); the panel shows it whole. The Reader writes two root properties while the
-  player shows: `--audio-bar-space` (the part of the reading area it covers) and
-  `--audio-bar-nav-space` (the bottom navigation's room plus a 10px gap, unset while the
-  navigation is hidden). Up to 980px wide, where the navigation shows, the player sits at
-  `max(79px, --audio-bar-nav-space)`. The lecture ends with `max(--reader-end-space,
-  --audio-bar-space + 16px)`, never both (stacking them hid the Next card under the
-  toolbar in landscape), and toasts and the selection toolbar keep above the player.
+  320px tall); the panel shows it whole. The Reader writes three root properties while
+  the player shows: `--audio-bar-space` (the part of the reading area it covers; toasts
+  and the selection toolbar keep above it), `--audio-bar-nav-space` (the bottom
+  navigation's room, unset while the navigation is hidden) and `--audio-bar-end-space`
+  (the lecture's end space). Up to 980px wide, where the navigation shows, the player
+  sits at `max(69px, --audio-bar-nav-space) + --audio-bar-nav-gap` (10px; 4px in phone
+  landscape). The end space puts the last pagination card (Next) 16px above the player;
+  where the strip between the reader toolbar and the player is shorter than the card
+  (phone landscape at 200% text), the card fills the strip, at the toolbar if it fits,
+  otherwise centred on it, so its centre is always visible and tappable. Never add the
+  lecture's own end space to the player's (that hid the Next card in landscape), and
+  never let the end space push the card above the toolbar (a fixed `--audio-bar-space +
+  16px` did at 568×320 and 667×375 at 200% text). Before the first measurement the CSS
+  falls back to `max(--reader-end-space, --audio-bar-space + 16px)`. In phone landscape
+  (`max-width: 980px and max-height: 430px`) the player uses 4px block padding and a
+  message at normal line height, so at least 40px of the card shows at 568×320 at 200%
+  text.
 - Tokens: `--narration-block-bg` (the spoken block; #101 keeps it as the fallback tint where
   the Highlight API is missing), `--audio-bar-bg`, `--audio-bar-ink`, `--audio-bar-ink-soft`
   and `--audio-bar-border` (3:1 against `--paper-2`), in `:root`, Night, system-dark and
   Contrast, pinned by `themeContrast.test.mjs`.
 - Sizes under `@media (max-width: 740px), (pointer: coarse)`: 44px targets for every
-  narration control, labels at 12px or more and metadata at 11px or more. The player's
+  narration control (the Listen panel's Previous and Next sentence included), labels at
+  12px or more and metadata at 11px or more. The player's
   seven controls fit one row: 44×44 with 2px gaps above 360px, 40×44 with 1px gaps at
   360px and below (286px of 288px at 320px). A redesign (#102) keeps 44px targets.
 - Copy: `speechPlatform(navigator)` (`ios`, `mac`, `windows`, `android`, `other`; iPadOS by

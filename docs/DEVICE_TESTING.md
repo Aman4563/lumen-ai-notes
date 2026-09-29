@@ -183,6 +183,14 @@ them as "Narration wording" (`voice-platform-copy`) and "VoiceOver"
    Text Size (or Accessibility → Larger Text) to its largest step. The player
    must sit above the bottom navigation with every button fully tappable, stay
    below the reader toolbar, and at the end of the lecture the Next card must
-   scroll clear of both. Switch to another app and back: the background
-   message must show its first lines without pushing the player off the
-   screen.
+   scroll clear of both. Where the space between the toolbar and the player is
+   shorter than the card (an iPhone SE or 8 turned sideways), the card must
+   fill that space and a tap on it must open the next lecture; notched iPhones
+   add a home-indicator inset in landscape that the headless audits do not
+   emulate. Switch to another app and back: the background message must show
+   its first lines without pushing the player off the screen.
+5. **A message after leaving the lecture.** Start Full lecture, go Back to the
+   Library while it plays, then switch to another app and back. The
+   notification must not mention Resume or Retry (that screen has neither)
+   and must say to open the lecture to listen again; with VoiceOver on it must
+   be read once.

@@ -3232,3 +3232,99 @@ startup entry is 622,713 bytes and the route screens 688,121 bytes. The full
 retries (`a11y` 114 axe runs with the empty allowlist, 7 screen states) at a
 load average of about 25–36. `audit:audio` then passed twice more alone with
 `LUMEN_BROWSER_RETRIES=0` (four passing runs of the fixed checks in all).
+
+## Second review follow-up on 2026-09-29: read-aloud panel, player and themes (#97)
+
+A second review of the branch build (dc2ff6f) reported these. Each was
+reproduced against that build, served on a random port, with the reviewer's
+probe (wheel-scroll to the end, `elementFromPoint` at the card's centre, then
+a real touchscreen tap there) and the extended `audit:audio` cases:
+
+- A regression in short phone landscape at 200% text. The lecture ended 16px
+  above the player whatever the room, and the Next card (85px at 200% text)
+  is taller than the strip between the reader toolbar and the player there,
+  so its centre went under the toolbar and a tap on it did nothing. At
+  568×320 speaking: `{"onCard":false,"hit":"reader-crumb","card":[61,146],"bar":[162,236],"toolbar":129,"visible":17,"whole":85}`;
+  with the synthesis-failed message `"card":[56,141],"bar":[158,236]` and
+  "a tap on the Next card's centre with the synthesis-failed message did not
+  open the next lecture". At 667×375 with the background message:
+  `{"onCard":false,"hit":"reader-crumb","card":[79,164],"bar":[180,291],"toolbar":129,"visible":35,"whole":85}`.
+  On main the card's centre stays tappable there (card 120–205 under a
+  player from y 174 at 568×320; main's player has no failed state). The
+  branch's gate missed it: the Next card case covered landscape only at 1×
+  text, and the player's-place case checked the player, not the card.
+- The toast after leaving the Reader told the learner to "Tap Retry" or "Tap
+  Resume", controls that screen does not have; opening the lecture again
+  stops the old session (as on main). Quoted from `audit:audio`: "a failure
+  after leaving the Reader names a control the screen does not show: “Error:
+  This sentence could not be spoken (synthesis failed). Tap Retry to try it
+  again.”", and the same for “Warning: Narration was interrupted. Tap Resume
+  to replay the current sentence safely.” and “Warning: Playback paused when
+  Lumen left the foreground. Tap Resume to replay the current sentence; Lumen
+  will not start audio in the background.”
+- Minor, as on main: the Listen panel's Previous and Next sentence buttons
+  were 40×40 on phones, now also shown beside Retry: "at 320 px Listen panel
+  controls under 44×44px: Previous narration sentence 40×40, Next narration
+  sentence 40×40".
+- The reviewer's gate run had `mermaid` pass only on retry at a load average
+  of about 40–45; the branch changes no Mermaid code and it passed alone twice.
+
+The fixes:
+
+- The Reader measures `--audio-bar-end-space` beside `--audio-bar-space`:
+  the last pagination card ends 16px above the player where it fits; where
+  the strip between the reader toolbar and the player is shorter, the card
+  fills it, at the toolbar if it fits and otherwise centred on it, so its
+  centre is always visible. A `ResizeObserver` on the player, the navigation,
+  the reading area and the pagination keeps it current. Portrait phones,
+  tablets and desktop measure as before (desktop's end space is 99px instead
+  of the 100px floor).
+- In phone landscape (`max-width: 980px` and `max-height: 430px`) the player
+  keeps its 44px buttons and 12px-and-up text but uses 4px block padding, a
+  message at normal line height instead of 1.35, and a 4px gap above the
+  bottom navigation (10px elsewhere; the Reader now measures the
+  navigation's room and the stylesheet adds the gap). At 568×320 with 200%
+  text 47px of the card shows (45px on main). The reviewer's probe hits the
+  card at its centre and opens the next lecture on a real tap at 568×320,
+  667×375, 852×393 and 932×430 at 1× and 2× text, 667×375 and 844×390 at
+  1.5×, and 393×852 and 320×568 at 1× and 2×, speaking, failed and
+  backgrounded; at 736×414 with 200% text its wheel scrolling stopped short
+  (as in the reviewer's own run), and scrolling there by `scrollTop` the
+  centre hit and the tap pass.
+- Each notice carries `plain`, its message without the control it names.
+  The toast after leaving the Reader is `plain` plus "Open the lecture to
+  listen again." (Listen resumes a full lecture from its saved sentence).
+- `.speech-controls .icon-button` joins the 44px phone and touch list.
+
+How each is now checked:
+
+- `audit:audio`'s "the Next card with the player visible" adds 667×375 at
+  200% text with the background message and 568×320 at 200% text with a
+  failed sentence, requires at least 40px of the card between the toolbar
+  and the player (or all of it), and ends with a real touchscreen tap on the
+  card's centre that must open the next lecture. Against dc2ff6f it fails as
+  quoted above. A build with the measured end space but without the
+  landscape player changes passes the centre test and fails the 40px one:
+  "at 568×320 at 200% text only 33px of the Next card shows between the
+  reader toolbar and the player" (29px with the message).
+- "a message after leaving the Reader" now covers a failure, an
+  interruption and a background pause, each from a fresh load: one toast,
+  announced once, naming no Retry, Resume or Tap, and saying "Open the
+  lecture to listen again." Against dc2ff6f all three fail as quoted above.
+- "the Listen panel on a failed sentence" measures every panel transport
+  control at 320 and 393 px (44×44 or more, no sideways scroll). Against
+  dc2ff6f it fails as quoted above.
+- Against origin/main (0c69d18), in a scratch copy of the audit that skips
+  the main flow's #97 iOS-wording assertion, all three cases fail earlier:
+  main's player has no Retry ("Waiting for selector `.audio-bar
+  button[aria-label="Retry narration"]` failed") and main shows no toast
+  after leaving the Reader ("a failure after leaving the Reader showed no
+  toast").
+
+Gate on the branch with these fixes (9af784b): `npm run check` passed
+(`audit:ai` 582/582, `audit:ai-eval` 27 cases, hit@1 0.913). The startup
+entry is 622,935 bytes (+222) and the route screens 688,842 bytes (+721),
+with no budget raised. The full `npm run check:browser` passed all 13
+suites on the first attempt with no retries (`a11y` 114 axe runs with the
+empty allowlist, 7 screen states; `responsive` 478 checks) at a load
+average of about 27–30; `mermaid` passed first time.

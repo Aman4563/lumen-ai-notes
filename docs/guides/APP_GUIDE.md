@@ -207,11 +207,15 @@ once, even while Settings or the menu is open. After a failed sentence,
 **Retry** (next to Stop) replays it; the speaker panel and Teaching Mode offer
 the same **Retry**, and Teaching Mode shows the reason under its controls. If a
 lecture keeps playing after you go Back to another screen, a reason appears as
-a notification there. When the sleep timer ends a session, a notification says
-so. The player sits above the bottom navigation on phones and tablets, and at
-the end of a lecture the page scrolls far enough that the player never covers
-the **Next** lecture card. Available voices and their offline behavior still
-depend on that particular device.
+a notification there; that screen has no player, so open the lecture again and
+tap **Listen** (a full lecture picks up at the sentence where it stopped). When
+the sleep timer ends a session, a notification says so. The player sits above
+the bottom navigation on phones and tablets, and at the end of a lecture the
+page scrolls far enough that the player never covers the **Next** lecture card.
+With a phone turned sideways the player is a little slimmer, and at large text,
+where the card is taller than the space left between the toolbar and the
+player, the card fills that space so it can still be tapped. Available voices
+and their offline behavior still depend on that particular device.
 
 ## Use the free local AI tutor
 
