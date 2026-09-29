@@ -171,7 +171,18 @@ them as "Narration wording" (`voice-platform-copy`) and "VoiceOver"
    VoiceOver must read the message once, and the player must keep it on its
    second line with Resume. Arm a 10-minute sleep timer and let it run
    out: the notification must be read once. Open the panel while a lecture
-   plays: VoiceOver must not read each sentence aloud over the voice.
+   plays: VoiceOver must not read each sentence aloud over the voice. Open
+   Settings (and, separately, the menu) while a lecture plays and interrupt it
+   the same way: VoiceOver must still read the message once, and closing
+   Settings must not read it again.
 3. **Retry.** A real synthesis failure is hard to force. If one happens (for
    example a network voice with the phone offline), the player must stay,
    show the message, and Retry must replay the same sentence.
+4. **The player in landscape and at large text.** Turn the iPhone to
+   landscape while a lecture plays, then set Settings → Display & Brightness →
+   Text Size (or Accessibility → Larger Text) to its largest step. The player
+   must sit above the bottom navigation with every button fully tappable, stay
+   below the reader toolbar, and at the end of the lecture the Next card must
+   scroll clear of both. Switch to another app and back: the background
+   message must show its first lines without pushing the player off the
+   screen.

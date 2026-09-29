@@ -405,9 +405,11 @@ checks that the closed drawer stays inert after Settings and a reader dialog
 close, that toasts reach persistent live regions and dismiss while the app
 re-renders, the offline status, the Ctrl+K dialog guard, and forced colors.
 After the routes it scans screen states the routes never open (its `STATES`
-list, issue #97): narration speaking, a failed sentence, the Listen panel and
-Teaching Mode, each in every theme and viewport, and an open dialog must hold
-focus.
+list, issue #97): narration speaking, a failed sentence, the Listen panel,
+the sleep timer's toast, Teaching Mode, and Teaching Mode on a failed
+sentence, each in every theme and viewport, plus a failed sentence in phone
+landscape (852×393), once per theme: a state with its own `viewport` runs
+only in the phone pass. An open dialog must hold focus.
 
 `src/lib/themeContrast.test.mjs` runs in `npm run check`. It parses the theme
 token blocks in `src/styles.css`. It requires 4.5:1 for every text token on
@@ -3094,3 +3096,139 @@ merged #142 (899,632 bytes); this branch on top of it measures 901,791, over
 the 900,000 budget until #95 frees room. The full `npm run check:browser`
 passed all 13 suites on the first attempt with no retries (`a11y` 81 axe
 runs with the empty allowlist) at a load average of about 11–14.
+
+## Review follow-up on 2026-09-29: read-aloud panel, player and themes (#97)
+
+The branch was rebased onto main (0c69d18, the warm tier #95 and the chat
+window fit #142). Only `themeContrast.test.mjs` (the runtime list now holds
+#142's tutor measurements and the player's), the `audit:a11y` summary line
+(#142's On-device Lite axe runs stay beside the new `STATES`) and the
+append-only docs conflicted. On main the branch measures route screens at
+687,671 bytes, so it is back under the 900,000 budget.
+
+Three review lenses reported these against the branch. Each was reproduced
+against the rebased branch build (1e210c6) served on a random port, unless
+noted, and is fixed:
+
+- The new Retry check raced the replay. After a live cancel, `useSpeech`
+  shows Pause at once and speaks the sentence one task later, so reading
+  `speechSynthesis.current` right after Pause appears could see nothing. Run
+  standalone with no retry at a load average of about 26, `audit:audio`
+  failed: "synthesis-failed with the panel closed: Retry did not replay the
+  sentence that failed". The interruption case read the live region in the
+  same window.
+- The player's space was added to the lecture's own 115px end space instead
+  of replacing it. In phone landscape the Next card ended under the reader
+  toolbar at maximum scroll: at 667×375 `{"onCard":false,"hit":"reader-toolbar","card":[28,103],"bar":[234,296],"toolbar":113}`,
+  and at 852×393 with the background message
+  `{"onCard":false,"hit":"reader-toolbar","card":[79,154],"bar":[270,368],"toolbar":122}`.
+- A player message had no height limit. At 320×568 with 200% text the
+  background message made the player 312px tall, and the Next card went under
+  the top bar: `{"onCard":false,"hit":"app-topbar","card":[-39,46],"bar":[177,489],"toolbar":129}`.
+  At 568×320 with 200% text its top was at y −194, off screen
+  (`{"top":-194,"bottom":241,"toolbar":113,"labelInside":false}`). At 667×375
+  with 200% text it reached y 23, over the toolbar. At 320×568 a bookmark toast
+  (bottom 403) overlapped the player (top 352).
+- The narration live regions sat inside `<main>`, which App makes inert and
+  `aria-hidden` while Settings, the phone menu or any App-level dialog is
+  open: "messages while Settings or the menu covers the Reader: an
+  interruption behind Settings is hidden from assistive technology".
+- A lecture still playing after browser Back left the Reader said nothing
+  when it failed: "a message after leaving the Reader: a failure after
+  leaving the Reader showed no toast".
+- The Listen panel on a failed sentence offered a fresh Read instead of the
+  player's transport: "the panel on a failed sentence offers Read full
+  lecture, Test voice". Read after a failure early in a lecture restarted
+  from the top.
+- From 741 to 980px wide (phone landscape, iPad portrait) the bottom
+  navigation shows, but the player kept its desktop 25px offset, and the
+  navigation covered the player's controls. At 200% text the navigation grows
+  to 89px while the player's phone offset stayed 79px. The new case reported
+  every button covered at 852×393, at 820×1180, and at 393×852 and 320×568
+  with 200% text (for example "at 852×393 speaking, the bottom navigation
+  covers Previous section, …, Stop narration"). axe `target-size` failed on 6
+  player buttons at 852×393 in every theme ("partially obscured (smallest
+  space is 44px by 15px)"). This predates the branch but hid the new message
+  and Retry.
+- Teaching Mode on a failed sentence showed no message, and its control read
+  "Resume narration": "Teaching Mode's narration control does not offer
+  Retry on a failed sentence"; `audit:a11y`'s new state "could not be
+  scanned (Waiting for selector `.teach-footer .teach-narration-message`
+  failed)".
+- Minor: the Listen panel showed messages at 11.52px on phones; Retry's
+  tooltip ("Replay this sentence") differed from its name; keyboard focus
+  fell to `<body>` after Stop in the player (as on main); a toast failed axe
+  `region` ("Some page content is not contained by landmarks", as on main);
+  the blocked message said "Tap Play again", with no Play control
+  (`ios: “Narration was blocked. Tap Play again and check that this iPhone or
+  iPad is not in a restricted audio state.” names a Play control`), and the
+  default failure read "Narration stopped (synthesis failed)."
+- Not covered before: Retry and Next on a failed sentence re-arm a lapsed
+  sleep timer, and Teaching Mode's control replays a failed sentence.
+
+The fixes:
+
+- The audit waits for the replayed sentence and for the message to clear
+  (`waitForSpoken`, `waitUnannounced`); `failSentence` waits for a sentence
+  to be playing.
+- The lecture ends with `max(--reader-end-space, --audio-bar-space + 16px)`
+  (`--reader-end-space` is the layout's own 100px, or 115px on phones), not
+  both. The Reader measures `--audio-bar-space` and `--audio-bar-nav-space`
+  (the bottom navigation's room plus 10px) on the root while the player
+  shows, and up to 980px wide the player sits above the navigation however
+  tall it is. Toasts and the selection toolbar keep above the player.
+- A message in the player wraps to three lines at most, two on phones and
+  one on screens 320px tall; the Listen panel shows it whole and the
+  announcer reads it whole.
+- `NarrationAnnouncer` in App, beside `ToastAnnouncer` and outside `<main>`,
+  holds the two `.narration-live` regions. App routes each notice once, when
+  it arrives: the sleep timer's is a toast; in the Reader the announcer reads
+  it; after the learner left the Reader it is a toast; a tutor's own reading
+  keeps its own display (`TUTOR_SPEECH_LABEL` now lives in `speech.js`). The
+  three dialog background lists no longer need their `.narration-live`
+  exclusion.
+- The Listen panel shows Retry in place of Pause, with Previous, Next and
+  Stop, while a failed sentence waits. Teaching Mode's control reads "Retry
+  narration" with the Retry icon, and its footer shows the message.
+- `.speech-popover .inline-warning` joins the 12px phone list; Retry's
+  tooltip is its name; focus goes to Listen when the player leaves; a toast
+  is a named region ("Notification"). `speechErrorMessage(code, platform,
+  { retry })` says "Tap Retry to try it again" for a blocked or failed
+  sentence where Retry exists (not a tutor's reading), no message names a
+  Play control, and the default reads "This sentence could not be spoken
+  (synthesis failed)."
+
+How each is now checked:
+
+- `audit:audio`: the Retry and Resume cases wait for the replay; the Next
+  card case adds 320×568 at 200% text with the background message, 667×375
+  and 852×393; new cases cover the player's place (the navigation at
+  852×393, 820×1180, and 393×852 and 320×568 at 200% text, each button hit at
+  its centre and bottom edge; the toolbar and the screen edge at 200% text
+  in portrait and landscape; a toast above a player with a message),
+  messages behind Settings and the phone menu (no `[inert]` or
+  `aria-hidden` ancestor, and no repeat when Settings closes), a toast after
+  browser Back, Retry in the Listen panel (with its 12px message), Retry and
+  Next past the sleep deadline, and Teaching Mode's Retry and message; the
+  failed-sentence case also checks tooltips and focus after Stop. Against
+  the pre-fix branch build the new and extended cases fail as quoted above;
+  "Retry and Next past the sleep deadline" passes there (the re-arm was
+  already right) and fails against main, which has no Retry.
+- `audit:a11y` adds three `STATES`: the failed sentence in phone landscape
+  (852×393, once per theme), the sleep timer's toast, and Teaching Mode on a
+  failed sentence. Against the pre-fix branch build they report 30
+  failures: the 6 covered player buttons in each theme, the toast's `region`
+  in each theme and width, and the Teaching Mode state in each theme and
+  width.
+- `speech.test.mjs` adds "narration errors name the Retry control only where
+  it exists", which fails against the pre-fix branch on the iOS "Tap Play
+  again" message. `themeContrast.test.mjs` pins the Teaching Mode message
+  colour (`--teach-message-ink`) at 4.5:1 on its navy.
+
+Gate on the rebased branch with these fixes (c60e3b1): `npm run check`
+passed (`audit:ai` 582/582, `audit:ai-eval` 27 cases, hit@1 0.913). The
+startup entry is 622,713 bytes and the route screens 688,121 bytes. The full
+`npm run check:browser` passed all 13 suites on the first attempt with no
+retries (`a11y` 114 axe runs with the empty allowlist, 7 screen states) at a
+load average of about 25–36. `audit:audio` then passed twice more alone with
+`LUMEN_BROWSER_RETRIES=0` (four passing runs of the fixed checks in all).

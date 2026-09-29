@@ -201,12 +201,17 @@ speed, pitch, volume, and scope are saved on the device.
 When Safari backgrounds Lumen, narration is stopped rather than allowed to begin
 audio invisibly. Return to Lumen and tap **Resume** to replay the current
 sentence. The compact player keeps the reason on its second line whenever
-narration pauses on its own or a sentence fails, and screen readers announce it
-once. After a failed sentence, **Retry** (next to Stop) replays it. When the
-sleep timer ends a session, a notification says so. At the end of a lecture the
-page scrolls far enough that the player never covers the **Next** lecture card.
-Available voices and their offline behavior still depend on that particular
-device.
+narration pauses on its own or a sentence fails (a long reason shows its first
+lines there; the speaker panel shows all of it), and screen readers announce it
+once, even while Settings or the menu is open. After a failed sentence,
+**Retry** (next to Stop) replays it; the speaker panel and Teaching Mode offer
+the same **Retry**, and Teaching Mode shows the reason under its controls. If a
+lecture keeps playing after you go Back to another screen, a reason appears as
+a notification there. When the sleep timer ends a session, a notification says
+so. The player sits above the bottom navigation on phones and tablets, and at
+the end of a lecture the page scrolls far enough that the player never covers
+the **Next** lecture card. Available voices and their offline behavior still
+depend on that particular device.
 
 ## Use the free local AI tutor
 

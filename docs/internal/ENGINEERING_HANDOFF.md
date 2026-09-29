@@ -871,24 +871,36 @@ Narration state rules (issue #96), which later narration work builds on:
 
 Narration panel and player rules (issue #97), which #100–#103 build on:
 
-- Messages: `useSpeech` returns `notice {id, code, message, severity}` beside `error`, a
-  fresh object per event. Codes: `background` (pagehide or hidden; a second event while
-  already waiting for Resume adds nothing), `interrupted` (also a failed resume), `error`
-  (synthesis failures, an unsupported browser, an over-long or empty target, a failed
-  pause) and `sleep-ended`. The next utterance or `stop()` clears it. The Reader announces
-  notices from two persistent, initially empty regions (`.narration-live`: polite, and
-  `role="alert"` for errors), keyed by id so each is read once; every modal's background
-  selector excludes `.narration-live`. `sleep-ended` is a toast raised in App through
-  `onNotice`, so it is announced by the toast announcer on any screen, and the Reader
-  skips it. The panel's `.speech-live` shows text but is not a live region: spoken
-  sentences are never announced.
+- Messages: `useSpeech` returns `notice {id, code, message, severity, label}` beside
+  `error`, a fresh object per event (`label` names the reading). Codes: `background`
+  (pagehide or hidden; a second event while already waiting for Resume adds nothing),
+  `interrupted` (also a failed resume), `error` (synthesis failures, an unsupported
+  browser, an over-long or empty target, a failed pause) and `sleep-ended`. The next
+  utterance or `stop()` clears it. App's `onNotice` routes each notice once, when it
+  arrives: `sleep-ended` is a toast on any screen; in the Reader, `NarrationAnnouncer`
+  (two persistent, initially empty `.narration-live` regions beside `ToastAnnouncer`,
+  polite and `role="alert"`, keyed by id) reads it, outside `main`, so Settings, the
+  phone menu and Reader dialogs never hide it; a lecture still playing after the learner
+  left the Reader (browser Back) gets a toast; a tutor's reading (`TUTOR_SPEECH_LABEL`,
+  now in `speech.js`) keeps its own display. The panel's `.speech-live` shows text but is
+  not a live region: spoken sentences are never announced. `speechErrorMessage(code,
+  platform, { retry })` names Retry for a blocked or failed sentence only where Retry
+  exists (not a tutor's reading), and no message names a Play control.
 - Player: it shows while speaking, paused, or failed with its queue intact (`canRetry`).
   In the failed state Retry takes Pause's slot, beside Stop, and `togglePause` replays
   `indexRef.current`; it never plays an empty queue (index 0 of an empty queue would
-  count as completion and start the playlist). A target over 500,000 characters stops the
-  reading it replaces. Keyboard focus follows the play control when it swaps. The bar
-  writes `--audio-bar-space` (the part of the reading area it covers) on `.reader-view`,
-  and `.has-player .reader-scroll` pads by that plus 16px.
+  count as completion and start the playlist). The Listen panel and Teaching Mode offer
+  the same Retry (Teaching Mode also shows the message in its footer, since the player is
+  under the slide). A target over 500,000 characters stops the reading it replaces.
+  Keyboard focus follows the play control when it swaps, and returns to Listen when the
+  player leaves. A message wraps to at most three lines (two on phones, one on screens
+  320px tall); the panel shows it whole. The Reader writes two root properties while the
+  player shows: `--audio-bar-space` (the part of the reading area it covers) and
+  `--audio-bar-nav-space` (the bottom navigation's room plus a 10px gap, unset while the
+  navigation is hidden). Up to 980px wide, where the navigation shows, the player sits at
+  `max(79px, --audio-bar-nav-space)`. The lecture ends with `max(--reader-end-space,
+  --audio-bar-space + 16px)`, never both (stacking them hid the Next card under the
+  toolbar in landscape), and toasts and the selection toolbar keep above the player.
 - Tokens: `--narration-block-bg` (the spoken block; #101 keeps it as the fallback tint where
   the Highlight API is missing), `--audio-bar-bg`, `--audio-bar-ink`, `--audio-bar-ink-soft`
   and `--audio-bar-border` (3:1 against `--paper-2`), in `:root`, Night, system-dark and
@@ -901,9 +913,11 @@ Narration panel and player rules (issue #97), which #100–#103 build on:
   its touch points) picks a `SPEECH_COPY` entry. Safari exposes only the voices built into
   iOS, so no message advises installing a voice. Speeds show as `formatSpeechRate` (1.25×).
 - Teaching Mode opens on one persistent narration control (`data-teach-narrate`): Space
-  narrates, pauses and resumes.
-- `audit:a11y` scans screen `STATES` after the routes in every theme and viewport; #98 adds
-  its dialog states to the same list.
+  narrates, pauses and resumes; on a failed sentence it is Retry.
+- `audit:a11y` scans screen `STATES` after the routes in every theme and viewport (a state
+  with its own `viewport`, such as the landscape player, once per theme); #98 adds its
+  dialog states to the same list. Toasts are named regions, so axe's `region` rule holds
+  while one shows.
 
 The browser/OS controls which voices exist and whether a labeled voice truly remains
 offline. Physical-iPhone enumeration, Bluetooth/audio routing, phone calls/backgrounding,
