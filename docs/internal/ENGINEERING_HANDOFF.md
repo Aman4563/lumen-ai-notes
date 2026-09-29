@@ -1192,6 +1192,7 @@ Current default controls:
 | downstream backpressure deadline | 15 s |
 | browser stream body cap | 4 MiB |
 | search timeout | 8 s |
+| header timeout (unused connection closed silently) | 15 s |
 
 Logs contain sanitized event/request/timing/count metadata, not prompts, responses, or
 queries. Preserve this rule when adding diagnostics.
@@ -1321,6 +1322,22 @@ one-request authorization; phone exact query remains separately approved.
 
 **Fix:** language-grouped multiple voice inventory, filters, preview, rate/pitch/volume,
 four scopes, presets, persistence, transport controls, and interruption handling.
+
+### 12.9 A lazy chunk answered with the server's own 400 (issue #138)
+
+**Symptoms:** under load, `audit:review` failed with "thin-history calibration did not
+refuse with the typed reason". The optimizer's chunk came back from the service worker as
+HTTP 400, `vite:preloadError` fired, and chunk recovery reloaded the page.
+
+**Cause:** browsers open connections before they need them. Node timed an unused one out
+after the 15 s header timeout and reported `ERR_HTTP_REQUEST_TIMEOUT` to the server's
+`clientError` handler, which wrote `400 Bad Request` into it. The browser later sent a
+request on that connection and read the 400 as its answer.
+
+**Fix:** `answerClientError` in `server/server.mjs` closes a connection that never sent a
+byte without writing anything (browsers retry on a new connection). A request that stalled
+part-way gets Node's 408 (431 for oversized headers), and malformed input keeps 400.
+`server/ai/server.test.mjs` covers all three.
 
 ## 13. Requirement reconciliation performed for this handoff
 
@@ -1823,6 +1840,8 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   `instanceof HTMLSelectElement`), and its Escape stays with it (`src/main.jsx`).
 - Never render Mermaid for each streaming token; preserve original source for rerender.
 - API responses are never service-worker cached.
+- The server never writes a response into a connection that has sent no request bytes: a
+  browser reads it as the answer to the next request it sends there (#138).
 - Worker activation only after matching shell assets exist (entry and route screens from the same build).
 - Warm tools never gate install or activation, are protected from cleanup, and fail with the
   typed offline message (or, when the server answers without the file, the fresh-app-files
