@@ -15,6 +15,7 @@ import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
 import { measureSelects, selectContractProblems } from "./select_contract.mjs";
+import { pollValue, settled, waitForTheme } from "./audit_waits.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -174,10 +175,8 @@ const openOptions = async (page) => {
   if (await page.$(".tutor-sheet")) return;
   await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
   await page.waitForSelector(".tutor-sheet .ai-tutor__web-search input", { timeout: 5_000 });
-  await page.evaluate(() => {
-    const running = document.querySelector(".tutor-sheet__scrim")?.getAnimations({ subtree: true }) || [];
-    return Promise.race([Promise.all(running.map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-  });
+  // Until it is still: the old wait gave up silently after 2 s (#138).
+  await settled(page, "the Options sheet", { selector: ".tutor-sheet__scrim" });
 };
 
 const closeOptions = async (page) => {
@@ -1101,21 +1100,24 @@ const auditChatFit = async () => {
       const { context, page } = await open(`narrow-${width}-${textSize}-${touch ? "touch" : "mouse"}`, { width, height, isMobile: touch, hasTouch: touch }, { textSize });
       try {
         await page.waitForSelector(".ai-tutor__starter", { timeout: 10_000 });
-        const themes = await page.evaluate(async () => {
-          const card = document.querySelector(".ai-tutor");
-          // Whatever a scroller or a clipping box inside the card holds is
-          // that box's to show; visually hidden text is clipped on purpose.
-          const clippedInside = (node) => {
-            for (let box = node; box && box !== card; box = box.parentElement) {
-              const style = getComputedStyle(box);
-              if (style.clipPath !== "none" || style.clip !== "auto" || (box !== node && style.overflowX !== "visible")) return true;
-            }
-            return false;
-          };
-          const result = {};
-          for (const theme of ["paper", "dark", "contrast"]) {
-            document.documentElement.dataset.theme = theme;
-            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const themes = {};
+        for (const theme of ["paper", "dark", "contrast"]) {
+          // Contrast widens button borders, which transition: measure the
+          // settled layout, not a frame of the switch (#138).
+          await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+          const themed = await waitForTheme(page, theme);
+          if (!themed.ok) throw new Error(`the ${theme} theme had not settled: ${themed.reason}`);
+          themes[theme] = await page.evaluate(() => {
+            const card = document.querySelector(".ai-tutor");
+            // Whatever a scroller or a clipping box inside the card holds is
+            // that box's to show; visually hidden text is clipped on purpose.
+            const clippedInside = (node) => {
+              for (let box = node; box && box !== card; box = box.parentElement) {
+                const style = getComputedStyle(box);
+                if (style.clipPath !== "none" || style.clip !== "auto" || (box !== node && style.overflowX !== "visible")) return true;
+              }
+              return false;
+            };
             const edge = card.getBoundingClientRect();
             const style = getComputedStyle(card);
             const left = edge.left + Number.parseFloat(style.borderLeftWidth);
@@ -1124,15 +1126,14 @@ const auditChatFit = async () => {
               const rect = node.getBoundingClientRect();
               return rect.width > 0 && rect.height > 0 && (rect.right > right + 0.5 || rect.left < left - 0.5) && node.checkVisibility() && !clippedInside(node);
             });
-            result[theme] = {
+            return {
               pointer: matchMedia("(pointer: fine)").matches ? "fine" : "coarse",
               sideways: document.documentElement.scrollWidth - innerWidth,
               past: past.filter((node) => !past.includes(node.parentElement)).map((node) => `${node.tagName.toLowerCase()}.${(node.getAttribute("class") || "").split(" ")[0]} ${Math.round(node.getBoundingClientRect().left)}–${Math.round(node.getBoundingClientRect().right)}px`),
               card: `${Math.round(left)}–${Math.round(right)}px`,
             };
-          }
-          return result;
-        });
+          });
+        }
         for (const [theme, state] of Object.entries(themes)) {
           expect(state.pointer === (touch ? "coarse" : "fine"), `${name} (${theme}): the page did not get the pointer it was meant to test`, state.pointer);
           expect(!state.past.length && state.sideways <= 1, `${name} (${theme}): the tutor's card clips what it holds or the page scrolls sideways`, state);
@@ -1580,9 +1581,9 @@ try {
   });
   await staleConfig.page.locator(sendSelector).click();
   await staleConfig.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
-  for (let attempt = 0; attempt < 20 && staleConfig.calls.config.length < 2; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  // The fresh configuration check follows the error; poll for it with a
+  // deadline rather than a fixed 500 ms budget (#138).
+  await pollValue(() => staleConfig.calls.config.length, (count) => count >= 2, { timeout: 10_000, interval: 25 });
   assert.ok(staleConfig.calls.config.length >= 2, "a server contract rejection did not force a fresh configuration check");
   assert.equal(await staleConfig.page.$(".ai-tutor__request-error button"), null, "a stale request snapshot remained retryable after configuration invalidation");
   assert.match(await staleConfig.page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /refreshed|changed/iu, "the learner was not told that limits were refreshed");
@@ -1598,9 +1599,9 @@ try {
   });
   await lostServer.page.locator(sendSelector).click();
   await lostServer.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
-  for (let attempt = 0; attempt < 20 && lostServer.calls.config.length < 2; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  // The fresh configuration check follows the error; poll for it with a
+  // deadline rather than a fixed 500 ms budget (#138).
+  await pollValue(() => lostServer.calls.config.length, (count) => count >= 2, { timeout: 10_000, interval: 25 });
   assert.ok(lostServer.calls.config.length >= 2, "a lost integrated server did not force a fresh configuration check");
   assert.equal(await lostServer.page.$(".ai-tutor__request-error button"), null, "a stale request remained retryable after the integrated server disappeared");
   await lostServer.page.close();
@@ -1707,6 +1708,9 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   });
+  // The retries cover a re-rendered answer; the route change itself is
+  // awaited, not assumed within their 1.5 s (#138).
+  await noteScenario.page.waitForFunction(() => window.location.hash.startsWith("#/read/"), { timeout: 8_000 }).catch(() => {});
   assert.match(await noteScenario.page.evaluate(() => window.location.hash), /^#\/read\//, "personal-note citation did not open its document");
   await noteScenario.page.waitForSelector(".personal-note-panel textarea", { timeout: 10_000 });
   await noteScenario.page.waitForFunction(
@@ -2402,14 +2406,27 @@ try {
       const surface = document.querySelector(".ai-tutor__conversation");
       return /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && surface.scrollHeight > surface.clientHeight + 300;
     }, { timeout: 8_000 });
-    await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = 0; });
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    const receivedAtTop = await page.$eval(".ai-tutor__conversation", (surface) => {
+      surface.scrollTop = 0;
+      return document.querySelector(".ai-tutor__stream-actions")?.textContent || "";
+    });
+    // Judge "stays there" once more text has arrived and the scroller has
+    // offered Jump to latest, not after a guessed 700 ms (#138).
+    await page.waitForFunction((before) => !document.querySelector(".ai-tutor__message--streaming")
+      || ((document.querySelector(".ai-tutor__stream-actions")?.textContent || "") !== before && document.querySelector(".ai-tutor__jump")?.textContent.includes("Jump to latest")), { timeout: 10_000 }, receivedAtTop).catch(() => {});
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")), pill: document.querySelector(".ai-tutor__jump")?.textContent.trim() || "" }));
     assert.equal(readBack.streaming, true, "the long stream finished before the scroll-back check could run");
     assert.ok(readBack.top < 60, `streaming pulled the conversation back down after the learner scrolled up: ${JSON.stringify(readBack)}`);
     assert.equal(readBack.pill, "Jump to latest", "the conversation scroller offered no Jump to latest");
-    await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = surface.scrollHeight; });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const receivedAtEnd = await page.$eval(".ai-tutor__conversation", (surface) => {
+      surface.scrollTop = surface.scrollHeight;
+      return document.querySelector(".ai-tutor__stream-actions")?.textContent || "";
+    });
+    // Following is judged once more text has arrived after the learner came
+    // back, not after a guessed half second in which none may have (#138).
+    await page.waitForFunction((before) => !document.querySelector(".ai-tutor__message--streaming") || (document.querySelector(".ai-tutor__stream-actions")?.textContent || "") !== before, { timeout: 10_000 }, receivedAtEnd).catch(() => {});
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const resumed = await page.$eval(".ai-tutor__conversation", (surface) => ({ gap: surface.scrollHeight - surface.scrollTop - surface.clientHeight, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
     assert.ok(!resumed.streaming || resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });

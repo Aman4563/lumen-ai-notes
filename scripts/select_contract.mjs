@@ -5,6 +5,8 @@
 // zooms), no browser-drawn chrome, the token chevron and theme token colors;
 // on a desktop, one height, radius and text size per variant.
 
+import { settled, waitForTheme } from "./audit_waits.mjs";
+
 export const SELECT_THEMES = ["paper", "dark", "contrast"];
 
 // Desktop metrics per variant: .ui-select, and the compact .ui-select--sm.
@@ -215,19 +217,19 @@ export const measureSelectsInThemes = async (page, themes = SELECT_THEMES) => {
   const byTheme = {};
   try {
     for (const theme of themes) {
-      await page.evaluate(async (value) => {
-        document.documentElement.dataset.theme = value;
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        // A slow machine can still be inside the (reduced-motion) colour
-        // transition two frames later: an emulated Linux run read the old
-        // theme's edge. Measure the settled colours.
-        await Promise.all(document.getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished.catch(() => {})));
-        await new Promise((resolve) => setTimeout(resolve, 60));
-      }, theme);
+      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+      // A slow machine can still be inside the (reduced-motion) colour
+      // transition: an emulated Linux run read the old theme's edge. The
+      // transitions start in waves (#138), so wait for all of them and for
+      // the page to wear the new theme's tokens.
+      const settledTheme = await waitForTheme(page, theme);
+      if (!settledTheme.ok) throw new Error(`selects would be measured before the ${theme} theme settled: ${settledTheme.reason}`);
       byTheme[theme] = await measureSelects(page);
     }
   } finally {
     await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, original);
   }
+  // Whatever the caller measures next sees the restored theme, not a blend.
+  await settled(page, "restoring the theme after the select measurements");
   return byTheme;
 };

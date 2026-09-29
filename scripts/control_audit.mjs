@@ -7,6 +7,7 @@ import { initialProfile, normalizeProfile } from "../src/lib/db.js";
 import { createMistake } from "../src/lib/mistakes.js";
 import { createReviewItem } from "../src/lib/review.js";
 import { chevronClearance, clippedValueProblems, measureSelectsInThemes, selectContractProblems, selectValueFit, valueDependentWidths } from "./select_contract.mjs";
+import { pollValue } from "./audit_waits.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -419,6 +420,10 @@ const auditThemedSelects = async () => {
           request.onerror = () => { open.result.close(); reject(request.error); };
         };
       }), boardKey);
+      // A board edit reads "Saving…" from the effect after its render and is
+      // stored 350 ms later. After the picker keys nothing should have
+      // changed, so the half-second grace gives a wrongly moved object time
+      // to reach "Saving…" before the check waits for "Saved".
       const saved = async () => {
         await new Promise((resolve) => setTimeout(resolve, 500));
         await page.waitForFunction(() => document.querySelector(".board-hint [role='status']")?.textContent === "Saved", { timeout: 5_000 });
@@ -437,16 +442,19 @@ const auditThemedSelects = async () => {
       await page.focus(".board-canvas");
       await page.keyboard.press("Tab");
       await page.waitForSelector(".board-selection-actions", { timeout: 5_000 });
-      await saved();
+      // The drawn rectangle is stored before the baseline is read (#138).
+      await pollValue(readBoard, (pages) => JSON.parse(pages)?.[0]?.objects?.length === 1);
+      await page.waitForFunction(() => document.querySelector(".board-hint [role='status']")?.textContent === "Saved", { timeout: 5_000 });
       const before = await readBoard();
       const tool = () => page.$eval('.board-toolbar button[aria-pressed="true"]', (button) => button.getAttribute("aria-label"));
       const toolBefore = await tool();
       await page.click(pagePicker);
       await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, pagePicker);
       await page.keyboard.press("ArrowDown");
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await page.waitForFunction(() => document.activeElement?.tagName === "OPTION" && document.activeElement.index === 1, { timeout: 2_000 }).catch(() => {});
       const focused = await page.evaluate(() => document.activeElement?.tagName === "OPTION" ? document.activeElement.index : null);
       await page.keyboard.press("e");
+      // Grace for a wrong tool switch to render; nothing is expected to change.
       await new Promise((resolve) => setTimeout(resolve, 150));
       const toolAfter = await tool();
       await page.keyboard.press("Escape");
@@ -507,7 +515,10 @@ const auditThemedSelects = async () => {
       await page.waitForFunction((selector) => document.querySelector(selector).matches(":open"), { timeout: 2_000 }, track)
         .catch(() => findings.push(`selects/${viewportName}/review: clicking Interview track did not open its picker`));
       await page.keyboard.press("End");
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await page.waitForFunction((selector) => {
+        const select = document.querySelector(selector);
+        return document.activeElement?.tagName === "OPTION" && document.activeElement === select.options[select.options.length - 1];
+      }, { timeout: 2_000 }, track).catch(() => {});
       const last = await page.evaluate(() => { const node = document.activeElement; const box = node.getBoundingClientRect(); return { tag: node.tagName, text: node.textContent.trim(), top: Math.round(box.top), bottom: Math.round(box.bottom), height: innerHeight }; });
       if (last.tag !== "OPTION" || last.top < 0 || last.bottom > last.height) findings.push(`selects/${viewportName}/review: at 1280×560 the Interview track picker drew its last option off screen (${last.tag} “${last.text}” at ${last.top}–${last.bottom}px of ${last.height}px)`);
       await page.keyboard.press("Escape");

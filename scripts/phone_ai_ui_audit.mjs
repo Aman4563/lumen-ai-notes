@@ -6,6 +6,7 @@ import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
 import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
+import { settled, waitForTheme } from "./audit_waits.mjs";
 
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 // axe-core, for the contrast of a Lite conversation in every theme.
@@ -41,11 +42,9 @@ const activeMode = (page) => page.evaluate(() => {
 });
 
 // The sheet slides in for 200ms. Its controls are measured once it has:
-// mid-slide under load a 44px button once read 43.99997px.
-const sheetSettled = (page) => page.evaluate(() => {
-  const running = document.querySelector(".tutor-sheet__scrim")?.getAnimations({ subtree: true }) || [];
-  return Promise.race([Promise.all(running.map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-});
+// mid-slide under load a 44px button once read 43.99997px. The wait used to
+// give up silently after 2 s; now it lasts until the sheet is still (#138).
+const sheetSettled = (page) => settled(page, "the Options sheet", { selector: ".tutor-sheet__scrim" });
 
 // Depth, Answer length and the web fallback live in the Options sheet
 // (#94): one tap opens it, Done closes it.
@@ -494,13 +493,15 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       await page.waitForSelector(".phone-tutor__message.is-user", { timeout: 10_000 });
       await page.evaluate(axeSource);
       for (const theme of ["paper", "dark", "contrast"]) {
-        const violations = await page.evaluate(async (value) => {
-          document.documentElement.dataset.theme = value;
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          await Promise.race([Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+        // Axe measures the new theme's settled colours, not a transition
+        // (#138): a theme switch's transitions arrive in waves.
+        await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+        const themed = await waitForTheme(page, theme);
+        expect(themed.ok, `${theme} theme: the conversation's colours had not settled before axe ran`, themed.reason);
+        const violations = await page.evaluate(async () => {
           const result = await window.axe.run(document.querySelector(".phone-tutor__conversation"), { runOnly: { type: "rule", values: ["color-contrast"] }, resultTypes: ["violations"] });
           return result.violations.flatMap((violation) => violation.nodes.map((node) => `${node.target.join(" ")}: ${(node.failureSummary || "").replace(/\s+/g, " ").slice(0, 160)}`));
-        }, theme);
+        });
         expect(!violations.length, `${theme} theme: text in a Lite conversation is below AA contrast`, violations);
       }
     } catch (error) {
@@ -704,7 +705,9 @@ try {
   });
   const lightThemeSurfaces = await themeSurfaces();
   await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
+  // The assertions below compare the surfaces with the dark tokens; read
+  // them once every transition the switch started has ended (#138).
+  await settled(page, "the dark theme switch");
   const darkThemeSurfaces = await themeSurfaces();
   assert.equal(darkThemeSurfaces.panel, darkThemeSurfaces.expected.paper, "On-device settings panel ignored the dark-theme paper surface");
   assert.equal(darkThemeSurfaces.fact, darkThemeSurfaces.expected.paper2, "model facts ignored the dark-theme secondary surface");
@@ -798,7 +801,9 @@ try {
   assert.deepEqual(linkedPhone, { text: "Linked citation [S1] and the forged phone route.", routeLinks: 0, citationsInLinks: 0, citation: "[S1]" }, "a model link to an app route, or around a citation, survived on the phone");
   const navigationsBeforeLinked = await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length);
   await page.evaluate(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant .phone-tutor__safe-response p")].find((node) => node.textContent.includes("Linked citation"))?.querySelector("button.ai-tutor__citation")?.click());
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // A followed link would change the hash during the click itself; the
+  // source opening is recorded afterwards, so wait for it (#138).
+  await page.waitForFunction((before) => window.__PHONE_AI_AUDIT__.navigations.length > before, { timeout: 5_000 }, navigationsBeforeLinked).catch(() => {});
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length), navigationsBeforeLinked + 1, "the linked [S1] citation did not open its source");
   assert.deepEqual(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.at(-1)), { documentId: "notes/audit-gradient-descent.md", anchor: "optimization" }, "the linked [S1] citation opened the wrong source");
   assert.equal(await page.evaluate(() => window.location.hash), hashBeforeLinked, "a citation click followed a model-chosen link");
