@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 import puppeteer from "puppeteer-core";
+import { settled } from "./audit_waits.mjs";
 
 /**
  * Minimal EPUB fixture (issue #12), zipped by hand: local headers + central
@@ -370,7 +371,10 @@ try {
   await page.$eval('button[aria-label="Stop narration"]', (button) => button.click());
 
   await page.$eval(".reader-scroll", (node) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * 0.62; node.dispatchEvent(new Event("scroll")); });
-  await delay(700);
+  // Measure once the reader has reacted to the scroll: the estimate shows
+  // and the chrome has stopped moving (#138), not after a guessed 700 ms.
+  await page.waitForFunction(() => /min/u.test(document.querySelector(".reading-time-left")?.textContent || ""), { timeout: 5_000 }).catch(() => {});
+  await settled(page, "the reader after scrolling to 62%");
   // READER-6: the minutes-left estimate is visible, not under the toolbar.
   const timeLeft = await page.$eval(".reading-time-left", (node) => {
     const box = node.getBoundingClientRect();
@@ -387,12 +391,27 @@ try {
   });
   await page.$eval('button[aria-label="Reading appearance"]', (button) => button.click());
   await page.waitForSelector(".display-popover");
+  const textSizeBefore = await page.$eval(".markdown-body", (node) => getComputedStyle(node).fontSize);
   await page.$eval('.display-popover input[type="range"]', (input) => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "1.3");
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await delay(400);
-  const anchorAfterResize = await page.evaluate(() => Math.round(document.querySelector("[data-audit-anchor]").getBoundingClientRect().top - document.querySelector(".reader-scroll").getBoundingClientRect().top));
+  // The new size applies, then the reader re-anchors: read the passage's
+  // place once it has held still for five frames, not 400 ms later (#138).
+  const anchorAfterResize = await page.evaluate(async (before) => {
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const offset = () => Math.round(document.querySelector("[data-audit-anchor]").getBoundingClientRect().top - document.querySelector(".reader-scroll").getBoundingClientRect().top);
+    const giveUpAt = performance.now() + 5_000;
+    while (getComputedStyle(document.querySelector(".markdown-body")).fontSize === before && performance.now() < giveUpAt) await frame();
+    let last = offset();
+    for (let still = 0; still < 5 && performance.now() < giveUpAt;) {
+      await frame();
+      const now = offset();
+      still = now === last ? still + 1 : 0;
+      last = now;
+    }
+    return last;
+  }, textSizeBefore);
   assert.ok(Math.abs(anchorAfterResize - readingAnchor) <= 24, `a text-size change moved the reading position (${readingAnchor}px to ${anchorAfterResize}px)`);
   // Restoring the text size re-anchors again. A jump the reader makes
   // itself (Back to top) must end that hold, so late layout, such as a
@@ -421,7 +440,7 @@ try {
   assert.ok(afterBackToTop < 400, `late layout pulled Back to top back to the old passage (scrollTop ${afterBackToTop})`);
   // Return to the 62% reading place that later persistence checks expect.
   await page.$eval(".reader-scroll", (node) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * 0.62; node.dispatchEvent(new Event("scroll")); });
-  await delay(400);
+  await waitForStored(page, "profile", (profile) => profile.readingPositions?.[documentId] >= 0.6, "the 62% reading place was not recorded");
   await page.keyboard.press("Escape");
   await page.waitForSelector(".display-popover", { hidden: true });
 
@@ -866,7 +885,9 @@ try {
     const resetDisabled = await page.$eval(".board-zoom-level", (button) => button.disabled);
     if (!resetDisabled) {
       await page.$eval(".board-zoom-level", (button) => button.click());
-      await delay(150);
+      // Measure the page once the reset has rendered and settled (#138).
+      await page.waitForFunction(() => document.querySelector(".board-zoom-level")?.disabled, { timeout: 5_000 });
+      await settled(page, "the whiteboard after resetting zoom");
     }
     const rotateBox = await boardPageBox(page);
     await page.$eval('button[aria-label="Rectangle"]', (button) => button.click());
@@ -1001,7 +1022,13 @@ try {
     await delay(100);
   }
   assert.ok(boardPngPath, "whiteboard PNG was not downloaded");
-  await delay(150);
+  // Read it once its size has stopped changing, not 150 ms later (#138).
+  for (let previous = -1, attempt = 0; attempt < 50; attempt += 1) {
+    const size = (await stat(boardPngPath).catch(() => null))?.size ?? -1;
+    if (size > 0 && size === previous) break;
+    previous = size;
+    await delay(100);
+  }
   const pngBytes = await readFile(boardPngPath);
   assert.ok(pngBytes.length > 0, "exported whiteboard PNG is empty");
   assert.deepEqual([...pngBytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], "exported whiteboard file does not start with the PNG signature");
@@ -1484,6 +1511,11 @@ try {
   await page.type(".markdown-editor", "\nUnsaved navigation guard marker.");
   acceptDialogs = false;
   await page.goBack({ waitUntil: "domcontentloaded" });
+  // The app puts the reader route back after the declined leave: it calls
+  // history.forward() and, 80 ms later, pushes the route if it is still
+  // missing. Wait for the route (#138), then let that 80 ms check pass, or
+  // it can push the reader back over the next, accepted Back.
+  await page.waitForFunction(() => location.hash.startsWith("#/read/") && document.querySelector(".markdown-editor"), { timeout: 5_000 }).catch(() => {});
   await delay(250);
   assert.ok(await page.$(".markdown-editor"), "canceling Back did not preserve the dirty editor");
   assert.ok(new URL(page.url()).hash.startsWith("#/read/"), "canceling Back did not restore the reader route");
@@ -1493,7 +1525,11 @@ try {
   assert.equal(new URL(page.url()).hash, "#/library", "browser Back did not restore the prior application route");
 
   await clickByText(page, ".bottom-nav button", "Notebook");
-  await delay(900);
+  await page.waitForSelector(".notebook-page");
+  // Reload once what the reload check reads is stored (#138).
+  await waitForStored(page, "profile", (profile) => profile.customDocuments.some((item) => item.title === "Acceptance Study Note Organized")
+    && profile.customDocuments.some((item) => item.title.toLocaleLowerCase().includes("uploaded persistence proof"))
+    && profile.personalNotes[documentId]?.includes("SDE-III systems interview"), "the notes were not stored before the reload");
   await page.reload({ waitUntil: "networkidle2" });
   await page.waitForSelector(".notebook-page");
   const reloadedText = await page.$eval(".notebook-page", (node) => node.innerText);

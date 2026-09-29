@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
+import { pollValue, settled } from "./audit_waits.mjs";
 import { installSpeechMock } from "./speech_mock.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
@@ -165,7 +166,8 @@ try {
     const displayed = await page.$eval(".audio-label strong", (node) => Number(node.textContent.match(/(\d+)\//)?.[1] || 0));
     if (displayed > 3) break;
     await page.$eval('button[aria-label="Next section"]', (node) => node.click());
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Read the next position once the label has moved, not 250 ms later (#138).
+    await page.waitForFunction((before) => Number(document.querySelector(".audio-label strong")?.textContent.match(/(\d+)\//)?.[1] || 0) !== before, { timeout: 5_000 }, displayed).catch(() => {});
   }
   await page.waitForFunction(() => Number(document.querySelector(".audio-label strong")?.textContent.match(/(\d+)\//)?.[1] || 0) > 3, { timeout: 5_000 });
   const resumeIndex = await page.$eval(".audio-label strong", (node) => Number(node.textContent.match(/(\d+)\//)?.[1] || 0));
@@ -272,8 +274,9 @@ try {
   });
   await page.waitForFunction(() => document.querySelector(".speech-popover .popover-heading strong")?.textContent.includes("2 device voices"));
 
-  await delay(700);
-  const stored = await readStoredProfile(page);
+  // The settings save is debounced: read it once it has landed (#138).
+  const stored = await pollValue(() => readStoredProfile(page), ({ settings }) => settings.speechLanguage === "hi-IN" && settings.voiceURI === "lekha-hi-in" && settings.speechRate === 1.25
+    && settings.speechPitch === 0.8 && settings.speechVolume === 0.4 && settings.speechScope === "selection");
   assert.equal(stored.settings.speechLanguage, "hi-IN");
   assert.equal(stored.settings.voiceURI, "lekha-hi-in");
   assert.equal(stored.settings.speechRate, 1.25);
@@ -577,8 +580,7 @@ try {
     await casePage.waitForFunction(() => document.querySelector(".speech-popover .popover-heading strong")?.textContent.includes("4 device voices"));
     await casePage.select('select[aria-label="Narration voice"]', "rishi-en-in");
     await casePage.waitForFunction(() => document.querySelector('select[aria-label="Narration voice"]')?.value === "rishi-en-in");
-    await delay(700);
-    assert.equal((await readStoredProfile(casePage)).settings.voiceURI, "rishi-en-in");
+    assert.equal((await pollValue(() => readStoredProfile(casePage), (profile) => profile.settings.voiceURI === "rishi-en-in")).settings.voiceURI, "rishi-en-in");
     await casePage.evaluate(() => {
       window.__lumenTestVoices = window.__lumenTestVoices.filter((voice) => voice.voiceURI !== "rishi-en-in");
       window.speechSynthesis.dispatch("voiceschanged");
@@ -888,7 +890,8 @@ try {
       await casePage.evaluate((factor) => { document.documentElement.style.fontSize = `${16 * factor}px`; }, scale);
       await openPanel(casePage);
       await casePage.waitForSelector(".speech-bookmarks .speech-bookmark-play", { timeout: 5_000 });
-      await delay(150);
+      // Measure the sheet once it has finished moving in (#138).
+      await settled(casePage, `the narration sheet at ${width} px`);
       const layout = await casePage.evaluate(() => {
         const sheet = document.querySelector(".speech-popover");
         const remove = document.querySelector('.speech-bookmarks button[aria-label="Delete this audio bookmark"]').getBoundingClientRect();
