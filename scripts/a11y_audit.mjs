@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
+import { settleAnimations, waitForTheme } from "./audit_waits.mjs";
 import { installSpeechMock } from "./speech_mock.mjs";
 
 // axe-core is a pinned dev dependency. The app CSP blocks injected <script>
@@ -170,6 +171,15 @@ const VIEWPORTS = [
   ["desktop", { width: 1280, height: 800, deviceScaleFactor: 1 }],
 ];
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"];
+// Settings text that axe once measured mid theme switch (#138): Paper's
+// --ink-soft on Night's --paper-3, then Night's on Contrast's. Axe runs only
+// once these (and the page's own ink and paper) carry the new theme's tokens.
+const SETTINGS_THEME_SAMPLES = [
+  { selector: ".settings-drawer", property: "backgroundColor", token: "--paper-2" },
+  { selector: ".pronunciation-editor", property: "color", token: "--ink-soft" },
+  { selector: ".pronunciation-editor code", property: "color", token: "--ink-soft" },
+  { selector: ".pronunciation-editor code", property: "backgroundColor", token: "--paper-3" },
+];
 
 // Known violations waiting on an owner fix. Each entry is one rule inside one
 // component container; anything else fails the gate. Remove an entry as soon
@@ -185,13 +195,13 @@ const check = (condition, message) => {
   if (!condition) findings.push(message);
 };
 
-// Theme switches run short color transitions; axe must measure settled colors.
-const settle = (page) => page.evaluate(async () => {
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const finite = document.getAnimations().filter((animation) => animation.playState === "running" && Number.isFinite(animation.effect?.getComputedTiming().endTime));
-  await Promise.race([Promise.all(finite.map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-});
+// Axe and the structural checks measure settled colours and positions: every
+// transition a change started, in all its waves, has finished (#138). A page
+// that never settles is a finding, not a measurement taken mid-transition.
+const settle = async (page, label = "page") => {
+  const result = await settleAnimations(page);
+  check(result.ok, `${label}: animations were still running after ${result.ms} ms (${result.running}: ${result.sample?.join(", ")})`);
+};
 
 const runAxe = async (page, label) => {
   if (!await page.evaluate(() => typeof window.axe !== "undefined")) await page.evaluate(axeSource);
@@ -210,9 +220,11 @@ const runAxe = async (page, label) => {
   }
 };
 
+// The drawer's content can load lazily behind a placeholder (#95), so wait
+// for the Settings page itself, not just the drawer frame.
 const openSettings = async (page) => {
   await page.$eval('button[aria-label="Open settings"]', (button) => button.click());
-  await page.waitForSelector(".settings-drawer .theme-choices");
+  await page.waitForSelector(".settings-drawer .settings-page .theme-choices", { timeout: 20_000 });
 };
 const closeSettings = async (page) => {
   await page.$eval(".settings-close", (button) => button.click());
@@ -222,8 +234,9 @@ const closeSettings = async (page) => {
 const navigate = async (page, route) => {
   await page.evaluate((hash) => { location.hash = hash; }, route.hash);
   await page.waitForSelector(route.ready, { timeout: 20_000 });
-  await page.waitForFunction(() => !document.querySelector(".view-loading"), { timeout: 20_000 }).catch(() => {});
-  await settle(page);
+  const loaded = await page.waitForFunction(() => !document.querySelector(".view-loading"), { timeout: 20_000 }).then(() => true, () => false);
+  check(loaded, `${route.name}: the screen was still loading after 20 s, so axe would audit its placeholder`);
+  await settle(page, route.name);
 };
 const sidebarState = (page) => page.$eval(".app-sidebar", (node) => ({ inert: node.inert, hidden: node.getAttribute("aria-hidden") }));
 
@@ -275,8 +288,8 @@ try {
       await navigate(page, ROUTES[0]);
       await openSettings(page);
       await page.$$eval(".theme-choices button", (buttons, label) => buttons.find((button) => button.textContent.includes(label))?.click(), themeLabel);
-      await page.waitForFunction((value) => document.documentElement.dataset.theme === value, {}, theme);
-      await settle(page);
+      const themed = await waitForTheme(page, theme, { samples: SETTINGS_THEME_SAMPLES });
+      check(themed.ok, `${viewportName}/${theme}/settings: the theme had not settled before axe ran: ${themed.reason}`);
       if (theme === "paper") {
         const radios = await page.$$eval(".theme-choices [role=radio]", (nodes) => nodes.map((node) => ({ checked: node.getAttribute("aria-checked"), tabIndex: node.tabIndex })));
         check(radios.length === 4 && radios.filter((radio) => radio.checked === "true").length === 1 && radios.filter((radio) => radio.tabIndex === 0).length === 1, `${viewportName}: theme choices are not a single-selection radio group (${JSON.stringify(radios)})`);
