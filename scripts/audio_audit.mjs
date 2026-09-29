@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
-import { pollValue, settled } from "./audit_waits.mjs";
-import { installSpeechMock } from "./speech_mock.mjs";
+import { pollValue, settled, waitForTheme } from "./audit_waits.mjs";
+import { installSpeechMock, stepToSpokenBlock } from "./speech_mock.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -946,13 +946,19 @@ try {
   const storeBookmark = (casePage, snippet) => casePage.evaluate((id, text) => localStorage.setItem("lumen-audio-bookmarks-v1", JSON.stringify([{
     id: "ab-97", documentId: id, v: 2, index: 6, total: 0, snippet: text, section: "", savedAt: new Date().toISOString(),
   }])), documentId, snippet);
+  // Measures only once the new theme has settled (#138): the root carries
+  // it, every transition the switch started has ended, and the page's ink
+  // and paper are the new theme's, then the drawer has closed and stopped.
+  const THEME_VALUES = { Paper: "paper", Night: "dark", System: "system", Contrast: "contrast" };
   const chooseTheme = async (casePage, label) => {
     await casePage.$eval('button[aria-label="Open settings"]', (node) => node.click());
     await casePage.waitForSelector(".settings-drawer .theme-choices", { timeout: 10_000 });
     await clickByText(casePage, ".theme-choices button", label);
+    const themed = await waitForTheme(casePage, THEME_VALUES[label]);
+    assert.ok(themed.ok, `the ${label} theme had not settled: ${themed.reason}`);
     await casePage.$eval(".settings-close", (node) => node.click());
     await casePage.waitForSelector(".settings-drawer", { hidden: true, timeout: 5_000 });
-    await delay(450);
+    await settled(casePage, `closing Settings after choosing ${label}`);
   };
 
   // ND4, NM9: with the panel closed, a failed sentence, an interruption and
@@ -992,7 +998,8 @@ try {
     await casePage.$eval('.audio-bar button[aria-label="Stop narration"]', (node) => node.focus());
     await casePage.keyboard.press("Enter");
     await casePage.waitForFunction(() => !document.querySelector(".audio-bar"), { timeout: 5_000 });
-    await delay(50);
+    // Focus moves once the player has gone: read it when it lands (#138).
+    await casePage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Listen", { timeout: 5_000 }).catch(() => {});
     assert.equal(await focusedLabel(), "Listen", "after Stop from the player, focus did not go to Listen");
   });
 
@@ -1201,7 +1208,7 @@ try {
         getSelection().addRange(range);
         document.dispatchEvent(new Event("selectionchange"));
       });
-      await delay(150);
+      // The Ready badge below is the Reader taking the selection (#138).
       await openPanel(casePage);
       await casePage.waitForSelector(".speech-scope-grid button span", { timeout: 5_000 });
       const panel = await casePage.evaluate(() => {
@@ -1335,7 +1342,8 @@ try {
     await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 });
     await tapBar(casePage, "Bookmark this sentence");
     await casePage.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("bookmarked"), { timeout: 5_000 });
-    await delay(300);
+    // The toast rises 10px as it fades in: measure where it comes to rest (#138).
+    await settled(casePage, "the bookmark toast");
     const stack = await casePage.evaluate(() => ({ toast: Math.round(document.querySelector(".toast").getBoundingClientRect().bottom), bar: Math.round(document.querySelector(".audio-bar").getBoundingClientRect().top) }));
     if (stack.toast > stack.bar) problems.push(`at 320×568 a toast overlaps the player holding a message: ${JSON.stringify(stack)}`);
     assert.deepEqual(problems, [], problems.join("; "));
@@ -1536,7 +1544,8 @@ try {
     const message = "This reading target exceeds 500,000 characters.";
     await casePage.waitForFunction((text) => document.querySelector(".speech-popover .speech-live")?.textContent.includes(text), { timeout: 5_000 }, message)
       .catch(() => assert.fail("an over-long target left no message in the panel"));
-    await delay(150);
+    // The old reading stops as the message shows: read once it has (#138).
+    await casePage.waitForFunction(() => !document.querySelector(".audio-bar") && !window.speechSynthesis.current, { timeout: 5_000 }).catch(() => {});
     const after = await casePage.evaluate(() => ({ player: Boolean(document.querySelector(".audio-bar")), speaking: Boolean(window.speechSynthesis.current) }));
     assert.deepEqual(after, { player: false, speaking: false }, `an over-long target left the previous reading behind: ${JSON.stringify(after)}`);
     const regions = await announcements(casePage, message);
@@ -1582,12 +1591,13 @@ try {
     await casePage.keyboard.press("Tab");
     await casePage.keyboard.press("Enter");
     await casePage.waitForFunction(() => !document.querySelector('.teach-mode button[aria-label="Stop narration"]'), { timeout: 5_000 });
-    await delay(50);
+    // Focus returns once Stop has gone: read it when it lands (#138).
+    await casePage.waitForFunction(() => document.activeElement?.hasAttribute("data-teach-narrate") && document.activeElement.getAttribute("aria-label") === "Narrate this section", { timeout: 5_000 }).catch(() => {});
     assert.equal(await narrateLabel(), "Narrate this section", "after Stop, focus did not return to the narration control");
     await casePage.keyboard.press("Escape");
     await casePage.waitForSelector(".teach-mode", { hidden: true, timeout: 5_000 })
       .catch(() => assert.fail("Escape did not close Teaching Mode"));
-    await delay(150);
+    await casePage.waitForFunction(() => document.activeElement?.textContent.trim() === "Teach", { timeout: 5_000 }).catch(() => {});
     assert.equal(await casePage.evaluate(() => document.activeElement?.textContent.trim()), "Teach", "focus did not return to Teach after Escape");
   });
 
@@ -1615,7 +1625,8 @@ try {
     // A blocked sentence's message, from the player or else the panel.
     await startFullLecture(casePage);
     await failSentence(casePage, "not-allowed");
-    await delay(150);
+    // Read the message once the player shows it or has gone (#138).
+    await casePage.waitForFunction(() => !document.querySelector(".audio-bar") || /blocked/u.test(document.querySelector(".audio-bar .audio-label")?.textContent || ""), { timeout: 5_000 }).catch(() => {});
     const blocked = await barMessage(casePage) || await (async () => {
       await openPanel(casePage);
       return casePage.$eval(".speech-popover .speech-live", (node) => node.textContent);
@@ -1698,11 +1709,10 @@ try {
       await casePage.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
       await chooseTheme(casePage, choice);
       await startFullLecture(casePage);
-      for (let step = 0; step < 12 && !await casePage.$(".markdown-body p.narration-active"); step += 1) {
-        await casePage.$eval('.audio-bar button[aria-label="Next narration sentence"]', (node) => node.click());
-        await delay(120);
-      }
-      await delay(400);
+      // Colours are read once the spoken block's tint has finished its
+      // transition, and the panel's once it has settled (#138).
+      await stepToSpokenBlock(casePage, ".markdown-body p.narration-active");
+      await settled(casePage, `${label}: the spoken block`);
       const readings = {
         "text on the spoken block": [await measure(".markdown-body p.narration-active"), 4.5],
         "the player's edge on the page": [await measure(".audio-bar", { edge: true, backdrop: ".reader-scroll" }), 3],
@@ -1711,11 +1721,11 @@ try {
       await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 });
       await openPanel(casePage);
       await casePage.waitForSelector(".speech-popover .inline-warning", { timeout: 5_000 });
-      await delay(400);
+      await settled(casePage, `${label}: the panel's message`);
       readings["the panel's message"] = [await measure(".speech-popover .inline-warning"), 4.5];
       await clickByText(casePage, ".speech-scope-grid button", "Selection");
       await casePage.waitForSelector(".speech-target-status.warning", { timeout: 5_000 });
-      await delay(400);
+      await settled(casePage, `${label}: the target warning`);
       readings["the target warning"] = [await measure(".speech-target-status.warning"), 4.5];
       await clickByText(casePage, ".speech-scope-grid button", "Full");
       await casePage.$eval('button[aria-label="Close narration"]', (node) => node.click());

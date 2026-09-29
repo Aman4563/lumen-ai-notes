@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { settleAnimations, waitForTheme } from "./audit_waits.mjs";
-import { installSpeechMock } from "./speech_mock.mjs";
+import { installSpeechMock, stepToSpokenBlock } from "./speech_mock.mjs";
 
 // axe-core is a pinned dev dependency. The app CSP blocks injected <script>
 // tags, so its source is evaluated through CDP instead.
@@ -56,10 +56,7 @@ const STATES = [
     route: ROUTES[2],
     setup: async (page) => {
       await startNarration(page);
-      for (let step = 0; step < 12 && !await page.$(".markdown-body :is(p, li).narration-active"); step += 1) {
-        await page.$eval('.audio-bar button[aria-label="Next narration sentence"]', (button) => button.click());
-        await new Promise((resolve) => setTimeout(resolve, 120));
-      }
+      await stepToSpokenBlock(page, ".markdown-body :is(p, li).narration-active");
     },
     ready: ".markdown-body :is(p, li).narration-active",
     close: stopNarration,

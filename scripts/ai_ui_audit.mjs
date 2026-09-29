@@ -906,6 +906,9 @@ const auditChatFit = async () => {
         setTimeout(() => { observer.disconnect(); resolve(false); }, 5_000);
       }));
       await pause(page, 900);
+      // The window above bounds "stays stopped"; the pill that says so is
+      // awaited, not assumed to have rendered within it (#138).
+      await page.waitForSelector(".ai-tutor__jump", { timeout: 5_000 }).catch(() => {});
       const g = await page.evaluate(chatFitGeometry);
       expect(raced && g.jump && g.conversation.fromEnd > 60, "1280x720: a key pressed to read back just before the tutor's own follow scroll did not stop following", { raced, jump: g.jump, conversation: g.conversation });
       await stop(page);
@@ -933,6 +936,9 @@ const auditChatFit = async () => {
       await clickByText(page, ".document-tools button", "Ask AI");
       await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea")?.value.includes("Explain this excerpt") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 15_000 });
       await pause(page, 600);
+      // The window above bounds "stays at the latest turn"; the focus the
+      // check reads is awaited, not assumed to have landed within it (#138).
+      await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 }).catch(() => {});
       const g = await geometry(page);
       const focused = await page.evaluate(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"));
       expect(focused && inView(g, g.field), `Ask AI ${name}: the box with the excerpt is not focused in view`, { focused, field: g.field });
@@ -1046,6 +1052,7 @@ const auditChatFit = async () => {
           await page.focus(".ai-tutor__options-toggle");
           await page.keyboard.press("Home");
           await pause(page, 700);
+          await page.waitForSelector(".ai-tutor__jump", { timeout: 5_000 }).catch(() => {});
           const g = await page.evaluate(chatFitGeometry);
           expect(g.jump && g.conversation.fromEnd > 60, `${name} run ${run}: Home pressed from Options did not stop following`, { jump: g.jump, conversation: g.conversation });
         }
