@@ -8550,16 +8550,19 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 .speech-autoadvance-row .setting-toggle span { color: var(--ink-soft); font-size: 0.68rem; font-weight: 750; }
 
 /* The mini player makes room for itself at the end of the lecture (issue
-   #97): the lecture ends with its usual space or, when the player needs more,
-   the part of the reading area the player covers (measured by Reader.jsx)
-   plus 16px, never both. */
-.reader-view.has-player .reader-layout { padding-bottom: max(var(--reader-end-space), calc(var(--audio-bar-space, 0px) + 16px)); }
+   #97). Reader.jsx measures --audio-bar-end-space: the Next card ends 16px
+   above the player or, where the strip between the reader toolbar and the
+   player is shorter than the card (phone landscape at large text), fills
+   that strip with its centre in view. Before that measurement: the lecture's
+   usual end space or the part of the reading area the player covers plus
+   16px, never both. */
+.reader-view.has-player .reader-layout { padding-bottom: var(--audio-bar-end-space, max(var(--reader-end-space), calc(var(--audio-bar-space, 0px) + 16px))); }
 
-/* The bottom navigation shows up to 980px wide, so the player sits 10px
-   above it there, however tall larger text makes it (Reader.jsx measures it
-   into --audio-bar-nav-space; 79px is its usual 69px plus the gap). */
+/* The bottom navigation shows up to 980px wide, so the player sits a gap
+   above it there, however tall larger text makes it (Reader.jsx measures its
+   room into --audio-bar-nav-space; 69px is its usual room). */
 @media (max-width: 980px) {
-  .reader-view .audio-bar { bottom: max(calc(79px + env(safe-area-inset-bottom)), var(--audio-bar-nav-space, 0px)); }
+  .reader-view .audio-bar { --audio-bar-nav-gap: 10px; bottom: calc(max(calc(69px + env(safe-area-inset-bottom)), var(--audio-bar-nav-space, 0px)) + var(--audio-bar-nav-gap)); }
 }
 
 /* Narration on phones and touch screens (issue #97): 44px hit areas (Apple's
@@ -8600,6 +8603,16 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
   .speech-current strong { font-size: 0.6875rem; }
   .reader-view .audio-bar .icon-button { width: 44px; height: 44px; }
   .audio-bar .audio-label .audio-message { -webkit-line-clamp: 2; }
+}
+
+/* Phone landscape (issue #97 review): the reading area between the reader
+   toolbar and the player is short, and at 200% text the Next card is taller
+   than it. The player gives back what it can without shrinking a control or
+   its text: 4px above and below its buttons, a message spaced like the line
+   above it rather than at 1.35, and a 4px gap above the bottom navigation. */
+@media (max-width: 980px) and (max-height: 430px) {
+  .reader-view .audio-bar { --audio-bar-nav-gap: 4px; padding-block: 4px; }
+  .audio-bar .audio-label .audio-message { line-height: normal; }
 }
 
 /* A phone 320px tall in landscape has no room for a second line at large

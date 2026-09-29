@@ -1102,7 +1102,12 @@ try {
   // ND8: at the end of the lecture the Next card scrolls clear of the
   // player, including when a message makes the player taller, a long message
   // at 200% text on a small phone, and in phone landscape, where the
-  // lecture's own end space and the player's must not add up.
+  // lecture's own end space and the player's must not add up. In short
+  // landscape at 200% text (568×320, 667×375) the strip between the reader
+  // toolbar and the player is shorter than the card: the card's centre stays
+  // in that strip, not under the toolbar, at least 40px of it shows (the
+  // player gives back its spare padding there), and a real tap on it opens
+  // the next lecture.
   await issue97Case("the Next card with the player visible", {}, async (casePage) => {
     await openLecture(casePage);
     await startFullLecture(casePage);
@@ -1116,22 +1121,38 @@ try {
       const card = document.querySelector(".document-pagination .next");
       const box = card.getBoundingClientRect();
       const bar = document.querySelector(".audio-bar").getBoundingClientRect();
+      const toolbar = document.querySelector(".reader-toolbar").getBoundingClientRect().bottom;
       const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-      return { onCard: Boolean(hit && card.contains(hit)), hit: hit?.className || hit?.tagName || null, card: [Math.round(box.top), Math.round(box.bottom)], bar: [Math.round(bar.top), Math.round(bar.bottom)], toolbar: Math.round(document.querySelector(".reader-toolbar").getBoundingClientRect().bottom) };
+      return {
+        onCard: Boolean(hit && card.contains(hit)),
+        hit: hit?.className || hit?.tagName || null,
+        card: [Math.round(box.top), Math.round(box.bottom)],
+        bar: [Math.round(bar.top), Math.round(bar.bottom)],
+        toolbar: Math.round(toolbar),
+        visible: Math.round(Math.min(box.bottom, bar.top) - Math.max(box.top, toolbar)),
+        whole: Math.round(box.height),
+        centre: [box.left + box.width / 2, box.top + box.height / 2],
+      };
     });
     const problems = [];
-    for (const [label, viewport, scale, message] of [
+    const shown = (label, state, where) => {
+      if (!where.onCard) problems.push(`at ${label} the player${state} covers the Next card's centre or it is under the reader toolbar: ${JSON.stringify(where)}`);
+      else if (where.visible < Math.min(40, where.whole)) problems.push(`at ${label} only ${where.visible}px of the Next card shows between the reader toolbar and the player${state}: ${JSON.stringify(where)}`);
+    };
+    const sizes = [
       ["393×852", phoneViewport, 1, "synthesis-failed"],
       ["320×568", { ...phoneViewport, width: 320, height: 568 }, 1, "synthesis-failed"],
       ["393×852 at 200% text", phoneViewport, 2, "synthesis-failed"],
       ["320×568 at 200% text", { ...phoneViewport, width: 320, height: 568 }, 2, "pagehide"],
       ["667×375", { ...phoneViewport, width: 667, height: 375 }, 1, "synthesis-failed"],
       ["852×393", { ...phoneViewport, width: 852, height: 393 }, 1, "pagehide"],
-    ]) {
+      ["667×375 at 200% text", { ...phoneViewport, width: 667, height: 375 }, 2, "pagehide"],
+      ["568×320 at 200% text", { ...phoneViewport, width: 568, height: 320 }, 2, "synthesis-failed"],
+    ];
+    for (const [index, [label, viewport, scale, message]] of sizes.entries()) {
       await casePage.setViewport(viewport);
       await setTextScale(casePage, scale);
-      const speaking = await nextCardHit();
-      if (!speaking.onCard) problems.push(`at ${label} the player covers the Next card's centre: ${JSON.stringify(speaking)}`);
+      shown(label, "", await nextCardHit());
       if (message === "pagehide") {
         await casePage.evaluate(() => window.dispatchEvent(new Event("pagehide")));
         await casePage.waitForSelector('.audio-bar button[aria-label="Resume narration"]', { timeout: 5_000 });
@@ -1140,7 +1161,15 @@ try {
         await casePage.waitForSelector('.audio-bar button[aria-label="Retry narration"]', { timeout: 5_000 });
       }
       const withMessage = await nextCardHit();
-      if (!withMessage.onCard) problems.push(`at ${label} the player with the ${message} message covers the Next card's centre: ${JSON.stringify(withMessage)}`);
+      shown(label, ` with the ${message} message`, withMessage);
+      if (index === sizes.length - 1) {
+        // A learner's tap where the card's centre shows opens the next lecture.
+        const before = await casePage.evaluate(() => window.location.hash);
+        await casePage.touchscreen.tap(...withMessage.centre);
+        const opened = await casePage.waitForFunction((hash) => window.location.hash !== hash, { timeout: 5_000 }, before).then(() => true, () => false);
+        if (!opened) problems.push(`at ${label} a tap on the Next card's centre with the ${message} message did not open the next lecture: ${JSON.stringify(withMessage)}`);
+        break;
+      }
       await tapBar(casePage, message === "pagehide" ? "Resume narration" : "Retry narration");
       await casePage.waitForSelector('.audio-bar button[aria-label="Pause narration"]', { timeout: 5_000 });
     }

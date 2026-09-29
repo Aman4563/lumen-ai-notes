@@ -155,9 +155,10 @@ test("every custom property referenced by the app stylesheets is defined", () =>
   // Mermaid diagram's readable width (mermaidDiagrams.js), the tutor's
   // dock measurements: its height, the top bar, the bottom navigation, the
   // keyboard offset and the wide column's question box cap (useTutorDock.js),
-  // and the reading area the narration mini player covers and the room the
-  // bottom navigation leaves it (Reader.jsx).
-  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space", "--ai-top", "--ai-nav-space", "--ai-dock-bottom", "--ai-field-max", "--audio-bar-space", "--audio-bar-nav-space"]);
+  // and the reading area the narration mini player covers, the room the
+  // bottom navigation leaves it and the lecture's end space while it shows
+  // (Reader.jsx).
+  const runtime = new Set(["--font-scale", "--line-height", "--swatch", "--board-offset-top", "--board-toolbar-height", "--diagram-readable-width", "--ai-composer-space", "--ai-top", "--ai-nav-space", "--ai-dock-bottom", "--ai-field-max", "--audio-bar-space", "--audio-bar-nav-space", "--audio-bar-end-space"]);
   const missing = [...new Set(sheets.flatMap((sheet) => [...sheet.matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name)))].filter((name) => !defined.has(name) && !runtime.has(name));
   assert.deepEqual(missing, [], `undefined custom properties: ${missing.join(", ")}`);
 });

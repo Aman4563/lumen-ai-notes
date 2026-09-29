@@ -760,36 +760,64 @@ export default function Reader({
   }, [document.id, speech.activeLabel, speech.progress, speech.currentText, speech.sectionLabel]);
 
   // The mini player floats over the end of the lecture (issue #97, ND8). Up
-  // to 980px wide it sits 10px above the bottom navigation, which larger text
-  // makes taller: --audio-bar-nav-space is the room the navigation takes plus
-  // that gap (unset while the navigation is hidden). --audio-bar-space is the
-  // part of the reading area the player covers (its height plus its bottom
-  // offset): the lecture's end space (.has-player), toasts and the selection
-  // toolbar keep clear of it. Both live on the root, where toasts read them.
+  // to 980px wide it sits a small gap above the bottom navigation, which
+  // larger text makes taller: --audio-bar-nav-space is the room the
+  // navigation takes (unset while it is hidden) and the stylesheet adds the
+  // gap. --audio-bar-space is the part of the reading area the player covers
+  // (its height plus its bottom offset): toasts and the selection toolbar
+  // keep clear of it. --audio-bar-end-space is the lecture's end space while
+  // the player shows (.has-player): the last card (Next) ends 16px above the
+  // player. Where the strip between the reader toolbar and the player is too
+  // short for the card (phone landscape at large text), the card fills it
+  // instead: at the toolbar if it fits, else centred on the strip, so its
+  // centre stays visible and tappable. All live on the root, where toasts
+  // read them.
   const playerVisible = speech.status === "speaking" || speech.status === "paused" || speech.canRetry;
   useLayoutEffect(() => {
     const bar = audioBarRef.current;
+    const scroller = scrollRef.current;
     if (!playerVisible || !bar) return undefined;
     const root = window.document.documentElement;
     const nav = window.document.querySelector(".bottom-nav");
+    const toolbar = scroller?.parentElement?.querySelector(".reader-toolbar");
+    const pagination = scroller?.querySelector(".document-pagination");
     const measure = () => {
-      if (nav?.isConnected && getComputedStyle(nav).display !== "none") root.style.setProperty("--audio-bar-nav-space", `${Math.ceil(window.innerHeight - nav.getBoundingClientRect().top + 10)}px`);
+      if (nav?.isConnected && getComputedStyle(nav).display !== "none") root.style.setProperty("--audio-bar-nav-space", `${Math.ceil(window.innerHeight - nav.getBoundingClientRect().top)}px`);
       else root.style.removeProperty("--audio-bar-nav-space");
       // Read after the offset above is applied: the bar may have moved.
-      const bottom = scrollRef.current?.getBoundingClientRect().bottom ?? window.innerHeight;
-      root.style.setProperty("--audio-bar-space", `${Math.max(0, Math.ceil(bottom - bar.getBoundingClientRect().top))}px`);
+      const barTop = bar.getBoundingClientRect().top;
+      const frame = scroller?.getBoundingClientRect();
+      root.style.setProperty("--audio-bar-space", `${Math.max(0, Math.ceil((frame?.bottom ?? window.innerHeight) - barTop))}px`);
+      const cards = pagination?.querySelectorAll("button");
+      const card = cards?.[cards.length - 1];
+      const layout = card?.closest(".reader-layout");
+      if (!frame || !card || !layout) {
+        root.style.removeProperty("--audio-bar-end-space");
+        return;
+      }
+      const box = card.getBoundingClientRect();
+      const top = Math.max(frame.top, toolbar?.getBoundingClientRect().bottom ?? frame.top);
+      const middle = (top + barTop) / 2;
+      const cardBottom = Math.max(barTop - 16, Math.min(top + box.height, middle + box.height / 2));
+      // Whatever scrolls after the card besides the end space itself (none
+      // today), so the card lands where it should at the end of the scroll.
+      const endSpace = Number.parseFloat(getComputedStyle(layout).paddingBottom) || 0;
+      const after = scroller.scrollHeight - scroller.scrollTop - (box.bottom - frame.top - scroller.clientTop) - endSpace;
+      const viewBottom = frame.top + scroller.clientTop + scroller.clientHeight;
+      root.style.setProperty("--audio-bar-end-space", `${Math.max(0, Math.ceil(viewBottom - cardBottom - Math.max(0, after)))}px`);
     };
     measure();
-    // The bar grows with a message; the navigation grows with the text size.
+    // The bar grows with a message; the navigation, the toolbar (so the
+    // reading area) and the cards grow with the text size.
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
-    observer?.observe(bar);
-    if (nav) observer?.observe(nav);
+    for (const node of [bar, nav, scroller, pagination]) if (node) observer?.observe(node);
     window.addEventListener("resize", measure);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", measure);
       root.style.removeProperty("--audio-bar-space");
       root.style.removeProperty("--audio-bar-nav-space");
+      root.style.removeProperty("--audio-bar-end-space");
     };
   }, [playerVisible]);
 
