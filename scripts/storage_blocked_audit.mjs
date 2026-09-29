@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,9 @@ import { installSpeechMock } from "./speech_mock.mjs";
 // - a refusing store: getItem and removeItem throw a SecurityError and
 //   setItem a QuotaExceededError.
 // Settings must then say, once and politely, that preferences are not being
-// saved; with working storage it must not.
+// saved; with working storage it must not. A third shape is Chrome's own
+// cookie blocking, set in the profile: Web Storage and IndexedDB both fail,
+// so nothing is saved and Settings must not say study data is.
 const axeSource = await readFile(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 const baseUrl = (process.env.LUMEN_URL || "http://127.0.0.1:4173/").replace(/\/$/, "");
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -28,6 +30,8 @@ const profileDirectory = await mkdtemp(join(tmpdir(), "lumen-storage-blocked-"))
 const LECTURE = "notes/part-01-foundations/01-ai-ml-mental-model.md";
 const BOARD_DOCUMENT = "notes/00-roadmap.md";
 const NOTICE = "This browser is not saving preferences on this device";
+const STUDY_DATA_SENTENCE = "Notes, progress and reviews are saved separately";
+const SYNC_WARNING = "Sync needs this browser to save settings on this device";
 const CRASH = "could not render this screen";
 // The error boundary's screens: the app-wide one and the in-shell route one.
 // (Text alone would match the device-evidence checklist, which quotes it.)
@@ -188,13 +192,13 @@ const axeViolations = async (page, selector) => {
 };
 
 const failures = [];
-const stats = { cases: 0, routes: 0, axeRuns: 0 };
+const stats = { cases: 0, routes: 0, loads: 0, axeRuns: 0 };
 let browser;
 
 // Runs one mode at one size in a fresh profile; failures are collected so one
 // broken flow cannot hide the others.
-const runCase = async (label, { install, viewport }, run) => {
-  const context = await browser.createBrowserContext();
+const runCase = async (label, { install, viewport, browserInstance = browser }, run) => {
+  const context = await browserInstance.createBrowserContext();
   const page = await context.newPage();
   const errors = [];
   stats.cases += 1;
@@ -210,16 +214,22 @@ const runCase = async (label, { install, viewport }, run) => {
     const calls = await installAiMocks(page);
     const crashed = () => page.evaluate((selector) => Boolean(document.querySelector(selector)), CRASH_SELECTOR);
     const assertRendered = async (where) => assert.equal(await crashed(), false, `${where} showed “Lumen ${CRASH}” (${errors.slice(-2).join(" | ") || "no browser error"})`);
-    // Each route is a fresh load, so every route is also an entry point.
+    // Each route is a real document load, so every route is also an entry
+    // point. A goto that changes only the hash stays in the same document, so
+    // the page leaves through about:blank, and a marker proves it did.
     const open = async (hash, ready) => {
       stats.routes += 1;
+      await page.evaluate(() => { window.__lumenAuditEarlierDocument = true; }).catch(() => {});
+      await page.goto("about:blank", { timeout: 30_000 });
       await page.goto(`${baseUrl}/${hash}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      assert.equal(await page.evaluate(() => window.__lumenAuditEarlierDocument === true), false, `${hash} did not load as a new document`);
+      stats.loads += 1;
       await page.waitForFunction((selector, crash) => document.querySelector(selector) || document.querySelector(crash), { timeout: 20_000 }, ready, CRASH_SELECTOR)
         .catch(() => assert.fail(`${hash} never showed ${ready}`));
       await assertRendered(hash);
       assert.ok(await page.$(ready), `${hash} never showed ${ready}`);
     };
-    await run({ page, open, assertRendered, calls });
+    await run({ page, context, open, assertRendered, calls });
     await assertRendered("the last screen");
     assert.deepEqual(errors, [], `browser errors: ${errors.join(" | ")}`);
   } catch (error) {
@@ -237,11 +247,69 @@ const closeSettings = async (page) => {
   await page.$eval(".settings-close", (button) => button.click());
   await page.waitForSelector(".settings-drawer", { hidden: true });
 };
-const noticeState = (page) => page.evaluate(() => {
+// What a screen reader is offered: the visible notice, and the text of any
+// status region in Settings that carries it.
+const noticeState = (page) => page.evaluate((title) => {
   const notice = document.querySelector(".settings-drawer .settings-storage-notice");
-  const status = notice?.querySelector('[role="status"]');
-  return { visible: Boolean(notice?.getClientRects().length), text: notice?.querySelector("strong")?.textContent || "", announced: status?.textContent || "" };
-});
+  const announced = [...document.querySelectorAll(".settings-drawer [role='status']")].map((node) => node.textContent).filter((text) => text.includes(title));
+  return {
+    visible: Boolean(notice?.getClientRects().length),
+    text: notice?.querySelector("strong")?.textContent || "",
+    detail: notice?.querySelector("span")?.textContent || "",
+    announced: announced.join(" | "),
+    announcedRegions: announced.length,
+  };
+}, NOTICE);
+
+// Samples every frame from before Settings opens: a polite region is announced
+// when its text changes, so the region that carries the notice must have been
+// on screen and empty in an earlier frame (not inserted already filled).
+const watchAnnouncement = (page) => page.evaluate((title) => {
+  const seenEmpty = new WeakSet();
+  const result = { frames: 0, filled: false, filledAfterEmptyFrame: false };
+  window.__lumenAuditAnnouncement = result;
+  const sample = () => {
+    result.frames += 1;
+    for (const region of document.querySelectorAll(".settings-drawer [role='status']")) {
+      if (!region.textContent.trim()) seenEmpty.add(region);
+      else if (region.textContent.includes(title) && !result.filled) {
+        result.filled = true;
+        result.filledAfterEmptyFrame = seenEmpty.has(region);
+      }
+    }
+    if (!result.filled && result.frames < 1_800) requestAnimationFrame(sample);
+  };
+  requestAnimationFrame(sample);
+}, NOTICE);
+const expectAnnouncement = async (page) => {
+  await page.waitForFunction(() => window.__lumenAuditAnnouncement?.filled, { timeout: 8_000 })
+    .catch(() => assert.fail("Settings did not announce that preferences are not being saved"));
+  const announcement = await page.evaluate(() => window.__lumenAuditAnnouncement);
+  assert.ok(announcement.filledAfterEmptyFrame, `the storage notice went into a status region that was never on screen empty, so it may not be announced: ${JSON.stringify(announcement)}`);
+};
+// The announcement leaves its region once read, so browse mode meets the
+// notice once, and a later change can never leave stale text behind.
+const expectAnnouncementCleared = (page) => page.waitForFunction((title) => ![...document.querySelectorAll(".settings-drawer [role='status']")].some((node) => node.textContent.includes(title)), { timeout: 10_000 }, NOTICE)
+  .catch(() => assert.fail("the storage notice stayed in a status region after it was announced, so browse mode reads it twice"));
+
+// With a passphrase entered, only failing storage keeps a vault from being
+// created or joined, and the sync card says why.
+const syncState = (page) => page.evaluate((warning) => {
+  const card = document.querySelector(".settings-drawer .sync-card");
+  const button = (label) => [...card.querySelectorAll("button")].find((node) => node.textContent.includes(label));
+  return {
+    warning: [...card.querySelectorAll(".inline-warning")].some((node) => node.textContent.includes(warning) && node.getClientRects().length),
+    createDisabled: button("Create sync vault")?.disabled,
+    joinDisabled: button("Join via a peer")?.disabled,
+  };
+}, SYNC_WARNING);
+const typePassphrase = async (page) => {
+  await page.$eval('.settings-drawer input[aria-label="Sync vault passphrase"]', (field) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(field, "blocked storage vault passphrase");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
 
 // Every route and the core flows, with storage failing in `mode`.
 const blockedStorageFlows = (viewportName) => async ({ page, open, assertRendered, calls }) => {
@@ -360,12 +428,14 @@ const blockedStorageFlows = (viewportName) => async ({ page, open, assertRendere
 
   // Settings: the notice shows and is announced once; Settings still works.
   await open("#/home", ".welcome-block");
+  await watchAnnouncement(page);
   await openSettings(page);
-  await page.waitForFunction((text) => document.querySelector(".settings-storage-notice [role='status']")?.textContent.includes(text), { timeout: 5_000 }, NOTICE)
-    .catch(() => assert.fail("Settings did not announce that preferences are not being saved"));
+  await expectAnnouncement(page);
   const first = await noticeState(page);
   assert.ok(first.visible && first.text === NOTICE, `the storage notice was not shown: ${JSON.stringify(first)}`);
-  assert.equal(await page.$$eval(".settings-drawer [role='status']", (nodes) => nodes.filter((node) => node.textContent.includes("not saving preferences")).length), 1, "the notice was announced more than once");
+  assert.equal(first.announcedRegions, 1, "the notice was announced more than once");
+  // IndexedDB works in this mode, and Settings says so once a write proved it.
+  assert.ok(first.detail.includes(STUDY_DATA_SENTENCE) && first.announced.includes(STUDY_DATA_SENTENCE), `with IndexedDB working the notice did not say study data is saved: ${JSON.stringify(first)}`);
   for (const [theme, label] of THEMES) {
     await clickByText(page, ".theme-choices button", label);
     await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, { timeout: 5_000 }, theme);
@@ -374,13 +444,18 @@ const blockedStorageFlows = (viewportName) => async ({ page, open, assertRendere
     stats.axeRuns += 1;
     assert.deepEqual(violations, [], `${label}: axe found violations in Settings with the storage notice`);
   }
+  await expectAnnouncementCleared(page);
+  assert.ok((await noticeState(page)).visible, "the visible storage notice left with its announcement");
   await clickByText(page, ".theme-choices button", "Paper");
   await closeSettings(page);
   await openSettings(page);
-  await delay(300);
+  await delay(600);
   const reopened = await noticeState(page);
   assert.ok(reopened.visible, "the storage notice disappeared on reopening Settings");
   assert.equal(reopened.announced, "", "reopening Settings announced the storage notice again");
+  // A vault would be forgotten when Lumen closes, so sync says so and stays off.
+  await typePassphrase(page);
+  assert.deepEqual(await syncState(page), { warning: true, createDisabled: true, joinDisabled: true }, "with storage failing, the sync card let a vault be created or joined, or did not say why not");
   // The theme was saved to IndexedDB, which blocked Web Storage never touches.
   await waitForStored(page, "profile", (profile) => profile?.settings?.theme === "paper", "a Settings change was not saved while Web Storage failed");
 
@@ -399,6 +474,90 @@ const blockedStorageFlows = (viewportName) => async ({ page, open, assertRendere
   }
 };
 
+// Chrome's own cookie blocking, set in the profile (not an injected mock):
+// localStorage throws and IndexedDB will not open, so nothing lasts.
+const ROUTES = [
+  ["#/home", ".welcome-block"],
+  ["#/library", ".library-page"],
+  [`#/read/${encodeURIComponent(LECTURE)}`, ".reader-view .markdown-body h1"],
+  ["#/review", ".review-center-page"],
+  ["#/notebook", ".notebook-page"],
+  [`#/board/${encodeURIComponent(BOARD_DOCUMENT)}`, ".board-canvas"],
+  ["#/ai", ".ai-learning-studio"],
+  ["#/device-evidence", ".device-evidence-page"],
+];
+const waitForFiles = async (directory, pattern) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const found = (await readdir(directory)).filter((name) => pattern.test(name));
+    if (found.length) return found;
+    await delay(100);
+  }
+  return [];
+};
+const saveStatusText = (page) => page.evaluate(() => [...document.querySelectorAll(".settings-drawer .microcopy")].map((node) => node.textContent).find((text) => text.includes("Save status:"))?.match(/Save status: (\w+)/)?.[1] || "");
+const siteDataBlockedFlows = (viewportName) => async ({ page, context, open }) => {
+  await open("#/home", ".welcome-block");
+  const blocked = await page.evaluate(async () => {
+    let local = "saves";
+    try { localStorage.getItem("lumen.audit"); } catch (error) { local = error.name; }
+    const database = await new Promise((resolve) => {
+      try {
+        const request = indexedDB.open("lumen-storage-blocked-audit");
+        request.onsuccess = () => { request.result.close(); resolve("saves"); };
+        request.onerror = () => resolve(request.error?.name || "error");
+      } catch (error) {
+        resolve(error.name);
+      }
+    });
+    return { local, database };
+  });
+  assert.ok(blocked.local !== "saves" && blocked.database !== "saves", `Chrome's cookie blocking did not block site storage, so this case proves nothing: ${JSON.stringify(blocked)}`);
+
+  // First open, before anything tried to save: Save status still reads
+  // "saved", so the notice must not lean on it to say study data is saved.
+  await watchAnnouncement(page);
+  await openSettings(page);
+  await expectAnnouncement(page);
+  const first = await noticeState(page);
+  assert.ok(first.visible && first.text === NOTICE, `the storage notice was not shown: ${JSON.stringify(first)}`);
+  assert.ok(!first.detail.includes(STUDY_DATA_SENTENCE) && !first.announced.includes(STUDY_DATA_SENTENCE), `with IndexedDB blocked as well, Settings said study data is saved: ${JSON.stringify(first)}`);
+  await typePassphrase(page);
+  assert.deepEqual(await syncState(page), { warning: true, createDisabled: true, joinDisabled: true }, "with site data blocked, the sync card let a vault be created or joined, or did not say why not");
+  await closeSettings(page);
+
+  // Every route still renders as an entry point.
+  if (viewportName === "phone") {
+    for (const [hash, ready] of ROUTES.slice(1)) await open(hash, ready);
+  }
+
+  // Export works: the backup downloads, although its export date cannot be
+  // recorded, and the toast says so instead of "Backup failed".
+  const downloads = await mkdtemp(join(profileDirectory, "downloads-"));
+  const session = await page.createCDPSession();
+  await session.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads, browserContextId: context.id });
+  await open("#/home", ".welcome-block");
+  await openSettings(page);
+  await clickByText(page, ".settings-drawer button", "Export backup");
+  await page.waitForFunction(() => /Backup/.test(document.querySelector(".toast")?.textContent || ""), { timeout: 15_000 })
+    .catch(() => assert.fail("Export backup showed no result"));
+  const exported = await page.$eval(".toast", (node) => node.textContent);
+  assert.ok(!exported.includes("Backup failed") && exported.includes("downloaded"), `a backup that downloaded was reported as “${exported}”`);
+  assert.equal((await waitForFiles(downloads, /^lumen-notes-backup-.*\.json$/)).length, 1, "Export backup did not download its file");
+
+  // A change cannot be saved: the toast points to a backup (storage is
+  // blocked, not full), Save status turns to "error" and the notice still
+  // makes no claim about study data.
+  await clickByText(page, ".theme-choices button", "Night");
+  await page.waitForFunction(() => (document.querySelector(".toast")?.textContent || "").includes("before closing or reloading"), { timeout: 15_000 })
+    .catch(() => assert.fail("a change that could not be saved was not reported"));
+  const unsaved = await page.$eval(".toast", (node) => node.textContent);
+  assert.ok(unsaved.includes("export a backup") && !unsaved.includes("reduce local data"), `blocked storage was reported as full: “${unsaved}”`);
+  await page.waitForFunction(() => [...document.querySelectorAll(".settings-drawer .microcopy")].some((node) => node.textContent.includes("Save status: error")), { timeout: 10_000 })
+    .catch(async () => assert.fail(`Save status did not turn to "error" (it reads "${await saveStatusText(page)}")`));
+  const after = await noticeState(page);
+  assert.ok(after.visible && !after.detail.includes(STUDY_DATA_SENTENCE), `after a failed save the notice said study data is saved: ${JSON.stringify(after)}`);
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -411,22 +570,47 @@ try {
       await runCase(`${mode.name} at ${viewportName}`, { install: mode.install, viewport }, blockedStorageFlows(viewportName));
     }
   }
-  // Control: with working storage there is no notice, and preferences are
-  // really stored, so they survive a reload.
+  // Control: with working storage there is no notice, sync works, and
+  // preferences are really stored, so they survive a reload.
   await runCase("working storage", { viewport: VIEWPORTS[0][1] }, async ({ page, open }) => {
     await open("#/ai", ".ai-learning-studio");
     await page.$eval('[data-ai-engine-option="phone-local"]', (button) => button.click());
     await page.waitForSelector(".ai-learning-studio[data-ai-engine='phone-local']", { timeout: 10_000 });
-    await open("#/ai", ".ai-learning-studio");
-    assert.equal(await page.$eval(".ai-learning-studio", (node) => node.dataset.aiEngine), "phone-local", "the engine choice was not stored");
+    await page.evaluate(() => { window.__lumenAuditEarlierDocument = true; });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector(".ai-learning-studio", { timeout: 20_000 });
+    assert.equal(await page.evaluate(() => window.__lumenAuditEarlierDocument === true), false, "the page did not reload");
+    assert.equal(await page.evaluate(() => localStorage.getItem("lumen.ai.engine.v1")), "phone-local", "the engine choice never reached localStorage");
+    assert.equal(await page.$eval(".ai-learning-studio", (node) => node.dataset.aiEngine), "phone-local", "the engine choice did not survive a reload");
     await openSettings(page);
     await delay(500);
     assert.equal((await noticeState(page)).visible, false, "Settings claimed storage was failing while it works");
+    await typePassphrase(page);
+    assert.deepEqual(await syncState(page), { warning: false, createDisabled: false, joinDisabled: false }, "with working storage the sync card still blocked Create and Join");
     assert.equal(await page.evaluate(() => localStorage.getItem("lumen.storage-probe.v1")), null, "the storage probe left its key behind");
   });
 
+  // Chrome's cookie blocking comes from the profile, so it needs a browser
+  // of its own; its contexts inherit the block.
+  const blockedProfile = join(profileDirectory, "site-data-blocked");
+  await mkdir(join(blockedProfile, "Default"), { recursive: true });
+  await writeFile(join(blockedProfile, "Default", "Preferences"), JSON.stringify({ profile: { default_content_setting_values: { cookies: 2 } } }));
+  const blockedBrowser = await puppeteer.launch({
+    executablePath: chromePath,
+    headless: true,
+    userDataDir: blockedProfile,
+    args: ["--disable-background-networking", "--no-first-run", "--no-default-browser-check"],
+  });
+  try {
+    for (const [viewportName, viewport] of VIEWPORTS) {
+      await runCase(`blocked site data at ${viewportName}`, { viewport, browserInstance: blockedBrowser }, siteDataBlockedFlows(viewportName));
+    }
+  } finally {
+    await blockedBrowser.close();
+  }
+
   assert.deepEqual(failures, [], `blocked-storage failures:\n- ${failures.join("\n- ")}`);
-  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} at 393x852 and 1280x800, plus working storage) opened ${stats.routes} routes (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once, kept it on reopening, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast.`);
+  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after, kept it on reopening, said study data is saved only after IndexedDB took a write, kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so; with working storage the engine choice survived a real reload.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
