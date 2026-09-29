@@ -1377,21 +1377,37 @@ try {
 
   // A lecture still playing after browser Back left the Reader has no player
   // on the new screen: its message is a toast, announced once by the toast
-  // announcer.
+  // announcer. That screen has no Retry or Resume, and opening the lecture
+  // again stops the old session, so the toast names neither control.
   await issue97Case("a message after leaving the Reader", {}, async (casePage) => {
-    await casePage.goto(`${baseUrl}#/library`, { waitUntil: "networkidle2", timeout: 30_000 });
-    await casePage.waitForSelector(".library-page", { timeout: 15_000 });
-    await casePage.evaluate((hash) => { window.location.hash = hash; }, `#/read/${encodeURIComponent(documentId)}`);
-    await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
-    await startFullLecture(casePage);
-    await casePage.evaluate(() => history.back());
-    await casePage.waitForSelector(".library-page", { timeout: 10_000 });
-    const failure = "This sentence could not be spoken (synthesis failed).";
-    await failSentence(casePage, "synthesis-failed");
-    await casePage.waitForFunction((text) => [...document.querySelectorAll(".toast")].some((node) => node.textContent.includes(text)), { timeout: 5_000 }, failure)
-      .catch(() => assert.fail("a failure after leaving the Reader showed no toast"));
-    const regions = await announcements(casePage, failure);
-    assert.deepEqual(regions, [{ region: "visually-hidden toast-live toast-live--assertive", role: "alert", count: 1 }], `a failure after leaving the Reader was announced as ${JSON.stringify(regions)}`);
+    const problems = [];
+    for (const [kind, message, trigger, region] of [
+      ["a failure", "This sentence could not be spoken (synthesis failed).", () => failSentence(casePage, "synthesis-failed"), { region: "visually-hidden toast-live toast-live--assertive", role: "alert", count: 1 }],
+      ["an interruption", "Narration was interrupted.", () => failSentence(casePage, "interrupted"), { region: "visually-hidden toast-live toast-live--polite", role: "status", count: 1 }],
+      ["a background pause", "Playback paused when Lumen left the foreground.", () => casePage.evaluate(() => window.dispatchEvent(new Event("pagehide"))), { region: "visually-hidden toast-live toast-live--polite", role: "status", count: 1 }],
+    ]) {
+      // A fresh load each time, so no earlier toast or session is left over.
+      await casePage.goto("about:blank");
+      await casePage.goto(`${baseUrl}#/library`, { waitUntil: "networkidle2", timeout: 30_000 });
+      await casePage.waitForSelector(".library-page", { timeout: 15_000 });
+      await casePage.evaluate((hash) => { window.location.hash = hash; }, `#/read/${encodeURIComponent(documentId)}`);
+      await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
+      await startFullLecture(casePage);
+      await casePage.evaluate(() => history.back());
+      await casePage.waitForSelector(".library-page", { timeout: 10_000 });
+      await trigger();
+      const toast = await casePage.waitForFunction((text) => [...document.querySelectorAll(".toast")].find((node) => node.textContent.includes(text))?.textContent, { timeout: 5_000 }, message)
+        .then((handle) => handle.jsonValue(), () => null);
+      if (!toast) {
+        problems.push(`${kind} after leaving the Reader showed no toast`);
+        continue;
+      }
+      const regions = await announcements(casePage, message);
+      if (JSON.stringify(regions) !== JSON.stringify([region])) problems.push(`${kind} after leaving the Reader was announced as ${JSON.stringify(regions)}`);
+      if (/\b(?:Retry|Resume)\b|\bTap\b/u.test(toast)) problems.push(`${kind} after leaving the Reader names a control the screen does not show: “${toast}”`);
+      if (!toast.includes("Open the lecture to listen again.")) problems.push(`${kind} after leaving the Reader does not say how to listen again: “${toast}”`);
+    }
+    assert.deepEqual(problems, [], problems.join("; "));
   });
 
   // After a failed sentence the Listen panel offers what the player offers:

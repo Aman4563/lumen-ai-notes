@@ -51,6 +51,9 @@ export function useSpeech({
   // announces it again. Codes: `background`, `interrupted`, `error` and
   // `sleep-ended`. `error` keeps the same text for the panel. `label` names
   // the reading it is about (App routes a tutor's own notices differently).
+  // `plain` is the message without the control it names (Retry, Resume), for
+  // a screen that shows neither: App's toast once the learner has left the
+  // Reader, where no player or Listen panel is on screen.
   const [notice, setNotice] = useState(null);
   const noticeIdRef = useRef(0);
   const queueRef = useRef([]);
@@ -80,9 +83,9 @@ export function useSpeech({
   onNoticeRef.current = onNotice;
   const activeLabelRef = useRef("");
 
-  const report = useCallback((code, message) => {
+  const report = useCallback((code, message, plain = message) => {
     noticeIdRef.current += 1;
-    const next = { id: noticeIdRef.current, code, message, severity: code === "error" ? "error" : code === "sleep-ended" ? "info" : "warning", label: activeLabelRef.current };
+    const next = { id: noticeIdRef.current, code, message, plain, severity: code === "error" ? "error" : code === "sleep-ended" ? "info" : "warning", label: activeLabelRef.current };
     setError(message);
     setNotice(next);
     onNoticeRef.current?.(next);
@@ -226,13 +229,13 @@ export function useSpeech({
       if (event.error === "interrupted") {
         restartRequiredRef.current = true;
         updateStatus("paused");
-        report("interrupted", "Narration was interrupted. Tap Resume to replay the current sentence safely.");
+        report("interrupted", "Narration was interrupted. Tap Resume to replay the current sentence safely.", "Narration was interrupted.");
         return;
       }
       // The queue and index stay, so Retry can replay this sentence. A
       // tutor's reading has no Retry control, so its message names none.
       updateStatus("error");
-      report("error", speechErrorMessage(event.error, platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }));
+      report("error", speechErrorMessage(event.error, platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }), speechErrorMessage(event.error, platform));
     };
     try {
       window.speechSynthesis.speak(utterance);
@@ -240,7 +243,7 @@ export function useSpeech({
     } catch (speechError) {
       utteranceRef.current = null;
       updateStatus("error");
-      report("error", speechErrorMessage(speechError?.name || "synthesis-failed", platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }));
+      report("error", speechErrorMessage(speechError?.name || "synthesis-failed", platform, { retry: activeLabelRef.current !== TUTOR_SPEECH_LABEL }), speechErrorMessage(speechError?.name || "synthesis-failed", platform));
       return false;
     }
   }, [clearMessages, clearResumeTimer, endIfSleepLapsed, finish, platform, report, supported, updateStatus]);
@@ -455,7 +458,7 @@ export function useSpeech({
     utteranceRef.current = null;
     restartRequiredRef.current = true;
     updateStatus("paused");
-    report("background", "Playback paused when Lumen left the foreground. Tap Resume to replay the current sentence; Lumen will not start audio in the background.");
+    report("background", "Playback paused when Lumen left the foreground. Tap Resume to replay the current sentence; Lumen will not start audio in the background.", "Playback paused when Lumen left the foreground. Lumen will not start audio in the background.");
   }, [cancelEngine, clearResumeTimer, report, supported, updateStatus]);
 
   useEffect(() => {

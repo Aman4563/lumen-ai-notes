@@ -1497,11 +1497,14 @@ export default function App() {
     // its notice is a toast on whichever screen is open. In the Reader the
     // player shows the message and NarrationAnnouncer reads it. A lecture
     // still playing after the learner left the Reader has no player there, so
-    // its message is a toast. A tutor shows its own reading's messages.
+    // its message is a toast. That screen has no Retry or Resume, and opening
+    // the lecture again starts a fresh session (Listen resumes a full lecture
+    // from its saved sentence), so the toast names no control, only where to
+    // go. A tutor shows its own reading's messages.
     onNotice: (notice) => {
       if (notice.code === "sleep-ended") notify(notice.message, "info", 8000);
       else if (view === "reader") setNarrationNoticeId(notice.id);
-      else if (notice.label !== TUTOR_SPEECH_LABEL) notify(notice.message, notice.severity === "error" ? "error" : "warning");
+      else if (notice.label !== TUTOR_SPEECH_LABEL) notify(`${notice.plain} Open the lecture to listen again.`, notice.severity === "error" ? "error" : "warning");
     },
   });
   const wakeLock = useWakeLock(profile.settings.keepScreenAwake && (view === "reader" || view === "board"));
