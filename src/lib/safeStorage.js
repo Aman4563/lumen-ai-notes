@@ -11,9 +11,10 @@
  *
  * Two kinds of store:
  * - `safeLocalStorage` and `safeSessionStorage` hold per-browser conveniences
- *   (the AI engine choice, the reader panel, recent searches, the local-model
- *   disclosure, tutor drafts). A change the browser would not store is kept
- *   in memory, so it still holds until Lumen closes.
+ *   (the tutor engine choice, the reader panel on wider screens, recent
+ *   searches, the local-model disclosure, tutor drafts, sync vault membership
+ *   and the device id). A change the browser would not store is kept in
+ *   memory, so it still holds until Lumen closes.
  * - `durableLocalStorage` and `durableSessionStorage` have no memory copy: a
  *   read returns only what the browser really stored. They serve callers that
  *   must know a write landed: download consent and its revocation, the
@@ -31,12 +32,21 @@
 const failedAreas = new Set();
 const listeners = new Set();
 
-const noteFailure = (area) => {
-  if (!area || failedAreas.has(area)) return;
-  failedAreas.add(area);
+const notifyListeners = () => {
   for (const listener of [...listeners]) {
     try { listener(); } catch { /* a listener never breaks storage */ }
   }
+};
+
+const noteFailure = (area) => {
+  if (!area || failedAreas.has(area)) return;
+  failedAreas.add(area);
+  notifyListeners();
+};
+
+const noteRecovery = (area) => {
+  if (!failedAreas.delete(area)) return;
+  notifyListeners();
 };
 
 const openStore = (resolve) => {
@@ -108,7 +118,8 @@ const PROBE_KEY = "lumen.storage-probe.v1";
 
 /**
  * Whether this browser is saving Lumen's per-device preferences. It turns
- * false for the rest of the session once any localStorage access fails.
+ * false once any localStorage access fails, and only a later successful
+ * `checkDeviceStorage()` turns it true again.
  */
 export const deviceStorageSaves = () => !failedAreas.has("local");
 
@@ -117,13 +128,17 @@ export const subscribeDeviceStorage = (listener) => {
   return () => listeners.delete(listener);
 };
 
-/** Writes, reads back and removes a probe key; a failure updates `deviceStorageSaves`. */
+/**
+ * Writes, reads back and removes a small probe key, and sets
+ * `deviceStorageSaves` from the result. It always runs, so one refused write
+ * (a large fallback journal over the quota) does not keep the status false
+ * while small preferences still save.
+ */
 export const checkDeviceStorage = () => {
-  if (!deviceStorageSaves()) return false;
-  if (!durableLocalStorage.setItem(PROBE_KEY, "1")) return false;
-  if (durableLocalStorage.getItem(PROBE_KEY) !== "1") {
-    noteFailure("local");
-    return false;
-  }
-  return durableLocalStorage.removeItem(PROBE_KEY);
+  const saves = durableLocalStorage.setItem(PROBE_KEY, "1")
+    && durableLocalStorage.getItem(PROBE_KEY) === "1"
+    && durableLocalStorage.removeItem(PROBE_KEY);
+  if (saves) noteRecovery("local");
+  else noteFailure("local");
+  return saves;
 };

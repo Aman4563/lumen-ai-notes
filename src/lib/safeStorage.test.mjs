@@ -107,6 +107,40 @@ test("a throwing accessor: preferences last the session, durable writes report f
   }
 });
 
+// Review round 1: one refused large write (the IndexedDB fallback journal
+// over the quota) kept Settings saying "not saving preferences" for the rest
+// of the visit, although small preferences still saved.
+test("a refused large write marks the status false only until a probe succeeds", () => {
+  const events = [];
+  const unsubscribe = subscribeDeviceStorage(() => events.push(deviceStorageSaves()));
+  const quotaLimited = memoryStore();
+  const store = quotaLimited.setItem;
+  quotaLimited.setItem = (key, value) => {
+    if (String(value).length > 1_000) throw quotaError();
+    store(key, value);
+  };
+  try {
+    withStorageGlobal("localStorage", () => quotaLimited, () => {
+      assert.equal(checkDeviceStorage(), true, "the probe runs although an earlier access failed");
+      assert.equal(deviceStorageSaves(), true, "a successful probe clears the earlier failure");
+      events.length = 0;
+      assert.equal(durableLocalStorage.setItem("lumen-ai-notes-fallback", "x".repeat(5_000)), false, "the large journal write is refused");
+      assert.equal(deviceStorageSaves(), false);
+      assert.equal(safeLocalStorage.setItem("lumen.ai.engine.v1", "phone-local"), true, "a small preference still lands");
+      assert.equal(checkDeviceStorage(), true, "the probe sees small writes landing");
+      assert.equal(deviceStorageSaves(), true, "so the device status recovers");
+      assert.deepEqual(events, [false, true], "subscribers hear both changes");
+      assert.equal(quotaLimited.raw.has("lumen.storage-probe.v1"), false, "the probe key was removed");
+    });
+    withStorageGlobal("localStorage", () => { throw securityError(); }, () => {
+      assert.equal(checkDeviceStorage(), false, "a blocked store fails the probe");
+      assert.equal(deviceStorageSaves(), false);
+    });
+  } finally {
+    unsubscribe();
+  }
+});
+
 // db.js tells a refused journal read from an empty journal by this value.
 test("getItem returns the caller's value only for a refused read", () => {
   const unreadable = Symbol("unreadable");
