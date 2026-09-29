@@ -94,9 +94,10 @@ note the iOS version with each verdict.
 ## Blocked storage checks that need a device (issue #139)
 
 `audit:storage-blocked` loads every route in Chrome with a throwing
-`localStorage`/`sessionStorage` accessor and with a store whose writes throw
-`QuotaExceededError` and reads `SecurityError`. Only an iPhone shows what
-Safari's own blocking does. Note the iOS version and whether Lumen ran in a
+`localStorage`/`sessionStorage` accessor, with a store whose writes throw
+`QuotaExceededError` and reads `SecurityError`, and under Chrome's own cookie
+blocking, where IndexedDB fails as well. Only an iPhone shows what Safari's
+own blocking does. Note the iOS version and whether Lumen ran in a
 Safari tab or from the Home Screen, and add the verdict to the device
 evidence report in issue #7.
 
@@ -107,12 +108,25 @@ evidence report in issue #7.
    card), Notebook, the whiteboard (draw an arrow), the AI tutor (Mac local,
    then On-device Lite) and Settings. No screen may show "Lumen could not
    render this screen". The bookmark must say it could not be saved.
-2. **The Settings notice.** Settings must show "This browser is not saving
-   preferences on this device". With VoiceOver on, opening Settings reads it
-   once; closing and reopening Settings must not read it again. Record the
-   "Save status" under Backup and transfer: if Safari also blocked IndexedDB,
-   it reads "error" and the notice leaves out its sentence about study data.
-3. **Preferences last the visit only.** Switch the tutor to On-device Lite,
+2. **The Settings notice.** Open Lumen afresh and open Settings before
+   changing anything. It must show "This browser is not saving preferences on
+   this device". With VoiceOver on, opening Settings reads it once, and
+   swiping through Settings a few seconds later meets it once, not twice;
+   closing and reopening Settings must not read it again. Record whether the
+   notice says "Notes, progress and reviews are saved separately": it may
+   only while Safari still lets Lumen write to IndexedDB. Then change the
+   theme. If Safari blocked IndexedDB too, an error says the change could not
+   be saved and advises a backup, "Save status" under Backup and transfer
+   turns from "saved" to "error" (it reads "saved" until that first save
+   attempt), and the notice has no sentence about study data. Under
+   Cross-device sync, a warning says sync needs this browser to save
+   settings, and Create sync vault and Join via a peer's file stay off with
+   a passphrase entered.
+3. **Export with storage blocked.** Tap Export backup. The backup must
+   download (to Files). If IndexedDB is blocked, the message says it was
+   downloaded and that the export date could not be recorded, never "Backup
+   failed". Record whether the file opens with Import backup's preflight.
+4. **Preferences last the visit only.** Switch the tutor to On-device Lite,
    go Home and back: it stays. Reload: it is back on Mac local. Turn Block
    All Cookies off and reload: the notice is gone, and a switched engine
    survives a reload again.
