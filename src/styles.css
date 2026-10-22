@@ -8751,6 +8751,12 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
 .settings-drawer .settings-close { position: static; }
 .settings-drawer .page { padding-top: 22px; }
 .settings-intro { margin: 0 0 18px; color: var(--ink-soft); font-size: 0.86rem; line-height: 1.5; }
+/* Issue #139: storage is refused, so preferences last only this visit. */
+.settings-storage-notice { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 15px; padding: 13px 15px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--ink); background: var(--gold-soft); line-height: 1.45; }
+.settings-storage-notice > svg { flex: 0 0 auto; margin-top: 2px; color: var(--ai-warn); }
+.settings-storage-notice > div { min-width: 0; }
+.settings-storage-notice strong { display: block; color: var(--ai-warn); font-size: 0.86rem; }
+.settings-storage-notice span { display: block; margin-top: 3px; font-size: 0.78rem; overflow-wrap: anywhere; }
 .settings-card-heading h2,
 .storage-health-heading h2 { display: block; margin: 0; font: inherit; font-weight: 700; letter-spacing: normal; }
 .settings-help-actions { display: flex; flex-wrap: wrap; gap: 10px; }

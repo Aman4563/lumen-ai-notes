@@ -48,7 +48,8 @@ import { customDocumentBytes, isEpubFileName, isHtmlFileName, MAX_CUSTOM_DOCUMEN
 import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { mergeBoardVersions } from "./lib/boardSync.js";
-import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
+import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor, vaultMembershipStored } from "./lib/syncIdentity.js";
+import { durableLocalStorage, safeLocalStorage } from "./lib/safeStorage.js";
 // Actions load these tools on use; the service worker warms them (issue #95).
 import { isWarmToolUnavailable, loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
 // The lecture renderer (marked and DOMPurify, about 85 KB) stays in the
@@ -721,7 +722,7 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   const [recentSearches, setRecentSearches] = useState(() => {
     try {
       // Pruning on load clears the per-keystroke prefixes older builds stored.
-      return pruneRecentSearches(JSON.parse(globalThis.localStorage?.getItem("lumen.library.recent-searches") || "[]"));
+      return pruneRecentSearches(JSON.parse(safeLocalStorage.getItem("lumen.library.recent-searches") || "[]"));
     } catch {
       return [];
     }
@@ -801,7 +802,8 @@ function LibraryView({ profile, query, setQuery, selectedPart, setSelectedPart, 
   const saveRecentSearches = useCallback((update) => setRecentSearches((current) => {
     const next = update(current);
     if (next.length === current.length && next.every((entry, index) => entry === current[index])) return current;
-    try { globalThis.localStorage?.setItem("lumen.library.recent-searches", JSON.stringify(next)); } catch { /* device-local convenience only */ }
+    // A device-local convenience: without storage it lasts this session.
+    safeLocalStorage.setItem("lumen.library.recent-searches", JSON.stringify(next));
     return next;
   }), []);
   // Recents record committed searches only — Enter, leaving the field,
@@ -1153,8 +1155,10 @@ export default function App() {
   }, [notify]);
 
   const reportPersistenceError = useCallback((error) => {
+    // Storage that is unavailable (blocked, not full) is not helped by
+    // reducing local data; a backup keeps the change instead.
     const message = error instanceof StorageBudgetError
-      ? `${error.message} The current unsaved change remains visible in this tab; reduce local data before closing or reloading.`
+      ? `${error.message} The current unsaved change remains visible in this tab; ${error.code === "BUDGET_STATE_UNAVAILABLE" ? "export a backup" : "reduce local data"} before closing or reloading.`
       : "Changes could not be saved to this browser. Keep this tab open and retry after checking available storage.";
     if (lastPersistenceErrorRef.current === message) return;
     lastPersistenceErrorRef.current = message;
@@ -1291,7 +1295,8 @@ export default function App() {
         at: Date.now(),
       };
       try { channel?.postMessage(signal); } catch { /* storage event remains available */ }
-      try { localStorage.setItem(PROFILE_SYNC_SIGNAL_KEY, JSON.stringify(signal)); } catch { /* IndexedDB remains authoritative */ }
+      // Without storage the BroadcastChannel carries the signal; IndexedDB remains authoritative.
+      durableLocalStorage.setItem(PROFILE_SYNC_SIGNAL_KEY, JSON.stringify(signal));
     };
 
     return () => {
@@ -2862,9 +2867,11 @@ export default function App() {
   }, [notify]);
 
   const exportBackup = async (password) => {
+    let exportedAt;
+    let result;
     try {
       const { createBackup, encryptBackupJson } = await loadBackupTools();
-      const exportedAt = new Date().toISOString();
+      exportedAt = new Date().toISOString();
       const data = await getAllData();
       // Export a read-only three-way snapshot so concurrent work already
       // committed by another tab is included without claiming success early.
@@ -2876,7 +2883,7 @@ export default function App() {
       );
       data.profile = snapshotMerge.profile;
       reportSyncConflicts(snapshotMerge.conflicts);
-      const result = await createBackup(data, { exportedAt, secureContext: window.isSecureContext });
+      result = await createBackup(data, { exportedAt, secureContext: window.isSecureContext });
       if (password) {
         // Transport wrapper only: the plaintext is the exact canonical JSON
         // above, so preflight and integrity behave identically after decrypt.
@@ -2885,7 +2892,13 @@ export default function App() {
       } else {
         downloadText(`lumen-notes-backup-${exportedAt.slice(0, 10)}.json`, result.json);
       }
+    } catch (error) {
+      notify(warmToolFailureMessage(error, "Backup failed: "), "error", 5000);
+      return;
+    }
 
+    const downloaded = `Backup verified with ${result.envelope.integrity.algorithm}${password ? ", encrypted with AES-256-GCM," : ""} and downloaded.`;
+    try {
       // Only a successfully created and triggered download earns export
       // metadata. Commit it atomically against the latest cross-tab profile.
       const localAtCommit = profileRef.current;
@@ -2923,9 +2936,11 @@ export default function App() {
         setProfile(rebased.profile);
         reportSyncConflicts(rebased.conflicts);
       }
-      notify(`Backup verified with ${result.envelope.integrity.algorithm}${password ? ", encrypted with AES-256-GCM," : ""} and downloaded.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
-    } catch (error) {
-      notify(warmToolFailureMessage(error, "Backup failed: "), "error", 5000);
+      notify(`${downloaded}${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, result.warnings.length ? "warning" : "success", result.warnings.length ? 7000 : 4500);
+    } catch {
+      // The file is already downloaded and valid. Only its export date could
+      // not be recorded, for example while this browser blocks site storage.
+      notify(`${downloaded} This browser could not record the export date, so Last export is unchanged.${result.warnings.length ? " Review the HTTPS warning before transfer." : ""}`, "warning", 9000);
     }
   };
 
@@ -2937,6 +2952,13 @@ export default function App() {
   const createSyncVaultAction = useCallback(() => {
     const config = createVaultConfig();
     setSyncVaultConfig(config);
+    // Settings turns creation off where storage fails; a write refused now
+    // (a full store) leaves the vault in memory only, so it must not be
+    // reported as lasting.
+    if (!vaultMembershipStored(config)) {
+      notify("Sync vault created for this visit only: this browser did not save it, so it is forgotten when Lumen is closed or reloaded.", "warning", 9000);
+      return;
+    }
     notify("Sync vault created. Choose a strong passphrase, export your sync file, and share the vault folder between your devices.", "success", 7000);
   }, [notify]);
 
@@ -2983,6 +3005,7 @@ export default function App() {
       const now = new Date().toISOString();
       const deviceId = syncDeviceIdRef.current;
       let config = readVaultConfig();
+      let joined = false;
       const skipped = [];
       const peers = [];
       for (const file of files) {
@@ -3000,6 +3023,7 @@ export default function App() {
             continue;
           }
           config = adoptVaultConfig(header.vaultId);
+          joined = true;
           setSyncVaultConfig(config);
         }
         const admission = checkSyncHeader(header, { vaultId: config?.vaultId || "", deviceId });
@@ -3056,8 +3080,10 @@ export default function App() {
       // next import three-ways against what this vault last agreed on.
       await saveSyncBaseline({ vaultId: config.vaultId, records: { profile: folded.profile, ...folded.boards }, updatedAt: now });
       setSyncVaultConfig(recordVaultSync());
+      // A join the browser would not store lasts this visit only (issue #139).
+      const joinedForVisit = joined && !vaultMembershipStored(config);
       const conflictCount = folded.conflicts.length + commitConflicts.length;
-      notify(`Merged ${peers.length} peer file${peers.length === 1 ? "" : "s"}${conflictCount ? `; ${conflictCount} conflict${conflictCount === 1 ? "" : "s"} recorded` : ""}${folded.replacementApplied ? "; a reset/restore from another device was applied" : ""}${skipped.length ? `; skipped — ${skipped.join(" · ")}` : ""}. Export your sync file now so peers see this state.`, skipped.length || conflictCount ? "warning" : "success", 9000);
+      notify(`Merged ${peers.length} peer file${peers.length === 1 ? "" : "s"}${conflictCount ? `; ${conflictCount} conflict${conflictCount === 1 ? "" : "s"} recorded` : ""}${folded.replacementApplied ? "; a reset/restore from another device was applied" : ""}${skipped.length ? `; skipped — ${skipped.join(" · ")}` : ""}. Export your sync file now so peers see this state.${joinedForVisit ? " This browser did not save the vault membership, so this device leaves the vault when Lumen is closed or reloaded." : ""}`, skipped.length || conflictCount || joinedForVisit ? "warning" : "success", 9000);
     } catch (error) {
       notify(warmToolFailureMessage(error, "Sync import failed: "), "error", 8000);
     }

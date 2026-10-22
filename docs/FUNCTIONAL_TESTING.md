@@ -18,7 +18,8 @@ to disable retries when diagnosing.
 The browser suites cover reading/editing, narration controls, annotations and
 relocation, reviews and mistakes, imports, whiteboards and exports, backup and
 restore, cross-tab sync, search, keyboard focus, mobile layouts, AI consent and
-recovery, phone model lifecycle, diagrams, and stale application assets.
+recovery, phone model lifecycle, diagrams, stale application assets, and
+blocked or full browser storage.
 Synthetic speech/WebGPU fixtures check application behavior; they do not prove
 audible output or GPU compatibility on a physical iPhone.
 
@@ -3328,6 +3329,382 @@ with no budget raised. The full `npm run check:browser` passed all 13
 suites on the first attempt with no retries (`a11y` 114 axe runs with the
 empty allowlist, 7 screen states; `responsive` 478 checks) at a load
 average of about 27–30; `mermaid` passed first time.
+
+## Bugs reproduced on 2026-09-29: blocked Web Storage (#139)
+
+Against main (0c69d18, and again at 01c7a89 after the read-aloud fixes #144
+merged), built into a scratch directory and served the way `check:browser`
+serves a build:
+
+- With `window.localStorage` and `window.sessionStorage` getters that throw
+  a SecurityError, as storage blocked by Safari's Block All Cookies, a
+  managed policy or a sandboxed frame does, every route showed "Lumen could
+  not render this screen": Home, Library, a lecture, Review, Notebook, the
+  whiteboard, the AI studio and device evidence, each loaded fresh at
+  393×852. A stack captured in the throwing getter named `readVaultConfig`
+  in `syncIdentity.js`: its `storage = globalThis.localStorage` default
+  parameter is evaluated before the function's `try`, and App calls it in
+  its first render. `getDeviceId`, the tutor's quiz and practice state
+  (`sessionStorage`) and the On-device Lite engine had the same default.
+- With `getItem` and `removeItem` throwing a SecurityError and `setItem` a
+  QuotaExceededError, the routes rendered, but the tutor engine choice reset
+  to Mac local on a route change: nothing kept a preference the browser
+  refused.
+- `src/` held 29 direct `localStorage`/`sessionStorage` references in 13
+  files, each guarded (or not) its own way.
+
+`src/lib/safeStorage.js` is now the only code that names either store. It
+looks the store up inside `try` on every call and never throws. Preferences
+(the engine choice, the reader panel, recent searches, the local-model
+disclosure, tutor drafts, quiz and practice state, device and vault
+identity) use a store that keeps a refused change in memory for the visit.
+Download consent and its revocation, the chunk-recovery marker, narration
+positions, audio bookmarks, the IndexedDB fallback journal and the cross-tab
+signals use a durable store with no memory copy that returns `false` for a
+refused write, so each keeps its fail-closed behaviour (#96's bookmarks still
+report "could not save the bookmark" and list as empty). Once a localStorage
+access fails, or a probe write when Settings opens is refused, Settings shows
+"This browser is not saving preferences on this device". The notice uses the
+tested `--ai-warn` on `--gold-soft` pair and is announced once per visit.
+(The review follow-up below changed when it says study data is saved and how
+it is announced.)
+
+How each is now checked:
+
+- `src/lib/safeStorage.test.mjs` (part of `audit:ai`, so `npm run check`)
+  covers the helper: a throwing accessor, a refusing store, injected and
+  missing stores, the probe, and when a memory copy is and is not used. Its
+  last case strips comments from every `src/` source and fails on any
+  `localStorage` or `sessionStorage` outside the helper; on main's sources it
+  lists all 29 references with file and line.
+- `audit:storage-blocked`, a new `check:browser` suite, loads every route
+  fresh at 393×852 and 1280×800 with the throwing accessor and then with the
+  refusing store. It searches the library and sees the recent search kept,
+  plays full-lecture narration through three sentences and bookmarks one (the
+  toast says it could not be saved), creates and grades a review card, draws
+  a whiteboard arrow and waits for IndexedDB to hold it, gets a Mac tutor
+  answer after acknowledging the disclosure in the page, opens On-device
+  Lite, and checks that the engine choice and an unsent Mac draft survive an
+  engine switch and a route change. In Settings the notice must show, be
+  announced once and not again on reopening, fit a 320 px phone at 200%
+  text, and pass axe in Paper, Night and Contrast while a theme change still
+  saves. A working-storage case must show no notice and keep the engine
+  choice across a reload. On main: "#/home showed “Lumen could not render
+  this screen” (SecurityError: The operation is insecure.)" for the throwing
+  accessor and "the engine choice reset on a route change" for the refusing
+  store, at both sizes. (The review follow-up below found that these route
+  visits stayed in one document and that the control never reloaded; both
+  now do.)
+- `audit:storage` gains a case with IndexedDB failing and Web Storage
+  refusing reads and writes: a save must reject as "Persistent browser
+  storage is unavailable" and a read in the same session must still return it
+  from the in-memory journal. Main passes it (its read threw into the
+  journal's `catch`). A first version of this branch passed `undefined` as
+  the "refused read" value, which selects the parameter's `null` default, so
+  the journal read as empty; the case failed there with `undefined` instead of
+  the saved record, and the journal now passes a Symbol.
+- #96's checks are unchanged and pass: `narrationPositions.test.mjs`,
+  `audioBookmarks.test.mjs`, and `audit:audio`'s throwing-storage cases.
+
+Found and not fixed here: at 320 px with 200% text, Settings on main already
+scrolls sideways by 9 px, because the backup password and sync passphrase
+fields and their labels are wider than the drawer. The storage notice fits,
+so the new audit measures the notice itself.
+
+Budgets (`npm run size`, rebased onto 01c7a89): entry 622,803 bytes (main
+622,935), the HTML loads 652,136 bytes of JavaScript (main 651,210; the
+helper is one shared preloaded chunk), install 689,334 bytes in 41 files
+(main 688,842), warm unchanged at 305,006. No budget changed.
+
+Gate on the rebased branch: `npm run check` passed (`audit:ai` 590/590,
+`audit:ai-eval` 27 cases, hit@1 0.913). The full `npm run check:browser`
+passed all 14 suites (`storage-blocked` 72 s, `a11y` 114 axe runs with the
+empty allowlist) at a load average of 26–105 from other work on the
+machine. `workflow` passed only on retry: its first attempt timed out after
+30 s waiting for `.reader-view` after opening an uploaded note (visual took
+30 minutes in the same run). Rerun alone twice with `LUMEN_BROWSER_RETRIES=0` it
+passed both times (364 s and 67 s) at a load average of 80–128.
+
+## Review follow-up on 2026-09-29: blocked Web Storage (#139)
+
+Reproduced against this branch's first version (da0c279), built into a
+scratch directory and served the way `check:browser` serves a build:
+
+- Under Chrome's own cookie blocking, set in a fresh profile
+  (`default_content_setting_values.cookies = 2`, not an injected mock),
+  `localStorage` throws a SecurityError and `indexedDB.open` fails with
+  UnknownError. Opening Settings before any change showed the notice with
+  "Notes, progress and reviews are saved separately and are not affected."
+  and "Save status: saved", although nothing could be saved; the first change
+  then failed with "Lumen cannot safely measure the existing workspace while
+  durable storage is unavailable…". Save status starts as "saved", and
+  `getData()` reads a blocked database as empty, so neither said anything
+  about IndexedDB.
+- In the same mode Export backup downloaded a valid backup, but the toast
+  said "Backup failed: …": the export-date commit after the download shared
+  the export's `catch`. The failed save advised "reduce local data", which
+  cannot help storage that is blocked rather than full.
+- A sync vault created with storage blocked lasted the visit, was gone after
+  a reload, and a new device id was minted each visit; nothing said so.
+- The notice's status region was inserted already filled in one frame
+  (Settings is preloaded, so the click's effect committed before a frame),
+  repeated the notice in the accessibility tree, and kept the study-data
+  sentence after the visible notice dropped it.
+- One refused large localStorage write (the fallback journal over the quota)
+  kept the notice up for the visit while small preferences still saved: the
+  probe returned early once any failure was recorded.
+- The notice named "the AI engine" and "the reader panel"; the screen says
+  "Tutor engine", and phones never save the reader panel.
+- `audit:storage-blocked` reached its routes with hash-only `page.goto`
+  calls, which stay in one document, so only the first route of each case was
+  an entry point. Its working-storage control never reloaded: with
+  `Storage.prototype.setItem` replaced by a no-op, its engine assertion still
+  passed.
+- The chunk-recovery fix for a throwing `sessionStorage` accessor had no
+  check.
+
+What changed:
+
+- Settings runs `checkStudyDataStorage()` from `db.js`, a readwrite
+  IndexedDB transaction that adds and removes a probe record, and says study
+  data is saved only after it commits and while Save status is not "error".
+- The status region is always rendered, empty; the notice goes in 250 ms
+  after the checks and leaves 5 s later, and a notice that changed is never
+  left there.
+- `checkDeviceStorage()` always probes, so a failure that has passed clears.
+- While settings are not saved, the sync card says sync needs this browser
+  to save settings, Create sync vault and Join via a peer's file stay off,
+  and the notice says cross-device sync is off. A vault created as its write
+  is refused says it lasts this visit only.
+- A failure after the backup download is a warning: "Backup verified with
+  SHA-256 and downloaded. This browser could not record the export date, so
+  Last export is unchanged." A `BUDGET_STATE_UNAVAILABLE` save error advises
+  exporting a backup; the whiteboard's says the change stays until storage
+  access recovers.
+- The notice reads "Choices such as the tutor engine, recent searches and an
+  unsent tutor question last until Lumen closes, and cross-device sync is
+  off."
+
+How each is now checked:
+
+- `audit:storage-blocked`: `open()` leaves through `about:blank` and asserts
+  that a marker set on the previous document is gone. A per-frame sampler
+  started before Open settings requires the region that carries the notice
+  to have been on screen empty in an earlier frame, and the region must
+  empty again after the axe runs. With IndexedDB working the notice must say
+  study data is saved; with a passphrase entered the sync card must warn and
+  keep Create and Join off. A new case under Chrome's cookie blocking, at
+  393×852 and 1280×800, first proves storage really is blocked, opens
+  Settings before any change and requires no study-data sentence, requires
+  sync off, loads every route as a new document at phone size, exports a
+  backup and requires the file and a toast that says "downloaded" and not
+  "Backup failed", then changes the theme and requires a toast that advises a
+  backup (not reducing data), Save status "error" and still no study-data
+  sentence. The working-storage control reloads for real, reads
+  `lumen.ai.engine.v1` from `localStorage`, and requires Create and Join to
+  work with a passphrase.
+  On da0c279 every case fails: "the storage notice went into a status region
+  that was never on screen empty, so it may not be announced" (throwing
+  accessor at both sizes, refusing store and blocked site data at desktop),
+  "the storage notice stayed in a status region after it was announced"
+  (refusing store at phone), and "with IndexedDB blocked as well, Settings
+  said study data is saved" (blocked site data at phone). With those
+  assertions removed in scratch copies, the next ones fail there too: "the
+  sync card let a vault be created or joined" in all six cases, then "a
+  backup that downloaded was reported as “Error: Backup failed: …”", then
+  "blocked storage was reported as full". With `setItem` a no-op, the new
+  control fails with "the engine choice never reached localStorage"; the old
+  control's engine assertion passed. On main (01c7a89) every blocked case,
+  Chrome's cookie blocking included, fails with "#/home showed “Lumen could
+  not render this screen”", and the refusing store with "the engine choice
+  reset on a route change".
+- `src/lib/safeStorage.test.mjs`: "a refused large write marks the status
+  false only until a probe succeeds"; on da0c279 it fails with "the probe
+  runs although an earlier access failed".
+- `src/lib/chunkRecovery.test.mjs`: with a throwing `sessionStorage` getter
+  and the default store, and with a store whose `setItem` returns `false`
+  while an old marker still reads back, `schedule()` must return false with
+  no reload. On main both return true and reload once.
+- `audit:storage`: `checkStudyDataStorage()` is false when the database will
+  not open or a transaction fails, true otherwise, and leaves no record.
+
+Found and not fixed here: under Chrome's cookie blocking, Storage health
+shows the browser's own message "Failed to execute 'keys' on 'CacheStorage':
+An attempt was made to break through the security policy of the user agent."
+That wording predates this branch; it is reachable now that the app runs in
+this mode.
+
+## Second review on 2026-10-22: blocked Web Storage (#139)
+
+Re-verified against new builds of da0c279, the reviewed tip (d51a066) and
+main (01c7a89), served the way `check:browser` serves a build:
+
+- `audit:storage-blocked` passed on d51a066 (7 cases, 48 routes loaded as
+  new documents, 56 s). On da0c279 every blocked case failed again on one of
+  the new announcement or study-data assertions, but split differently from
+  the run above: "never on screen empty" for the throwing accessor and
+  Chrome's cookie blocking at phone size, "stayed in a status region after it
+  was announced" for the throwing accessor at desktop and the refusing store
+  at both sizes, and "said study data is saved" for Chrome's cookie blocking
+  at desktop. Which of these a case hits first depends on frame timing (in
+  the re-verification below, the "never on screen empty" sampler caught
+  da0c279 in 11 of 16 runs); every blocked case fails either way. On main
+  every blocked case failed, Chrome's cookie blocking included ("#/home
+  showed “Lumen could not render this screen”"), and the refusing store lost
+  the engine choice on a route change.
+- A separate probe checked one behaviour at a time, so no failure could hide
+  the next. On da0c279 at 393×852: the notice's status region was filled in
+  the first sampled frame and still held the notice 7 s later; the notice
+  named "the AI engine, the reader panel"; with a passphrase entered, Create
+  sync vault and Join via a peer's file were enabled with no warning. Under
+  Chrome's cookie blocking it also said study data is saved on the first
+  open, said "Backup failed" for a backup that downloaded, advised "reduce
+  local data" after a failed save, and kept the study-data sentence in the
+  hidden region after the visible notice dropped it. On d51a066 each behaved
+  as the follow-up above describes. With `Storage.prototype.setItem` a
+  no-op, a same-URL `goto` (the old control) stayed in one document and still
+  read `phone-local`; a real reload read `mac-local` with nothing stored,
+  which the new control requires.
+- The two new `chunkRecovery.test.mjs` cases fail against main's
+  `chunkRecovery.js` ("a reload was scheduled although no recovery marker
+  could be stored"), and the probe case of `safeStorage.test.mjs` fails
+  against da0c279's helper ("the probe runs although an earlier access
+  failed").
+
+An independent re-verification then re-checked the twelve findings and the
+issue's acceptance criteria against d51a066 with real interactions (every
+route loaded as a new document 192 times across four sizes and six storage
+modes, 48 axe runs on Settings, all clean): eleven findings were resolved
+and C3, the latched notice, only partly. It found six more problems,
+reproduced against d51a066:
+
+- With IndexedDB blocked as well, Settings knew its probe had failed but
+  said only that preferences were not saved, and Save status read "saved"
+  until the first save failed.
+- What remained of C3: in a nearly full store, the budget-ledger mirror
+  that `db.js` writes on every save was refused, and each refusal turned the
+  notice on and locked Create and Join until Settings was reopened, although
+  small preferences still saved.
+- "last until Lumen closes" was wrong: a reload loses those choices too, and
+  iOS reloads background tabs and Home Screen apps on its own.
+- The sync warning and the vault toast said this browser was "not saving
+  settings", but Settings choices such as the theme and text size are saved
+  (in IndexedDB).
+- Three fixes had no check: the toast that says a new vault lasts this visit
+  only, the whiteboard's "until storage access recovers" wording, and the
+  status region never keeping a sentence the visible notice dropped.
+- The follow-up above ties each da0c279 case to the assertion it failed
+  first, which depends on frame timing (see the rerun above).
+
+What changed:
+
+- `safeStorage.js`: a refused write or removal only returns `false` to its
+  caller. A store that cannot be reached or read, and the probe Settings runs
+  on every open, set the device status, so a store that refuses every write
+  (old private browsing) is still found.
+- `syncIdentity.js` gains `vaultMembershipStored()`, which reads past the
+  session's memory copy. Creating a vault uses it instead of the device
+  status, and joining one through a peer's file now adds, when the browser
+  refused the membership, "This browser did not save the vault membership,
+  so this device leaves the vault when Lumen is closed or reloaded."
+- Settings says "Notes, progress and reviews are not being saved either, so
+  export a backup before closing or reloading Lumen." when its IndexedDB
+  probe fails or Save status is "error", shows Save status "error" once the
+  probe has failed, and runs the probe again whenever Save status changes,
+  so a passing failure does not stick.
+- The notice says choices "last only until Lumen is closed or reloaded";
+  the sync card says "Sync is off because this browser would not keep this
+  device's vault membership…"; the vault toast says the browser "did not
+  save it".
+
+How each is now checked:
+
+- `safeStorage.test.mjs`: the refused-large-write case now requires the
+  status to stay true (changed on purpose; on d51a066 it fails with "a
+  refused large write does not say small preferences are not saved"); a
+  store that refuses every write must be reported by the probe and not by
+  the write (on d51a066: "one refused write does not decide the device
+  status"); a write through a throwing accessor must still report it.
+  `syncIdentity.test.mjs` (new): a vault kept only in memory is not a stored
+  membership, a stored one is, and only the same vault counts.
+- `audit:storage-blocked` gains:
+  - under Chrome's cookie blocking, "not being saved either" in the notice
+    and the announcement and Save status "error" on the first open, the same
+    sentence after the failed save, and at phone size a drawn arrow whose
+    error says "until storage access recovers", not "reduce local data";
+  - with IndexedDB working, no such sentence and no "error";
+  - "IndexedDB failing after Settings opens": the announcement says study
+    data is saved, then every IndexedDB transaction throws and a theme change
+    fails. A per-frame sampler requires that no status region keeps "saved
+    separately" once the visible notice drops it; a run that lands after the
+    announcement's 5 s is repeated on a new document (at most three times),
+    so the check cannot pass without testing;
+  - "nearly full store" (values over 64 characters refused): after a theme
+    change, with the ledger mirror shown to be refused, no notice and sync
+    on; Create sync vault says it lasts this visit only, the vault is gone
+    after a reload, and joining through a peer's file says the membership
+    was not saved;
+  - the working-storage control creates a vault, leaves it and joins a
+    peer's vault, with neither toast saying it lasts this visit only and the
+    joined vault in `localStorage`.
+
+  Against d51a066 the extended audit fails in eight of its nine cases (nine
+  of ten with the recovery case added below): the cookie cases and
+  "IndexedDB failing after Settings opens" lack "not being saved either",
+  the nearly full store shows the notice, and the throwing and refusing
+  cases show the old sync wording; the control passes. Against
+  da0c279, scratch copies that skip the earlier steps failing there for
+  other findings show each new check failing on its own: "a status region
+  kept saying study data is saved after the notice dropped it (19 of 46
+  frames)", "a vault the browser did not store was reported as lasting",
+  "joining a vault the browser did not store was reported as lasting", and
+  "blocked storage was reported to the whiteboard as full". Six mutant
+  builds of the new tip each fail the matching case: the stale-text guard
+  removed (43 of 44 frames), a create toast that always reports a lasting
+  vault, no join note, a refused write setting the status again, a failed
+  probe not counted as lost study data, and Save status left at "saved".
+
+A second re-verification of cb792cd confirmed each of these fixed, with
+its check failing on the pre-change build, and found that the twelve
+findings and the acceptance criteria still hold (its copy of the extended
+audit also passed at 320×568 and 393×852 with 200% text and at 852×393). It
+found two more, fixed here:
+
+- After its toast, the sync card showed a vault the browser had refused like
+  a lasting one, with Export enabled. The card now says "This browser is not
+  keeping this vault membership, so this device leaves the vault when Lumen
+  is closed or reloaded." while that is true. The nearly full store case
+  requires it for a created and a joined vault once the toasts are
+  dismissed, and the working-storage control requires no such note; on
+  cb792cd it fails with "once its toast had gone, nothing said the new vault
+  lasts this visit only".
+- Nothing checked that Settings' study-data probe runs again when Save
+  status changes. A new case, "IndexedDB recovering after Settings opens",
+  makes IndexedDB refuse while Settings opens and then work again: once a
+  theme change has landed, the notice must say "saved separately" and Save
+  status "saved". With the probe running only once (its old dependencies)
+  it fails with "after IndexedDB recovered and a save landed, Settings still
+  said study data is not being saved (Save status "error")"; on d51a066 it
+  fails earlier, with no "not being saved" sentence.
+
+Budgets (`npm run size` on cbd4089): entry 623,582 bytes (main 622,935;
+126,418 headroom), the HTML loads 653,122 bytes of JavaScript (main 651,210),
+install 690,571 bytes in 41 files (main 688,842; 209,429 headroom), warm
+unchanged at 305,006. No budget changed.
+
+Gate on 2026-10-22 at cbd4089, which also covers the first follow-up above
+(its gate was interrupted when the work paused): `npm run check` passed
+(`audit:ai` 598/598, `audit:ai-eval` 27 cases, hit@1 0.913). The full
+`npm run check:browser` passed all 14 suites on the first attempt with no
+retries (`storage-blocked` 10 cases and 53 routes in 61 s, `a11y` 114 axe runs
+with the empty allowlist, `responsive` 478 checks and 367 controls) at a
+load average of about 6–14. An earlier run on cb792cd, while the machine was
+swapping heavily (about 10 GB of swap in use, load average up to 113),
+failed `phone-ai-ui`, `mermaid`, `chunks`, `storage-blocked`, `responsive`
+and `a11y` on timeouts (navigation, DevTools protocol and selector waits,
+`storage-blocked` taking 71 minutes for two attempts against about a
+minute alone); it stopped during the `a11y` retry, and every one of those
+suites passed on its first attempt in the run above.
 
 ## Flaky browser audits on 2026-10-22: waiting for real state (#138)
 

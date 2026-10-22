@@ -262,6 +262,50 @@ session products remain Backlog even though the curriculum contains related pros
 - a localStorage fallback journal and an in-memory emergency fallback;
 - an internal budget ledger and authoritative replacement snapshots.
 
+Web Storage is touched only through `src/lib/safeStorage.js` (issue #139), which looks the
+store up inside `try` on every call and never throws: where a browser blocks site storage,
+reading `localStorage` itself throws a SecurityError, and a full store throws a
+QuotaExceededError on write. `safeLocalStorage`/`safeSessionStorage` keep a refused change in
+memory for the session (the engine choice, the reader panel on wider screens, recent
+searches, the local-model disclosure, tutor drafts, quiz and practice state, device and vault
+identity).
+`durableLocalStorage`/`durableSessionStorage` have no memory copy and return `false` for a
+refused write; download consent and its revocation, the chunk-recovery marker, narration
+positions and audio bookmarks, the fallback journal and the cross-tab signals use them.
+`getItem(key, unavailable)` tells a refused read from a missing key when `unavailable` is a
+sentinel such as a Symbol (not `undefined`, which selects the null default); the journal then
+returns its in-memory copy, as `audit:storage` checks. Once localStorage cannot be reached or
+read, or the probe below fails, `deviceStorageSaves()` is false and Settings shows "This browser
+is not saving preferences on this device". A refused write alone (a full store) only returns
+`false` to its caller and never sets the status: one large refused value, such as the
+budget-ledger mirror `db.js` writes on every save or the fallback journal, says nothing about
+small preferences. Settings runs `checkDeviceStorage()` (write, read back and remove a small
+key) before its first paint on every open and sets the status from it, so a failure that has
+passed clears and a store that refuses every write (old private browsing) is still found.
+The notice adds that notes, progress and reviews are saved only after `checkStudyDataStorage()`
+in `db.js` has committed a readwrite IndexedDB transaction (a probe record added and removed),
+and that they are not being saved either, with a backup advised, when that probe fails or Save
+status is "error"; the probe runs again whenever Save status changes. Save status starts as
+"saved" and `getData()` reads a blocked database as empty, so neither proves study data is
+saved; once the probe has failed, Settings shows Save status "error" before any save has tried.
+The notice is announced once per visit through a status region that Settings always renders
+empty, filled 250 ms after the checks and emptied 5 s later, so it is announced as a change,
+browse mode meets it once, and a changed notice never leaves stale text there. While the
+status is false the sync card says why and keeps Create and Join off: vault membership and
+the device id would last only the visit, and each visit would write a new `<deviceId>.lumenc`.
+Creating or joining a vault then checks `vaultMembershipStored()` in `syncIdentity.js`, which
+reads past the session's memory copy, so a membership the browser refused (a nearly full
+store) says it lasts this visit only, in its toast and, for as long as it is shown, on the
+sync card.
+Once IndexedDB is blocked too, `exportBackup` still downloads a valid backup and reports it
+with a warning that the export date could not be recorded, and a `BUDGET_STATE_UNAVAILABLE`
+save error advises a backup (the whiteboard: waiting for storage access) rather than reducing
+local data.
+`src/lib/safeStorage.test.mjs` fails if any other file in `src/` names either store;
+`audit:storage-blocked` loads every route as a new document with a throwing accessor, with a
+refusing store and under Chrome's own cookie blocking (Web Storage and IndexedDB both fail),
+and adds IndexedDB failing after Settings opens and a nearly full store.
+
 The profile contains progress, reading positions, bookmarks, notes, clips, annotations,
 review data, backup metadata, Mac tutor history/tombstones, edits, custom documents,
 recents, last document, and user settings. Boards are separate records.
@@ -853,11 +897,12 @@ Narration state rules (issue #96), which later narration work builds on:
   Range boxes cross the reading line (`sentenceIndexAt`). Nothing inside `.diagram-shell`
   (a diagram's failure message and raw source) is narrated.
 - Positions: resume positions (`src/lib/narrationPositions.js`) and audio bookmarks store
-  `{v: 2, index, total, snippet, section}` in localStorage, resolved inside `try`, so a
-  blocked or full store never breaks the Reader. `locatePosition` finds the chunk at
-  `index` that still starts with the 60-character snippet, then the nearest chunk that does,
-  then `index` itself when the queue has the saved length and the same section there (a
-  pronunciation override or an edit in place rewords the sentence), then the section start
+  `{v: 2, index, total, snippet, section}` in localStorage through `safeStorage.js`'s durable
+  store, so a blocked or full store never breaks the Reader and a refused write reads as
+  none. `locatePosition` finds the chunk at `index` that still starts with the 60-character
+  snippet, then the nearest chunk that does, then `index` itself when the queue has the saved
+  length and the same section there (a pronunciation override or an edit in place rewords
+  the sentence), then the section start
   (announced as such), and otherwise starts over with a notice. Resume never lands on the
   last chunk. Version 1 integers are bounds-checked. Bookmarks play the full lecture
   whatever the panel's target. The Reader writes a position or bookmark only for the lecture
@@ -1789,6 +1834,13 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   and scale x and y uniformly.
 - Backup preflight and recovery snapshot precede destructive replacement.
 - Failures remain visible; never claim data/cache deletion before post-check succeeds.
+- Web Storage goes only through `src/lib/safeStorage.js`; no default parameter or module
+  scope names `localStorage`/`sessionStorage`. Anything that must know a write landed
+  (consent, revocation, the chunk-recovery marker) uses the durable store, never the
+  session-memory one. Nothing tells the learner study data is saved on the strength of a
+  default: Settings says so only after IndexedDB committed a probe write, and says it is not
+  being saved when that probe fails. A refused write never sets the device status; reads and
+  the probe do. A vault is reported as lasting only when the browser really stored it.
 
 ### AI input/output
 
@@ -1866,11 +1918,14 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
 - [src/App.jsx](../../src/App.jsx) — routes, profile lifecycle, persistence, document state,
   backup/reset, AI adapters/history, source navigation, review/board integration.
 - [src/lib/db.js](../../src/lib/db.js) — profile v4 normalizer, IndexedDB/fallback, budgets,
-  authoritative replace.
+  authoritative replace, and `checkStudyDataStorage()`, the write probe behind Settings' claim
+  that study data is saved.
 - [src/lib/profileSync.js](../../src/lib/profileSync.js) — record-aware cross-tab profile merge.
 - [src/lib/boardSync.js](../../src/lib/boardSync.js) — board merge/rebase.
 - [src/lib/backup.js](../../src/lib/backup.js) — canonical backup, integrity, preflight.
 - [src/lib/storageBudget.js](../../src/lib/storageBudget.js) — 20 MiB/250-board aggregate gate.
+- [src/lib/safeStorage.js](../../src/lib/safeStorage.js) — the only Web Storage access: session
+  and durable stores that never throw, and the device status behind Settings' notice.
 - [src/components/Settings.jsx](../../src/components/Settings.jsx) and
   [src/components/Notebook.jsx](../../src/components/Notebook.jsx) — lazy install-tier screens;
   [src/components/DocumentCard.jsx](../../src/components/DocumentCard.jsx) is shared with Home.

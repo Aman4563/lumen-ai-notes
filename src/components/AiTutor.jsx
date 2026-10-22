@@ -102,6 +102,7 @@ import {
 } from "../lib/tutorPractice.js";
 import { TUTOR_SPEECH_LABEL } from "../lib/speech.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
+import { safeLocalStorage, safeSessionStorage } from "../lib/safeStorage.js";
 import "../ai-tutor.css";
 
 const MODE_OPTIONS = Object.freeze([
@@ -242,22 +243,13 @@ const LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY = "lumen.ai.local-disclosure-ack.v1";
 const DISCLOSURE_REASON = "Review and acknowledge the local-model disclosure once on this browser to enable generation.";
 const WEB_FALLBACK_STATES = new Set(["off", "armed", "not-needed", "searching", "used", "failed"]);
 
-const readLocalDisclosureAcknowledgement = () => {
-  try {
-    return globalThis.localStorage?.getItem(LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY) === "acknowledged";
-  } catch {
-    return false;
-  }
-};
+const readLocalDisclosureAcknowledgement = () => safeLocalStorage.getItem(LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY) === "acknowledged";
 
+// Where the browser will not store it (a private or restricted context), the
+// acknowledgement still holds for the current visit.
 const rememberLocalDisclosureAcknowledgement = (acknowledged) => {
-  try {
-    if (acknowledged) globalThis.localStorage?.setItem(LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY, "acknowledged");
-    else globalThis.localStorage?.removeItem(LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY);
-  } catch {
-    // Storage can be unavailable in private/restricted browser contexts. The
-    // in-memory acknowledgement still remains valid for the current visit.
-  }
+  if (acknowledged) safeLocalStorage.setItem(LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY, "acknowledged");
+  else safeLocalStorage.removeItem(LOCAL_DISCLOSURE_ACKNOWLEDGEMENT_KEY);
 };
 
 // An unsent question and its settings survive route changes and engine
@@ -267,19 +259,16 @@ const TUTOR_DRAFT_KEY = "lumen.ai.tutor-draft.v1";
 
 const readTutorDraft = () => {
   try {
-    const draft = JSON.parse(globalThis.sessionStorage?.getItem(TUTOR_DRAFT_KEY) || "null");
+    const draft = JSON.parse(safeSessionStorage.getItem(TUTOR_DRAFT_KEY) || "null");
     return draft && typeof draft === "object" && !Array.isArray(draft) ? draft : null;
   } catch {
     return null;
   }
 };
 
+// Without session storage the draft is kept in memory until the page closes.
 const rememberTutorDraft = (draft) => {
-  try {
-    globalThis.sessionStorage?.setItem(TUTOR_DRAFT_KEY, JSON.stringify(draft));
-  } catch {
-    // Without session storage a remount simply starts from the mode default.
-  }
+  safeSessionStorage.setItem(TUTOR_DRAFT_KEY, JSON.stringify(draft));
 };
 
 const createId = () => globalThis.crypto?.randomUUID?.()

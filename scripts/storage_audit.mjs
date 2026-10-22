@@ -6,10 +6,13 @@ let failTransactions = false;
 let failOpen = false;
 let fullScanRequests = 0;
 
+// `localBlocked` makes every Web Storage call throw, as blocked storage does.
+let localBlocked = false;
+const refuseStorage = () => { throw Object.assign(new Error("The operation is insecure."), { name: "SecurityError" }); };
 globalThis.localStorage = {
-  getItem: (key) => local.has(key) ? local.get(key) : null,
-  setItem: (key, value) => local.set(key, String(value)),
-  removeItem: (key) => local.delete(key),
+  getItem: (key) => { if (localBlocked) refuseStorage(); return local.has(key) ? local.get(key) : null; },
+  setItem: (key, value) => { if (localBlocked) refuseStorage(); local.set(key, String(value)); },
+  removeItem: (key) => { if (localBlocked) refuseStorage(); local.delete(key); },
 };
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
@@ -117,12 +120,36 @@ assert.equal((await db.getAllData()).profile, undefined, "a fallback tombstone m
 assert.equal(await db.getData("profile"), undefined, "recovery must not resurrect a deleted record");
 assert.equal(backing.has("profile"), false, "tombstone recovery must remove the stale IndexedDB record");
 
+// Issue #139: with IndexedDB failing and Web Storage refusing reads and
+// writes, the journal lives only in memory. A refused read must return that
+// copy, not an empty journal, so the session still sees its own save.
+failTransactions = true;
+localBlocked = true;
+await assert.rejects(db.setData("blocked-journal", { note: "kept in memory" }), /Persistent browser storage is unavailable/);
+assert.deepEqual(await db.getData("blocked-journal"), { note: "kept in memory" }, "a refused journal read must return the in-memory copy");
+localBlocked = false;
+failTransactions = false;
+assert.equal(local.get("lumen-ai-notes-fallback")?.includes("kept in memory") || false, false, "the refused write must not reach Web Storage");
+
 failOpen = true;
 const retryDb = await import("../src/lib/db.js?storage-audit-retry");
 assert.equal(await retryDb.getData("retry-key"), undefined);
 failOpen = false;
 await retryDb.setData("retry-key", { ok: true });
 assert.deepEqual(await retryDb.getData("retry-key"), { ok: true }, "a rejected database-open promise must reset so a later call can recover");
+
+// Issue #139 review: getData() reads a blocked database as "nothing saved",
+// so Settings says study data is saved only after this positive check.
+failOpen = true;
+const blockedDb = await import("../src/lib/db.js?storage-audit-probe");
+assert.equal(await blockedDb.checkStudyDataStorage(), false, "a database that will not open is not saving study data");
+failOpen = false;
+failTransactions = true;
+assert.equal(await db.checkStudyDataStorage(), false, "a failing readwrite transaction is not saving study data");
+failTransactions = false;
+const keysBeforeProbe = [...backing.keys()];
+assert.equal(await db.checkStudyDataStorage(), true, "a working database takes the probe write");
+assert.deepEqual([...backing.keys()], keysBeforeProbe, "the study-data probe leaves no record behind");
 
 await db.setData("board:removed-by-restore", { pages: ["private old work"] });
 failTransactions = true;
@@ -212,4 +239,4 @@ assert.equal(backing.get("profile").raw.length, shrunkLegacyLength);
 await db.deleteData("profile");
 assert.equal(backing.has("profile"), false, "legacy oversized state must always be removable");
 
-console.log("Storage audit passed: recovery, generation fencing, aggregate byte/board budgets, fallback parity, hidden ledger metadata, and legacy shrink/delete verified.");
+console.log("Storage audit passed: recovery, generation fencing, aggregate byte/board budgets, fallback parity, the in-memory journal with Web Storage blocked, the study-data write probe, hidden ledger metadata, and legacy shrink/delete verified.");

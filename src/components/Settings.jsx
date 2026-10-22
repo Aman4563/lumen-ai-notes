@@ -1,8 +1,10 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertTriangle, Brain, BrainCircuit, Check, CircleUserRound, Contrast, Download, Import, Keyboard, Moon, Palette, RefreshCw, RotateCcw, Share, Smartphone, Sparkles, Sun, Trash2, Volume2, Wifi, WifiOff } from "lucide-react";
 import ErrorBoundary from "./ErrorBoundary";
 import { recoverableImport } from "../lib/chunkRecovery.js";
-import { syncFileNameFor } from "../lib/syncIdentity.js";
+import { checkStudyDataStorage } from "../lib/db.js";
+import { checkDeviceStorage, deviceStorageSaves, subscribeDeviceStorage } from "../lib/safeStorage.js";
+import { syncFileNameFor, vaultMembershipStored } from "../lib/syncIdentity.js";
 
 // Settings. It left the startup bundle for its budget (issue #95) and is an
 // install-tier route screen, so it opens offline after one visit.
@@ -10,6 +12,34 @@ const StorageHealth = lazy(() => recoverableImport(() => import("./StorageHealth
 
 const THEME_CHOICES = [{ id: "system", label: "System", icon: CircleUserRound }, { id: "paper", label: "Paper", icon: Sun }, { id: "dark", label: "Night", icon: Moon }, { id: "contrast", label: "Contrast", icon: Contrast }];
 const THEME_KEY_STEPS = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+
+// Issue #139: where the browser refuses Web Storage, per-device preferences
+// last only until Lumen is closed or reloaded. The notice stays visible on
+// every open but is announced once per visit, politely, so reopening Settings
+// does not repeat it.
+const STORAGE_NOTICE_TITLE = "This browser is not saving preferences on this device";
+const STORAGE_NOTICE_DETAIL = "Choices such as the tutor engine, recent searches and an unsent tutor question last only until Lumen is closed or reloaded, and cross-device sync is off.";
+const STORAGE_NOTICE_STUDY_DATA = "Notes, progress and reviews are saved separately and are not affected.";
+const STORAGE_NOTICE_STUDY_DATA_LOST = "Notes, progress and reviews are not being saved either, so export a backup before closing or reloading Lumen.";
+const SYNC_STORAGE_WARNING = "Sync is off because this browser would not keep this device's vault membership: a vault would be forgotten when Lumen is closed or reloaded, and each visit would write a new sync file.";
+// A vault the browser refused to store (a nearly full store) is still shown
+// for this visit; the card says so after the toast has gone.
+const SYNC_VISIT_NOTE = "This browser is not keeping this vault membership, so this device leaves the vault when Lumen is closed or reloaded.";
+// The announcement goes into a status region that is already on screen and
+// empty, a moment after Settings opens, and leaves it again once read, so
+// reading the page line by line never meets the notice twice.
+const STORAGE_ANNOUNCE_DELAY_MS = 250;
+const STORAGE_ANNOUNCE_CLEAR_MS = 5_000;
+let storageNoticeAnnounced = false;
+
+function DeviceStorageNotice({ detail }) {
+  return (
+    <div className="settings-storage-notice">
+      <AlertTriangle size={19} aria-hidden="true" />
+      <div><strong>{STORAGE_NOTICE_TITLE}</strong><span>{detail}</span></div>
+    </div>
+  );
+}
 
 export default function SettingsView({ settings, backupMeta, aiHistoryCount, onClearAiHistory, onSettingsChange, onResetSettings, onResetApp, onExport, onImport, onInstall, onShowShortcuts, onNotify, online, secureContext, saveStatus, wakeLock, storagePersisted, onRequestStorage, syncVault, syncDeviceId, onCreateSyncVault, onLeaveSyncVault, onSyncExport, onSyncImport }) {
   const importRef = useRef(null);
@@ -27,11 +57,51 @@ export default function SettingsView({ settings, backupMeta, aiHistoryCount, onC
     onSettingsChange({ theme: THEME_CHOICES[target].id });
     themeButtonsRef.current[target]?.focus();
   };
+  const storageSaves = useSyncExternalStore(subscribeDeviceStorage, deviceStorageSaves, deviceStorageSaves);
+  // A probe write catches a store that nothing has touched yet this visit, and
+  // clears a failure that has passed, before the first paint.
+  useLayoutEffect(() => { checkDeviceStorage(); }, []);
+  // Study data is said to be saved only after IndexedDB really took a write:
+  // Save status starts as "saved", and a blocked database reads as empty.
+  // The check runs again whenever Save status changes, so it follows the
+  // real saves instead of keeping its first answer.
+  const [studyDataCheck, setStudyDataCheck] = useState("pending");
+  useEffect(() => {
+    if (storageSaves) return undefined;
+    let active = true;
+    checkStudyDataStorage().then((saves) => { if (active) setStudyDataCheck(saves ? "saving" : "failed"); });
+    return () => { active = false; };
+  }, [storageSaves, saveStatus]);
+  // Where IndexedDB refuses too, nothing is being saved: the notice says so
+  // and advises a backup, and Save status no longer reads "saved" before the
+  // first save has tried.
+  const studyDataLost = studyDataCheck === "failed" || saveStatus === "error";
+  const studyDataSentence = studyDataLost ? STORAGE_NOTICE_STUDY_DATA_LOST : studyDataCheck === "saving" ? STORAGE_NOTICE_STUDY_DATA : "";
+  const noticeDetail = studyDataSentence ? `${STORAGE_NOTICE_DETAIL} ${studyDataSentence}` : STORAGE_NOTICE_DETAIL;
+  const shownSaveStatus = !storageSaves && studyDataCheck === "failed" && saveStatus === "saved" ? "error" : saveStatus;
+  const noticeText = storageSaves ? "" : `${STORAGE_NOTICE_TITLE}. ${noticeDetail}`;
+  const [announced, setAnnounced] = useState("");
+  useEffect(() => {
+    if (!noticeText || studyDataCheck === "pending" || storageNoticeAnnounced) return undefined;
+    const timer = setTimeout(() => {
+      storageNoticeAnnounced = true;
+      setAnnounced(noticeText);
+    }, STORAGE_ANNOUNCE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [noticeText, studyDataCheck]);
+  useEffect(() => {
+    if (!announced) return undefined;
+    const timer = setTimeout(() => setAnnounced(""), STORAGE_ANNOUNCE_CLEAR_MS);
+    return () => clearTimeout(timer);
+  }, [announced]);
   const fontScaleLabel = `${Math.round(settings.fontScale * 100)}%`;
   const lineHeightLabel = String(settings.lineHeight);
   return (
     <div className="page settings-page">
       <p className="settings-intro">Appearance, reading comfort, narration, AI, backups, storage, and iPhone installation.</p>
+      {/* A notice that changed since it was announced (a save failed) is never left behind here. */}
+      <p className="visually-hidden settings-storage-announcer" role="status">{announced && announced === noticeText ? announced : ""}</p>
+      {!storageSaves && <DeviceStorageNotice detail={noticeDetail} />}
       <section className="settings-card" aria-labelledby="settings-appearance-title">
         <div className="settings-card-heading"><Palette size={21} aria-hidden="true" /><div><h2 id="settings-appearance-title">Appearance and reading</h2><span>Choose a reading atmosphere and comfortable text.</span></div></div>
         <div className="theme-choices" role="radiogroup" aria-label="Theme">
@@ -84,18 +154,20 @@ export default function SettingsView({ settings, backupMeta, aiHistoryCount, onC
         <label className="backup-password-field"><span>Backup password <small>optional — encrypts the export with AES-256-GCM</small></span><input className="text-input" type="password" value={backupPassword} minLength={8} maxLength={128} onChange={(event) => setBackupPassword(event.target.value)} placeholder={cryptoAvailable ? "Leave empty for a plain backup" : "Needs a secure (HTTPS) context"} disabled={!cryptoAvailable} autoComplete="new-password" aria-label="Optional backup encryption password" /></label>
         {backupPassword && <p className="inline-warning">A forgotten password means permanent loss of this file — there is no recovery or escrow. The pre-restore recovery download stays unencrypted so a restore can always be undone.</p>}
         <div className="settings-action-row"><button className="button secondary" onClick={() => onExport(backupPassword.trim() || undefined)} disabled={Boolean(backupPassword.trim()) && backupPassword.trim().length < 8} type="button"><Download size={17} /> Export {backupPassword.trim() ? "encrypted " : ""}backup</button><button className="button secondary" onClick={() => importRef.current?.click()} type="button"><Import size={17} /> Import backup</button>{!storagePersisted && <button className="button ghost" onClick={onRequestStorage} type="button">Protect local storage</button>}</div>
-        <p className="microcopy">Backups include progress, positions, bookmarks, highlights, clippings, review history, locally saved AI conversations, personal notes, edited copies, uploads, preferences, and whiteboards. Every new backup is checksummed and every restore is preflighted. Storage: {storagePersisted ? "persistent" : "best effort"} · Save status: {saveStatus} · Last export: {backupMeta?.lastExportAt ? new Date(backupMeta.lastExportAt).toLocaleString() : "never"}.</p>
+        <p className="microcopy">Backups include progress, positions, bookmarks, highlights, clippings, review history, locally saved AI conversations, personal notes, edited copies, uploads, preferences, and whiteboards. Every new backup is checksummed and every restore is preflighted. Storage: {storagePersisted ? "persistent" : "best effort"} · Save status: {shownSaveStatus} · Last export: {backupMeta?.lastExportAt ? new Date(backupMeta.lastExportAt).toLocaleString() : "never"}.</p>
       </section>
       <section className="settings-card sync-card" aria-labelledby="settings-sync-title">
         <div className="settings-card-heading"><RefreshCw size={21} aria-hidden="true" /><div><h2 id="settings-sync-title">Cross-device sync</h2><span>Encrypted, account-free vault sync through files you control.</span></div></div>
         <input ref={syncImportRef} type="file" accept=".lumenc" multiple hidden onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; if (files.length) onSyncImport(files, syncPassphrase); }} />
         {!cryptoAvailable && <p className="inline-warning">Sync needs WebCrypto in a secure (HTTPS) context. There is no weak-crypto fallback.</p>}
+        {!storageSaves && <p className="inline-warning sync-storage-warning">{SYNC_STORAGE_WARNING}</p>}
+        {storageSaves && syncVault && !vaultMembershipStored(syncVault) && <p className="inline-warning sync-visit-warning">{SYNC_VISIT_NOTE}</p>}
         {!syncVault && <p className="microcopy">Each device in a vault writes one encrypted file into a folder you share however you like — iCloud Drive, Syncthing, a USB stick. One passphrase per vault, entered on each device and never stored. Create a vault here, or pick a peer's <code>.lumenc</code> sync file to join theirs.</p>}
         {syncVault && <p className="microcopy sync-status-line">Vault <code>{syncVault.vaultId.slice(0, 8)}…</code> · this device <code>{syncDeviceId.slice(0, 8)}…</code> · last sync {syncVault.lastSyncAt ? new Date(syncVault.lastSyncAt).toLocaleString() : "never"}. Your file is <code>{syncFileNameFor(syncDeviceId)}</code>; each device only ever writes its own.</p>}
         <label className="backup-password-field"><span>Vault passphrase <small>never stored — needed for every export and import</small></span><input className="text-input" type="password" value={syncPassphrase} minLength={8} maxLength={128} onChange={(event) => setSyncPassphrase(event.target.value)} placeholder={syncVault ? "Required for export and import" : "Required to create or join a vault"} disabled={!cryptoAvailable} autoComplete="off" aria-label="Sync vault passphrase" /></label>
         {!syncVault && <div className="settings-action-row">
-          <button className="button secondary" onClick={onCreateSyncVault} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><RefreshCw size={16} /> Create sync vault</button>
-          <button className="button ghost" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Import size={16} /> Join via a peer's file</button>
+          <button className="button secondary" onClick={onCreateSyncVault} disabled={!cryptoAvailable || !storageSaves || syncPassphrase.length < 8} type="button"><RefreshCw size={16} /> Create sync vault</button>
+          <button className="button ghost" onClick={() => syncImportRef.current?.click()} disabled={!cryptoAvailable || !storageSaves || syncPassphrase.length < 8} type="button"><Import size={16} /> Join via a peer's file</button>
         </div>}
         {syncVault && <div className="settings-action-row">
           <button className="button secondary" onClick={() => onSyncExport(syncPassphrase)} disabled={!cryptoAvailable || syncPassphrase.length < 8} type="button"><Download size={17} /> Export my sync file</button>
