@@ -1192,7 +1192,7 @@ Current default controls:
 | downstream backpressure deadline | 15 s |
 | browser stream body cap | 4 MiB |
 | search timeout | 8 s |
-| header timeout (unused connection closed silently) | 15 s |
+| header timeout (unused connection closed silently; checked every 30 s) | 15 s |
 
 Logs contain sanitized event/request/timing/count metadata, not prompts, responses, or
 queries. Preserve this rule when adding diagnostics.
@@ -1330,9 +1330,10 @@ refuse with the typed reason". The optimizer's chunk came back from the service 
 HTTP 400, `vite:preloadError` fired, and chunk recovery reloaded the page.
 
 **Cause:** browsers open connections before they need them. Node timed an unused one out
-after the 15 s header timeout and reported `ERR_HTTP_REQUEST_TIMEOUT` to the server's
-`clientError` handler, which wrote `400 Bad Request` into it. The browser later sent a
-request on that connection and read the 400 as its answer.
+once the 15 s header timeout had passed (it checks every 30 s) and reported
+`ERR_HTTP_REQUEST_TIMEOUT` to the server's `clientError` handler, which wrote
+`400 Bad Request` into it. The browser later sent a request on that connection and read
+the 400 as its answer.
 
 **Fix:** `answerClientError` in `server/server.mjs` closes a connection that never sent a
 byte without writing anything (browsers retry on a new connection). A request that stalled

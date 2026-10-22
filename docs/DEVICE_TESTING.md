@@ -197,8 +197,9 @@ them as "Narration wording" (`voice-platform-copy`) and "VoiceOver"
 
 ## Idle connections and lazily loaded screens (issue #138)
 
-The server now closes a connection that never sent a request when its 15 s
-header timeout ends, instead of writing `400 Bad Request` into it. Chrome
+The server now closes a connection that never sent a request once its 15 s
+header timeout has passed (Node checks every 30 s, so 15 to 45 s after it
+opened), instead of writing `400 Bad Request` into it. Chrome
 read that 400 as the answer to the next request it sent on the connection,
 so a lazily loaded file failed and chunk recovery reloaded the page. The
 server tests cover idle plain and TLS connections (a finished handshake is

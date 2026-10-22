@@ -67,12 +67,12 @@ responsive`) to narrow a run. A failed suite is retried once and reported as
 `LUMEN_BROWSER_RETRIES=0` when diagnosing. [docs/FUNCTIONAL_TESTING.md](../docs/FUNCTIONAL_TESTING.md)
 summarizes what the browser suites cover.
 
-Browser audits wait for what they check, never for a guessed delay: a slow
-runner makes every guess wrong sooner or later. `scripts/audit_waits.mjs`
+In a browser audit, wait for what a check reads, not for a guessed delay: a
+slow runner makes every guess wrong sooner or later. `scripts/audit_waits.mjs`
 waits until transitions have ended (`settled`), until a theme switch has
 finished and the page wears its colours (`waitForTheme`), and until state that
-lands later, such as a debounced save, is there (`pollValue`). A fixed sleep
-only bounds a check that something must not happen.
+lands later, such as a debounced save, is there (`pollValue`). Keep a fixed
+sleep only to bound a check that something must not happen.
 
 Changes to the AI tutor or server should also pass the real-model acceptance
 run: build, run `npm run start:local-ai` with Ollama running, then
