@@ -1990,8 +1990,19 @@ try {
       // sheet, and a link there must find the sheet open and close it.
       await linkCase("(g) Jump to second behind the outline sheet", async () => {
         const route = await openLinkRoute(linkFixtureId, fixtureReady);
-        await linkPage.click('button[aria-label="Table of contents"]');
-        await linkPage.waitForSelector("#reader-side-panel.open", { timeout: 5_000 });
+        // What a tap at the button's centre lands on, so a sheet that does not
+        // open says what took the tap.
+        const tableOfContents = 'button[aria-label="Table of contents"]';
+        const hitTarget = () => linkPage.$eval(tableOfContents, (button) => {
+          const box = button.getBoundingClientRect();
+          const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+          const name = hit ? `${hit.tagName.toLowerCase()}${hit.id ? `#${hit.id}` : ""}${[...hit.classList].map((item) => `.${item}`).join("")}` : "nothing";
+          return `${button.contains(hit) ? "the button" : name} (button at ${Math.round(box.left)},${Math.round(box.top)}, scrollY ${Math.round(scrollY)}, aria-expanded ${button.getAttribute("aria-expanded")})`;
+        });
+        const beforeTap = await hitTarget();
+        await linkPage.click(tableOfContents);
+        const opened = await linkPage.waitForSelector("#reader-side-panel.open", { timeout: 5_000 }).then(() => true, () => false);
+        if (!opened) throw new Error(`the sheet did not open; the tap's point hit ${beforeTap}, and after 5 s hits ${await hitTarget()}`);
         await articleLink("Jump to second", "click");
         const closed = await linkPage.waitForFunction(() => !document.querySelector("#reader-side-panel.open"), { timeout: 5_000 }).then(() => true, () => false);
         const state = await waitForLinkState("2-second-section", (current) => current.focused, 5_000);
