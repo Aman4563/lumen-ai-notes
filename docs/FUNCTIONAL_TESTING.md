@@ -3809,5 +3809,13 @@ and the full `npm run check:browser` passed all 13 suites on the first
 attempt with no retries (`a11y` 114 axe runs with the empty allowlist,
 499 structural checks). No app code changed: the startup entry is
 622,935 bytes, the install route screens 688,842 bytes and the warm
-tools 305,006 bytes in 8 files. The commit after abe38ba changes only
-these notes.
+tools 305,006 bytes in 8 files. CI passed the same 13 suites on the first
+attempt.
+
+Main (45826f7, the blocked-storage fixes #145) was then merged into the
+branch at 8242fd7 rather than rebased, since the branch was already
+pushed; only these append-only notes conflicted, and both sets of entries
+are kept. On 2026-10-23 the gate passed again on the merged tree:
+`npm run check` (`audit:ai` 600/600; startup entry 623,582 bytes, route
+screens 690,571 bytes) and the full `npm run check:browser`, now 14 suites
+with `storage-blocked`, all on the first attempt with no retries.
