@@ -1089,7 +1089,14 @@ try {
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.waitForFunction(() => document.querySelector(".phone-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 3_000 }).catch(() => assert.fail("On-device Lite offered no Jump to latest while the learner read elsewhere"));
   assert.deepEqual(await page.$eval(".phone-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the On-device jump pill was a live region or too small to tap");
-  await page.click(".phone-tutor__jump");
+  // The pill sits on the dock's measured height, which updates a frame
+  // after the question box changes or the page scrolls, so the pill can
+  // still move once it shows: when an answer lands, its question leaves the
+  // box and the pill drops 24px. page.click measured the centre once and
+  // pressed later, and under load the press landed just above the moved
+  // pill (#138). The locator presses once the pill holds still across two
+  // frames.
+  await page.locator(".phone-tutor__jump").click();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.evaluate(() => {
     const end = document.querySelector(".phone-tutor__conversation-end").getBoundingClientRect();
@@ -1102,7 +1109,7 @@ try {
   await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming") && document.querySelector(".phone-tutor__jump")?.textContent.includes("Answer ready"), { timeout: 10_000 }).catch(() => assert.fail("an On-device answer that landed out of view was not offered"));
-  await page.click(".phone-tutor__jump");
+  await page.locator(".phone-tutor__jump").click();
   await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("Answer ready did not move focus to the new On-device answer"));
   assert.equal(await page.$(".phone-tutor__jump"), null, "the On-device pill stayed after it was used");
   await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
