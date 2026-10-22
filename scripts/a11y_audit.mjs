@@ -248,13 +248,33 @@ const STATES = [
     },
   },
   // Teaching Mode after a link jump, with focus on the heading it went to.
-  // Built-in lectures have no in-page links, so one is injected. Its target
-  // is on a later slide, so the focus-inside-dialog check means something.
+  // Built-in lectures have no in-page links, so one is injected. It targets
+  // the first section that holds tabbable content (a link, code, a table or
+  // a diagram), so the jump lands on a later slide with tabbable content and
+  // the focus-inside-dialog check means something. A long slide with no
+  // tabbable content fails axe's scrollable-region-focusable on its scroller
+  // with or without a jump; that is pre-existing and tracked in #98 (states
+  // the audit never opens), not a link-jump defect. The state has its own
+  // lecture because linear regression (ROUTES[2]) has no tabbable content in
+  // any section.
   {
     name: "teaching-mode-link-jump",
-    route: ROUTES[2],
+    route: { name: "reader-trees", hash: `#/read/${encodeURIComponent("notes/part-05-supervised-learning/03-trees-and-ensembles.md")}`, ready: ".reader-view .markdown-body h1" },
     setup: async (page) => {
-      const id = await page.evaluate(() => document.querySelectorAll(".reader-view article.markdown-body:not(.teaching-markdown) h2")[2].id);
+      // Chosen as the state runs, so it survives edits to the lecture. A
+      // section is an h2's following siblings, up to the next h2. Waiting for
+      // one also waits out the lecture shown before, which has none.
+      const id = await page.waitForFunction(() => {
+        const tabbable = "a[href], pre[tabindex], .table-scroll, .diagram-shell";
+        const holdsTabbable = (heading) => {
+          for (let node = heading.nextElementSibling; node && node.tagName !== "H2"; node = node.nextElementSibling) {
+            if (node.matches(tabbable) || node.querySelector(tabbable)) return true;
+          }
+          return false;
+        };
+        return [...document.querySelectorAll(".reader-view article.markdown-body:not(.teaching-markdown) h2")].find(holdsTabbable)?.id || false;
+      }, { timeout: 10_000 }).then((handle) => handle.jsonValue(), () => "");
+      if (!id) throw new Error("no h2 section of the lecture holds a link, code, a table or a diagram to jump to");
       await clickText(page, ".document-tools button", "Teach");
       await page.waitForSelector(".teach-mode .teaching-markdown");
       await page.$eval(".teach-mode .teaching-markdown", (article, target) => {
