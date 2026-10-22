@@ -261,22 +261,48 @@ export const reviewStats = (items, now = new Date(), timeZone = currentTimeZone(
   return stats;
 };
 
-const intervalForRating = (item, rating) => {
+// The Classic rule every new attempt records, so sync replay grades it the way it
+// was graded. Rule 1 multiplied the interval however recently the card was
+// reviewed (attempts recorded before #148 carry no rule and replay under it);
+// rule 2 grows an early review from the elapsed time. #149 bumps this constant.
+export const REVIEW_SCHEDULE_RULE = 2;
+// From this rule on, Classic grading is early-aware; a later build's rule keeps it.
+const EARLY_AWARE_SCHEDULE_RULE = 2;
+const MAX_SCHEDULE_RULE = 1_000;
+
+export const normalizeScheduleRule = (value, fallback = 1) => {
+  const rule = Number(value);
+  return Number.isInteger(rule) && rule >= 1 ? Math.min(rule, MAX_SCHEDULE_RULE) : fallback;
+};
+
+const intervalForRating = (item, rating, now, scheduleRule) => {
   const priorInterval = Number(item.intervalDays) || 0;
   const priorEase = Number(item.ease) || 2.5;
   const firstReview = isNewReviewItem(item);
   if (rating === "again") return { intervalDays: 10 / 1_440, ease: clamp(priorEase - 0.2, 1.3, 3.5), repetitions: 0 };
+  // Reviewed before its interval ran out (Extra practice): grow from the time
+  // waited, so quick repeat passes cannot compound it. Whole milliseconds, as the
+  // due time was set, keep a due card from reading as early. A last review ahead of
+  // now counts as no time waited; an unreadable one is not early.
+  if (scheduleRule >= EARLY_AWARE_SCHEDULE_RULE && !firstReview && priorInterval >= 1) {
+    const lastReviewedMs = Date.parse(item.lastReviewedAt);
+    const waitedMs = Math.max(0, now.getTime() - lastReviewedMs);
+    if (Number.isFinite(lastReviewedMs) && waitedMs < Math.round(priorInterval * DAY_MS)) {
+      const factor = rating === "hard" ? 1.2 : rating === "good" ? priorEase : priorEase * 1.3;
+      return { intervalDays: Math.max(priorInterval, (waitedMs / DAY_MS) * factor), ease: priorEase, repetitions: Number(item.repetitions) || 0 };
+    }
+  }
   if (rating === "hard") return { intervalDays: firstReview ? 1 : Math.max(1, priorInterval * 1.2), ease: clamp(priorEase - 0.15, 1.3, 3.5), repetitions: (Number(item.repetitions) || 0) + 1 };
   if (rating === "good") return { intervalDays: firstReview ? 1 : item.repetitions <= 1 ? 3 : Math.max(1, priorInterval * priorEase), ease: priorEase, repetitions: (Number(item.repetitions) || 0) + 1 };
   return { intervalDays: firstReview ? 4 : Math.max(4, priorInterval * priorEase * 1.3), ease: clamp(priorEase + 0.15, 1.3, 3.5), repetitions: (Number(item.repetitions) || 0) + 1 };
 };
 
-export const previewReviewIntervals = (item, { scheduler = "sm2", requestRetention = FSRS_DEFAULT_RETENTION, weights } = {}) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
+export const previewReviewIntervals = (item, { scheduler = "sm2", requestRetention = FSRS_DEFAULT_RETENTION, weights, now = new Date() } = {}) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
   if (scheduler === "fsrs") {
-    const result = fsrsGrade(item, id, new Date(), { requestRetention, ...(Array.isArray(weights) && weights.length === 17 ? { weights } : {}) });
+    const result = fsrsGrade(item, id, now, { requestRetention, ...(Array.isArray(weights) && weights.length === 17 ? { weights } : {}) });
     return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
   }
-  const result = intervalForRating(item, id);
+  const result = intervalForRating(item, id, now, REVIEW_SCHEDULE_RULE);
   return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
 }));
 
@@ -299,6 +325,7 @@ export const gradeReviewItem = (item, rating, now = new Date(), elapsedMs = 0, m
   const priorInterval = Number(item.intervalDays) || 0;
   const priorReviewCount = Number(item.reviewCount) || (item.lastReviewedAt ? 1 : 0);
   const useFsrs = metadata.scheduler === "fsrs";
+  const scheduleRule = normalizeScheduleRule(metadata.scheduleRule, REVIEW_SCHEDULE_RULE);
   // FSRS mode keeps writing the legacy fields (intervalDays, frozen ease,
   // repetitions) so stats, mastery, weak-first ordering, and interval labels
   // stay correct and toggling back to SM-2 is graceful.
@@ -309,7 +336,7 @@ export const gradeReviewItem = (item, rating, now = new Date(), elapsedMs = 0, m
       ease: Number(item.ease) || 2.5,
       repetitions: rating === "again" ? 0 : (Number(item.repetitions) || 0) + 1,
     }
-    : intervalForRating(item, rating);
+    : intervalForRating(item, rating, now, scheduleRule);
   const intervalDays = Math.round(clamp(schedule.intervalDays, 10 / 1_440, 36_500) * 100) / 100;
   const nextDueAt = new Date(now.getTime() + intervalDays * DAY_MS).toISOString();
   const lapses = (Number(item.lapses) || 0) + (rating === "again" && priorReviewCount > 0 ? 1 : 0);
@@ -341,6 +368,7 @@ export const gradeReviewItem = (item, rating, now = new Date(), elapsedMs = 0, m
     sessionKind: metadata.sessionKind || (priorReviewCount > 0 ? "review" : "new"),
     sessionKey: metadata.sessionKey || "",
     crunch: Boolean(metadata.crunch),
+    scheduleRule,
   };
   return { item: updated, attempt };
 };
