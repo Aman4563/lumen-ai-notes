@@ -73,6 +73,7 @@ import {
   mergeBoardVersions,
 } from "../lib/boardSync.js";
 import { PROFILE_REPLACEMENT_EVENT } from "../lib/profileSync.js";
+import { durableLocalStorage } from "../lib/safeStorage.js";
 import { StorageBudgetError } from "../lib/storageBudget.js";
 
 const inks = [
@@ -626,7 +627,7 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
         if (loadedDocumentRef.current === targetDocumentId && (!sequence || sequence === saveSequenceRef.current)) {
           setSaveStatus("error");
           notify?.(error instanceof StorageBudgetError
-            ? `${error.message} This board change remains visible only in the current tab until you reduce local data.`
+            ? `${error.message} This board change remains visible only in the current tab until ${error.code === "BUDGET_STATE_UNAVAILABLE" ? "storage access recovers" : "you reduce local data"}.`
             : "Whiteboard changes could not be saved. Keep this tab open and retry after checking browser storage.", "error", 9000);
         }
       });
@@ -759,7 +760,8 @@ export default function Whiteboard({ documentId, documentTitle, notify }) {
         at: Date.now(),
       };
       try { channel?.postMessage(signal); } catch { /* storage event remains available */ }
-      try { localStorage.setItem(BOARD_SYNC_SIGNAL_KEY, JSON.stringify(signal)); } catch { /* IndexedDB remains authoritative */ }
+      // Without storage the BroadcastChannel carries the signal; IndexedDB remains authoritative.
+      durableLocalStorage.setItem(BOARD_SYNC_SIGNAL_KEY, JSON.stringify(signal));
     };
     return () => {
       active = false;

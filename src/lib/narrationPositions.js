@@ -1,3 +1,5 @@
+import { durableLocalStorage, guardStorage } from "./safeStorage.js";
+
 /**
  * Full-lecture narration positions (AUDIO-001, issue #96): where narration
  * stopped in each lecture on this device. Media positions are per-device
@@ -9,14 +11,16 @@
  * a pronunciation override or a new chunking rule shifts the indices.
  * Version 1 stored the bare index as a string; it is read as `{index}`.
  *
- * Storage is resolved inside `try`: the accessor itself throws where storage
- * is blocked, and a full store throws on write. Every call then returns null
- * instead of breaking the Reader.
+ * Storage goes through safeStorage.js (issue #139), which resolves it inside
+ * `try`: the accessor itself throws where storage is blocked, and a full store
+ * throws on write. The durable store keeps no memory copy, so a position that
+ * could not be stored reads as none, and every call returns null instead of
+ * breaking the Reader. An injected `storage` is guarded the same way.
  */
 const KEY_PREFIX = "lumen-narration-";
 export const POSITION_SNIPPET_LENGTH = 60;
 
-const storageFor = (storage) => (storage === undefined ? globalThis.localStorage : storage);
+const storageFor = (storage) => (storage === undefined ? durableLocalStorage : guardStorage(storage));
 
 const wholeNumber = (value) => (Number.isInteger(value) && value >= 0 ? value : null);
 
@@ -46,24 +50,12 @@ export const readPosition = (documentId, storage) => {
 };
 
 export const writePosition = (documentId, position, storage) => {
-  try {
-    const value = normalizePosition(position && typeof position === "object" ? position : null);
-    if (!value) return null;
-    storageFor(storage).setItem(`${KEY_PREFIX}${documentId}`, JSON.stringify(value));
-    return value;
-  } catch {
-    return null;
-  }
+  const value = normalizePosition(position && typeof position === "object" ? position : null);
+  if (!value) return null;
+  return storageFor(storage).setItem(`${KEY_PREFIX}${documentId}`, JSON.stringify(value)) ? value : null;
 };
 
-export const clearPosition = (documentId, storage) => {
-  try {
-    storageFor(storage).removeItem(`${KEY_PREFIX}${documentId}`);
-    return true;
-  } catch {
-    return null;
-  }
-};
+export const clearPosition = (documentId, storage) => (storageFor(storage).removeItem(`${KEY_PREFIX}${documentId}`) ? true : null);
 
 /**
  * Finds a saved position in a freshly built queue. In order: the chunk at

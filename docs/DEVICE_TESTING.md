@@ -87,11 +87,49 @@ note the iOS version with each verdict.
    stop. The Reader must never show "Lumen could not render this screen".
    Narration keeps playing, and a bookmark that could not be saved says so
    instead of claiming it was saved. Record whether resume and bookmarks
-   persisted in each mode. This step covers storage that fails on write. Do
-   not use Settings → Safari → Block All Cookies for it: with storage blocked
-   outright, reading `localStorage` itself throws, and Lumen currently fails
-   at startup, before narration runs, on main as well. That is a separate
-   app-shell issue.
+   persisted in each mode. This step covers storage that fails on write.
+   Storage blocked outright (Block All Cookies), where reading `localStorage`
+   itself throws, is covered by the next section.
+
+## Blocked storage checks that need a device (issue #139)
+
+`audit:storage-blocked` loads every route in Chrome with a throwing
+`localStorage`/`sessionStorage` accessor, with a store whose writes throw
+`QuotaExceededError` and reads `SecurityError`, and under Chrome's own cookie
+blocking, where IndexedDB fails as well. Only an iPhone shows what Safari's
+own blocking does. Note the iOS version and whether Lumen ran in a
+Safari tab or from the Home Screen, and add the verdict to the device
+evidence report in issue #7.
+
+1. **Every screen with storage blocked.** Turn on Settings → Apps → Safari →
+   Block All Cookies (Settings → Safari on iOS 17 and earlier) and open
+   Lumen. Visit Home, Library (search for "gradient"), a lecture (start Full
+   lecture from Listen and bookmark a sentence), Review (add and grade a
+   card), Notebook, the whiteboard (draw an arrow), the AI tutor (Mac local,
+   then On-device Lite) and Settings. No screen may show "Lumen could not
+   render this screen". The bookmark must say it could not be saved.
+2. **The Settings notice.** Open Lumen afresh and open Settings before
+   changing anything. It must show "This browser is not saving preferences on
+   this device". With VoiceOver on, opening Settings reads it once, and
+   swiping through Settings a few seconds later meets it once, not twice;
+   closing and reopening Settings must not read it again. Record how the
+   notice ends. "Notes, progress and reviews are saved separately" may appear
+   only while Safari still lets Lumen write to IndexedDB. If Safari blocked
+   IndexedDB too, the notice says "Notes, progress and reviews are not being
+   saved either" and advises a backup, and "Save status" under Backup and
+   transfer reads "error" before anything is changed. Then change the theme:
+   in that case an error says the change could not be saved and advises a
+   backup. Under Cross-device sync, a warning says sync is off because this
+   browser would not keep this device's vault membership, and Create sync
+   vault and Join via a peer's file stay off with a passphrase entered.
+3. **Export with storage blocked.** Tap Export backup. The backup must
+   download (to Files). If IndexedDB is blocked, the message says it was
+   downloaded and that the export date could not be recorded, never "Backup
+   failed". Record whether the file opens with Import backup's preflight.
+4. **Preferences last the visit only.** Switch the tutor to On-device Lite,
+   go Home and back: it stays. Reload: it is back on Mac local. Turn Block
+   All Cookies off and reload: the notice is gone, and a switched engine
+   survives a reload again.
 
 ## Offline tools that need a device (issue #95)
 

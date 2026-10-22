@@ -1,3 +1,5 @@
+import { durableLocalStorage, guardStorage } from "./safeStorage.js";
+
 /**
  * Audio bookmarks (AUDIO-001 slice, issue #17): saved positions inside a
  * document's full-lecture narration queue. Device-local like narration
@@ -7,13 +9,15 @@
  * queue length and its section label, so `locatePosition` in
  * narrationPositions.js finds it again after an edit shifts the indices.
  *
- * Storage is resolved inside `try`: where the accessor itself throws, the
- * list is empty and saving reports failure instead of breaking the Reader.
+ * Storage goes through safeStorage.js (issue #139), which resolves it inside
+ * `try`. The durable store keeps no memory copy: where storage is blocked or
+ * full the list is empty and saving reports failure instead of breaking the
+ * Reader. An injected `storage` is guarded the same way.
  */
 const STORAGE_KEY = "lumen-audio-bookmarks-v1";
 export const MAX_AUDIO_BOOKMARKS = 100;
 
-const storageFor = (storage) => (storage === undefined ? globalThis.localStorage : storage);
+const storageFor = (storage) => (storage === undefined ? durableLocalStorage : guardStorage(storage));
 
 const readAll = (storage) => {
   try {
@@ -25,15 +29,8 @@ const readAll = (storage) => {
   }
 };
 
-const writeAll = (storage, bookmarks) => {
-  try {
-    storageFor(storage).setItem(STORAGE_KEY, JSON.stringify(bookmarks.slice(0, MAX_AUDIO_BOOKMARKS)));
-    return true;
-  } catch {
-    // Quota or private-mode failures never break narration.
-    return false;
-  }
-};
+// Quota or private-mode failures return false and never break narration.
+const writeAll = (storage, bookmarks) => storageFor(storage).setItem(STORAGE_KEY, JSON.stringify(bookmarks.slice(0, MAX_AUDIO_BOOKMARKS)));
 
 const count = (value) => Math.max(0, Math.round(Number(value) || 0));
 

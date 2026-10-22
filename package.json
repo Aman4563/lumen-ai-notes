@@ -43,6 +43,7 @@
     "audit:phone-ai-ui": "node scripts/phone_ai_ui_audit.mjs",
     "audit:mermaid": "node scripts/mermaid_ui_audit.mjs",
     "audit:chunks": "node scripts/chunk_recovery_audit.mjs",
+    "audit:storage-blocked": "node scripts/storage_blocked_audit.mjs",
     "audit:ai-ui": "node scripts/ai_ui_audit.mjs",
     "audit:ai-live": "node scripts/live_ai_endpoints.mjs",
     "audit:ai-live-ui": "node scripts/live_ai_workflows.mjs",

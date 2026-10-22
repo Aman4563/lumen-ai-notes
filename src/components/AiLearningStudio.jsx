@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useState } from "react";
 import { Cpu, Info, Laptop } from "lucide-react";
 import { recoverableImport } from "../lib/chunkRecovery.js";
+import { safeLocalStorage } from "../lib/safeStorage.js";
 import "../ai-learning-studio.css";
 
 const AiTutor = lazy(() => recoverableImport(() => import("./AiTutor"), "AiTutor"));
@@ -21,23 +22,16 @@ export const AI_ENGINE_OPTIONS = Object.freeze([
 
 // The engine choice is a per-browser UI preference, not study data: it stays
 // out of the profile and backups and survives route changes and reloads.
+// Where the browser will not store it, it still survives route changes.
 const ENGINE_PREFERENCE_KEY = "lumen.ai.engine.v1";
 
 const readEnginePreference = () => {
-  try {
-    const stored = globalThis.localStorage?.getItem(ENGINE_PREFERENCE_KEY);
-    return AI_ENGINE_OPTIONS.some((option) => option.id === stored) ? stored : "mac-local";
-  } catch {
-    return "mac-local";
-  }
+  const stored = safeLocalStorage.getItem(ENGINE_PREFERENCE_KEY);
+  return AI_ENGINE_OPTIONS.some((option) => option.id === stored) ? stored : "mac-local";
 };
 
 const rememberEnginePreference = (engine) => {
-  try {
-    globalThis.localStorage?.setItem(ENGINE_PREFERENCE_KEY, engine);
-  } catch {
-    // Restricted storage only loses the preference, never the engine switch.
-  }
+  safeLocalStorage.setItem(ENGINE_PREFERENCE_KEY, engine);
 };
 
 export default function AiLearningStudio(props) {

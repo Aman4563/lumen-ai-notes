@@ -83,6 +83,50 @@ test("does not auto-reload offline or when a durable loop marker cannot be writt
   assert.equal(reloads, 0);
 });
 
+// Issue #139: where the browser blocks site storage, reading sessionStorage
+// throws. Before the fix the default store resolved to undefined, and
+// `undefined !== null` read as "marker written", so the page reloaded with no
+// cooldown marker to stop the next reload.
+test("with a throwing sessionStorage accessor the default store never reloads without a marker", () => {
+  const blocked = () => { throw Object.assign(new Error("The operation is insecure."), { name: "SecurityError" }); };
+  const saved = ["window", "sessionStorage"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+  // In a browser `window` is the global object.
+  Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, get: blocked });
+  try {
+    let reloads = 0;
+    const recovery = createChunkRecovery({ isOnline: () => true, reload: () => { reloads += 1; } });
+    const error = new TypeError("Failed to fetch dynamically imported module: http://lumen.test/assets/Reader-old.js");
+    assert.equal(recovery.schedule(error), false, "a reload was scheduled although no recovery marker could be stored");
+    assert.equal(reloads, 0);
+  } finally {
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
+
+// A guarded store reports a refused write as false instead of throwing; an
+// old marker it still reads back must not pass for the new one.
+test("a store that refuses the marker write with false never reloads", () => {
+  let reloads = 0;
+  const stale = JSON.stringify({ attemptedAt: 1_000, asset: "http://lumen.test/assets/Reader-older.js" });
+  const refusing = {
+    getItem: () => stale,
+    setItem: () => false,
+    removeItem: () => false,
+  };
+  const recovery = createChunkRecovery({
+    storage: refusing,
+    now: () => 1_000 + 10 * 60_000,
+    isOnline: () => true,
+    reload: () => { reloads += 1; },
+  });
+  assert.equal(recovery.schedule(new TypeError("Failed to fetch dynamically imported module: http://lumen.test/assets/Reader-old.js")), false);
+  assert.equal(reloads, 0);
+});
+
 // Since issue #96 any successful import clears a marker only once its
 // cooldown has passed; a marker still cooling down needs the chunk it names
 // (see "after a failed load of chunk A…" below).

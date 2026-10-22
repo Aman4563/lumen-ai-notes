@@ -1,3 +1,4 @@
+import { safeSessionStorage } from "./safeStorage.js";
 import { withoutCitationLabels } from "./tutorFollowUps.js";
 
 /**
@@ -55,7 +56,7 @@ const normalizeStates = (value) => Object.fromEntries(Object.entries(value && ty
   .sort((left, right) => right[1].updatedAt - left[1].updatedAt)
   .slice(0, MAX_QUIZ_STATES));
 
-export const readQuizStates = (storage = globalThis.sessionStorage) => {
+export const readQuizStates = (storage = safeSessionStorage) => {
   try {
     return normalizeStates(JSON.parse(storage?.getItem(QUIZ_STATE_KEY) || "{}"));
   } catch {
@@ -63,7 +64,7 @@ export const readQuizStates = (storage = globalThis.sessionStorage) => {
   }
 };
 
-export const writeQuizStates = (states, storage = globalThis.sessionStorage) => {
+export const writeQuizStates = (states, storage = safeSessionStorage) => {
   try {
     const normalized = normalizeStates(states);
     if (Object.keys(normalized).length) storage?.setItem(QUIZ_STATE_KEY, JSON.stringify(normalized));

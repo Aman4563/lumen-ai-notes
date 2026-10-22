@@ -13,6 +13,7 @@ import {
   summarizeOwnedData,
   summarizeOwnedRecordBytes,
 } from "./storageBudget.js";
+import { durableLocalStorage } from "./safeStorage.js";
 
 const DB_NAME = "lumen-ai-notes";
 const DB_VERSION = 1;
@@ -109,9 +110,14 @@ const visibleFallbackEntries = (entries) => Object.fromEntries(
   }),
 );
 
+// Returned only when the browser refused the read, never for a missing key.
+const UNREADABLE = Symbol("unreadable journal");
+
 const readFallback = () => {
   try {
-    const parsed = JSON.parse(localStorage.getItem(FALLBACK_KEY) || "{}");
+    const stored = durableLocalStorage.getItem(FALLBACK_KEY, UNREADABLE);
+    if (stored === UNREADABLE) return memoryFallback;
+    const parsed = JSON.parse(stored || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : memoryFallback;
   } catch {
     return memoryFallback;
@@ -121,10 +127,10 @@ const readFallback = () => {
 const writeFallback = (value) => {
   memoryFallback = value;
   try {
-    localStorage.setItem(FALLBACK_KEY, JSON.stringify(value));
-    return true;
+    // A refused write returns false; the in-memory copy above still keeps
+    // the current session usable.
+    return durableLocalStorage.setItem(FALLBACK_KEY, JSON.stringify(value));
   } catch {
-    // The in-memory copy still keeps the current session usable.
     return false;
   }
 };
@@ -801,6 +807,27 @@ export const getStorageBudgetSummary = async () => {
     maximumBytes: MAX_OWNED_DATA_BYTES,
     maximumBoards: MAX_BOARD_RECORDS,
   };
+};
+
+const STUDY_DATA_PROBE_KEY = "__lumenStudyDataProbe";
+
+/**
+ * Whether IndexedDB, where study data lives, takes a write right now: one
+ * readwrite transaction adds and removes a probe record and must commit.
+ * Nothing is left behind and it never throws. getData() treats a blocked
+ * database as "nothing saved yet", so Settings needs this positive check
+ * before it says study data is being saved (issue #139).
+ */
+export const checkStudyDataStorage = async () => {
+  try {
+    await withStore("readwrite", (store) => {
+      store.put(1, STUDY_DATA_PROBE_KEY);
+      return store.delete(STUDY_DATA_PROBE_KEY);
+    });
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 export const replaceAllData = async (entries) => {
