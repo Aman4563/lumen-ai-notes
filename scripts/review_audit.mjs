@@ -588,12 +588,13 @@ try {
     .catch(() => assert.fail("the lab miss did not land as a code-category mistake"));
   // The next step leaves the page and edits the stored profile directly, so
   // the miss is stored, deleted, and the deletion stored before it does.
-  await savedProfile(page, (profile) => profile.mistakes.some((mistake) => mistake.category === "code"));
+  const isCodeMiss = (mistake) => mistake.category === "code";
+  assert.ok((await savedProfile(page, (profile) => profile.mistakes.some(isCodeMiss))).mistakes.some(isCodeMiss), "the lab miss was not stored");
   await page.evaluate(() => {
     const card = [...document.querySelectorAll(".mistake-card")].find((node) => node.textContent.includes("Code"));
     card?.querySelector('button[aria-label="Delete this mistake entry"]')?.click();
   });
-  await savedProfile(page, (profile) => !profile.mistakes.some((mistake) => mistake.category === "code"));
+  assert.ok(!(await savedProfile(page, (profile) => !profile.mistakes.some(isCodeMiss))).mistakes.some(isCodeMiss), "deleting the lab miss was not stored");
 
   // Issue #54 (REV-19/REV-11): burst typing into a clipping note keeps every
   // character with several clippings, and a deleted clipping can be undone.
