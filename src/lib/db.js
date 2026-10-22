@@ -955,6 +955,12 @@ const stringRecord = (value, maximumLength) => Object.fromEntries(
     .map(([key, item]) => [key, maximumLength ? item.slice(0, maximumLength) : item]),
 );
 const uniqueStrings = (value, limit = 500) => [...new Set(Array.isArray(value) ? value.filter((item) => typeof item === "string") : [])].slice(0, limit);
+// An attempt's schedule rule is sparse like board rotation: only a valid rule is
+// written, so attempts recorded before #148 stay byte-identical and replay as rule 1.
+const sparseScheduleRule = (value) => {
+  const scheduleRule = normalizeScheduleRule(value, 0);
+  return scheduleRule ? { scheduleRule } : {};
+};
 
 const sanitizeStructuredValue = (value, state = { nodes: 0 }, depth = 0) => {
   if (state.nodes >= 2_000 || depth > 6) return null;
@@ -1289,7 +1295,7 @@ export const normalizeProfile = (value) => {
       sessionKind: ["new", "review", "crunch"].includes(attempt.sessionKind) ? attempt.sessionKind : "review",
       sessionKey: typeof attempt.sessionKey === "string" ? attempt.sessionKey.slice(0, 160) : "",
       crunch: Boolean(attempt.crunch),
-      scheduleRule: normalizeScheduleRule(attempt.scheduleRule),
+      ...sparseScheduleRule(attempt.scheduleRule),
       previousState: isRecord(attempt.previousState) ? {
         dueAt: typeof attempt.previousState.dueAt === "string" ? attempt.previousState.dueAt : "",
         intervalDays: numberWithin(attempt.previousState.intervalDays, 0, 36_500, 0),

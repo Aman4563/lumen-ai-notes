@@ -304,9 +304,22 @@ test("a rule-1 and a rule-2 grade of one card merge to the same card in either o
   const leftFirst = mergeProfileVersions(base, oldTab, newTab, { now: NOW, advanceRevision: false }).profile;
   const rightFirst = mergeProfileVersions(base, newTab, oldTab, { now: NOW, advanceRevision: false }).profile;
   assert.deepEqual(reviewMergeProjection(leftFirst), reviewMergeProjection(rightFirst));
-  assert.deepEqual(leftFirst.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule, attempt.nextIntervalDays]), [["attempt-rule-2", 2, 10], ["attempt-rule-1", 1, 25]]);
+  assert.deepEqual(leftFirst.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule, attempt.nextIntervalDays]), [["attempt-rule-2", 2, 10], ["attempt-rule-1", undefined, 25]]);
   const merged = leftFirst.reviewItems[0];
   assert.deepEqual([merged.intervalDays, merged.repetitions, merged.reviewCount], [25, 5, 6]);
+});
+
+// The rule is part of the event identity: an attempt whose rule an older build
+// dropped is a changed event, and its card is rebuilt under rule 1.
+test("an attempt that loses its rule in an older build is replayed under rule 1 (#148)", () => {
+  const gradedAt = new Date("2026-08-23T09:00:00.000Z");
+  const card = { ...reviewRecord("lost-rule", "Lost rule card"), intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0, lastReviewedAt: new Date(gradedAt.getTime() - 86_400_000).toISOString(), dueAt: new Date(gradedAt.getTime() + 9 * 86_400_000).toISOString() };
+  const base = gradeProfile(normalizeProfile({ ...initialProfile, reviewItems: [card] }), card.id, "good", gradedAt.toISOString(), "attempt-kept");
+  assert.deepEqual([base.reviewItems[0].intervalDays, base.reviewAttempts[0].scheduleRule], [10, 2]);
+  const stripped = normalizeProfile({ ...base, reviewAttempts: base.reviewAttempts.map(({ scheduleRule: _dropped, ...attempt }) => attempt) });
+  const merged = mergeProfileVersions(base, base, stripped, { now: NOW, advanceRevision: false }).profile;
+  assert.equal("scheduleRule" in merged.reviewAttempts[0], false);
+  assert.deepEqual([merged.reviewItems[0].intervalDays, merged.reviewItems[0].repetitions], [25, 5]);
 });
 
 test("rolling review-attempt retention never replays an expired oldest snapshot as an undo", () => {

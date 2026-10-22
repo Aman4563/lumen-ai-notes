@@ -416,7 +416,8 @@ const reviewAttemptEvent = (attempt) => ({
   sessionKind: attempt?.sessionKind,
   sessionKey: attempt?.sessionKey,
   crunch: attempt?.crunch,
-  scheduleRule: attempt?.scheduleRule,
+  // As replay reads it, so no rule and an explicit rule 1 are one event.
+  scheduleRule: normalizeScheduleRule(attempt?.scheduleRule),
 });
 
 const compareReviewAttempts = (left, right) => (
