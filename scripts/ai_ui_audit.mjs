@@ -460,12 +460,15 @@ const startScriptedServer = async () => {
 
 // An in-page stream that delivers deltas over time, armed per request with
 // window.__lumenAuditSlowStream = { paragraphs, phases, holdAfter,
-// holdComplete }. It checks following, scrolling back, Stop and Esc without a
-// real model. After a phase named in `holdAfter`, and with `holdComplete`
-// before it completes, the stream waits until the audit sets
+// holdComplete, drip }. It checks following, scrolling back, Stop and Esc
+// without a real model. After a phase named in `holdAfter`, and with
+// `holdComplete` before it completes, the stream waits until the audit sets
 // window.__lumenAuditRelease[phase] (or .complete), so a state the audit
 // reads stays on screen until it has been read, however slow the machine
-// (#138). A Stop still ends a held stream at once.
+// (#138). With `drip`, a held stream keeps sending a paragraph every 60 ms,
+// so a check of following always has new text to follow; the completion
+// carries all of it, as the client requires. A Stop still ends a held
+// stream at once.
 const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
@@ -498,12 +501,22 @@ const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
           if (init.signal?.aborted) return;
           send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
         }
+        let streamed = text;
         if (slow.holdComplete) {
           const deadline = Date.now() + 60_000;
-          while (!window.__lumenAuditRelease?.complete && !init.signal?.aborted && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+          let sequence = pieces.length;
+          while (!window.__lumenAuditRelease?.complete && !init.signal?.aborted && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, slow.drip ? 60 : 20));
+            if (slow.drip && !init.signal?.aborted && !window.__lumenAuditRelease?.complete) {
+              const more = `Paragraph ${paragraphs + sequence - pieces.length + 1} explains why a final holdout must stay untouched.\n\n`;
+              send({ type: "delta", requestId: response.requestId, sequence, text: more });
+              streamed += more;
+              sequence += 1;
+            }
+          }
           if (init.signal?.aborted) return;
         }
-        send({ type: "complete", requestId: response.requestId, response });
+        send({ type: "complete", requestId: response.requestId, response: { ...response, outputText: streamed } });
         try { controller.close(); } catch { /* aborted */ }
       },
     });
@@ -2400,7 +2413,12 @@ try {
       return gap >= -2 && gap <= 60;
     }, { timeout: 2_000, polling: "raf" }).catch(async () => assert.fail(`${message}: ${await endGap()}`));
     await setPrompt("Keyboard check: stream a long answer on a phone.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
+    // Held open, with text still arriving, until following has been
+    // checked: under load 110 paragraphs could end first (#138).
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 110, holdComplete: true, drip: true };
+    });
     await page.$eval(sendSelector, (button) => button.click());
     await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && document.querySelector(".ai-tutor__message--streaming").getBoundingClientRect().height > 900, { timeout: 8_000 });
     await waitForEndAboveComposer("the streaming answer's end was not kept just above the composer");
@@ -2424,6 +2442,7 @@ try {
     assert.ok(await page.$(".ai-tutor__message--streaming"), "the long stream finished before following could be checked");
     await waitForEndAboveComposer("following did not resume after Jump to latest");
     assert.equal(await page.$(".ai-tutor__jump"), null, "Jump to latest came back while following");
+    await page.evaluate(() => { window.__lumenAuditRelease.complete = true; });
     await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
 
@@ -2433,35 +2452,41 @@ try {
     // mobile emulation stay on, so the page is not reloaded.
     await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
     await setPrompt("Keyboard check: stream a longer answer.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
+    // Held open, with text still arriving, until both checks below have
+    // run: a stream that ended first left nothing to stay put against or
+    // to follow, so the checks passed without testing anything (#138).
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 110, holdComplete: true, drip: true };
+    });
     await page.$eval(sendSelector, (button) => button.click());
     await page.waitForFunction(() => {
       const surface = document.querySelector(".ai-tutor__conversation");
       return /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && surface.scrollHeight > surface.clientHeight + 300;
     }, { timeout: 8_000 });
-    const receivedAtTop = await page.$eval(".ai-tutor__conversation", (surface) => {
-      surface.scrollTop = 0;
-      return document.querySelector(".ai-tutor__stream-actions")?.textContent || "";
-    });
-    // Judge "stays there" once more text has arrived and the scroller has
-    // offered Jump to latest, not after a guessed 700 ms (#138).
-    await page.waitForFunction((before) => !document.querySelector(".ai-tutor__message--streaming")
-      || ((document.querySelector(".ai-tutor__stream-actions")?.textContent || "") !== before && document.querySelector(".ai-tutor__jump")?.textContent.includes("Jump to latest")), { timeout: 10_000 }, receivedAtTop).catch(() => {});
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = 0; });
+    // The window bounds "stays there" while text keeps arriving; the pill
+    // is awaited after it, not assumed to have rendered within it (#138).
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 5_000 }).catch(() => {});
     const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")), pill: document.querySelector(".ai-tutor__jump")?.textContent.trim() || "" }));
     assert.equal(readBack.streaming, true, "the long stream finished before the scroll-back check could run");
     assert.ok(readBack.top < 60, `streaming pulled the conversation back down after the learner scrolled up: ${JSON.stringify(readBack)}`);
     assert.equal(readBack.pill, "Jump to latest", "the conversation scroller offered no Jump to latest");
-    const receivedAtEnd = await page.$eval(".ai-tutor__conversation", (surface) => {
+    // Following is judged once the answer has grown by twice the tolerance
+    // below since the learner came back, so a scroller that stayed put
+    // would be left that far behind; not after a guessed half second in
+    // which little text may have arrived (#138).
+    const heightAtEnd = await page.$eval(".ai-tutor__conversation", (surface) => {
       surface.scrollTop = surface.scrollHeight;
-      return document.querySelector(".ai-tutor__stream-actions")?.textContent || "";
+      return surface.scrollHeight;
     });
-    // Following is judged once more text has arrived after the learner came
-    // back, not after a guessed half second in which none may have (#138).
-    await page.waitForFunction((before) => !document.querySelector(".ai-tutor__message--streaming") || (document.querySelector(".ai-tutor__stream-actions")?.textContent || "") !== before, { timeout: 10_000 }, receivedAtEnd).catch(() => {});
+    const grew = await page.waitForFunction((before) => document.querySelector(".ai-tutor__conversation").scrollHeight >= before + 320, { timeout: 10_000 }, heightAtEnd).then(() => true, () => false);
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const resumed = await page.$eval(".ai-tutor__conversation", (surface) => ({ gap: surface.scrollHeight - surface.scrollTop - surface.clientHeight, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
-    assert.ok(!resumed.streaming || resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
+    assert.ok(grew && resumed.streaming, `the long stream stopped growing before following could be checked: ${JSON.stringify(resumed)}`);
+    assert.ok(resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
+    await page.evaluate(() => { window.__lumenAuditRelease.complete = true; });
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
 
