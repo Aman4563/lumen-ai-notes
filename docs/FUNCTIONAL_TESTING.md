@@ -3802,7 +3802,7 @@ afterwards, starting only while no other browser gate ran and the load was
 under 30, without the build loop: `phone-ai-ui` 10/10, `sync` 10/10 and
 `ai-ui` 4/4, so 10 `ai-ui` passes in all (load 6–46, median 10).
 
-The gate at abe38ba ran with no other browser suite on the machine
+The gate at abe38ba started with no other browser gate running
 (1-minute load 5–15): `npm run check` passed (`audit:ai` 584/584, both
 idle-connection tests included; `audit:ai-eval` 27 cases, hit@1 0.913),
 and the full `npm run check:browser` passed all 13 suites on the first
