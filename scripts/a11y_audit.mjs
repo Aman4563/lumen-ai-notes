@@ -30,8 +30,11 @@ const THEMES = [["paper", "Paper"], ["dark", "Night"], ["contrast", "Contrast"]]
 // theme and viewport: `setup` opens the state from `route`, `ready` names an
 // element it shows, and `close` returns the route to rest. An open dialog
 // must hold focus. A state with its own `viewport` is scanned once per theme,
-// in that viewport, during the phone pass. Issue #98 adds its dialog states
-// to this list.
+// in that viewport, during the phone pass. An optional `verify(page, label)`
+// records structural findings once axe has run. A state that needs cards the
+// routes' empty profile lacks (extra-practice, #148) stores them in `setup`
+// and removes them in `close`, so the route scans keep their empty deck.
+// Issue #98 adds its dialog states to this list.
 const clickText = (page, selector, text) => page.$$eval(selector, (nodes, expected) => {
   const node = nodes.find((item) => item.textContent.replace(/\s+/g, " ").trim().includes(expected));
   node?.click();
@@ -48,6 +51,53 @@ const startNarration = async (page) => {
   await page.waitForSelector(".audio-bar");
 };
 const stopNarration = (page) => page.evaluate(() => document.querySelector('button[aria-label="Stop narration"]')?.click());
+// Extra practice (#148) needs a card in the deck. The stored profile also holds
+// the theme the route scans chose, so the card goes in (or out, for null) by a
+// read-modify-write of the review cards alone, never a fixture that replaces
+// the record. Taking it out is by id, so a repeated close finds nothing to do.
+const PRACTICE_CARD_ID = "a11y-practice";
+const storePracticeCard = (page, card) => page.evaluate((id, practice) => new Promise((resolve, reject) => {
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const db = request.result;
+    const transaction = db.transaction("study-data", "readwrite");
+    const store = transaction.objectStore("study-data");
+    const get = store.get("profile");
+    get.onerror = () => reject(get.error);
+    get.onsuccess = () => {
+      const profile = get.result;
+      if (!profile || typeof profile !== "object") {
+        reject(new Error("there is no stored profile to put the practice card into"));
+        return;
+      }
+      profile.reviewItems = [...(profile.reviewItems || []).filter((item) => item.id !== id), ...(practice ? [practice] : [])];
+      store.put(profile, "profile");
+    };
+    transaction.oncomplete = () => { db.close(); resolve(); };
+    transaction.onerror = () => { db.close(); reject(transaction.error); };
+  };
+}), PRACTICE_CARD_ID, card);
+// A card in review, last reviewed a day ago and due in nine: Extra practice
+// reaches it early, which is when its notice promises an unchanged interval.
+const practiceCard = () => {
+  const stamp = (days) => new Date(Date.now() + days * 86_400_000).toISOString();
+  return {
+    id: PRACTICE_CARD_ID, type: "basic", front: "Which split tunes hyperparameters?", back: "The validation split.", tags: [],
+    documentId: "notes/part-05-supervised-learning/01-linear-regression.md",
+    suspended: false, archived: false, buriedOnDay: "", intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0,
+    lastReviewedAt: stamp(-1), dueAt: stamp(9), createdAt: stamp(-60), updatedAt: stamp(-1),
+  };
+};
+// A reload brings the theme back from the stored profile: wait until the page
+// wears it again, so axe never reads the previous theme's colours (#138).
+const reloadInTheme = async (page, ready) => {
+  const theme = await page.evaluate(() => document.documentElement.dataset.theme);
+  await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(ready, { timeout: 20_000 });
+  const themed = await waitForTheme(page, theme);
+  assert.ok(themed.ok, `the reload did not bring back the ${theme} theme: ${themed.reason}`);
+};
 const STATES = [
   // The spoken block's tint behind body text (the lecture opens with its
   // title, which as large text needs only 3:1).
@@ -160,6 +210,41 @@ const STATES = [
       await page.evaluate(() => document.querySelector('.teach-mode button[aria-label="Stop narration"]')?.click());
       await page.keyboard.press("Escape");
       await page.waitForSelector(".teach-mode", { hidden: true });
+    },
+  },
+  // An Extra practice session (#148), never scanned before: the notice above
+  // the card with the header and card around it, in every theme, and a check
+  // that the notice wraps inside the viewport. The practice card is stored for
+  // this state only.
+  {
+    name: "extra-practice",
+    route: ROUTES[4],
+    setup: async (page) => {
+      await storePracticeCard(page, practiceCard());
+      await reloadInTheme(page, `.review-deck-card[data-card-id="${PRACTICE_CARD_ID}"]`);
+      // Axe cannot measure text over the page's radial-gradient background: it
+      // files that text as "incomplete", which this audit does not collect, so
+      // no contrast failure would ever show. Scan it on the theme's paper colour.
+      await page.evaluate(() => { document.body.style.backgroundImage = "none"; });
+      assert.ok(await clickText(page, ".review-hero-actions button", "Crunch weak cards"), "the review center offers no Crunch weak cards button");
+    },
+    ready: ".review-crunch-notice",
+    verify: async (page, label) => {
+      // Against the layout viewport: on the phone viewport (mobile emulation)
+      // innerWidth grows to fit overflowing content, so it is never smaller
+      // than the page and a comparison with it cannot fail.
+      const fit = await page.$eval(".review-crunch-notice", (notice) => ({
+        right: notice.getBoundingClientRect().right,
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      check(fit.right <= fit.clientWidth && fit.scrollWidth <= fit.clientWidth, `${label}: the Extra practice notice overflows (${JSON.stringify(fit)})`);
+    },
+    close: async (page) => {
+      assert.ok(await clickText(page, ".review-session-header button", "End session"), "the Extra practice session offers no End session button");
+      await storePracticeCard(page, null);
+      await reloadInTheme(page, ".review-center-page");
+      assert.equal(await page.$(`.review-deck-card[data-card-id="${PRACTICE_CARD_ID}"]`), null, "the practice card is still in the deck, so the next route scans would not see an empty one");
     },
   },
 ];
@@ -362,6 +447,7 @@ try {
           });
           check(!focus.dialogs || focus.inside, `${label}: focus is outside the open dialog (${JSON.stringify(focus)})`);
           await runAxe(page, label);
+          if (state.verify) await state.verify(page, label);
           await state.close(page);
         } catch (error) {
           check(false, `${label}: the state could not be scanned (${String(error.message).split("\n")[0]})`);
