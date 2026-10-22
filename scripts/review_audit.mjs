@@ -945,10 +945,11 @@ try {
       text: node.textContent.trim(),
       right: node.getBoundingClientRect().right,
       scrollWidth: document.documentElement.scrollWidth,
-      innerWidth: window.innerWidth,
+      // Not innerWidth: on a phone-emulated page Chrome grows it to fit overflowing content, so it can never fail.
+      clientWidth: document.documentElement.clientWidth,
     }));
     assert.equal(notice.text, "Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back.", "the Extra practice notice must say that answers still reschedule cards and point to the rating buttons");
-    assert.ok(notice.right <= notice.innerWidth && notice.scrollWidth <= notice.innerWidth, `the Extra practice notice must wrap inside a 393px phone: ${JSON.stringify(notice)}`);
+    assert.ok(notice.right <= notice.clientWidth && notice.scrollWidth <= notice.clientWidth, `the Extra practice notice must wrap inside a 393px phone: ${JSON.stringify(notice)}`);
 
     const handled = [];
     for (let turn = 1; turn <= earlyCards.length; turn += 1) {
@@ -960,7 +961,10 @@ try {
       assert.ok(card, `Extra practice showed a card that was not seeded: ${prompt}`);
       handled.push(prompt);
       await earlyPage.keyboard.press("Space");
-      // The revealed answer holds focus once the rating keys are live.
+      // The revealed answer holds focus once the rating keys are live: the key-handler
+      // effect is declared before the focus effect in ReviewCenter.jsx, so once focus
+      // lands the handler is attached. Reordering those effects would let a key press
+      // land before the handler exists.
       await earlyPage.waitForFunction(() => document.activeElement?.classList.contains("review-answer") && document.querySelectorAll(".review-rating span").length === 4, { timeout: 5_000 })
         .catch(() => assert.fail(`revealing the answer of “${card.id}” did not show the rating buttons`));
       const buttons = await earlyPage.$$eval(".review-rating span", (nodes) => nodes.map((node) => node.textContent));
@@ -997,6 +1001,7 @@ try {
     // setting, so the stored attempts pass through hydrate, merge and write again.
     const newLimit = (await earlyPage.evaluateHandle(() => [...document.querySelectorAll(".review-settings-strip label")].find((label) => label.firstChild?.textContent.trim() === "New")?.querySelector("select"))).asElement();
     assert.ok(newLimit, "the Daily limits strip must offer a New picker");
+    assert.notEqual(crunched.reviewSettings.dailyNewLimit, 20, "the reload check must change the stored new-card limit, or it would read the record it already verified");
     await newLimit.select("20");
     const reloaded = await savedProfile(earlyPage, (profile) => profile.reviewSettings?.dailyNewLimit === 20);
     assert.equal(reloaded.reviewSettings?.dailyNewLimit, 20, "the Daily limits change made after the reload was not saved");
@@ -1006,7 +1011,7 @@ try {
     await earlyContext.close();
   }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), and early Crunch grades that keep their interval and Mastered count verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, and early Crunch grades that keep their interval and Mastered count verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
