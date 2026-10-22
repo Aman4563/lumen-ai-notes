@@ -59,6 +59,10 @@ const records = () => ({
       updatedAt: fixedTime,
       lastReviewedAt: "",
     }],
+    reviewAttempts: [
+      { id: "attempt-rule-2", reviewItemId: "card-1", rating: "good", elapsedMs: 1_200, reviewedAt: fixedTime, sessionKind: "crunch", crunch: true, scheduleRule: 2 },
+      { id: "attempt-legacy", reviewItemId: "card-1", rating: "again", elapsedMs: 900, reviewedAt: fixedTime, sessionKind: "review" },
+    ],
   },
   "board:notes/part-01": {
     version: 2,
@@ -95,6 +99,7 @@ test("v4 backup round-trips with canonical SHA-256 integrity and inventory", asy
   assert.equal(restoredMistake.correction, "Only validation data may steer choices.");
   assert.equal(restoredMistake.occurrences, 2);
   assert.equal(restoredMistake.reviewItemId, "card-1", "the mistake keeps its review-card link through a backup round trip");
+  assert.deepEqual(checked.data.profile.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule]), [["attempt-rule-2", 2], ["attempt-legacy", 1]], "scheduleRule survives a backup round trip, and an attempt without one restores as rule 1");
   assert.equal(checked.data.profile.collections[0].name, "Transformers");
   const restoredTrash = checked.data.profile.trash[0];
   assert.equal(restoredTrash.raw, "# old", "a trashed document's content survives a backup round trip");

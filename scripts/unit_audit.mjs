@@ -286,6 +286,17 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   assert.equal(firstEasy.item.intervalDays, 4, "a first Easy review schedules four days out");
 }
 
+// Issue #148: the attempt normalizer keeps scheduleRule. Attempts recorded
+// before it read as rule 1, a later build's rule (#149 writes 3) survives,
+// and malformed values fall back to 1.
+{
+  const card = createReviewItem({ front: "rule card", back: "a" }, new Date("2026-08-21T12:00:00.000Z"));
+  const attempt = (id, extra = {}) => ({ id, reviewItemId: card.id, rating: "good", reviewedAt: "2026-08-21T12:00:00.000Z", ...extra });
+  const rules = normalizeProfile({ reviewItems: [card], reviewAttempts: [attempt("current", { scheduleRule: 2 }), attempt("legacy"), attempt("newer", { scheduleRule: 3 }), attempt("fraction", { scheduleRule: 2.5 }), attempt("zero", { scheduleRule: 0 }), attempt("text", { scheduleRule: "x" }), attempt("huge", { scheduleRule: 5_000 })] })
+    .reviewAttempts.map((entry) => [entry.id, entry.scheduleRule]);
+  assert.deepEqual(rules, [["current", 2], ["legacy", 1], ["newer", 3], ["fraction", 1], ["zero", 1], ["text", 1], ["huge", 1_000]], "the attempt normalizer must keep scheduleRule");
+}
+
 // 12-week retention trend buckets attempts oldest-first with null-safe weeks.
 {
   const trendNow = new Date("2026-08-21T12:00:00.000Z");

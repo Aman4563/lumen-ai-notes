@@ -3,6 +3,7 @@ import { normalizePageSize } from "./boardGeometry.js";
 import { normalizeMistakes } from "./mistakes.js";
 import { aiClippingIds, withAiDraftTag } from "./aiProvenance.js";
 import { normalizeAssessments } from "./assessment.js";
+import { normalizeScheduleRule } from "./review.js";
 import {
   assertOwnedDataBudgetTransition,
   isOwnedDataKey,
@@ -1288,6 +1289,7 @@ export const normalizeProfile = (value) => {
       sessionKind: ["new", "review", "crunch"].includes(attempt.sessionKind) ? attempt.sessionKind : "review",
       sessionKey: typeof attempt.sessionKey === "string" ? attempt.sessionKey.slice(0, 160) : "",
       crunch: Boolean(attempt.crunch),
+      scheduleRule: normalizeScheduleRule(attempt.scheduleRule),
       previousState: isRecord(attempt.previousState) ? {
         dueAt: typeof attempt.previousState.dueAt === "string" ? attempt.previousState.dueAt : "",
         intervalDays: numberWithin(attempt.previousState.intervalDays, 0, 36_500, 0),
