@@ -281,9 +281,10 @@ const intervalForRating = (item, rating, now, scheduleRule) => {
   const firstReview = isNewReviewItem(item);
   if (rating === "again") return { intervalDays: 10 / 1_440, ease: clamp(priorEase - 0.2, 1.3, 3.5), repetitions: 0 };
   // Reviewed before its interval ran out (Extra practice): grow from the time
-  // waited, so quick repeat passes cannot compound it. Whole milliseconds, as the
-  // due time was set, keep a due card from reading as early. A last review ahead of
-  // now counts as no time waited; an unreadable one is not early.
+  // waited, so quick repeat passes cannot compound it. A stored due time is exactly
+  // the last review plus the rounded interval, so comparing whole milliseconds keeps
+  // a due card from reading as early. A last review ahead of now counts as no time
+  // waited; an unreadable one is not early.
   if (scheduleRule >= EARLY_AWARE_SCHEDULE_RULE && !firstReview && priorInterval >= 1) {
     const lastReviewedMs = Date.parse(item.lastReviewedAt);
     const waitedMs = Math.max(0, now.getTime() - lastReviewedMs);

@@ -52,6 +52,11 @@ test("an early review grows only from the time actually waited", () => {
   assert.deepEqual(schedule(gradeReviewItem(sixDaysIn, "easy", NOW).item), { intervalDays: 19.5, ease: 2.5, repetitions: 4 });
 });
 
+test("an early review counts the fraction of a day already waited", () => {
+  const sixAndAHalf = probeCard({ lastReviewedAt: iso(-6.5 * DAY_MS), dueAt: iso(3.5 * DAY_MS) });
+  assert.deepEqual(schedule(gradeReviewItem(sixAndAHalf, "good", NOW).item), { intervalDays: 16.25, ease: 2.5, repetitions: 4 }); // whole days would give 15
+});
+
 test("a due or overdue card is graded exactly as before", () => {
   const dueNow = probeCard({ lastReviewedAt: iso(-10 * DAY_MS), dueAt: iso(0) }); // graded at its exact due millisecond
   const overdue = probeCard({ lastReviewedAt: iso(-12 * DAY_MS), dueAt: iso(-2 * DAY_MS) });
