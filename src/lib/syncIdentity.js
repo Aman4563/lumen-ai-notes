@@ -1,5 +1,5 @@
 import { createId } from "./id.js";
-import { safeLocalStorage } from "./safeStorage.js";
+import { durableLocalStorage, safeLocalStorage } from "./safeStorage.js";
 
 /**
  * SYNC-001 device identity and vault membership. Settings renders these on
@@ -45,6 +45,14 @@ export const readVaultConfig = (storage = safeLocalStorage) => {
     return null;
   }
 };
+
+/**
+ * Whether the browser really stored this vault membership. A write it refused
+ * leaves the vault only in this session's memory copy, so Settings still shows
+ * it until Lumen is closed or reloaded; this reads past that copy (issue #139).
+ */
+export const vaultMembershipStored = (config, storage = durableLocalStorage) =>
+  Boolean(config?.vaultId) && readVaultConfig(storage)?.vaultId === config.vaultId;
 
 const writeVaultConfig = (storage, config) => {
   try {

@@ -48,8 +48,8 @@ import { customDocumentBytes, isEpubFileName, isHtmlFileName, MAX_CUSTOM_DOCUMEN
 import { addTrashEntry, appendRevision, applyBatchDelete, applyBatchOrganize, documentFromTrashEntry, findDuplicateDocument, purgeExpiredTrash, recordActivityEntry, revisionForDocument, trashEntryForDocument, TRASH_RETENTION_DAYS } from "./lib/contentOps.js";
 import { importReviewCards, parseCardInterchange } from "./lib/cardInterchange.js";
 import { mergeBoardVersions } from "./lib/boardSync.js";
-import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor } from "./lib/syncIdentity.js";
-import { deviceStorageSaves, durableLocalStorage, safeLocalStorage } from "./lib/safeStorage.js";
+import { adoptVaultConfig, clearSyncBaseline, clearVaultConfig, createVaultConfig, getDeviceId, readVaultConfig, recordVaultSync, syncFileNameFor, vaultMembershipStored } from "./lib/syncIdentity.js";
+import { durableLocalStorage, safeLocalStorage } from "./lib/safeStorage.js";
 // Actions load these tools on use; the service worker warms them (issue #95).
 import { isWarmToolUnavailable, loadBackupTools, loadImportConverters, loadLibraryRetrieval, loadLinkAudit, warmToolFailureMessage } from "./lib/warmTools.js";
 // The lecture renderer (marked and DOMPurify, about 85 KB) stays in the
@@ -2953,9 +2953,10 @@ export default function App() {
     const config = createVaultConfig();
     setSyncVaultConfig(config);
     // Settings turns creation off where storage fails; a write refused now
-    // (a full store) must not be reported as a lasting vault.
-    if (!deviceStorageSaves()) {
-      notify("Sync vault created for this visit only: this browser is not saving settings on this device, so the vault is forgotten when Lumen closes.", "warning", 9000);
+    // (a full store) leaves the vault in memory only, so it must not be
+    // reported as lasting.
+    if (!vaultMembershipStored(config)) {
+      notify("Sync vault created for this visit only: this browser did not save it, so it is forgotten when Lumen is closed or reloaded.", "warning", 9000);
       return;
     }
     notify("Sync vault created. Choose a strong passphrase, export your sync file, and share the vault folder between your devices.", "success", 7000);
@@ -3004,6 +3005,7 @@ export default function App() {
       const now = new Date().toISOString();
       const deviceId = syncDeviceIdRef.current;
       let config = readVaultConfig();
+      let joined = false;
       const skipped = [];
       const peers = [];
       for (const file of files) {
@@ -3021,6 +3023,7 @@ export default function App() {
             continue;
           }
           config = adoptVaultConfig(header.vaultId);
+          joined = true;
           setSyncVaultConfig(config);
         }
         const admission = checkSyncHeader(header, { vaultId: config?.vaultId || "", deviceId });
@@ -3077,8 +3080,10 @@ export default function App() {
       // next import three-ways against what this vault last agreed on.
       await saveSyncBaseline({ vaultId: config.vaultId, records: { profile: folded.profile, ...folded.boards }, updatedAt: now });
       setSyncVaultConfig(recordVaultSync());
+      // A join the browser would not store lasts this visit only (issue #139).
+      const joinedForVisit = joined && !vaultMembershipStored(config);
       const conflictCount = folded.conflicts.length + commitConflicts.length;
-      notify(`Merged ${peers.length} peer file${peers.length === 1 ? "" : "s"}${conflictCount ? `; ${conflictCount} conflict${conflictCount === 1 ? "" : "s"} recorded` : ""}${folded.replacementApplied ? "; a reset/restore from another device was applied" : ""}${skipped.length ? `; skipped — ${skipped.join(" · ")}` : ""}. Export your sync file now so peers see this state.`, skipped.length || conflictCount ? "warning" : "success", 9000);
+      notify(`Merged ${peers.length} peer file${peers.length === 1 ? "" : "s"}${conflictCount ? `; ${conflictCount} conflict${conflictCount === 1 ? "" : "s"} recorded` : ""}${folded.replacementApplied ? "; a reset/restore from another device was applied" : ""}${skipped.length ? `; skipped — ${skipped.join(" · ")}` : ""}. Export your sync file now so peers see this state.${joinedForVisit ? " This browser did not save the vault membership, so this device leaves the vault when Lumen is closed or reloaded." : ""}`, skipped.length || conflictCount || joinedForVisit ? "warning" : "success", 9000);
     } catch (error) {
       notify(warmToolFailureMessage(error, "Sync import failed: "), "error", 8000);
     }

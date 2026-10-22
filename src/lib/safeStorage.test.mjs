@@ -109,8 +109,11 @@ test("a throwing accessor: preferences last the session, durable writes report f
 
 // Review round 1: one refused large write (the IndexedDB fallback journal
 // over the quota) kept Settings saying "not saving preferences" for the rest
-// of the visit, although small preferences still saved.
-test("a refused large write marks the status false only until a probe succeeds", () => {
+// of the visit, although small preferences still saved. Round 2: it still
+// turned the notice on while Settings was open, because a nearly full store
+// refuses the budget-ledger mirror on every save. A refused write now only
+// reports false to its caller; reads and the probe set the device status.
+test("a refused large write leaves the device status to the probe", () => {
   const events = [];
   const unsubscribe = subscribeDeviceStorage(() => events.push(deviceStorageSaves()));
   const quotaLimited = memoryStore();
@@ -125,11 +128,10 @@ test("a refused large write marks the status false only until a probe succeeds",
       assert.equal(deviceStorageSaves(), true, "a successful probe clears the earlier failure");
       events.length = 0;
       assert.equal(durableLocalStorage.setItem("lumen-ai-notes-fallback", "x".repeat(5_000)), false, "the large journal write is refused");
-      assert.equal(deviceStorageSaves(), false);
+      assert.equal(deviceStorageSaves(), true, "a refused large write does not say small preferences are not saved");
       assert.equal(safeLocalStorage.setItem("lumen.ai.engine.v1", "phone-local"), true, "a small preference still lands");
       assert.equal(checkDeviceStorage(), true, "the probe sees small writes landing");
-      assert.equal(deviceStorageSaves(), true, "so the device status recovers");
-      assert.deepEqual(events, [false, true], "subscribers hear both changes");
+      assert.deepEqual(events, [], "subscribers hear no change");
       assert.equal(quotaLimited.raw.has("lumen.storage-probe.v1"), false, "the probe key was removed");
     });
     withStorageGlobal("localStorage", () => { throw securityError(); }, () => {
@@ -139,6 +141,42 @@ test("a refused large write marks the status false only until a probe succeeds",
   } finally {
     unsubscribe();
   }
+});
+
+// Old Safari private browsing reads normally and refuses every write with a
+// QuotaExceededError. Writes no longer set the device status, so the probe
+// that Settings runs on every open is what reports such a store.
+test("a store that refuses every write is reported by the probe, not by the write", () => {
+  const events = [];
+  const working = memoryStore();
+  const readOnly = memoryStore();
+  readOnly.setItem = () => { throw quotaError(); };
+  withStorageGlobal("localStorage", () => working, () => assert.equal(checkDeviceStorage(), true));
+  const unsubscribe = subscribeDeviceStorage(() => events.push(deviceStorageSaves()));
+  try {
+    withStorageGlobal("localStorage", () => readOnly, () => {
+      assert.equal(safeLocalStorage.setItem("lumen.ai.engine.v1", "phone-local"), false, "the browser did not store it");
+      assert.equal(safeLocalStorage.getItem("lumen.ai.engine.v1"), "phone-local", "the choice holds for this session");
+      assert.equal(deviceStorageSaves(), true, "one refused write does not decide the device status");
+      assert.equal(checkDeviceStorage(), false, "the probe write is refused");
+      assert.equal(deviceStorageSaves(), false);
+      assert.deepEqual(events, [false], "subscribers hear the probe's result");
+      assert.equal(readOnly.raw.size, 0, "nothing reached the store");
+    });
+  } finally {
+    unsubscribe();
+  }
+});
+
+// A store that cannot even be reached is not saving anything: a write
+// through a throwing accessor reports it at once, with no read or probe.
+test("a write through a throwing accessor marks the browser as not saving", () => {
+  const working = memoryStore();
+  withStorageGlobal("localStorage", () => working, () => assert.equal(checkDeviceStorage(), true));
+  withStorageGlobal("localStorage", () => { throw securityError(); }, () => {
+    assert.equal(safeLocalStorage.setItem("lumen.library.recent-searches", "[]"), false);
+    assert.equal(deviceStorageSaves(), false, "an unreachable store is reported by the write itself");
+  });
 });
 
 // db.js tells a refused journal read from an empty journal by this value.

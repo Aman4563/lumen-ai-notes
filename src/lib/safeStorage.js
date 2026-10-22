@@ -14,7 +14,7 @@
  *   (the tutor engine choice, the reader panel on wider screens, recent
  *   searches, the local-model disclosure, tutor drafts, sync vault membership
  *   and the device id). A change the browser would not store is kept in
- *   memory, so it still holds until Lumen closes.
+ *   memory, so it still holds until Lumen is closed or reloaded.
  * - `durableLocalStorage` and `durableSessionStorage` have no memory copy: a
  *   read returns only what the browser really stored. They serve callers that
  *   must know a write landed: download consent and its revocation, the
@@ -55,6 +55,17 @@ const openStore = (resolve) => {
   return store;
 };
 
+// The store, or null when it cannot be reached (reported to the device
+// status: nothing can be saved there).
+const reachStore = (resolve, area) => {
+  try {
+    return openStore(resolve);
+  } catch {
+    noteFailure(area);
+    return null;
+  }
+};
+
 /**
  * A Storage-shaped object over `resolve()`, which is called inside `try` on
  * every access. `area` ("local" or "session") reports failures to the device
@@ -74,27 +85,32 @@ export const createSafeStorage = (resolve, { area = "", remember = false } = {})
         return unavailable;
       }
     },
+    // A write or removal the browser refuses (a full store) reports false to
+    // its caller but leaves the device status alone: one large refused value
+    // says nothing about small preferences, and the probe decides that.
     setItem(key, value) {
       const name = String(key);
       const text = String(value);
+      const store = reachStore(resolve, area);
       try {
-        openStore(resolve).setItem(name, text);
+        if (!store) throw new TypeError("Web Storage is unavailable.");
+        store.setItem(name, text);
         memory?.delete(name);
         return true;
       } catch {
-        noteFailure(area);
         memory?.set(name, text);
         return false;
       }
     },
     removeItem(key) {
       const name = String(key);
+      const store = reachStore(resolve, area);
       try {
-        openStore(resolve).removeItem(name);
+        if (!store) throw new TypeError("Web Storage is unavailable.");
+        store.removeItem(name);
         memory?.delete(name);
         return true;
       } catch {
-        noteFailure(area);
         // A removal the browser refused still hides the stored value here.
         memory?.set(name, null);
         return false;
@@ -118,8 +134,9 @@ const PROBE_KEY = "lumen.storage-probe.v1";
 
 /**
  * Whether this browser is saving Lumen's per-device preferences. It turns
- * false once any localStorage access fails, and only a later successful
- * `checkDeviceStorage()` turns it true again.
+ * false when localStorage cannot be reached or read, or when the probe in
+ * `checkDeviceStorage()` fails, and only a later successful probe turns it
+ * true again. A refused write alone (a full store) never changes it.
  */
 export const deviceStorageSaves = () => !failedAreas.has("local");
 
@@ -130,9 +147,9 @@ export const subscribeDeviceStorage = (listener) => {
 
 /**
  * Writes, reads back and removes a small probe key, and sets
- * `deviceStorageSaves` from the result. It always runs, so one refused write
- * (a large fallback journal over the quota) does not keep the status false
- * while small preferences still save.
+ * `deviceStorageSaves` from the result. It always runs, so a failure that has
+ * passed clears, and a store that refuses every write (old private browsing)
+ * is reported although no write ever sets the status.
  */
 export const checkDeviceStorage = () => {
   const saves = durableLocalStorage.setItem(PROBE_KEY, "1")
