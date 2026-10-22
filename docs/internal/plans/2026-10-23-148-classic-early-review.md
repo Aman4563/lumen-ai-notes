@@ -17,7 +17,8 @@
 - Budgets: startup entry < 750,000 B; install route screens < 900,000 B (baseline on 45826f7: 623,582 B and 690,571 B).
 - Local-first: no network request, no paid or cloud AI, no tracking; learner data stays on the device.
 - Persisted data: the new attempt field `scheduleRule` changes the `normalizeProfile` attempt normalizer (`src/lib/db.js`), the backup round-trip fixture (`src/lib/backup.test.mjs`) and the `mergeProfileVersions` replay (`src/lib/profileSync.js`) with a case in `src/lib/profileSync.test.mjs`, all in one task.
-- Never weaken an existing assertion; every test of new behaviour must fail on 45826f7 for the stated reason.
+- Never weaken an existing assertion; every test of new behaviour must fail on main for the stated reason.
+- Browser audits wait for what a check reads, never a guessed delay (`.github/CONTRIBUTING.md`, #138): `scripts/audit_waits.mjs` provides `settled`, `waitForTheme` and `pollValue`; `scripts/review_audit.mjs` reads saved state with `savedProfile(page, landed)`. A fixed sleep may only bound a check that something must not happen.
 - Commits: concise imperative subject, short why-body, no trailers.
 - Exact values from the issue:
   - A review is *early* when the card is in review (prior interval ≥ 1 day, not new) and elapsed time is below the prior interval.
@@ -329,10 +330,11 @@ git commit -m "Keep each review attempt's schedule rule through storage and sync
   - before: `.review-hero strong` is "0"; the `.review-stat-grid` article whose span reads "Mastered" shows "1"; on `#/home` the `.mastery-row` whose `.mastery-part` is "05" includes "1/2 cards mastered".
   - keyboard only: focus the "Crunch weak cards" button and press Enter. `.review-crunch-notice` text (trimmed) equals `Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.`; its right edge ≤ `innerWidth` and `document.documentElement.scrollWidth` ≤ `innerWidth` ("the Extra practice notice must wrap inside a 393px phone").
   - for each card (identify it by its `.review-question` text): wait until the prompt has focus (`document.activeElement` has class `review-question`), press Space, then read `.review-rating span` texts. Probe: `["14 min · 1", "10 days · 2", "10 days · 3", "10 days · 4"]` ("Extra practice must preview early-aware intervals"; main shows `12 days`, `25 days`, `1 mo`). Mastered card: Good reads `1 mo · 3` (main `3 mo · 3`). Press "3"; the status region then includes `Rated Good: next review in 10 days` (probe) or `Rated Good: next review in 1 mo` (mastered).
-  - after the session returns to `.review-center-page`, poll the stored profile until it holds both attempts: probe `intervalDays` 10, `repetitions` 4, `ease` 2.5; mastered `intervalDays` 30, `repetitions` 5; for each, `Date.parse(item.dueAt) - Date.parse(attempt.reviewedAt) === intervalDays * 86_400_000` ("an early Crunch grade must keep the interval: dueAt is now + 10 days, not + 25"), `attempt.crunch === true`, `attempt.sessionKind === "crunch"`, `attempt.scheduleRule === 2`.
+  - after the session returns to `.review-center-page`, read the stored profile with the file's `savedProfile(page, landed)` until it holds both attempts: probe `intervalDays` 10, `repetitions` 4, `ease` 2.5; mastered `intervalDays` 30, `repetitions` 5; for each, `Date.parse(item.dueAt) - Date.parse(attempt.reviewedAt) === intervalDays * 86_400_000` ("an early Crunch grade must keep the interval: dueAt is now + 10 days, not + 25"), `attempt.crunch === true`, `attempt.sessionKind === "crunch"`, `attempt.scheduleRule === 2`.
   - the Mastered tile still reads "1" (main "2"), the hero still "0", and the Part 05 row still includes "1/2 cards mastered" (main "2/2").
   - reload: both stored attempts still have `scheduleRule === 2` ("scheduleRule must survive a reload").
   - add "early Crunch grades that keep their interval and Mastered count" to the final "Review audit passed" line; push page errors into `errors`; close the context in `finally`.
+  - every wait in the section waits for what it reads (`waitForSelector`, `waitForFunction`, `savedProfile`); no fixed sleeps.
 
 - [ ] **Step 2: Run against the unchanged UI and record the failure**
 
@@ -373,7 +375,7 @@ git commit -m "Show early-aware intervals and an accurate notice in Extra practi
   - `verify`: `check()` that the notice's right edge ≤ `innerWidth` and `document.documentElement.scrollWidth` ≤ `innerWidth`, message `${label}: the Extra practice notice overflows (…)`;
   - `close`: click "End session", remove `a11y-practice` from the stored profile, reload, wait for `.review-center-page`.
 
-  In the runner, call `if (state.verify) await state.verify(page, label);` right after `await runAxe(page, label);`. Update the comment above `STATES` to mention the new state.
+  In the runner, call `if (state.verify) await state.verify(page, label);` right after `await runAxe(page, label);`. Update the comment above `STATES` to mention the new state. After each reload, wait for the element the next step reads (the seeded deck card, `.review-center-page`); the runner's `settle(page, label)` already waits for transitions before axe. No fixed sleeps.
 
 - [ ] **Step 3: Run both suites**
 
