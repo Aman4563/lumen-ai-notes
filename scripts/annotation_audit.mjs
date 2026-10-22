@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
+import { settled } from "./audit_waits.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -43,14 +44,18 @@ const waitForStored = async (page, key, predicate, message, timeout = 10_000) =>
   return assert.fail(message);
 };
 
+// A finished download has its final name and a size that has stopped
+// changing; read it then, not a guessed 200 ms after the name appears (#138).
 const waitForDownload = async (matcher, message, timeout = 10_000) => {
   const deadline = Date.now() + timeout;
+  let lastSize = -1;
   do {
     const files = await readdir(downloadDirectory);
     const name = files.find((entry) => !entry.endsWith(".crdownload") && matcher(entry));
     if (name) {
-      await delay(200);
-      return join(downloadDirectory, name);
+      const size = (await stat(join(downloadDirectory, name)).catch(() => null))?.size ?? -1;
+      if (size > 0 && size === lastSize) return join(downloadDirectory, name);
+      lastSize = size;
     }
     await delay(100);
   } while (Date.now() < deadline);
@@ -94,7 +99,8 @@ try {
   // READER-1: mid-lecture on a phone, a selection gets Highlight/Clip/Ask AI
   // right above the bottom navigation instead of only in the top tool row.
   await page.$eval(".reader-scroll", (node) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * 0.5; node.dispatchEvent(new Event("scroll")); });
-  await delay(250);
+  // Pick the passage once the reader chrome has reacted to the scroll (#138).
+  await settled(page, "the reader after scrolling to mid-lecture");
   const midQuote = await page.evaluate(() => {
     const top = document.querySelector(".reader-scroll").getBoundingClientRect().top;
     const paragraph = [...document.querySelectorAll(".markdown-body p")].find((node) => { const box = node.getBoundingClientRect(); return box.top > top + 40 && box.bottom < innerHeight - 260 && node.textContent.trim().length > 40; });
@@ -145,7 +151,8 @@ try {
   // Losing connectivity rerenders the app while the learner is editing.
   // The unsaved color/comment/tags must survive that unrelated update.
   await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-  await delay(100);
+  // Check the draft after that update has rendered, not 100 ms later (#138).
+  await page.waitForFunction(() => document.querySelector(".offline-status")?.textContent.includes("Offline"), { timeout: 5_000 });
   assert.equal(await page.$eval(".annotation-color-options .coral", (button) => button.getAttribute("aria-pressed")), "true", "a background update reset the chosen highlight color");
   assert.equal(await page.$eval(".annotation-dialog textarea", (field) => field.value), "Explain the production trade-off without looking.", "a background update erased the unsaved comment");
   await page.evaluate(() => window.dispatchEvent(new Event("online")));

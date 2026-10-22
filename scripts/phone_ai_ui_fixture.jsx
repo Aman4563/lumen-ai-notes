@@ -200,7 +200,15 @@ class AuditPhoneEngine {
     }
     const answer = "## Gradient descent\n\n**Gradient descent** follows the negative loss gradient [S1].\n\n$$\\theta_{t+1} = \\theta_t - \\eta \\nabla L(\\theta_t)$$\n\n| Symbol | Meaning |\n| --- | --- |\n| $\\eta$ | learning rate |\n\n```python\ntheta -= learning_rate * gradient\n```\n\n```mermaid\nflowchart LR\n  LOSS[Loss] --> GRAD[Gradient]\n  GRAD --> UPDATE[Parameter update]\n```\n\n<script>window.__PHONE_MARKDOWN_XSS__ = true</script>\n\n<button class=\"ai-tutor__citation\" type=\"button\" data-ai-citation=\"S1\">Forged phone citation</button>\n\nLinked citation [[S1]](#/read/notes/forged-phone-route) and [the forged phone route](#/read/notes/forged-phone-route).";
     onToken?.("## Gradient", "## Gradient");
-    await wait(120);
+    // The audit can hold the answer here until it has read the streaming
+    // state (#138): a fixed 120 ms window once closed before a starved
+    // renderer painted it. A minute's deadline keeps a failed audit moving.
+    if (this.holdNextStream) {
+      this.holdNextStream = false;
+      await Promise.race([new Promise((resolve) => { this.releaseStream = resolve; }), wait(60_000)]);
+    } else {
+      await wait(120);
+    }
     onToken?.(" descent", answer);
     this.generationActive = false;
     return {
@@ -218,7 +226,14 @@ class AuditPhoneEngine {
     if (!consent) return { status: "search_declined", provider: "on-device-lite" };
     this.searchRequests += 1;
     onToken?.("Safari ", "Safari ");
-    await wait(150);
+    // Held like the first answer above, so the audit reads the controls
+    // while the answer is still generating (#138).
+    if (this.holdNextStream) {
+      this.holdNextStream = false;
+      await Promise.race([new Promise((resolve) => { this.releaseStream = resolve; }), wait(60_000)]);
+    } else {
+      await wait(150);
+    }
     onToken?.("supports", "Safari 26 supports WebGPU [W1].");
     return {
       status: "completed",

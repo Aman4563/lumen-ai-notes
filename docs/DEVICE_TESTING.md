@@ -232,3 +232,25 @@ them as "Narration wording" (`voice-platform-copy`) and "VoiceOver"
    notification must not mention Resume or Retry (that screen has neither)
    and must say to open the lecture to listen again; with VoiceOver on it must
    be read once.
+
+## Idle connections and lazily loaded screens (issue #138)
+
+The server now closes a connection that never sent a request once its 15 s
+header timeout has passed (Node checks every 30 s, so 15 to 45 s after it
+opened), instead of writing `400 Bad Request` into it. Chrome
+read that 400 as the answer to the next request it sent on the connection,
+so a lazily loaded file failed and chunk recovery reloaded the page. The
+server tests cover idle plain and TLS connections (a finished handshake is
+not a request), and `audit:review` covers Chrome; only a real iPhone shows
+that Safari retries a request on a connection the server closed.
+
+1. **A lazy file after an idle minute.** Serve the app over HTTPS on the LAN
+   (section 1) and open `#/review` in Safari on the iPhone. Create one card,
+   switch Scheduler to Adaptive (FSRS), then leave the phone untouched and
+   unlocked on that screen for at least 60 seconds. Tap **Calibrate from my
+   history**. Its optimizer is loaded on demand and is not saved for
+   offline use, so this tap reaches the server. The "Calibration needs at
+   least 50 spaced reviews" warning must appear, and the page must not
+   reload (the card list keeps its scroll place and no loading screen
+   shows). Only the first tap is the check: once loaded, the optimizer is
+   kept for later taps. Note the iOS version.

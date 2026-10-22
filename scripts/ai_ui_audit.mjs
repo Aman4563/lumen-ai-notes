@@ -15,6 +15,7 @@ import { createReviewItem } from "../src/lib/review.js";
 import contentIndex from "../src/generated/content-index.json" with { type: "json" };
 import interviewBank from "../src/data/interviewTracks.v1.json" with { type: "json" };
 import { measureSelects, selectContractProblems } from "./select_contract.mjs";
+import { pollValue, settled, waitForTheme } from "./audit_waits.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -174,10 +175,8 @@ const openOptions = async (page) => {
   if (await page.$(".tutor-sheet")) return;
   await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
   await page.waitForSelector(".tutor-sheet .ai-tutor__web-search input", { timeout: 5_000 });
-  await page.evaluate(() => {
-    const running = document.querySelector(".tutor-sheet__scrim")?.getAnimations({ subtree: true }) || [];
-    return Promise.race([Promise.all(running.map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-  });
+  // Until it is still: the old wait gave up silently after 2 s (#138).
+  await settled(page, "the Options sheet", { selector: ".tutor-sheet__scrim" });
 };
 
 const closeOptions = async (page) => {
@@ -460,8 +459,16 @@ const startScriptedServer = async () => {
 };
 
 // An in-page stream that delivers deltas over time, armed per request with
-// window.__lumenAuditSlowStream = { paragraphs, phases }. It checks
-// following, scrolling back, Stop and Esc without a real model.
+// window.__lumenAuditSlowStream = { paragraphs, phases, holdAfter,
+// holdComplete, drip }. It checks following, scrolling back, Stop and Esc
+// without a real model. After a phase named in `holdAfter`, and with
+// `holdComplete` before it completes, the stream waits until the audit sets
+// window.__lumenAuditRelease[phase] (or .complete), so a state the audit
+// reads stays on screen until it has been read, however slow the machine
+// (#138). With `drip`, a held stream keeps sending a paragraph every 60 ms,
+// so a check of following always has new text to follow; the completion
+// carries all of it, as the client requires. A Stop still ends a held
+// stream at once.
 const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
@@ -483,6 +490,10 @@ const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
           await new Promise((resolve) => setTimeout(resolve, slow.phaseDelayMs || 400));
           if (init.signal?.aborted) return;
           send({ type: "phase", requestId: response.requestId, phase, message });
+          if (slow.holdAfter?.includes(phase)) {
+            const deadline = Date.now() + 60_000;
+            while (!window.__lumenAuditRelease?.[phase] && !init.signal?.aborted && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
         }
         const pieces = text.match(/[\s\S]{1,120}/g);
         for (let index = 0; index < pieces.length; index += 1) {
@@ -490,7 +501,22 @@ const installSlowStream = (page) => page.evaluateOnNewDocument(() => {
           if (init.signal?.aborted) return;
           send({ type: "delta", requestId: response.requestId, sequence: index, text: pieces[index] });
         }
-        send({ type: "complete", requestId: response.requestId, response });
+        let streamed = text;
+        if (slow.holdComplete) {
+          const deadline = Date.now() + 60_000;
+          let sequence = pieces.length;
+          while (!window.__lumenAuditRelease?.complete && !init.signal?.aborted && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, slow.drip ? 60 : 20));
+            if (slow.drip && !init.signal?.aborted && !window.__lumenAuditRelease?.complete) {
+              const more = `Paragraph ${paragraphs + sequence - pieces.length + 1} explains why a final holdout must stay untouched.\n\n`;
+              send({ type: "delta", requestId: response.requestId, sequence, text: more });
+              streamed += more;
+              sequence += 1;
+            }
+          }
+          if (init.signal?.aborted) return;
+        }
+        send({ type: "complete", requestId: response.requestId, response: { ...response, outputText: streamed } });
         try { controller.close(); } catch { /* aborted */ }
       },
     });
@@ -907,6 +933,9 @@ const auditChatFit = async () => {
         setTimeout(() => { observer.disconnect(); resolve(false); }, 5_000);
       }));
       await pause(page, 900);
+      // The window above bounds "stays stopped"; the pill that says so is
+      // awaited, not assumed to have rendered within it (#138).
+      await page.waitForSelector(".ai-tutor__jump", { timeout: 5_000 }).catch(() => {});
       const g = await page.evaluate(chatFitGeometry);
       expect(raced && g.jump && g.conversation.fromEnd > 60, "1280x720: a key pressed to read back just before the tutor's own follow scroll did not stop following", { raced, jump: g.jump, conversation: g.conversation });
       await stop(page);
@@ -934,6 +963,9 @@ const auditChatFit = async () => {
       await clickByText(page, ".document-tools button", "Ask AI");
       await page.waitForFunction(() => document.querySelector(".ai-tutor__composer textarea")?.value.includes("Explain this excerpt") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 15_000 });
       await pause(page, 600);
+      // The window above bounds "stays at the latest turn"; the focus the
+      // check reads is awaited, not assumed to have landed within it (#138).
+      await page.waitForFunction(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"), { timeout: 5_000 }).catch(() => {});
       const g = await geometry(page);
       const focused = await page.evaluate(() => document.activeElement === document.querySelector(".ai-tutor__composer textarea"));
       expect(focused && inView(g, g.field), `Ask AI ${name}: the box with the excerpt is not focused in view`, { focused, field: g.field });
@@ -1047,6 +1079,7 @@ const auditChatFit = async () => {
           await page.focus(".ai-tutor__options-toggle");
           await page.keyboard.press("Home");
           await pause(page, 700);
+          await page.waitForSelector(".ai-tutor__jump", { timeout: 5_000 }).catch(() => {});
           const g = await page.evaluate(chatFitGeometry);
           expect(g.jump && g.conversation.fromEnd > 60, `${name} run ${run}: Home pressed from Options did not stop following`, { jump: g.jump, conversation: g.conversation });
         }
@@ -1101,21 +1134,24 @@ const auditChatFit = async () => {
       const { context, page } = await open(`narrow-${width}-${textSize}-${touch ? "touch" : "mouse"}`, { width, height, isMobile: touch, hasTouch: touch }, { textSize });
       try {
         await page.waitForSelector(".ai-tutor__starter", { timeout: 10_000 });
-        const themes = await page.evaluate(async () => {
-          const card = document.querySelector(".ai-tutor");
-          // Whatever a scroller or a clipping box inside the card holds is
-          // that box's to show; visually hidden text is clipped on purpose.
-          const clippedInside = (node) => {
-            for (let box = node; box && box !== card; box = box.parentElement) {
-              const style = getComputedStyle(box);
-              if (style.clipPath !== "none" || style.clip !== "auto" || (box !== node && style.overflowX !== "visible")) return true;
-            }
-            return false;
-          };
-          const result = {};
-          for (const theme of ["paper", "dark", "contrast"]) {
-            document.documentElement.dataset.theme = theme;
-            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const themes = {};
+        for (const theme of ["paper", "dark", "contrast"]) {
+          // Contrast widens button borders, which transition: measure the
+          // settled layout, not a frame of the switch (#138).
+          await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+          const themed = await waitForTheme(page, theme);
+          if (!themed.ok) throw new Error(`the ${theme} theme had not settled: ${themed.reason}`);
+          themes[theme] = await page.evaluate(() => {
+            const card = document.querySelector(".ai-tutor");
+            // Whatever a scroller or a clipping box inside the card holds is
+            // that box's to show; visually hidden text is clipped on purpose.
+            const clippedInside = (node) => {
+              for (let box = node; box && box !== card; box = box.parentElement) {
+                const style = getComputedStyle(box);
+                if (style.clipPath !== "none" || style.clip !== "auto" || (box !== node && style.overflowX !== "visible")) return true;
+              }
+              return false;
+            };
             const edge = card.getBoundingClientRect();
             const style = getComputedStyle(card);
             const left = edge.left + Number.parseFloat(style.borderLeftWidth);
@@ -1124,15 +1160,14 @@ const auditChatFit = async () => {
               const rect = node.getBoundingClientRect();
               return rect.width > 0 && rect.height > 0 && (rect.right > right + 0.5 || rect.left < left - 0.5) && node.checkVisibility() && !clippedInside(node);
             });
-            result[theme] = {
+            return {
               pointer: matchMedia("(pointer: fine)").matches ? "fine" : "coarse",
               sideways: document.documentElement.scrollWidth - innerWidth,
               past: past.filter((node) => !past.includes(node.parentElement)).map((node) => `${node.tagName.toLowerCase()}.${(node.getAttribute("class") || "").split(" ")[0]} ${Math.round(node.getBoundingClientRect().left)}–${Math.round(node.getBoundingClientRect().right)}px`),
               card: `${Math.round(left)}–${Math.round(right)}px`,
             };
-          }
-          return result;
-        });
+          });
+        }
         for (const [theme, state] of Object.entries(themes)) {
           expect(state.pointer === (touch ? "coarse" : "fine"), `${name} (${theme}): the page did not get the pointer it was meant to test`, state.pointer);
           expect(!state.past.length && state.sideways <= 1, `${name} (${theme}): the tutor's card clips what it holds or the page scrolls sideways`, state);
@@ -1580,9 +1615,9 @@ try {
   });
   await staleConfig.page.locator(sendSelector).click();
   await staleConfig.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
-  for (let attempt = 0; attempt < 20 && staleConfig.calls.config.length < 2; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  // The fresh configuration check follows the error; poll for it with a
+  // deadline rather than a fixed 500 ms budget (#138).
+  await pollValue(() => staleConfig.calls.config.length, (count) => count >= 2, { timeout: 10_000, interval: 25 });
   assert.ok(staleConfig.calls.config.length >= 2, "a server contract rejection did not force a fresh configuration check");
   assert.equal(await staleConfig.page.$(".ai-tutor__request-error button"), null, "a stale request snapshot remained retryable after configuration invalidation");
   assert.match(await staleConfig.page.$eval(".ai-tutor__composer-notice", (node) => node.textContent), /refreshed|changed/iu, "the learner was not told that limits were refreshed");
@@ -1598,9 +1633,9 @@ try {
   });
   await lostServer.page.locator(sendSelector).click();
   await lostServer.page.waitForSelector(".ai-tutor__request-error", { timeout: 10_000 });
-  for (let attempt = 0; attempt < 20 && lostServer.calls.config.length < 2; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  // The fresh configuration check follows the error; poll for it with a
+  // deadline rather than a fixed 500 ms budget (#138).
+  await pollValue(() => lostServer.calls.config.length, (count) => count >= 2, { timeout: 10_000, interval: 25 });
   assert.ok(lostServer.calls.config.length >= 2, "a lost integrated server did not force a fresh configuration check");
   assert.equal(await lostServer.page.$(".ai-tutor__request-error button"), null, "a stale request remained retryable after the integrated server disappeared");
   await lostServer.page.close();
@@ -1707,6 +1742,9 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   });
+  // The retries cover a re-rendered answer; the route change itself is
+  // awaited, not assumed within their 1.5 s (#138).
+  await noteScenario.page.waitForFunction(() => window.location.hash.startsWith("#/read/"), { timeout: 8_000 }).catch(() => {});
   assert.match(await noteScenario.page.evaluate(() => window.location.hash), /^#\/read\//, "personal-note citation did not open its document");
   await noteScenario.page.waitForSelector(".personal-note-panel textarea", { timeout: 10_000 });
   await noteScenario.page.waitForFunction(
@@ -1784,7 +1822,9 @@ try {
       const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
       let text = walker.nextNode();
       while (text && !text.textContent.includes(label)) text = walker.nextNode();
-      text.parentElement.scrollIntoView({ block: "center" });
+      // The page scrolls smoothly; hit-test where the text ends up, not
+      // mid-scroll under the top bar (#138).
+      text.parentElement.scrollIntoView({ block: "center", behavior: "instant" });
       const range = document.createRange();
       range.setStart(text, text.textContent.indexOf(label));
       range.setEnd(text, text.textContent.indexOf(label) + label.length);
@@ -2322,7 +2362,12 @@ try {
     // pulled back, during or after it (TFEAT-08). "Jump to latest" is offered
     // meanwhile, and "Answer ready" once it lands out of view.
     await setPrompt("Keyboard check: stream this answer slowly.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = true; });
+    // The answer completes only once "Jump to latest" has been read: its
+    // 1.5 s of text once ended inside the windows below (#138).
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 40, holdComplete: true };
+    });
     await page.$eval(sendSelector, (button) => button.click());
     await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
     // The learner scrolls the page back to the top (a wheel gesture, then the
@@ -2336,11 +2381,16 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 800));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "streaming pulled the page back after the learner scrolled away");
     const pillText = () => page.$eval(".ai-tutor__jump", (node) => node.textContent.trim()).catch(() => "");
+    // The window above only proves nothing pulled the page back; the pill
+    // itself is awaited, not assumed to have rendered within it (#138).
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.trim() === "Jump to latest" || !document.querySelector(".ai-tutor__message--streaming"), { timeout: 10_000 }).catch(() => {});
     assert.equal(await pillText(), "Jump to latest", "no Jump to latest was offered while the learner read elsewhere");
     assert.deepEqual(await page.$eval(".ai-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the jump pill was a live region or too small to tap");
+    await page.evaluate(() => { window.__lumenAuditRelease.complete = true; });
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.ok(await page.evaluate(() => scrollY) <= scrolledTo + 2, "completion scrolled a learner who had scrolled away");
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.trim() === "Answer ready", { timeout: 5_000 }).catch(() => {});
     assert.equal(await pillText(), "Answer ready", "a finished answer out of view was not offered");
     // From the keyboard, the pill takes focus to the new answer.
     await page.$eval(".ai-tutor__jump", (button) => button.focus());
@@ -2363,7 +2413,12 @@ try {
       return gap >= -2 && gap <= 60;
     }, { timeout: 2_000, polling: "raf" }).catch(async () => assert.fail(`${message}: ${await endGap()}`));
     await setPrompt("Keyboard check: stream a long answer on a phone.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
+    // Held open, with text still arriving, until following has been
+    // checked: under load 110 paragraphs could end first (#138).
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 110, holdComplete: true, drip: true };
+    });
     await page.$eval(sendSelector, (button) => button.click());
     await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && document.querySelector(".ai-tutor__message--streaming").getBoundingClientRect().height > 900, { timeout: 8_000 });
     await waitForEndAboveComposer("the streaming answer's end was not kept just above the composer");
@@ -2387,6 +2442,7 @@ try {
     assert.ok(await page.$(".ai-tutor__message--streaming"), "the long stream finished before following could be checked");
     await waitForEndAboveComposer("following did not resume after Jump to latest");
     assert.equal(await page.$(".ai-tutor__jump"), null, "Jump to latest came back while following");
+    await page.evaluate(() => { window.__lumenAuditRelease.complete = true; });
     await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
 
@@ -2396,22 +2452,41 @@ try {
     // mobile emulation stay on, so the page is not reloaded.
     await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
     await setPrompt("Keyboard check: stream a longer answer.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 110 }; });
+    // Held open, with text still arriving, until both checks below have
+    // run: a stream that ended first left nothing to stay put against or
+    // to follow, so the checks passed without testing anything (#138).
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 110, holdComplete: true, drip: true };
+    });
     await page.$eval(sendSelector, (button) => button.click());
     await page.waitForFunction(() => {
       const surface = document.querySelector(".ai-tutor__conversation");
       return /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || "") && surface.scrollHeight > surface.clientHeight + 300;
     }, { timeout: 8_000 });
     await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = 0; });
+    // The window bounds "stays there" while text keeps arriving; the pill
+    // is awaited after it, not assumed to have rendered within it (#138).
     await new Promise((resolve) => setTimeout(resolve, 700));
+    await page.waitForFunction(() => document.querySelector(".ai-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 5_000 }).catch(() => {});
     const readBack = await page.$eval(".ai-tutor__conversation", (surface) => ({ top: surface.scrollTop, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")), pill: document.querySelector(".ai-tutor__jump")?.textContent.trim() || "" }));
     assert.equal(readBack.streaming, true, "the long stream finished before the scroll-back check could run");
     assert.ok(readBack.top < 60, `streaming pulled the conversation back down after the learner scrolled up: ${JSON.stringify(readBack)}`);
     assert.equal(readBack.pill, "Jump to latest", "the conversation scroller offered no Jump to latest");
-    await page.$eval(".ai-tutor__conversation", (surface) => { surface.scrollTop = surface.scrollHeight; });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Following is judged once the answer has grown by twice the tolerance
+    // below since the learner came back, so a scroller that stayed put
+    // would be left that far behind; not after a guessed half second in
+    // which little text may have arrived (#138).
+    const heightAtEnd = await page.$eval(".ai-tutor__conversation", (surface) => {
+      surface.scrollTop = surface.scrollHeight;
+      return surface.scrollHeight;
+    });
+    const grew = await page.waitForFunction((before) => document.querySelector(".ai-tutor__conversation").scrollHeight >= before + 320, { timeout: 10_000 }, heightAtEnd).then(() => true, () => false);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const resumed = await page.$eval(".ai-tutor__conversation", (surface) => ({ gap: surface.scrollHeight - surface.scrollTop - surface.clientHeight, streaming: Boolean(document.querySelector(".ai-tutor__message--streaming")) }));
-    assert.ok(!resumed.streaming || resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
+    assert.ok(grew && resumed.streaming, `the long stream stopped growing before following could be checked: ${JSON.stringify(resumed)}`);
+    assert.ok(resumed.gap < 160, `scrolling back to the end did not resume following: ${JSON.stringify(resumed)}`);
+    await page.evaluate(() => { window.__lumenAuditRelease.complete = true; });
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     await page.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
 
@@ -2419,7 +2494,11 @@ try {
     // streams slowly so the Stop cannot race its completion on a busy host.
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await setPrompt("Keyboard check: stop this one.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 40 }; });
+    // Held open until Stop ends it, so Stop never races the completion.
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 40, holdComplete: true };
+    });
     await page.$eval(sendSelector, (button) => button.focus());
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => /Stop generating/.test(document.activeElement?.textContent || ""), { timeout: 3_000 });
@@ -2544,9 +2623,23 @@ try {
       await setLayoutPrompt(Array.from({ length: 8 }, (_, line) => `Line ${line + 1} of a long draft about ridge and lasso penalties.`).join("\n"));
       await checkLayout("long draft");
       await setLayoutPrompt("Layout check: why does repeated holdout inspection leak information?");
-      // A double tap on Send must not land on the Stop it turns into.
-      await page.click(".ai-tutor__send");
-      await page.click(".ai-tutor__send");
+      // A double tap on Send must not land on the Stop it turns into. The
+      // app ignores a Stop tap within 500 ms of the request starting. Two
+      // page.click calls are two sets of round trips, which a loaded runner
+      // spaced past that guard, so the second tap was a real Stop (#138).
+      // Both taps' mouse events go out together, as a learner's do.
+      const sendTarget = await page.$eval(".ai-tutor__send", (button) => {
+        button.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+        const box = button.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      });
+      const tapSession = await page.createCDPSession();
+      try {
+        await tapSession.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...sendTarget });
+        await Promise.all([1, 2].flatMap((clickCount) => ["mousePressed", "mouseReleased"].map((type) => tapSession.send("Input.dispatchMouseEvent", { type, ...sendTarget, button: "left", clickCount }))));
+      } finally {
+        await tapSession.detach();
+      }
       await page.waitForSelector(".ai-tutor__message--streaming", { timeout: 5_000 });
       await checkLayout("streaming");
       await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming") && document.querySelector(".ai-tutor__message--assistant"), { timeout: 10_000 });
@@ -2719,7 +2812,12 @@ try {
     await chooseMode(page, "Explain");
 
     await setKeysPrompt("Keyboard stop: stream this one.");
-    await page.evaluate(() => { window.__lumenAuditSlowStream = { paragraphs: 60 }; });
+    // Held open until Escape ends it: whether Escape in the sheet left the
+    // answer running must not depend on how fast 2.3 s of text arrives.
+    await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
+      window.__lumenAuditSlowStream = { paragraphs: 60, holdComplete: true };
+    });
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => /characters received/.test(document.querySelector(".ai-tutor__stream-actions")?.textContent || ""), { timeout: 8_000 });
     await page.$eval(".ai-tutor__options-toggle", (button) => button.click());
@@ -2744,6 +2842,7 @@ try {
     });
     await setKeysPrompt("Progress check: explain the bias-variance trade-off from my notes.");
     await page.evaluate(() => {
+      window.__lumenAuditRelease = {};
       window.__lumenAuditSlowStream = {
         paragraphs: 8,
         phaseDelayMs: 700,
@@ -2752,6 +2851,9 @@ try {
           ["generating", "Generating the answer with the local model."],
           ["validating", "Checking completion and grounding before finalizing the answer."],
         ],
+        // Each step below is read before the stream moves past it, not
+        // within the 700 ms before the next phase (#138).
+        holdAfter: ["generating", "validating"],
       };
     });
     await page.keyboard.press("Enter");
@@ -2763,7 +2865,9 @@ try {
     const waitingCopy = await page.$eval(".ai-tutor__message--streaming", (node) => node.textContent);
     assert.doesNotMatch(waitingCopy, /Preparing your answer and checking sources/, "a waiting line repeated the progress steps");
     assert.doesNotMatch(waitingCopy, /egress/i, "the waiting state used pipeline jargon");
+    await page.evaluate(() => { window.__lumenAuditRelease.generating = true; });
     await page.waitForFunction(() => document.querySelector(".ai-tutor__progress li.is-active")?.textContent.includes("Checking citations"), { timeout: 8_000 }).catch(() => assert.fail("the validating phase did not activate Checking citations"));
+    await page.evaluate(() => { window.__lumenAuditRelease.validating = true; });
     await page.waitForFunction(() => !document.querySelector(".ai-tutor__message--streaming"), { timeout: 15_000 });
     const progressAnnouncements = [...new Set(await page.evaluate(() => window.__lumenAuditAnnouncements))].filter(Boolean);
     assert.ok(progressAnnouncements.some((text) => /^Found \d+ passages?\. Drafting the answer…$/.test(text)), `drafting was not announced: ${JSON.stringify(progressAnnouncements)}`);
@@ -3330,7 +3434,10 @@ try {
     assert.equal(afterBreak.conversationSummary, "", "turns before the break were summarised");
 
     // After a long break the next question starts fresh; the divider sits
-    // at the end until it is asked.
+    // at the end until it is asked. Patch only once the app has stored the
+    // answer above, or its save (or the reload's flush) can land over the
+    // patch (#138).
+    await waitForStoredHistory(page, 6);
     await patchStoredProfile(page, { aiTutorHistory: [
       turn("old-q", "user", "Yesterday: how does linear regression work?", 300),
       turn("old-a", "assistant", "Linear regression fits a line by least squares.", 299),

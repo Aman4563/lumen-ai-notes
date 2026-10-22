@@ -75,3 +75,25 @@ export const installSpeechMock = ({ webkitLegacy = false } = {}) => {
   Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: TestUtterance });
   Object.defineProperty(window, "speechSynthesis", { configurable: true, value: synthesis });
 };
+
+// Taps the player's Next until the Reader marks a block matching `selector`
+// (a paragraph, say) as the one being spoken, at most `steps` times. Each tap
+// is awaited on what it changes, not a guessed delay (#138): the mocked
+// engine speaks the next sentence, then the Reader's highlight moves to the
+// first block holding that sentence's opening, as Reader.jsx finds it (or
+// stays put when no block holds it).
+export const stepToSpokenBlock = async (page, selector, steps = 12) => {
+  for (let step = 0; step < steps && !await page.$(selector); step += 1) {
+    const before = await page.evaluate(() => window.speechSynthesis.current?.text ?? null);
+    await page.$eval('.audio-bar button[aria-label="Next narration sentence"]', (button) => button.click());
+    await page.waitForFunction((previous) => {
+      const text = window.speechSynthesis.current?.text;
+      if (!text || text === previous) return false;
+      const needle = text.slice(0, 60).replace(/\s+/g, " ").trim().toLocaleLowerCase();
+      if (needle.length < 8) return true;
+      const target = [...document.querySelectorAll(".markdown-body :is(h1, h2, h3, h4, p, li, blockquote)")]
+        .find((block) => block.textContent.replace(/\s+/g, " ").toLocaleLowerCase().includes(needle));
+      return !target || target.classList.contains("narration-active");
+    }, { timeout: 5_000 }, before);
+  }
+};

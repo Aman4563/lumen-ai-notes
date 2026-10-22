@@ -3705,3 +3705,117 @@ and `a11y` on timeouts (navigation, DevTools protocol and selector waits,
 `storage-blocked` taking 71 minutes for two attempts against about a
 minute alone); it stopped during the `a11y` retry, and every one of those
 suites passed on its first attempt in the run above.
+
+## Flaky browser audits on 2026-10-22: waiting for real state (#138)
+
+Two suites failed a first attempt in CI and passed on retry, both under
+load:
+
+- `audit:review` during the #96 gate, at a load average of about 13–16:
+  "thin-history calibration did not refuse with the typed reason". The
+  optimizer's lazily loaded chunk came back from the service worker as HTTP
+  400, `vite:preloadError` fired and chunk recovery reloaded the page under
+  the audit. Browsers open connections before they need them; Node timed an
+  unused one out after the 15 s header timeout and the server's
+  `clientError` handler wrote `400 Bad Request` into it, which Chrome read as
+  the answer to the chunk request it later sent there. `answerClientError`
+  now closes a connection that never sent a byte without writing anything; a
+  request that stalled part-way gets 408, oversized headers 431 and
+  malformed input 400. `server/ai/server.test.mjs` covers plain and TLS
+  connections, and both tests fail against the old handler (`actual:
+  'HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'`).
+- `audit:a11y` in CI for #142: on Settings, axe measured `span > code` in
+  the middle of a theme switch (Paper's `#566078` on Night's `#252e3f`,
+  2.16:1; Night's `#b8bdca` on Contrast's `#f2f2f2`, 1.67:1). A switch starts
+  its transitions in waves, since a child's inherited colour changes only
+  once its parent's transition has ended, and the old `settle()` waited on
+  one snapshot of `document.getAnimations()`. `scripts/audit_waits.mjs` now
+  waits until no transition has run for three frames and sample colours
+  equal the new theme's tokens (`waitForTheme`); a deadline is a named
+  finding, not a measurement taken mid-switch.
+
+The same branch replaced the sleeps before positive checks in the
+annotation, audio, controls, cross-tab, tutor, On-device Lite, review and
+workflow audits with waits on stored or rendered state (`pollValue`,
+`settled`, mock streams held until the audit has read them). Sleeps that
+bound a check that something must not happen are kept.
+
+Found while verifying the branch, each reproduced and then fixed:
+
+- `audit:phone-ai-ui` failed 1 of 10 loaded runs: "Answer ready did not
+  move focus to the new On-device answer". Instrumented runs showed why.
+  The pill sits on the dock's measured height, which updates a frame after
+  the question box changes: when the answer lands, its question leaves the
+  box (72 to 48 px) and the pill drops 24 px (y 579–623 to 603–647).
+  `page.click` had measured the centre in the pill's first frame (y 601) and
+  pressed after the drop, on the page 2 px above it, so focus stayed on the
+  body. Measuring at once and pressing three frames later failed 2 of 3 runs
+  the same way; `page.locator(".phone-tutor__jump").click()`, which presses
+  once the pill holds still for two frames, pressed it in 5 of 5. Both pill
+  taps in that check now use the locator. The Mac tutor's pill is placed
+  inside its composer, so it moves in the same layout and is unaffected.
+- An independent review of the branch reported these, each confirmed:
+  - The conversation scroller's "scrolling back to the end resumes
+    following" waited for one new delta, about 90 px of growth against a
+    160 px tolerance. Against a build whose wide scroller never resumes
+    following, the branch's `audit:ai-ui` passed end to end; the fixed audit
+    fails: "scrolling back to the end did not resume following:
+    {"gap":427,"streaming":true}". Held slow streams can now drip a
+    paragraph every 60 ms until released, so "stays there" keeps its 700 ms
+    window, following is judged after 320 px of growth, and neither long
+    stream can end before its checks.
+  - The new server tests waited for `close` with no timeout, so a server
+    that stopped closing idle sockets would have hung `npm run check`. With
+    a handler that leaves sockets open, both now fail in about 5 s with
+    "(the server left the connection open)". The TLS client also verifies
+    the test's throwaway certificate instead of skipping verification.
+  - The cross-tab idle baseline absorbed any rewrites that settled within
+    10 s. At most one revision may now follow the second tab's Recent write;
+    six measured runs had none.
+  - The review audit's waits for the stored lab miss and its deletion now
+    assert what they waited for instead of falling through.
+  - Not changed: the reviewer read the clipping Undo check as weakened,
+    because the debounced Delete and Undo usually share one save. A build
+    whose Undo appends the clipping at the end passes both the branch's
+    check and a variant that reads the first save after the Undo, as
+    main's 700 ms sleep did: `mergeProfileVersions` returns the two
+    clippings in the same order whichever position Undo used, so stored
+    order cannot show where Undo put it.
+
+Verification. Each touched suite ran repeatedly with
+`LUMEN_BROWSER_RETRIES=0`. First pass, at ebabce7, two suites at a time
+beside the machine's own workload and a production-build loop that ran
+whenever the 1-minute load average was below 24 (it ran about 30% of the
+time; the two suites and the workload held the load above 24 for the rest).
+The 1-minute load was 10–60, median 30. Results: `a11y` 20/20, `review`
+20/20, `ai-ui` 10/10, `audio` 10/10, `controls` 10/10, `workflow` 10/10,
+`sync` 10/10, `annotations` 10/10 and `phone-ai-ui` 9/10 (the failure
+above).
+
+After the fixes, at abe38ba, `review` passed 20/20 in the same setting
+(load 5–44, median 16), and `ai-ui` 6 runs and `phone-ai-ui` 1. Then another
+full browser gate started on this machine beside the two suites, three ran
+at once and memory ran out (1-minute load up to 129). The 10 runs in that
+period failed on lost browser connections or navigation timeouts, or
+reached the per-run limit; none failed on a check. Run one suite at a time
+afterwards, starting only while no other browser gate ran and the load was
+under 30, without the build loop: `phone-ai-ui` 10/10, `sync` 10/10 and
+`ai-ui` 4/4, so 10 `ai-ui` passes in all (load 6–46, median 10).
+
+The gate at abe38ba started with no other browser gate running
+(1-minute load 5–15): `npm run check` passed (`audit:ai` 584/584, both
+idle-connection tests included; `audit:ai-eval` 27 cases, hit@1 0.913),
+and the full `npm run check:browser` passed all 13 suites on the first
+attempt with no retries (`a11y` 114 axe runs with the empty allowlist,
+499 structural checks). No app code changed: the startup entry is
+622,935 bytes, the install route screens 688,842 bytes and the warm
+tools 305,006 bytes in 8 files. CI passed the same 13 suites on the first
+attempt.
+
+Main (45826f7, the blocked-storage fixes #145) was then merged into the
+branch at 8242fd7 rather than rebased, since the branch was already
+pushed; only these append-only notes conflicted, and both sets of entries
+are kept. On 2026-10-23 the gate passed again on the merged tree:
+`npm run check` (`audit:ai` 600/600; startup entry 623,582 bytes, route
+screens 690,571 bytes) and the full `npm run check:browser`, now 14 suites
+with `storage-blocked`, all on the first attempt with no retries.

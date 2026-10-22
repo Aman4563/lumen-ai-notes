@@ -6,6 +6,7 @@ import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
 import { mistakeTutorRequest } from "../src/lib/tutorBridge.js";
+import { settled, waitForTheme } from "./audit_waits.mjs";
 
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 // axe-core, for the contrast of a Lite conversation in every theme.
@@ -41,11 +42,9 @@ const activeMode = (page) => page.evaluate(() => {
 });
 
 // The sheet slides in for 200ms. Its controls are measured once it has:
-// mid-slide under load a 44px button once read 43.99997px.
-const sheetSettled = (page) => page.evaluate(() => {
-  const running = document.querySelector(".tutor-sheet__scrim")?.getAnimations({ subtree: true }) || [];
-  return Promise.race([Promise.all(running.map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-});
+// mid-slide under load a 44px button once read 43.99997px. The wait used to
+// give up silently after 2 s; now it lasts until the sheet is still (#138).
+const sheetSettled = (page) => settled(page, "the Options sheet", { selector: ".tutor-sheet__scrim" });
 
 // Depth, Answer length and the web fallback live in the Options sheet
 // (#94): one tap opens it, Done closes it.
@@ -494,13 +493,15 @@ const auditLiteChatFit = async ({ appUrl, fixtureUrl }) => {
       await page.waitForSelector(".phone-tutor__message.is-user", { timeout: 10_000 });
       await page.evaluate(axeSource);
       for (const theme of ["paper", "dark", "contrast"]) {
-        const violations = await page.evaluate(async (value) => {
-          document.documentElement.dataset.theme = value;
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          await Promise.race([Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+        // Axe measures the new theme's settled colours, not a transition
+        // (#138): a theme switch's transitions arrive in waves.
+        await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+        const themed = await waitForTheme(page, theme);
+        expect(themed.ok, `${theme} theme: the conversation's colours had not settled before axe ran`, themed.reason);
+        const violations = await page.evaluate(async () => {
           const result = await window.axe.run(document.querySelector(".phone-tutor__conversation"), { runOnly: { type: "rule", values: ["color-contrast"] }, resultTypes: ["violations"] });
           return result.violations.flatMap((violation) => violation.nodes.map((node) => `${node.target.join(" ")}: ${(node.failureSummary || "").replace(/\s+/g, " ").slice(0, 160)}`));
-        }, theme);
+        });
         expect(!violations.length, `${theme} theme: text in a Lite conversation is below AA contrast`, violations);
       }
     } catch (error) {
@@ -704,7 +705,9 @@ try {
   });
   const lightThemeSurfaces = await themeSurfaces();
   await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
+  // The assertions below compare the surfaces with the dark tokens; read
+  // them once every transition the switch started has ended (#138).
+  await settled(page, "the dark theme switch");
   const darkThemeSurfaces = await themeSurfaces();
   assert.equal(darkThemeSurfaces.panel, darkThemeSurfaces.expected.paper, "On-device settings panel ignored the dark-theme paper surface");
   assert.equal(darkThemeSurfaces.fact, darkThemeSurfaces.expected.paper2, "model facts ignored the dark-theme secondary surface");
@@ -739,9 +742,16 @@ try {
   assert.equal(await page.$eval(sendButtonSelector, (button) => button.disabled), true, "an empty question box armed Send");
   await useSuggestion(page);
   assert.equal(await page.$eval(sendButtonSelector, (button) => button.disabled), false, "loaded local model did not enable a valid prompt");
+  // The fixture holds the answer after its first token until the streaming
+  // state below has been read, instead of for 120 ms (#138).
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.holdNextStream = true; });
   await page.click(sendButtonSelector);
   // A model "##" heading renders as h4 below the per-message heading.
   await page.waitForSelector(".phone-tutor__message.is-streaming .phone-tutor__safe-response h4.ai-tutor__md-h2");
+  await page.evaluate(() => {
+    window.__PHONE_AI_AUDIT__.holdNextStream = false;
+    window.__PHONE_AI_AUDIT__.releaseStream?.();
+  });
   await page.waitForFunction(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant")].some((node) => node.textContent.includes("negative loss gradient")));
   assert.ok(await page.$(".phone-tutor__message.is-assistant .katex-display"), "display LaTeX was not rendered through KaTeX");
   assert.ok(await page.$(".phone-tutor__message.is-assistant table"), "GFM table was not rendered");
@@ -798,7 +808,9 @@ try {
   assert.deepEqual(linkedPhone, { text: "Linked citation [S1] and the forged phone route.", routeLinks: 0, citationsInLinks: 0, citation: "[S1]" }, "a model link to an app route, or around a citation, survived on the phone");
   const navigationsBeforeLinked = await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length);
   await page.evaluate(() => [...document.querySelectorAll(".phone-tutor__message.is-assistant .phone-tutor__safe-response p")].find((node) => node.textContent.includes("Linked citation"))?.querySelector("button.ai-tutor__citation")?.click());
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // A followed link would change the hash during the click itself; the
+  // source opening is recorded afterwards, so wait for it (#138).
+  await page.waitForFunction((before) => window.__PHONE_AI_AUDIT__.navigations.length > before, { timeout: 5_000 }, navigationsBeforeLinked).catch(() => {});
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.length), navigationsBeforeLinked + 1, "the linked [S1] citation did not open its source");
   assert.deepEqual(await page.evaluate(() => window.__PHONE_AI_AUDIT__.navigations.at(-1)), { documentId: "notes/audit-gradient-descent.md", anchor: "optimization" }, "the linked [S1] citation opened the wrong source");
   assert.equal(await page.evaluate(() => window.location.hash), hashBeforeLinked, "a citation click followed a model-chosen link");
@@ -907,10 +919,18 @@ try {
   await page.waitForSelector(".phone-tutor__search-consent");
   assert.match(await page.$eval(".phone-tutor__search-consent", (node) => node.textContent), /Safari 26 WebGPU release notes/, "a valid local-planner query was not preferred on the fresh retry");
   assert.deepEqual(await page.evaluate(() => window.__PHONE_AI_AUDIT__.searchDecisions), [{ searchId: "audit-search-1", consent: false }], "retry reused the declined proposal instead of creating a fresh approval");
+  // The answer is held after its first token until the controls have been
+  // read: the fixture's 150 ms of generation once ended first (#138).
+  await page.evaluate(() => { window.__PHONE_AI_AUDIT__.holdNextStream = true; });
   await clickByText(page, ".phone-tutor__search-consent button", "Send this query");
   await page.waitForFunction(() => window.__PHONE_AI_AUDIT__.searchRequests === 1);
+  await page.waitForFunction(() => !document.querySelector(".phone-tutor__search-consent") && document.querySelector(".phone-local-ai-actions button")?.disabled, { timeout: 5_000 }).catch(() => {});
   assert.equal(await page.$(".phone-tutor__search-consent"), null, "consumed search-consent card remained tappable while its query was already in flight");
   assert.equal(await page.$eval(".phone-local-ai-actions button", (buttons) => buttons.disabled), true, "model lifecycle controls stayed enabled during generation");
+  await page.evaluate(() => {
+    window.__PHONE_AI_AUDIT__.holdNextStream = false;
+    window.__PHONE_AI_AUDIT__.releaseStream?.();
+  });
   await page.waitForSelector(".phone-tutor__web-sources a");
   assert.equal(await page.evaluate(() => window.__PHONE_AI_AUDIT__.searchRequests), 1, "approved query was not searched exactly once");
   assert.equal(await page.$eval(".phone-tutor__web-sources a", (anchor) => anchor.getAttribute("href")), "https://developer.apple.com/documentation/safari-release-notes/safari-26-release-notes");
@@ -1069,7 +1089,14 @@ try {
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.waitForFunction(() => document.querySelector(".phone-tutor__jump")?.textContent.includes("Jump to latest"), { timeout: 3_000 }).catch(() => assert.fail("On-device Lite offered no Jump to latest while the learner read elsewhere"));
   assert.deepEqual(await page.$eval(".phone-tutor__jump", (node) => ({ role: node.getAttribute("role"), live: node.getAttribute("aria-live"), tall: node.getBoundingClientRect().height >= 44 })), { role: null, live: null, tall: true }, "the On-device jump pill was a live region or too small to tap");
-  await page.click(".phone-tutor__jump");
+  // The pill sits on the dock's measured height, which updates a frame
+  // after the question box changes or the page scrolls, so the pill can
+  // still move once it shows: when an answer lands, its question leaves the
+  // box and the pill drops 24px. page.click measured the centre once and
+  // pressed later, and under load the press landed just above the moved
+  // pill (#138). The locator presses once the pill holds still across two
+  // frames.
+  await page.locator(".phone-tutor__jump").click();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.evaluate(() => {
     const end = document.querySelector(".phone-tutor__conversation-end").getBoundingClientRect();
@@ -1082,7 +1109,7 @@ try {
   await page.waitForSelector(".phone-tutor__message.is-streaming", { timeout: 5_000 });
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.waitForFunction(() => !document.querySelector(".phone-tutor__message.is-streaming") && document.querySelector(".phone-tutor__jump")?.textContent.includes("Answer ready"), { timeout: 10_000 }).catch(() => assert.fail("an On-device answer that landed out of view was not offered"));
-  await page.click(".phone-tutor__jump");
+  await page.locator(".phone-tutor__jump").click();
   await page.waitForFunction(() => document.activeElement === [...document.querySelectorAll(".phone-tutor__message.is-assistant")].at(-1), { timeout: 3_000 }).catch(() => assert.fail("Answer ready did not move focus to the new On-device answer"));
   assert.equal(await page.$(".phone-tutor__jump"), null, "the On-device pill stayed after it was used");
   await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);

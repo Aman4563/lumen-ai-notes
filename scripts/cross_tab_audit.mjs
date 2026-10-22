@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
+import { pollValue } from "./audit_waits.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -133,11 +134,29 @@ try {
   const lectureB = "notes/part-01-foundations/02-problem-framing-and-objectives.md";
   await pageA.evaluate((id) => { location.hash = `#/read/${encodeURIComponent(id)}`; }, lectureA);
   await pageA.waitForSelector(".markdown-body h1", { timeout: 15_000 });
-  await delay(800);
+  // Each tab's Recent write lands before the next step (#138): B opens its
+  // lecture only after A's is stored, so the order below is the order opened.
+  await pollValue(() => readProfile(pageA), (profile) => profile.recent[0] === lectureA);
   await pageB.evaluate((id) => { location.hash = `#/read/${encodeURIComponent(id)}`; }, lectureB);
   await pageB.waitForSelector(".markdown-body h1", { timeout: 15_000 });
-  await delay(2_000);
-  const settledRevision = (await readProfile(pageA)).syncMeta.revision;
+  const landed = await pollValue(() => readProfile(pageA), (profile) => profile.recent[0] === lectureB);
+  assert.equal(landed.recent[0], lectureB, "the second tab's Recent write was not stored");
+  // The baseline is the revision once it has held for a second (at most
+  // 10 s, so tabs that never stop rewriting still reach the check below).
+  let settledRevision = landed.syncMeta.revision;
+  for (let stableSince = Date.now(), giveUpAt = Date.now() + 10_000; Date.now() - stableSince < 1_000 && Date.now() < giveUpAt;) {
+    await delay(250);
+    const revision = (await readProfile(pageA)).syncMeta.revision;
+    if (revision !== settledRevision) {
+      settledRevision = revision;
+      stableSince = Date.now();
+    }
+  }
+  // The second tab's Recent write is the last one expected, so writes while
+  // the revision settles count as well: a burst of echoes that stops before
+  // the idle window is still the ping-pong this guards against.
+  assert.ok(settledRevision - landed.syncMeta.revision <= 1, `two reader tabs kept rewriting the profile after the second opened its lecture (${settledRevision - landed.syncMeta.revision} revisions before it held still)`);
+  // The idle window itself: nothing should write during it.
   await delay(3_000);
   const idle = await readProfile(pageA);
   assert.ok(idle.syncMeta.revision - settledRevision <= 1, `two idle reader tabs kept rewriting the profile (${idle.syncMeta.revision - settledRevision} revisions in 3s)`);
