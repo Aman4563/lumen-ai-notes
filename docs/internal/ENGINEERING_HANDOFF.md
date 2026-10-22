@@ -274,26 +274,36 @@ refused write; download consent and its revocation, the chunk-recovery marker, n
 positions and audio bookmarks, the fallback journal and the cross-tab signals use them.
 `getItem(key, unavailable)` tells a refused read from a missing key when `unavailable` is a
 sentinel such as a Symbol (not `undefined`, which selects the null default); the journal then
-returns its in-memory copy, as `audit:storage` checks. Once any localStorage access fails,
-`deviceStorageSaves()` is false and Settings shows "This browser is not saving preferences on
-this device". Settings runs `checkDeviceStorage()` (write, read back and remove a small key)
-before its first paint on every open; the probe sets the status either way, so one refused
-large write (the fallback journal over the quota) does not keep the notice up while small
-preferences save. The notice adds that notes, progress and reviews are saved only after
-`checkStudyDataStorage()` in `db.js` has committed a readwrite IndexedDB transaction (a probe
-record added and removed) and while Save status is not "error": Save status starts as "saved"
-and `getData()` reads a blocked database as empty, so neither proves study data is saved.
+returns its in-memory copy, as `audit:storage` checks. Once localStorage cannot be reached or
+read, or the probe below fails, `deviceStorageSaves()` is false and Settings shows "This browser
+is not saving preferences on this device". A refused write alone (a full store) only returns
+`false` to its caller and never sets the status: one large refused value, such as the
+budget-ledger mirror `db.js` writes on every save or the fallback journal, says nothing about
+small preferences. Settings runs `checkDeviceStorage()` (write, read back and remove a small
+key) before its first paint on every open and sets the status from it, so a failure that has
+passed clears and a store that refuses every write (old private browsing) is still found.
+The notice adds that notes, progress and reviews are saved only after `checkStudyDataStorage()`
+in `db.js` has committed a readwrite IndexedDB transaction (a probe record added and removed),
+and that they are not being saved either, with a backup advised, when that probe fails or Save
+status is "error"; the probe runs again whenever Save status changes. Save status starts as
+"saved" and `getData()` reads a blocked database as empty, so neither proves study data is
+saved; once the probe has failed, Settings shows Save status "error" before any save has tried.
 The notice is announced once per visit through a status region that Settings always renders
 empty, filled 250 ms after the checks and emptied 5 s later, so it is announced as a change,
 browse mode meets it once, and a changed notice never leaves stale text there. While the
 status is false the sync card says why and keeps Create and Join off: vault membership and
 the device id would last only the visit, and each visit would write a new `<deviceId>.lumenc`.
+Creating or joining a vault then checks `vaultMembershipStored()` in `syncIdentity.js`, which
+reads past the session's memory copy, so a membership the browser refused (a nearly full
+store) says it lasts this visit only.
 Once IndexedDB is blocked too, `exportBackup` still downloads a valid backup and reports it
 with a warning that the export date could not be recorded, and a `BUDGET_STATE_UNAVAILABLE`
-save error advises a backup rather than reducing local data.
+save error advises a backup (the whiteboard: waiting for storage access) rather than reducing
+local data.
 `src/lib/safeStorage.test.mjs` fails if any other file in `src/` names either store;
 `audit:storage-blocked` loads every route as a new document with a throwing accessor, with a
-refusing store and under Chrome's own cookie blocking (Web Storage and IndexedDB both fail).
+refusing store and under Chrome's own cookie blocking (Web Storage and IndexedDB both fail),
+and adds IndexedDB failing after Settings opens and a nearly full store.
 
 The profile contains progress, reading positions, bookmarks, notes, clips, annotations,
 review data, backup metadata, Mac tutor history/tombstones, edits, custom documents,
@@ -1808,7 +1818,9 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   scope names `localStorage`/`sessionStorage`. Anything that must know a write landed
   (consent, revocation, the chunk-recovery marker) uses the durable store, never the
   session-memory one. Nothing tells the learner study data is saved on the strength of a
-  default: Settings says so only after IndexedDB committed a probe write.
+  default: Settings says so only after IndexedDB committed a probe write, and says it is not
+  being saved when that probe fails. A refused write never sets the device status; reads and
+  the probe do. A vault is reported as lasting only when the browser really stored it.
 
 ### AI input/output
 

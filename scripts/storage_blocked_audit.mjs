@@ -6,6 +6,8 @@ import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
+import { createBackup } from "../src/lib/backup.js";
+import { encryptBackupJson } from "../src/lib/backupCrypto.js";
 import { installSpeechMock } from "./speech_mock.mjs";
 
 // Issue #139: where a browser blocks site storage, reading localStorage
@@ -21,7 +23,11 @@ import { installSpeechMock } from "./speech_mock.mjs";
 // Settings must then say, once and politely, that preferences are not being
 // saved; with working storage it must not. A third shape is Chrome's own
 // cookie blocking, set in the profile: Web Storage and IndexedDB both fail,
-// so nothing is saved and Settings must not say study data is.
+// so nothing is saved, and Settings must say so rather than that study data
+// is saved. Two short cases follow: IndexedDB failing after Settings opened
+// (no status region may keep a sentence the notice dropped), and a nearly
+// full store that refuses only large values (no notice, sync on, and a vault
+// it would not store says it lasts this visit only).
 const axeSource = await readFile(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 const baseUrl = (process.env.LUMEN_URL || "http://127.0.0.1:4173/").replace(/\/$/, "");
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -31,7 +37,13 @@ const LECTURE = "notes/part-01-foundations/01-ai-ml-mental-model.md";
 const BOARD_DOCUMENT = "notes/00-roadmap.md";
 const NOTICE = "This browser is not saving preferences on this device";
 const STUDY_DATA_SENTENCE = "Notes, progress and reviews are saved separately";
-const SYNC_WARNING = "Sync needs this browser to save settings on this device";
+const STUDY_DATA_LOST = "Notes, progress and reviews are not being saved either";
+const SYNC_WARNING = "Sync is off because this browser would not keep this device's vault membership";
+// A vault the browser would not store lasts this visit only, and says so.
+const VAULT_FOR_VISIT = "Sync vault created for this visit only";
+const MEMBERSHIP_NOT_SAVED = "This browser did not save the vault membership";
+const SYNC_PASSPHRASE = "blocked storage vault passphrase";
+const PEER_VAULT = "storage-blocked-audit-peer-vault-0001";
 const CRASH = "could not render this screen";
 // The error boundary's screens: the app-wide one and the in-shell route one.
 // (Text alone would match the device-evidence checklist, which quotes it.)
@@ -266,7 +278,7 @@ const noticeState = (page) => page.evaluate((title) => {
 // on screen and empty in an earlier frame (not inserted already filled).
 const watchAnnouncement = (page) => page.evaluate((title) => {
   const seenEmpty = new WeakSet();
-  const result = { frames: 0, filled: false, filledAfterEmptyFrame: false };
+  const result = { frames: 0, filled: false, filledAfterEmptyFrame: false, filledAt: 0 };
   window.__lumenAuditAnnouncement = result;
   const sample = () => {
     result.frames += 1;
@@ -275,6 +287,7 @@ const watchAnnouncement = (page) => page.evaluate((title) => {
       else if (region.textContent.includes(title) && !result.filled) {
         result.filled = true;
         result.filledAfterEmptyFrame = seenEmpty.has(region);
+        result.filledAt = performance.now();
       }
     }
     if (!result.filled && result.frames < 1_800) requestAnimationFrame(sample);
@@ -304,11 +317,55 @@ const syncState = (page) => page.evaluate((warning) => {
   };
 }, SYNC_WARNING);
 const typePassphrase = async (page) => {
-  await page.$eval('.settings-drawer input[aria-label="Sync vault passphrase"]', (field) => {
+  await page.$eval('.settings-drawer input[aria-label="Sync vault passphrase"]', (field, passphrase) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setter.call(field, "blocked storage vault passphrase");
+    setter.call(field, passphrase);
     field.dispatchEvent(new Event("input", { bubbles: true }));
+  }, SYNC_PASSPHRASE);
+};
+// A peer's sync file for PEER_VAULT, written once below; joining through it
+// adopts that vault.
+let peerSyncFile = "";
+const writePeerSyncFile = async () => {
+  const backup = await createBackup({ profile: {} }, { exportedAt: new Date().toISOString(), secureContext: true });
+  const encrypted = await encryptBackupJson(backup.json, SYNC_PASSPHRASE, { vaultId: PEER_VAULT, deviceId: "peer-device-0001", iterations: 100_000 });
+  peerSyncFile = join(profileDirectory, "peer-device-0001.lumenc");
+  await writeFile(peerSyncFile, Buffer.concat(encrypted.blobParts.map((part) => Buffer.from(part))));
+};
+const dismissToasts = (page) => page.$$eval('.toast button[aria-label="Dismiss notification"]', (buttons) => buttons.forEach((button) => button.click()));
+const toastMatching = (page, text, message, timeout = 15_000) => page.waitForFunction((expected) => [...document.querySelectorAll(".toast")].some((node) => node.textContent.includes(expected)), { timeout }, text)
+  .then(() => page.$$eval(".toast", (nodes, expected) => nodes.find((node) => node.textContent.includes(expected))?.textContent || "", text))
+  .catch(async () => assert.fail(`${message} (toasts: ${JSON.stringify(await page.$$eval(".toast", (nodes) => nodes.map((node) => node.textContent)).catch(() => []))})`));
+const createVault = async (page) => {
+  await dismissToasts(page);
+  await clickByText(page, ".settings-drawer .sync-card button", "Create sync vault");
+  return toastMatching(page, "Sync vault created", "Create sync vault showed no result");
+};
+const joinPeerVault = async (page) => {
+  await dismissToasts(page);
+  await (await page.$('.settings-drawer .sync-card input[type="file"]')).uploadFile(peerSyncFile);
+  return toastMatching(page, "Merged 1 peer file", "joining the peer's vault did not fold its file", 30_000);
+};
+
+// Draws one arrow on the open board.
+const drawArrow = async (page) => {
+  const arrowPanel = await page.$eval('button[aria-label="Arrow"]', (node) => {
+    const panel = node.closest("[data-board-panel]");
+    return panel?.hidden ? panel.getAttribute("data-board-panel") : "";
   });
+  if (arrowPanel) await page.click(`[data-board-toggle="${arrowPanel}"]`);
+  await page.click('button[aria-label="Arrow"]');
+  await page.waitForFunction(() => Number(document.querySelector(".board-canvas")?.dataset.pageWidth) > 0);
+  const box = await page.$eval(".board-canvas", (canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    return { left: rect.left + Number(canvas.dataset.pageLeft), top: rect.top + Number(canvas.dataset.pageTop), width: Number(canvas.dataset.pageWidth), height: Number(canvas.dataset.pageHeight) };
+  });
+  await page.mouse.move(box.left + box.width * 0.2, box.top + box.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(box.left + box.width * 0.7, box.top + box.height * 0.6, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"), { timeout: 5_000 })
+    .catch(() => assert.fail("the arrow was not drawn"));
 };
 
 // Every route and the core flows, with storage failing in `mode`.
@@ -366,23 +423,7 @@ const blockedStorageFlows = (viewportName) => async ({ page, open, assertRendere
   // Whiteboard: a drawn arrow is saved to IndexedDB while the cross-tab
   // storage signal is refused.
   await open(`#/board/${encodeURIComponent(BOARD_DOCUMENT)}`, ".board-canvas");
-  const arrowPanel = await page.$eval('button[aria-label="Arrow"]', (node) => {
-    const panel = node.closest("[data-board-panel]");
-    return panel?.hidden ? panel.getAttribute("data-board-panel") : "";
-  });
-  if (arrowPanel) await page.click(`[data-board-toggle="${arrowPanel}"]`);
-  await page.click('button[aria-label="Arrow"]');
-  await page.waitForFunction(() => Number(document.querySelector(".board-canvas")?.dataset.pageWidth) > 0);
-  const box = await page.$eval(".board-canvas", (canvas) => {
-    const rect = canvas.getBoundingClientRect();
-    return { left: rect.left + Number(canvas.dataset.pageLeft), top: rect.top + Number(canvas.dataset.pageTop), width: Number(canvas.dataset.pageWidth), height: Number(canvas.dataset.pageHeight) };
-  });
-  await page.mouse.move(box.left + box.width * 0.2, box.top + box.height * 0.3);
-  await page.mouse.down();
-  await page.mouse.move(box.left + box.width * 0.7, box.top + box.height * 0.6, { steps: 8 });
-  await page.mouse.up();
-  await page.waitForFunction(() => document.querySelector(".board-hint")?.textContent.includes("1 object"), { timeout: 5_000 })
-    .catch(() => assert.fail("the arrow was not drawn"));
+  await drawArrow(page);
   await waitForStored(page, `board:${BOARD_DOCUMENT}`, (board) => board?.pages?.[0]?.objects?.length === 1, "the drawn arrow was not saved to IndexedDB");
 
   // The Mac tutor: acknowledge the disclosure in the UI and get an answer.
@@ -436,6 +477,8 @@ const blockedStorageFlows = (viewportName) => async ({ page, open, assertRendere
   assert.equal(first.announcedRegions, 1, "the notice was announced more than once");
   // IndexedDB works in this mode, and Settings says so once a write proved it.
   assert.ok(first.detail.includes(STUDY_DATA_SENTENCE) && first.announced.includes(STUDY_DATA_SENTENCE), `with IndexedDB working the notice did not say study data is saved: ${JSON.stringify(first)}`);
+  assert.ok(!first.detail.includes(STUDY_DATA_LOST), `with IndexedDB working the notice said study data is not being saved: ${JSON.stringify(first)}`);
+  assert.notEqual(await saveStatusText(page), "error", "with IndexedDB working, Save status read error");
   for (const [theme, label] of THEMES) {
     await clickByText(page, ".theme-choices button", label);
     await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, { timeout: 5_000 }, theme);
@@ -453,7 +496,7 @@ const blockedStorageFlows = (viewportName) => async ({ page, open, assertRendere
   const reopened = await noticeState(page);
   assert.ok(reopened.visible, "the storage notice disappeared on reopening Settings");
   assert.equal(reopened.announced, "", "reopening Settings announced the storage notice again");
-  // A vault would be forgotten when Lumen closes, so sync says so and stays off.
+  // A vault would be forgotten when Lumen is closed or reloaded, so sync says so and stays off.
   await typePassphrase(page);
   assert.deepEqual(await syncState(page), { warning: true, createDisabled: true, joinDisabled: true }, "with storage failing, the sync card let a vault be created or joined, or did not say why not");
   // The theme was saved to IndexedDB, which blocked Web Storage never touches.
@@ -521,6 +564,10 @@ const siteDataBlockedFlows = (viewportName) => async ({ page, context, open }) =
   const first = await noticeState(page);
   assert.ok(first.visible && first.text === NOTICE, `the storage notice was not shown: ${JSON.stringify(first)}`);
   assert.ok(!first.detail.includes(STUDY_DATA_SENTENCE) && !first.announced.includes(STUDY_DATA_SENTENCE), `with IndexedDB blocked as well, Settings said study data is saved: ${JSON.stringify(first)}`);
+  // Settings' IndexedDB check failed, so it says so and advises a backup
+  // before anything tried to save, and Save status does not read "saved".
+  assert.ok(first.detail.includes(STUDY_DATA_LOST) && first.announced.includes(STUDY_DATA_LOST), `with IndexedDB blocked as well, Settings did not say study data is not being saved: ${JSON.stringify(first)}`);
+  assert.equal(await saveStatusText(page), "error", "with IndexedDB blocked, Save status read as saved before the first save");
   await typePassphrase(page);
   assert.deepEqual(await syncState(page), { warning: true, createDisabled: true, joinDisabled: true }, "with site data blocked, the sync card let a vault be created or joined, or did not say why not");
   await closeSettings(page);
@@ -528,6 +575,12 @@ const siteDataBlockedFlows = (viewportName) => async ({ page, context, open }) =
   // Every route still renders as an entry point.
   if (viewportName === "phone") {
     for (const [hash, ready] of ROUTES.slice(1)) await open(hash, ready);
+    // A board change cannot be saved either; the whiteboard says it stays
+    // until storage access recovers (blocked, not full).
+    await open(`#/board/${encodeURIComponent(BOARD_DOCUMENT)}`, ".board-canvas");
+    await drawArrow(page);
+    const boardError = await toastMatching(page, "This board change remains visible only in the current tab", "a board change that could not be saved was not reported");
+    assert.ok(boardError.includes("until storage access recovers") && !boardError.includes("reduce local data"), `blocked storage was reported to the whiteboard as full: “${boardError}”`);
   }
 
   // Export works: the backup downloads, although its export date cannot be
@@ -556,9 +609,100 @@ const siteDataBlockedFlows = (viewportName) => async ({ page, context, open }) =
     .catch(async () => assert.fail(`Save status did not turn to "error" (it reads "${await saveStatusText(page)}")`));
   const after = await noticeState(page);
   assert.ok(after.visible && !after.detail.includes(STUDY_DATA_SENTENCE), `after a failed save the notice said study data is saved: ${JSON.stringify(after)}`);
+  assert.ok(after.detail.includes(STUDY_DATA_LOST), `after a failed save the notice did not say study data is not being saved: ${JSON.stringify(after)}`);
+};
+
+// Issue #139 review: IndexedDB works when Settings opens (so the notice says
+// study data is saved, and announces it), then fails. The visible notice
+// drops that sentence; a status region must never keep it. Only a failure
+// inside the announcement's 5 s stay tests that, so a run that lands later
+// is repeated on a new document.
+const watchStaleAnnouncement = (page) => page.evaluate((sentence) => {
+  const result = { frames: 0, stale: 0, droppedAt: 0 };
+  window.__lumenAuditStale = result;
+  const sample = () => {
+    result.frames += 1;
+    const visible = document.querySelector(".settings-drawer .settings-storage-notice span")?.textContent || "";
+    if (!visible.includes(sentence)) {
+      if (!result.droppedAt) result.droppedAt = performance.now();
+      if ([...document.querySelectorAll(".settings-drawer [role='status']")].some((node) => node.textContent.includes(sentence))) result.stale += 1;
+    }
+    if (result.frames < 1_800) requestAnimationFrame(sample);
+  };
+  requestAnimationFrame(sample);
+}, STUDY_DATA_SENTENCE);
+const studyDataFailsLaterFlows = async ({ page, open }) => {
+  for (let attempt = 1; ; attempt += 1) {
+    await open("#/home", ".welcome-block");
+    await watchAnnouncement(page);
+    await openSettings(page);
+    await expectAnnouncement(page);
+    const first = await noticeState(page);
+    assert.ok(first.announced.includes(STUDY_DATA_SENTENCE), `with IndexedDB working the announcement did not say study data is saved: ${JSON.stringify(first)}`);
+    await watchStaleAnnouncement(page);
+    // IndexedDB now refuses every transaction, as a store that fails mid-visit does.
+    await page.evaluate(() => {
+      IDBDatabase.prototype.transaction = function transaction() { throw new DOMException("The database connection is closing.", "InvalidStateError"); };
+    });
+    await clickByText(page, ".theme-choices button", "Night");
+    await page.waitForFunction(() => [...document.querySelectorAll(".settings-drawer .microcopy")].some((node) => node.textContent.includes("Save status: error")), { timeout: 10_000 })
+      .catch(async () => assert.fail(`a save that IndexedDB refused did not turn Save status to "error" (it reads "${await saveStatusText(page)}")`));
+    await delay(300);
+    const { filledAt } = await page.evaluate(() => window.__lumenAuditAnnouncement);
+    const stale = await page.evaluate(() => window.__lumenAuditStale);
+    assert.ok(stale.droppedAt > 0, "the visible notice kept saying study data is saved after a save failed");
+    const after = await noticeState(page);
+    assert.ok(after.detail.includes(STUDY_DATA_LOST), `after IndexedDB failed the notice did not say study data is not being saved: ${JSON.stringify(after)}`);
+    if (stale.droppedAt - filledAt < 4_500) {
+      assert.equal(stale.stale, 0, `a status region kept saying study data is saved after the notice dropped it (${stale.stale} of ${stale.frames} frames)`);
+      return;
+    }
+    assert.ok(attempt < 3, `three runs finished after the announcement had left its region (last ${Math.round(stale.droppedAt - filledAt)} ms after it), so nothing was tested`);
+  }
+};
+
+// Issue #139 review: a nearly full store refuses large values and takes
+// small ones. The budget-ledger mirror is refused on every save, which must
+// not make Settings say preferences are not saved (they are) or lock sync.
+// A vault the browser refuses to store lasts this visit only and says so,
+// on creating and on joining.
+const NEARLY_FULL_STORE = {
+  name: "nearly full store",
+  // Values over 64 characters (the ledger mirror, a vault membership) are
+  // refused; the probe and small preferences land.
+  install: () => {
+    const store = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (String(value).length > 64) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+      return store.call(this, key, value);
+    };
+  },
+};
+const fullStoreFlows = async ({ page, open }) => {
+  await open("#/home", ".welcome-block");
+  await openSettings(page);
+  await clickByText(page, ".theme-choices button", "Night");
+  await waitForStored(page, "profile", (profile) => profile?.settings?.theme === "dark", "a Settings change was not saved with a nearly full Web Storage");
+  await delay(600);
+  assert.equal(await page.evaluate(() => localStorage.getItem("lumen-ai-notes-fallback")), null, "the budget-ledger mirror was stored, so this case proves nothing");
+  assert.equal((await noticeState(page)).visible, false, "a refused large write made Settings say preferences are not being saved, although small ones are");
+  await typePassphrase(page);
+  assert.deepEqual(await syncState(page), { warning: false, createDisabled: false, joinDisabled: false }, "a refused large write locked sync, although small writes land");
+
+  const created = await createVault(page);
+  assert.ok(created.includes(VAULT_FOR_VISIT), `a vault the browser did not store was reported as lasting: “${created}”`);
+  await page.waitForSelector(".settings-drawer .sync-status-line", { timeout: 5_000 });
+  await open("#/home", ".welcome-block");
+  await openSettings(page);
+  assert.equal(await page.$(".settings-drawer .sync-status-line"), null, "a vault the browser did not store came back after a reload");
+
+  await typePassphrase(page);
+  const joined = await joinPeerVault(page);
+  assert.ok(joined.includes(MEMBERSHIP_NOT_SAVED), `joining a vault the browser did not store was reported as lasting: “${joined}”`);
 };
 
 try {
+  await writePeerSyncFile();
   browser = await puppeteer.launch({
     executablePath: chromePath,
     headless: true,
@@ -588,7 +732,19 @@ try {
     await typePassphrase(page);
     assert.deepEqual(await syncState(page), { warning: false, createDisabled: false, joinDisabled: false }, "with working storage the sync card still blocked Create and Join");
     assert.equal(await page.evaluate(() => localStorage.getItem("lumen.storage-probe.v1")), null, "the storage probe left its key behind");
+    // A stored vault, created or joined, is reported as lasting.
+    const created = await createVault(page);
+    assert.ok(!created.includes(VAULT_FOR_VISIT), `with working storage a new vault was said to last this visit only: “${created}”`);
+    await clickByText(page, ".settings-drawer .sync-card button", "Leave vault");
+    await page.waitForFunction(() => !document.querySelector(".settings-drawer .sync-status-line"), { timeout: 5_000 });
+    const joined = await joinPeerVault(page);
+    assert.ok(!joined.includes(MEMBERSHIP_NOT_SAVED), `with working storage a joined vault was said to last this visit only: “${joined}”`);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("lumen-sync-vault-v1") || "null")?.vaultId), PEER_VAULT, "the joined vault never reached localStorage");
   });
+
+  // IndexedDB failing after Settings opened, and a nearly full Web Storage.
+  await runCase("IndexedDB failing after Settings opens", { install: MODES[0].install, viewport: VIEWPORTS[0][1] }, studyDataFailsLaterFlows);
+  await runCase(NEARLY_FULL_STORE.name, { install: NEARLY_FULL_STORE.install, viewport: VIEWPORTS[0][1] }, fullStoreFlows);
 
   // Chrome's cookie blocking comes from the profile, so it needs a browser
   // of its own; its contexts inherit the block.
@@ -610,7 +766,7 @@ try {
   }
 
   assert.deepEqual(failures, [], `blocked-storage failures:\n- ${failures.join("\n- ")}`);
-  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after, kept it on reopening, said study data is saved only after IndexedDB took a write, kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so; with working storage the engine choice survived a real reload.`);
+  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, IndexedDB failing after Settings opens, a nearly full store, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after (never keeping a sentence the notice dropped), kept it on reopening, said study data is saved only after IndexedDB took a write and that it is not being saved when IndexedDB refused, kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so and the whiteboard advised waiting for storage access; a nearly full store kept the notice off and sync on, and a vault it would not store, created or joined, said it lasts this visit only; with working storage the engine choice survived a real reload and a created or joined vault was stored.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });

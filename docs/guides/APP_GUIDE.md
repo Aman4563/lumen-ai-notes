@@ -381,18 +381,20 @@ Some browsers block site storage (a privacy setting such as Safari's **Block
 All Cookies**, a managed-device policy, or a full device). Lumen still opens
 every screen. Small per-device choices, such as the tutor engine, recent
 searches, an unsent tutor question and, on wider screens, whether the reader
-panel is open, then last only until Lumen closes, and **Settings** says "This
-browser is not saving preferences on this device". Cross-device sync is off
-in this state: a vault would be forgotten when Lumen closes, and each visit
-would write a new sync file. Narration positions and audio bookmarks are not
-kept; a bookmark says it could not be saved. Notes, progress, reviews and
+panel is open, then last only until Lumen is closed or reloaded, and
+**Settings** says "This browser is not saving preferences on this device".
+Cross-device sync is off in this state: a vault would be forgotten when Lumen
+is closed or reloaded, and each visit would write a new sync file. If a nearly
+full browser storage will not save a vault you create or join, Lumen says it
+lasts this visit only. Narration positions and audio bookmarks are not kept;
+a bookmark says it could not be saved. Notes, progress, reviews and
 whiteboards use a separate store, and the notice says they are still saved
 only after Lumen has checked that this store takes a write. If the browser
-blocks that store too, the first change you make shows an error saying it
-could not be saved, and the save status under **Settings → Backup and
-transfer** turns from "saved" to "error". Export a backup before closing
-Lumen: it still downloads, and the message says only that its export date
-could not be recorded.
+blocks that store too, the notice says they are not being saved either, the
+save status under **Settings → Backup and transfer** reads "error", and a
+change you make shows an error saying it could not be saved. Export a backup
+before closing or reloading Lumen: it still downloads, and the message says
+only that its export date could not be recorded.
 
 ## Updating the curriculum or interface
 

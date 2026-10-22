@@ -112,16 +112,16 @@ evidence report in issue #7.
    changing anything. It must show "This browser is not saving preferences on
    this device". With VoiceOver on, opening Settings reads it once, and
    swiping through Settings a few seconds later meets it once, not twice;
-   closing and reopening Settings must not read it again. Record whether the
-   notice says "Notes, progress and reviews are saved separately": it may
-   only while Safari still lets Lumen write to IndexedDB. Then change the
-   theme. If Safari blocked IndexedDB too, an error says the change could not
-   be saved and advises a backup, "Save status" under Backup and transfer
-   turns from "saved" to "error" (it reads "saved" until that first save
-   attempt), and the notice has no sentence about study data. Under
-   Cross-device sync, a warning says sync needs this browser to save
-   settings, and Create sync vault and Join via a peer's file stay off with
-   a passphrase entered.
+   closing and reopening Settings must not read it again. Record how the
+   notice ends. "Notes, progress and reviews are saved separately" may appear
+   only while Safari still lets Lumen write to IndexedDB. If Safari blocked
+   IndexedDB too, the notice says "Notes, progress and reviews are not being
+   saved either" and advises a backup, and "Save status" under Backup and
+   transfer reads "error" before anything is changed. Then change the theme:
+   in that case an error says the change could not be saved and advises a
+   backup. Under Cross-device sync, a warning says sync is off because this
+   browser would not keep this device's vault membership, and Create sync
+   vault and Join via a peer's file stay off with a passphrase entered.
 3. **Export with storage blocked.** Tap Export backup. The backup must
    download (to Files). If IndexedDB is blocked, the message says it was
    downloaded and that the export date could not be recorded, never "Backup
