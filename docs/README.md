@@ -60,3 +60,6 @@ in the requirements tracker; see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
   requirement status and the append-only verification log.
 - [Local AI model research](internal/LOCAL_AI_MODEL_RESEARCH.md): the dated
   decision record behind the default local models.
+- [Learning-platform research](internal/research/README.md): how leading
+  memory, reading, practice and visual-learning tools work, the learning
+  science behind them, and the roadmap of issues it produced.
