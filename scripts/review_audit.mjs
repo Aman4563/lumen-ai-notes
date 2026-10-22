@@ -527,11 +527,10 @@ try {
   const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
   assert.ok(seasoned, "a reviewed card must exist for the migration check");
   assert.ok(seasoned.stability > 0 && seasoned.fsrsState !== "", `migration must seed reviewed cards (stability ${seasoned.stability}, state ${seasoned.fsrsState})`);
-  // Issue #148: only Classic keeps an early card's interval. FSRS grows it by its
-  // own rules, so Extra practice must not promise otherwise while it is on.
+  // Issue #148: the notice must say the same under FSRS, so no Classic-only promise comes back.
   await clickByText(page, ".review-hero-actions button", "Crunch weak cards");
   await page.waitForSelector(".review-session-page .review-crunch-notice", { timeout: 5_000 });
-  assert.equal(await page.$eval(".review-crunch-notice", (node) => node.textContent.trim()), "Extra practice doesn’t use today’s limits.", "under FSRS the Extra practice notice must not promise that an early answer keeps its interval");
+  assert.equal(await page.$eval(".review-crunch-notice", (node) => node.textContent.trim()), "Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back.", "under FSRS the Extra practice notice must say that answers still reschedule cards");
   await clickByText(page, ".review-session-header button", "End session");
   await page.waitForSelector(".review-center-page");
   // Issue #16: the workload planner shows steady-state daily reviews per
@@ -948,7 +947,7 @@ try {
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
     }));
-    assert.equal(notice.text, "Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.", "the Extra practice notice must say that a card answered early keeps its current interval");
+    assert.equal(notice.text, "Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back.", "the Extra practice notice must say that answers still reschedule cards and point to the rating buttons");
     assert.ok(notice.right <= notice.innerWidth && notice.scrollWidth <= notice.innerWidth, `the Extra practice notice must wrap inside a 393px phone: ${JSON.stringify(notice)}`);
 
     const handled = [];
