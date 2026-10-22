@@ -961,10 +961,9 @@ try {
       assert.ok(card, `Extra practice showed a card that was not seeded: ${prompt}`);
       handled.push(prompt);
       await earlyPage.keyboard.press("Space");
-      // The revealed answer holds focus once the rating keys are live: the key-handler
-      // effect is declared before the focus effect in ReviewCenter.jsx, so once focus
-      // lands the handler is attached. Reordering those effects would let a key press
-      // land before the handler exists.
+      // The answer takes focus in an effect of the same render that re-attaches the
+      // key handler with the card revealed (ReviewCenter.jsx), so once the answer
+      // has focus, key 3 rates the card.
       await earlyPage.waitForFunction(() => document.activeElement?.classList.contains("review-answer") && document.querySelectorAll(".review-rating span").length === 4, { timeout: 5_000 })
         .catch(() => assert.fail(`revealing the answer of “${card.id}” did not show the rating buttons`));
       const buttons = await earlyPage.$$eval(".review-rating span", (nodes) => nodes.map((node) => node.textContent));
