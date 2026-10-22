@@ -63,7 +63,7 @@ test("linkTarget names the lecture and the decoded heading a link points to", ()
   assert.deepEqual(linkTarget("notes/a.md", "#100%"), { anchor: "100%" }, "a malformed escape keeps its raw text");
   assert.deepEqual(linkTarget("notes/a.md", "#"), { anchor: "" });
   for (const href of ["https://example.com/a.md#x", "mailto:a@b.c", "tel:+15551234"]) assert.equal(linkTarget("notes/a.md", href), null, href);
-  for (const href of ["./image.png", "figure.png", "", "?q=1", "/assets/app.css", "//example.com/page"]) assert.deepEqual(linkTarget("notes/a.md", href), { notADocument: true }, href);
+  for (const href of ["./image.png", "figure.png", "", "?q=1", "/assets/app.css", "//example.com/page", "figure.png#fig:1", "page.html?t=10:30", "notes/a:b.png", "//example.com:8080/page"]) assert.deepEqual(linkTarget("notes/a.md", href), { notADocument: true }, href);
 });
 
 test("every heading id documentAnchorIds lists is a link target that lands on it", () => {

@@ -35,7 +35,10 @@ const decodeFragment = (fragment) => {
  * - `{ documentId, anchor }` — a lecture or note (anchor "" without a fragment);
  * - `{ anchor }` — a heading in the current lecture (`#…`; the anchor may be "");
  * - `{ notADocument: true }` — a relative link that is neither;
- * - null — a link with a scheme, which is the browser's to follow.
+ * - null — a link with a URL scheme that resolves to no lecture, which is the
+ *   browser's to follow. A `.md` link with a scheme other than http(s), mailto
+ *   and tel (`ftp://h/a.md`, `a:b.md`) still opens as a document, because
+ *   resolveDocumentLink runs first.
  * Anchors are percent-decoded, so they compare against heading ids directly.
  */
 export const linkTarget = (currentPath, href) => {
@@ -45,7 +48,7 @@ export const linkTarget = (currentPath, href) => {
   if (link.startsWith("#")) return { anchor };
   const documentId = resolveDocumentLink(currentPath, link);
   if (documentId !== null) return { documentId, anchor };
-  return link.includes(":") ? null : { notADocument: true };
+  return /^[a-z][a-z0-9+.-]*:/i.test(link) ? null : { notADocument: true };
 };
 
 /** What the Reader and Teaching Mode say when a link has nowhere to take the learner. */
