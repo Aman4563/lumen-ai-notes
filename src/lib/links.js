@@ -4,8 +4,7 @@ import { slugifyHeading } from "./markdown.js";
  * Link targets and heading anchors, shared by the Reader and the link audit so
  * a link the audit calls valid is one the Reader opens. Pure and DOM-free, so
  * Node suites run the exact functions the app does; its one import,
- * slugifyHeading, is already startup code. content.js re-exports
- * resolveDocumentLink for existing importers.
+ * slugifyHeading, is already startup code.
  */
 
 /** The document id a relative `.md` link opens, or null when it names none. */

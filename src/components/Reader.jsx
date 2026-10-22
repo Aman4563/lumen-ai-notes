@@ -43,7 +43,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { plainTextFromMarkdown, resolveDocumentLink } from "../lib/content";
+import { plainTextFromMarkdown } from "../lib/content";
+import { resolveDocumentLink } from "../lib/links.js";
 import { slugifyHeading } from "../lib/markdown";
 import { renderReaderMarkdown, useRenderedMarkdown } from "../lib/useRenderedMarkdown.js";
 import { diffLines, diffSummary } from "../lib/diff.js";

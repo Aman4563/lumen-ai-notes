@@ -86,8 +86,6 @@ export const parts = Array.from({ length: 23 }, (_, index) => {
 
 export const guides = documents.filter((doc) => doc.partNumber === 0);
 
-export { resolveDocumentLink } from "./links.js";
-
 export const makeCustomDocument = ({ id, title, raw, createdAt = new Date().toISOString(), updatedAt = createdAt, tags = [], collectionId = "", archived = false, pinned = false }) => {
   const documentId = id || `custom/${createId()}.md`;
   return {
