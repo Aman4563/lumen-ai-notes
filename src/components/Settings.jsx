@@ -4,7 +4,7 @@ import ErrorBoundary from "./ErrorBoundary";
 import { recoverableImport } from "../lib/chunkRecovery.js";
 import { checkStudyDataStorage } from "../lib/db.js";
 import { checkDeviceStorage, deviceStorageSaves, subscribeDeviceStorage } from "../lib/safeStorage.js";
-import { syncFileNameFor } from "../lib/syncIdentity.js";
+import { syncFileNameFor, vaultMembershipStored } from "../lib/syncIdentity.js";
 
 // Settings. It left the startup bundle for its budget (issue #95) and is an
 // install-tier route screen, so it opens offline after one visit.
@@ -22,6 +22,9 @@ const STORAGE_NOTICE_DETAIL = "Choices such as the tutor engine, recent searches
 const STORAGE_NOTICE_STUDY_DATA = "Notes, progress and reviews are saved separately and are not affected.";
 const STORAGE_NOTICE_STUDY_DATA_LOST = "Notes, progress and reviews are not being saved either, so export a backup before closing or reloading Lumen.";
 const SYNC_STORAGE_WARNING = "Sync is off because this browser would not keep this device's vault membership: a vault would be forgotten when Lumen is closed or reloaded, and each visit would write a new sync file.";
+// A vault the browser refused to store (a nearly full store) is still shown
+// for this visit; the card says so after the toast has gone.
+const SYNC_VISIT_NOTE = "This browser is not keeping this vault membership, so this device leaves the vault when Lumen is closed or reloaded.";
 // The announcement goes into a status region that is already on screen and
 // empty, a moment after Settings opens, and leaves it again once read, so
 // reading the page line by line never meets the notice twice.
@@ -158,6 +161,7 @@ export default function SettingsView({ settings, backupMeta, aiHistoryCount, onC
         <input ref={syncImportRef} type="file" accept=".lumenc" multiple hidden onChange={(event) => { const files = [...(event.target.files || [])]; event.target.value = ""; if (files.length) onSyncImport(files, syncPassphrase); }} />
         {!cryptoAvailable && <p className="inline-warning">Sync needs WebCrypto in a secure (HTTPS) context. There is no weak-crypto fallback.</p>}
         {!storageSaves && <p className="inline-warning sync-storage-warning">{SYNC_STORAGE_WARNING}</p>}
+        {storageSaves && syncVault && !vaultMembershipStored(syncVault) && <p className="inline-warning sync-visit-warning">{SYNC_VISIT_NOTE}</p>}
         {!syncVault && <p className="microcopy">Each device in a vault writes one encrypted file into a folder you share however you like — iCloud Drive, Syncthing, a USB stick. One passphrase per vault, entered on each device and never stored. Create a vault here, or pick a peer's <code>.lumenc</code> sync file to join theirs.</p>}
         {syncVault && <p className="microcopy sync-status-line">Vault <code>{syncVault.vaultId.slice(0, 8)}…</code> · this device <code>{syncDeviceId.slice(0, 8)}…</code> · last sync {syncVault.lastSyncAt ? new Date(syncVault.lastSyncAt).toLocaleString() : "never"}. Your file is <code>{syncFileNameFor(syncDeviceId)}</code>; each device only ever writes its own.</p>}
         <label className="backup-password-field"><span>Vault passphrase <small>never stored — needed for every export and import</small></span><input className="text-input" type="password" value={syncPassphrase} minLength={8} maxLength={128} onChange={(event) => setSyncPassphrase(event.target.value)} placeholder={syncVault ? "Required for export and import" : "Required to create or join a vault"} disabled={!cryptoAvailable} autoComplete="off" aria-label="Sync vault passphrase" /></label>

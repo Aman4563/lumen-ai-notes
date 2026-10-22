@@ -295,7 +295,8 @@ status is false the sync card says why and keeps Create and Join off: vault memb
 the device id would last only the visit, and each visit would write a new `<deviceId>.lumenc`.
 Creating or joining a vault then checks `vaultMembershipStored()` in `syncIdentity.js`, which
 reads past the session's memory copy, so a membership the browser refused (a nearly full
-store) says it lasts this visit only.
+store) says it lasts this visit only, in its toast and, for as long as it is shown, on the
+sync card.
 Once IndexedDB is blocked too, `exportBackup` still downloads a valid backup and reports it
 with a warning that the export date could not be recorded, and a `BUDGET_STATE_UNAVAILABLE`
 save error advises a backup (the whiteboard: waiting for storage access) rather than reducing

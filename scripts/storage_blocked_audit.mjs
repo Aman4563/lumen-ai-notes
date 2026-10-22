@@ -24,10 +24,11 @@ import { installSpeechMock } from "./speech_mock.mjs";
 // saved; with working storage it must not. A third shape is Chrome's own
 // cookie blocking, set in the profile: Web Storage and IndexedDB both fail,
 // so nothing is saved, and Settings must say so rather than that study data
-// is saved. Two short cases follow: IndexedDB failing after Settings opened
-// (no status region may keep a sentence the notice dropped), and a nearly
-// full store that refuses only large values (no notice, sync on, and a vault
-// it would not store says it lasts this visit only).
+// is saved. Short cases follow: IndexedDB failing after Settings opened (no
+// status region may keep a sentence the notice dropped), IndexedDB working
+// again (the notice and Save status recover with the next save), and a
+// nearly full store that refuses only large values (no notice, sync on, and
+// a vault it would not store says it lasts this visit only, on the card too).
 const axeSource = await readFile(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 const baseUrl = (process.env.LUMEN_URL || "http://127.0.0.1:4173/").replace(/\/$/, "");
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -42,6 +43,8 @@ const SYNC_WARNING = "Sync is off because this browser would not keep this devic
 // A vault the browser would not store lasts this visit only, and says so.
 const VAULT_FOR_VISIT = "Sync vault created for this visit only";
 const MEMBERSHIP_NOT_SAVED = "This browser did not save the vault membership";
+// ...and the sync card keeps saying so after the toast has gone.
+const SYNC_VISIT_NOTE = "This browser is not keeping this vault membership";
 const SYNC_PASSPHRASE = "blocked storage vault passphrase";
 const PEER_VAULT = "storage-blocked-audit-peer-vault-0001";
 const CRASH = "could not render this screen";
@@ -345,6 +348,13 @@ const joinPeerVault = async (page) => {
   await dismissToasts(page);
   await (await page.$('.settings-drawer .sync-card input[type="file"]')).uploadFile(peerSyncFile);
   return toastMatching(page, "Merged 1 peer file", "joining the peer's vault did not fold its file", 30_000);
+};
+// Whether the sync card itself says the vault lasts this visit only (with
+// every toast dismissed, so only the card can say it).
+const syncVisitNoteShown = async (page) => {
+  await dismissToasts(page);
+  await page.waitForFunction(() => !document.querySelector(".toast"), { timeout: 5_000 }).catch(() => {});
+  return page.$$eval(".settings-drawer .sync-card .inline-warning", (nodes, note) => nodes.some((node) => node.textContent.includes(note) && node.getClientRects().length), SYNC_VISIT_NOTE);
 };
 
 // Draws one arrow on the open board.
@@ -692,6 +702,7 @@ const fullStoreFlows = async ({ page, open }) => {
   const created = await createVault(page);
   assert.ok(created.includes(VAULT_FOR_VISIT), `a vault the browser did not store was reported as lasting: “${created}”`);
   await page.waitForSelector(".settings-drawer .sync-status-line", { timeout: 5_000 });
+  assert.ok(await syncVisitNoteShown(page), "once its toast had gone, nothing said the new vault lasts this visit only");
   await open("#/home", ".welcome-block");
   await openSettings(page);
   assert.equal(await page.$(".settings-drawer .sync-status-line"), null, "a vault the browser did not store came back after a reload");
@@ -699,6 +710,28 @@ const fullStoreFlows = async ({ page, open }) => {
   await typePassphrase(page);
   const joined = await joinPeerVault(page);
   assert.ok(joined.includes(MEMBERSHIP_NOT_SAVED), `joining a vault the browser did not store was reported as lasting: “${joined}”`);
+  assert.ok(await syncVisitNoteShown(page), "once its toast had gone, nothing said the joined vault lasts this visit only");
+};
+
+// Issue #139 review: IndexedDB refuses while Settings opens, then works
+// again. The probe runs again whenever Save status changes, so the next save
+// that lands must bring back "saved separately" and Save status "saved".
+const studyDataRecoversFlows = async ({ page, open }) => {
+  await open("#/home", ".welcome-block");
+  await page.evaluate(() => {
+    window.__lumenAuditTransaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function transaction() { throw new DOMException("The database connection is closing.", "InvalidStateError"); };
+  });
+  await openSettings(page);
+  await page.waitForFunction((lost) => document.querySelector(".settings-drawer .settings-storage-notice span")?.textContent.includes(lost), { timeout: 10_000 }, STUDY_DATA_LOST)
+    .catch(async () => assert.fail(`with IndexedDB refusing, the notice did not say study data is not being saved: ${JSON.stringify(await noticeState(page))}`));
+  assert.equal(await saveStatusText(page), "error", "with IndexedDB refusing, Save status did not read error");
+  await page.evaluate(() => { IDBDatabase.prototype.transaction = window.__lumenAuditTransaction; });
+  await clickByText(page, ".theme-choices button", "Night");
+  await waitForStored(page, "profile", (profile) => profile?.settings?.theme === "dark", "the theme was not saved once IndexedDB worked again");
+  await page.waitForFunction((saved) => document.querySelector(".settings-drawer .settings-storage-notice span")?.textContent.includes(saved)
+      && [...document.querySelectorAll(".settings-drawer .microcopy")].some((node) => node.textContent.includes("Save status: saved")), { timeout: 10_000 }, STUDY_DATA_SENTENCE)
+    .catch(async () => assert.fail(`after IndexedDB recovered and a save landed, Settings still said study data is not being saved (Save status "${await saveStatusText(page)}"): ${JSON.stringify(await noticeState(page))}`));
 };
 
 try {
@@ -735,15 +768,19 @@ try {
     // A stored vault, created or joined, is reported as lasting.
     const created = await createVault(page);
     assert.ok(!created.includes(VAULT_FOR_VISIT), `with working storage a new vault was said to last this visit only: “${created}”`);
+    assert.equal(await syncVisitNoteShown(page), false, "with working storage the sync card said a stored vault lasts this visit only");
     await clickByText(page, ".settings-drawer .sync-card button", "Leave vault");
     await page.waitForFunction(() => !document.querySelector(".settings-drawer .sync-status-line"), { timeout: 5_000 });
     const joined = await joinPeerVault(page);
     assert.ok(!joined.includes(MEMBERSHIP_NOT_SAVED), `with working storage a joined vault was said to last this visit only: “${joined}”`);
+    assert.equal(await syncVisitNoteShown(page), false, "with working storage the sync card said a joined vault lasts this visit only");
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("lumen-sync-vault-v1") || "null")?.vaultId), PEER_VAULT, "the joined vault never reached localStorage");
   });
 
-  // IndexedDB failing after Settings opened, and a nearly full Web Storage.
+  // IndexedDB failing after Settings opened, IndexedDB recovering, and a
+  // nearly full Web Storage.
   await runCase("IndexedDB failing after Settings opens", { install: MODES[0].install, viewport: VIEWPORTS[0][1] }, studyDataFailsLaterFlows);
+  await runCase("IndexedDB recovering after Settings opens", { install: MODES[0].install, viewport: VIEWPORTS[0][1] }, studyDataRecoversFlows);
   await runCase(NEARLY_FULL_STORE.name, { install: NEARLY_FULL_STORE.install, viewport: VIEWPORTS[0][1] }, fullStoreFlows);
 
   // Chrome's cookie blocking comes from the profile, so it needs a browser
@@ -766,7 +803,7 @@ try {
   }
 
   assert.deepEqual(failures, [], `blocked-storage failures:\n- ${failures.join("\n- ")}`);
-  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, IndexedDB failing after Settings opens, a nearly full store, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after (never keeping a sentence the notice dropped), kept it on reopening, said study data is saved only after IndexedDB took a write and that it is not being saved when IndexedDB refused, kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so and the whiteboard advised waiting for storage access; a nearly full store kept the notice off and sync on, and a vault it would not store, created or joined, said it lasts this visit only; with working storage the engine choice survived a real reload and a created or joined vault was stored.`);
+  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, IndexedDB failing and recovering after Settings opens, a nearly full store, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after (never keeping a sentence the notice dropped), kept it on reopening, said study data is saved only after IndexedDB took a write and that it is not being saved when IndexedDB refused (and recovered with the next save), kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so and the whiteboard advised waiting for storage access; a nearly full store kept the notice off and sync on, and a vault it would not store, created or joined, said it lasts this visit only, in a toast and on the sync card; with working storage the engine choice survived a real reload and a created or joined vault was stored.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
