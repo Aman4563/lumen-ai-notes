@@ -139,10 +139,11 @@ try {
   await pollValue(() => readProfile(pageA), (profile) => profile.recent[0] === lectureA);
   await pageB.evaluate((id) => { location.hash = `#/read/${encodeURIComponent(id)}`; }, lectureB);
   await pageB.waitForSelector(".markdown-body h1", { timeout: 15_000 });
-  await pollValue(() => readProfile(pageA), (profile) => profile.recent[0] === lectureB);
+  const landed = await pollValue(() => readProfile(pageA), (profile) => profile.recent[0] === lectureB);
+  assert.equal(landed.recent[0], lectureB, "the second tab's Recent write was not stored");
   // The baseline is the revision once it has held for a second (at most
   // 10 s, so tabs that never stop rewriting still reach the check below).
-  let settledRevision = (await readProfile(pageA)).syncMeta.revision;
+  let settledRevision = landed.syncMeta.revision;
   for (let stableSince = Date.now(), giveUpAt = Date.now() + 10_000; Date.now() - stableSince < 1_000 && Date.now() < giveUpAt;) {
     await delay(250);
     const revision = (await readProfile(pageA)).syncMeta.revision;
@@ -151,6 +152,10 @@ try {
       stableSince = Date.now();
     }
   }
+  // The second tab's Recent write is the last one expected, so writes while
+  // the revision settles count as well: a burst of echoes that stops before
+  // the idle window is still the ping-pong this guards against.
+  assert.ok(settledRevision - landed.syncMeta.revision <= 1, `two reader tabs kept rewriting the profile after the second opened its lecture (${settledRevision - landed.syncMeta.revision} revisions before it held still)`);
   // The idle window itself: nothing should write during it.
   await delay(3_000);
   const idle = await readProfile(pageA);
