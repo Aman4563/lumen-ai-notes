@@ -832,8 +832,168 @@ try {
   } finally {
     await savedAiContext.close();
   }
+
+  // Issue #148: Extra practice grades cards that are not due, and used to
+  // multiply their interval on every pass. The main flow above switches to
+  // FSRS and seeds 10,000 cards, so a fresh Classic context hosts this: two
+  // cards that are a day or three into a long interval are crunched with the
+  // keyboard alone. The buttons must preview the interval the grade stores, the
+  // grade must keep it, Mastered and the Part 05 ladder must not move, and the
+  // schedule rule the attempt was graded under must be stored and survive a reload.
+  const earlyContext = await browser.createBrowserContext();
+  try {
+    const earlyPage = await earlyContext.newPage();
+    await earlyPage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    earlyPage.on("pageerror", (error) => errors.push(error.message));
+    // Per card: how it is seeded, what its buttons must read, what is announced,
+    // what a quick grade must leave stored, and what multiplying would have stored.
+    const earlyCards = [
+      {
+        id: "early-probe",
+        front: "Early probe: what does dropout do at inference?",
+        back: "Nothing: it is switched off, so every unit is active.",
+        seed: { intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0 },
+        waitedDays: 1,
+        previews: [[0, "14 min · 1"], [1, "10 days · 2"], [2, "10 days · 3"], [3, "10 days · 4"]],
+        announced: "Rated Good: next review in 10 days",
+        kept: { intervalDays: 10, repetitions: 4, ease: 2.5 },
+        multipliedDays: 25,
+      },
+      {
+        id: "early-mastered",
+        front: "Early mastered: what does L2 regularization penalize?",
+        back: "The squared size of the weights, which shrinks large coefficients.",
+        seed: { intervalDays: 30, repetitions: 5, reviewCount: 5 },
+        waitedDays: 3,
+        previews: [[2, "1 mo · 3"]],
+        announced: "Rated Good: next review in 1 mo",
+        kept: { intervalDays: 30, repetitions: 5 },
+        multipliedDays: 75,
+      },
+    ];
+    await earlyPage.goto(`${baseUrl}#/review`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await earlyPage.waitForSelector(".review-center-page");
+    // Both cards were last reviewed `waitedDays` ago and are due exactly their
+    // interval after that review, as the app schedules them: neither is due now.
+    await earlyPage.evaluate((cards) => new Promise((resolve, reject) => {
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const transaction = request.result.transaction("study-data", "readwrite");
+        const store = transaction.objectStore("study-data");
+        const get = store.get("profile");
+        get.onerror = () => reject(get.error);
+        get.onsuccess = () => {
+          const profile = get.result && typeof get.result === "object" ? get.result : {};
+          const base = Date.now();
+          const stamp = (days) => new Date(base + days * 86_400_000).toISOString();
+          profile.reviewItems = cards.map((card) => ({
+            id: card.id, type: "basic", front: card.front, back: card.back, tags: [],
+            documentId: "notes/part-05-supervised-learning/01-linear-regression.md",
+            suspended: false, archived: false, buriedOnDay: "", ease: 2.5, lapses: 0, ...card.seed,
+            lastReviewedAt: stamp(-card.waitedDays), dueAt: stamp(card.seed.intervalDays - card.waitedDays),
+            createdAt: stamp(-60), updatedAt: stamp(-card.waitedDays),
+          }));
+          profile.reviewAttempts = [];
+          store.put(profile, "profile");
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }), earlyCards);
+    await earlyPage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await earlyPage.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 2, { timeout: 10_000 })
+      .catch(() => assert.fail("the two seeded cards did not load into the deck"));
+
+    const masteredTile = () => earlyPage.$$eval(".review-stat-grid article", (tiles) => tiles.find((tile) => tile.querySelector("span")?.textContent === "Mastered")?.querySelector("strong")?.textContent ?? null);
+    // Part 05's row on Home, read once it shows its cards; back on the review
+    // center afterwards.
+    const partFiveRow = async () => {
+      await earlyPage.evaluate(() => { location.hash = "#/home"; });
+      await earlyPage.waitForFunction(() => /\d+\/\d+ cards mastered/.test([...document.querySelectorAll(".mastery-row")].find((row) => row.querySelector(".mastery-part")?.textContent === "05")?.textContent ?? ""), { timeout: 10_000 })
+        .catch(() => assert.fail("Home did not show the cards mastered in Part 05"));
+      const row = await earlyPage.evaluate(() => [...document.querySelectorAll(".mastery-row")].find((node) => node.querySelector(".mastery-part")?.textContent === "05").textContent);
+      await earlyPage.evaluate(() => { location.hash = "#/review"; });
+      await earlyPage.waitForSelector(".review-center-page", { timeout: 5_000 });
+      return row;
+    };
+    assert.equal(await earlyPage.$eval(".review-hero strong", (node) => node.textContent), "0", "cards that are not due must leave today's queue empty");
+    assert.equal(await masteredTile(), "1", "only the 30-day card is Mastered before Extra practice");
+    const partFiveBefore = await partFiveRow();
+    assert.ok(partFiveBefore.includes("1/2 cards mastered"), `Part 05 must start with one of its two cards mastered: ${partFiveBefore}`);
+
+    // Keyboard only from here: Enter starts Extra practice, Space reveals, 3 rates Good.
+    // Focus the button once earlier focus moves have settled, and confirm it is
+    // still there a few frames later, or Enter can land on another control.
+    const crunchFocused = await earlyPage.waitForFunction(async () => {
+      const button = [...document.querySelectorAll(".review-hero-actions button")].find((node) => node.textContent.includes("Crunch weak cards"));
+      if (!button) return false;
+      button.focus();
+      for (let frame = 0; frame < 3; frame += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      return document.activeElement === button;
+    }, { timeout: 5_000, polling: 200 }).then(() => true, () => false);
+    assert.ok(crunchFocused, "the Crunch weak cards control must be a focusable button that keeps focus");
+    await earlyPage.keyboard.press("Enter");
+    await earlyPage.waitForSelector(".review-session-page .review-crunch-notice", { timeout: 5_000 });
+    const notice = await earlyPage.$eval(".review-crunch-notice", (node) => ({
+      text: node.textContent.trim(),
+      right: node.getBoundingClientRect().right,
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+    assert.equal(notice.text, "Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.", "the Extra practice notice must say that a card answered early keeps its current interval");
+    assert.ok(notice.right <= notice.innerWidth && notice.scrollWidth <= notice.innerWidth, `the Extra practice notice must wrap inside a 393px phone: ${JSON.stringify(notice)}`);
+
+    const handled = [];
+    for (let turn = 1; turn <= earlyCards.length; turn += 1) {
+      // The prompt of a card not yet graded holds focus: the next card is shown.
+      await earlyPage.waitForFunction((done) => document.activeElement?.classList.contains("review-question") && !done.includes(document.activeElement.textContent.trim()), { timeout: 5_000 }, handled)
+        .catch(() => assert.fail(`Extra practice did not focus the prompt of card ${turn}`));
+      const prompt = (await earlyPage.$eval(".review-question", (node) => node.textContent)).trim();
+      const card = earlyCards.find((entry) => entry.front === prompt);
+      assert.ok(card, `Extra practice showed a card that was not seeded: ${prompt}`);
+      handled.push(prompt);
+      await earlyPage.keyboard.press("Space");
+      // The revealed answer holds focus once the rating keys are live.
+      await earlyPage.waitForFunction(() => document.activeElement?.classList.contains("review-answer") && document.querySelectorAll(".review-rating span").length === 4, { timeout: 5_000 })
+        .catch(() => assert.fail(`revealing the answer of “${card.id}” did not show the rating buttons`));
+      const buttons = await earlyPage.$$eval(".review-rating span", (nodes) => nodes.map((node) => node.textContent));
+      assert.deepEqual(card.previews.map(([index]) => [index, buttons[index]]), card.previews, `Extra practice must preview early-aware intervals: “${card.id}” reads ${JSON.stringify(buttons)}`);
+      await earlyPage.keyboard.press("3");
+      await earlyPage.waitForFunction((text) => [...document.querySelectorAll(".review-session-page [role='status'], .review-center-page [role='status']")].some((node) => node.textContent.includes(text)), { timeout: 5_000 }, card.announced)
+        .catch(async () => assert.fail(`rating “${card.id}” Good must announce “${card.announced}”: ${JSON.stringify(await earlyPage.$$eval("[role='status']", (nodes) => nodes.map((node) => node.textContent)))}`));
+    }
+    assert.deepEqual(handled.slice().sort(), earlyCards.map((card) => card.front).sort(), "Extra practice must show each seeded card once");
+    await earlyPage.waitForSelector(".review-center-page", { timeout: 5_000 });
+
+    const crunched = await savedProfile(earlyPage, (profile) => earlyCards.every((card) => profile.reviewAttempts?.some((attempt) => attempt.reviewItemId === card.id)));
+    assert.equal(crunched.reviewAttempts.length, 2, "each Extra practice grade must store one attempt");
+    for (const card of earlyCards) {
+      const item = crunched.reviewItems.find((entry) => entry.id === card.id);
+      const attempt = crunched.reviewAttempts.find((entry) => entry.reviewItemId === card.id);
+      assert.ok(item && attempt, `“${card.id}” and its attempt must be stored`);
+      assert.deepEqual(Object.fromEntries(Object.keys(card.kept).map((field) => [field, item[field]])), card.kept, `“${card.id}” must keep its interval, repetitions and ease through an early Crunch grade`);
+      assert.equal(Date.parse(item.dueAt) - Date.parse(attempt.reviewedAt), card.kept.intervalDays * 86_400_000, `an early Crunch grade must keep the interval: dueAt is now + ${card.kept.intervalDays} days, not + ${card.multipliedDays}`);
+      assert.equal(attempt.crunch, true, `the attempt on “${card.id}” must be marked as Extra practice`);
+      assert.equal(attempt.sessionKind, "crunch", `the attempt on “${card.id}” must be an Extra practice session`);
+      assert.equal(attempt.scheduleRule, 2, `the attempt on “${card.id}” must record the schedule rule it was graded under`);
+    }
+    assert.equal(await earlyPage.$eval(".review-hero strong", (node) => node.textContent), "0", "Extra practice must leave today's queue empty");
+    assert.equal(await masteredTile(), "1", "early Crunch grades must not raise the Mastered count: the 10-day card stays at 10 days");
+    const partFiveAfter = await partFiveRow();
+    assert.ok(partFiveAfter.includes("1/2 cards mastered"), `early Crunch grades must not raise Part 05's mastered cards: ${partFiveAfter}`);
+
+    await earlyPage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await earlyPage.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 2, { timeout: 10_000 })
+      .catch(() => assert.fail("the graded cards did not load into the deck after a reload"));
+    const reloaded = await savedProfile(earlyPage, (profile) => profile.reviewAttempts?.length === 2);
+    assert.deepEqual(reloaded.reviewAttempts.map((attempt) => [attempt.reviewItemId, attempt.scheduleRule]).sort(), [["early-mastered", 2], ["early-probe", 2]], "scheduleRule must survive a reload");
+    await earlyPage.close();
+  } finally {
+    await earlyContext.close();
+  }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, and saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits) verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), and early Crunch grades that keep their interval and Mastered count verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
