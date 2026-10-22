@@ -527,6 +527,13 @@ try {
   const seasoned = fsrsProfile.reviewItems.find((item) => item.reviewCount > 0);
   assert.ok(seasoned, "a reviewed card must exist for the migration check");
   assert.ok(seasoned.stability > 0 && seasoned.fsrsState !== "", `migration must seed reviewed cards (stability ${seasoned.stability}, state ${seasoned.fsrsState})`);
+  // Issue #148: only Classic keeps an early card's interval. FSRS grows it by its
+  // own rules, so Extra practice must not promise otherwise while it is on.
+  await clickByText(page, ".review-hero-actions button", "Crunch weak cards");
+  await page.waitForSelector(".review-session-page .review-crunch-notice", { timeout: 5_000 });
+  assert.equal(await page.$eval(".review-crunch-notice", (node) => node.textContent.trim()), "Extra practice doesn’t use today’s limits.", "under FSRS the Extra practice notice must not promise that an early answer keeps its interval");
+  await clickByText(page, ".review-session-header button", "End session");
+  await page.waitForSelector(".review-center-page");
   // Issue #16: the workload planner shows steady-state daily reviews per
   // retention choice, monotone in retention, and switches the setting.
   await page.waitForSelector(".review-workload-strip", { timeout: 5_000 });
@@ -986,7 +993,14 @@ try {
     await earlyPage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
     await earlyPage.waitForFunction(() => document.querySelectorAll(".review-deck-card").length === 2, { timeout: 10_000 })
       .catch(() => assert.fail("the graded cards did not load into the deck after a reload"));
-    const reloaded = await savedProfile(earlyPage, (profile) => profile.reviewAttempts?.length === 2);
+    // A bare reload saves nothing (the app writes only when the profile changes),
+    // so reading the record again would only repeat the read above. Change a
+    // setting, so the stored attempts pass through hydrate, merge and write again.
+    const newLimit = (await earlyPage.evaluateHandle(() => [...document.querySelectorAll(".review-settings-strip label")].find((label) => label.firstChild?.textContent.trim() === "New")?.querySelector("select"))).asElement();
+    assert.ok(newLimit, "the Daily limits strip must offer a New picker");
+    await newLimit.select("20");
+    const reloaded = await savedProfile(earlyPage, (profile) => profile.reviewSettings?.dailyNewLimit === 20);
+    assert.equal(reloaded.reviewSettings?.dailyNewLimit, 20, "the Daily limits change made after the reload was not saved");
     assert.deepEqual(reloaded.reviewAttempts.map((attempt) => [attempt.reviewItemId, attempt.scheduleRule]).sort(), [["early-mastered", 2], ["early-probe", 2]], "scheduleRule must survive a reload");
     await earlyPage.close();
   } finally {

@@ -807,7 +807,8 @@ export default function ReviewCenter({
         </header>
         <div className="review-stage">
           <div className="review-progress" role="progressbar" aria-label="Session progress" aria-valuemin={0} aria-valuemax={sessionTotal} aria-valuenow={sessionDone} aria-valuetext={`${sessionDone} of ${sessionTotal} reviewed`}><span style={{ width: `${sessionTotal ? (sessionDone / sessionTotal) * 100 : 0}%` }} /></div>
-          {crunch && <p className="review-crunch-notice"><Flame size={15} /> Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.</p>}
+          {/* Only Classic keeps an early card's interval; FSRS grows it by its own rules, so it gets no such promise. */}
+          {crunch && <p className="review-crunch-notice"><Flame size={15} /> Extra practice doesn’t use today’s limits.{profile.reviewSettings.scheduler === "fsrs" ? "" : " A card you answer early keeps its current interval."}</p>}
           <article className={revealed ? "review-flashcard revealed" : "review-flashcard"}>
             <span className="eyebrow">{(() => {
               const queueClass = classifyReviewItem(current);
