@@ -73,7 +73,8 @@ export const headingAnchors = (markdown) => {
   const anchors = [];
   const counts = new Map();
   for (const [line, text] of blankFences(markdown).split("\n").entries()) {
-    const match = text.match(/^(##|###)\s+(.+)$/);
+    // A lecture saved with CRLF line endings leaves a "\r" on each line; it is not part of the heading.
+    const match = text.replace(/\r$/, "").match(/^(##|###)\s+(.+)$/);
     if (!match) continue;
     const base = slugifyHeading(headingText(match[2]), anchors.length);
     const seen = counts.get(base) || 0;

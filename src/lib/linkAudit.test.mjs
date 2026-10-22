@@ -45,6 +45,15 @@ test("the link audit flags exactly what the reader cannot open", () => {
   assert.equal(sweep.findings[0].kind, "missing-document");
 });
 
+test("the link audit flags an in-page link to a heading the document lacks, naming no other document", () => {
+  // A guard: the audit already did this before it classified links with linkTarget.
+  const findings = auditDocumentLinks("notes/p/a.md", "[gone](#nope) [top](#)", new Set(["notes/p/a.md"]), () => ["real"]);
+  assert.deepEqual(findings, [
+    { documentId: "notes/p/a.md", href: "#nope", label: "gone", kind: "missing-anchor" },
+    { documentId: "notes/p/a.md", href: "#", label: "top", kind: "missing-anchor" },
+  ]);
+});
+
 test("linkTarget names the lecture and the decoded heading a link points to", () => {
   assert.deepEqual(linkTarget("notes/01-advanced-curriculum-coverage-audit.md", "README.md#all-parts"), { documentId: "notes/README.md", anchor: "all-parts" });
   assert.deepEqual(linkTarget("notes/part-01/a.md", "#local-heading"), { anchor: "local-heading" });
@@ -85,6 +94,13 @@ test("teaching slides find the heading a link names", () => {
   assert.deepEqual(teachingSlideForAnchor(sections, "first-section-2"), { index: 4, ordinal: 0 });
   assert.equal(teachingSlideForAnchor(sections, "not-a-heading-in-a-fence"), null);
   assert.equal(teachingSlideForAnchor(sections, "missing"), null);
+});
+
+test("headings are found in a lecture saved with CRLF line endings", () => {
+  // Uploads keep their line endings. splitTeachingSections is not CRLF-aware, so the whole lecture is one slide.
+  const source = "# T\r\n\r\n## Alpha\r\ntext\r\n### Beta\r\n";
+  assert.deepEqual(documentAnchorIds(source), ["alpha", "beta"]);
+  assert.deepEqual(teachingSlideForAnchor(splitTeachingSections(source), "beta"), { index: 0, ordinal: 1 });
 });
 
 test("HTML import converts the allowlist, drops danger, and keeps titles", () => {
