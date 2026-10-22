@@ -89,11 +89,13 @@ export const documentAnchorIds = (markdown) => headingAnchors(markdown).map((hea
 
 /**
  * The Teaching Mode slide that holds the heading a link names, and that
- * heading's ordinal among the slide's h2/h3 headings; null when no heading has
- * that id. `sections` come from splitTeachingSections, which also starts a slide
- * at a "## " line inside a code fence, so slides are matched to headings by
- * source line rather than by counting headings. Joined with "\n" the sections
- * are the source less a blank intro (which holds no heading).
+ * heading's ordinal: its position among the slide's source h2/h3 headings;
+ * null when no heading has that id. `sections` come from splitTeachingSections,
+ * which also starts a slide at a "## " line inside a code fence, so slides are
+ * matched to headings by source line rather than by counting headings. A slide
+ * split inside a fence can render fewer headings than its source holds, so
+ * the caller checks the ordinal against the rendered slide. Joined with "\n"
+ * the sections are the source less a blank intro (which holds no heading).
  */
 export const teachingSlideForAnchor = (sections, anchor) => {
   const headings = headingAnchors(sections.map((section) => section.markdown).join("\n"));

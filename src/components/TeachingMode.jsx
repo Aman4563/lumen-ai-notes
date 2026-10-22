@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, Eye, EyeOff, Expand, Minus, Minimize2, Pause, Play, Plus, Printer, RotateCcw, Square } from "lucide-react";
 import { splitTeachingSections } from "../lib/markdown";
 import { plainTextFromMarkdown } from "../lib/content";
+import { LINK_NOTICES, linkTarget, teachingSlideForAnchor } from "../lib/links.js";
+import { scrollBehavior } from "../lib/motion.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import { renderReaderMarkdown, useRenderedMarkdown } from "../lib/useRenderedMarkdown.js";
 import { useModalDialog } from "../hooks/useModalDialog.js";
 
 const TEACHING_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-view > :not(.teach-mode)"];
 
-export default function TeachingMode({ title, source, onClose, speech }) {
+export default function TeachingMode({ title, source, documentId, onClose, onOpenDocument, onNotify, speech }) {
   const sections = useMemo(() => splitTeachingSections(source), [source]);
   const [index, setIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -46,6 +48,53 @@ export default function TeachingMode({ title, source, onClose, speech }) {
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
     onClose();
   }, [onClose, speech]);
+
+  // A link to a heading in this lecture shows its slide and focuses the
+  // heading. Each jump is a new object, so a jump within the slide already
+  // shown, where the index stays put, still runs the effect.
+  const [jump, setJump] = useState(null);
+  const jumpedToRef = useRef(null);
+  useEffect(() => {
+    const article = articleRef.current;
+    if (!jump || !article) return;
+    // The ordinal counts the slide's source headings. A slide split inside a
+    // code fence can render fewer, so the jump falls back to its first, or
+    // to the slide itself, and still lands on the right slide.
+    const headings = article.querySelectorAll("h2, h3");
+    const heading = headings[jump.ordinal] || headings[0] || article;
+    heading.setAttribute("tabindex", "-1");
+    heading.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+    heading.focus({ preventScroll: true });
+    jumpedToRef.current = heading;
+  }, [jump]);
+  const jumpToHeading = (anchor) => {
+    const target = teachingSlideForAnchor(sections, anchor);
+    if (!target) {
+      onNotify?.(LINK_NOTICES.missingSection, "warning");
+      return;
+    }
+    speech.stop();
+    setConcealed(false);
+    setIndex(target.index);
+    setJump(target);
+  };
+
+  // A slide's links stay in the app: followed by the browser, a fragment
+  // would replace the hash route and a relative URL would leave the app.
+  const followLink = (event) => {
+    const link = event.target.closest("a[href]");
+    if (!link) return;
+    const target = linkTarget(documentId, link.getAttribute("href"));
+    // A link with a scheme is the browser's to follow (web links open a new tab).
+    if (!target) return;
+    event.preventDefault();
+    if (target.notADocument) onNotify?.(LINK_NOTICES.notADocument, "warning");
+    else if (target.documentId && (target.documentId !== documentId || !target.anchor)) {
+      // The lecture opens in the Reader, so Teaching Mode ends first.
+      close();
+      onOpenDocument(target.documentId, { anchor: target.anchor });
+    } else jumpToHeading(target.anchor);
+  };
 
   useEffect(() => {
     const timer = setInterval(() => setElapsed(Math.floor((Date.now() - timerStarted) / 1_000)), 1_000);
@@ -89,8 +138,9 @@ export default function TeachingMode({ title, source, onClose, speech }) {
       if (event.target.closest?.("select, input, textarea, pre, .table-scroll, .diagram-shell")) return;
       if (event.key === "ArrowRight" || event.key === "PageDown") move(1);
       else if (event.key === "ArrowLeft" || event.key === "PageUp") move(-1);
-      else if (event.key === " " && event.target === document.body) {
-        // After a tap on the slide focus is on the page; Space still narrates.
+      else if (event.key === " " && (event.target === document.body || event.target === jumpedToRef.current)) {
+        // After a tap on the slide focus is on the page, and after a link jump
+        // on the heading. Neither is a control, so Space still narrates.
         event.preventDefault();
         narrate();
       }
@@ -113,7 +163,7 @@ export default function TeachingMode({ title, source, onClose, speech }) {
       <div className="teach-stage" onTouchStart={(event) => { touchStartRef.current = event.touches[0]?.clientX; }} onTouchEnd={(event) => { const start = touchStartRef.current; const end = event.changedTouches[0]?.clientX; if (Number.isFinite(start) && Number.isFinite(end) && Math.abs(end - start) > 55) move(end < start ? 1 : -1); touchStartRef.current = null; }}>
         <div className="teach-card">
           <div className="teach-section-label">Section {String(index + 1).padStart(2, "0")} · {current.title}</div>
-          {concealed ? <div className="teach-recall"><EyeOff size={34} /><span className="eyebrow">Active recall</span><h2>{current.title}</h2><p>Explain this section from memory. State the intuition, important formula or mechanism, trade-offs, and one production failure mode.</p><button className="button primary" onClick={() => setConcealed(false)} type="button"><Eye size={18} /> Reveal section</button></div> : <article ref={articleRef} className="markdown-body teaching-markdown" style={{ fontSize: `${20 * fontScale}px` }} dangerouslySetInnerHTML={currentMarkup} />}
+          {concealed ? <div className="teach-recall"><EyeOff size={34} /><span className="eyebrow">Active recall</span><h2>{current.title}</h2><p>Explain this section from memory. State the intuition, important formula or mechanism, trade-offs, and one production failure mode.</p><button className="button primary" onClick={() => setConcealed(false)} type="button"><Eye size={18} /> Reveal section</button></div> : <article ref={articleRef} className="markdown-body teaching-markdown" style={{ fontSize: `${20 * fontScale}px` }} onClick={followLink} dangerouslySetInnerHTML={currentMarkup} />}
         </div>
       </div>
       <footer className="teach-footer">

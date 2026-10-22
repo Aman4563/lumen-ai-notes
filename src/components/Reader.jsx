@@ -161,6 +161,7 @@ export default function Reader({
   const drawerReturnFocusRef = useRef(null);
   const headingNodesRef = useRef([]);
   const scrollToHeadingRef = useRef(null);
+  const teachingLinkRef = useRef(null);
   const lastAnchorRef = useRef(null);
   const anchorHoldRef = useRef(null);
   const trackFrameRef = useRef(0);
@@ -412,6 +413,18 @@ export default function Reader({
       article.removeEventListener("click", handleLink);
     };
   }, [document.id, document.path, editing, html, onNotify, onOpenDocument, previewEdit]);
+
+  // A lecture link in Teaching Mode opens once Teaching Mode has unmounted.
+  // Until its dialog cleanup runs the reader is inert, so App's move of focus
+  // to the new lecture's heading would not land, and the cleanup would then
+  // return focus to Teach.
+  useEffect(() => {
+    const link = teachingLinkRef.current;
+    if (teaching || !link) return;
+    teachingLinkRef.current = null;
+    onOpenDocument(link.id, link.target);
+  }, [onOpenDocument, teaching]);
+  const openAfterTeaching = (id, target) => { teachingLinkRef.current = { id, target }; };
 
   useEffect(() => {
     if (!navigationTarget || navigationTarget.documentId !== document.id || (editing && !previewEdit)) return undefined;
@@ -1236,7 +1249,7 @@ export default function Reader({
           second line and Retry, beside Stop, replays that sentence. Retry
           takes the place of Pause, so the bar keeps seven controls. */}
       {playerVisible && <div ref={attachAudioBar} className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button>{!speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button>}<button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong>{playerNotice ? <span className="audio-message">{playerNotice.message}</span> : <span>{speech.currentText}</span>}</div>{speech.activeLabel === "Full lecture" && <button className="icon-button" onClick={bookmarkCurrentSentence} aria-label="Bookmark this sentence" title="Bookmark this sentence" type="button"><BookmarkPlus size={17} /></button>}{speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} aria-label="Retry narration" title="Retry narration" type="button"><RotateCcw size={18} /></button>}<button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
-      {teaching && <TeachingMode title={document.title} source={source} onClose={() => setTeaching(false)} speech={speech} />}
+      {teaching && <TeachingMode title={document.title} source={source} documentId={document.id} onClose={() => setTeaching(false)} onOpenDocument={openAfterTeaching} onNotify={onNotify} speech={speech} />}
       <AnnotationDialog draft={annotationDraft} onClose={() => setAnnotationDraft(null)} onSave={saveAnnotation} />
     </section>
   );

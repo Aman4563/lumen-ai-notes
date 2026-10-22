@@ -247,6 +247,30 @@ const STATES = [
       assert.equal(await page.$(`.review-deck-card[data-card-id="${PRACTICE_CARD_ID}"]`), null, "the practice card is still in the deck, so the next route scans would not see an empty one");
     },
   },
+  // Teaching Mode after a link jump, with focus on the heading it went to.
+  // Built-in lectures have no in-page links, so one is injected. Its target
+  // is on a later slide, so the focus-inside-dialog check means something.
+  {
+    name: "teaching-mode-link-jump",
+    route: ROUTES[2],
+    setup: async (page) => {
+      const id = await page.evaluate(() => document.querySelectorAll(".reader-view article.markdown-body:not(.teaching-markdown) h2")[2].id);
+      await clickText(page, ".document-tools button", "Teach");
+      await page.waitForSelector(".teach-mode .teaching-markdown");
+      await page.$eval(".teach-mode .teaching-markdown", (article, target) => {
+        const link = document.createElement("a");
+        link.setAttribute("href", `#${target}`);
+        link.textContent = "Jump to section";
+        article.prepend(link);
+        link.click();
+      }, id);
+    },
+    ready: ".teach-mode .teaching-markdown h2:focus",
+    close: async (page) => {
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(".teach-mode", { hidden: true });
+    },
+  },
 ];
 const VIEWPORTS = [
   ["phone", { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true }],
