@@ -38,13 +38,13 @@
 - A reviewed card with no `lastReviewedAt` (older data: `reviewCount > 0`, `lastReviewedAt: ""`): today's rule applies (25 days), never "early forever". Test in Task 1.
 - The exact due millisecond (elapsed equals the interval): not early, graded as today (25 days). Test in Task 1.
 - A card made due by "Schedule corrective review" (`dueAt` now, last review 2 days ago, 10-day interval): early under the elapsed definition, so it keeps 10 days. Test in Task 1.
-- A rule from a newer build (3) or a malformed rule (0, 2.5, "x", 5,000): the normalizer keeps 3, caps at 1,000 and turns the rest into 1; grading under rule 3 stays early-aware. Tests in Tasks 1 and 2.
+- A rule from a newer build (3) or a malformed rule (0, 2.5, "x", 5,000): the normalizer keeps 3, caps at 1,000 and stores no rule for the rest, which replay as rule 1; grading under rule 3 stays early-aware. Tests in Tasks 1 and 2.
 
 ## Rulings
 
 - Ruling: early-ness compares whole milliseconds with a strict `<`: `max(0, now − lastReviewedAt) < Math.round(intervalDays × 86_400_000)`, using fractional days for the formula, not FSRS's floored days. Every stored due time equals the last review plus the rounded interval exactly (checked for all 3,650,000 0.01-day intervals), so a due or overdue card can never read as early. Cost if wrong: near-due early reviews get slightly different intervals than a floored rule (a card 15 minutes short of due grows to about 25, not 22.5).
 - Ruling: a card made due by "Schedule corrective review" (`App.jsx` resets only `dueAt`) is early when its last review is more recent than its interval, as the issue defines early by elapsed time. Cost if wrong: a corrective review of a card already in review keeps its interval instead of multiplying it.
-- Ruling: the normalizer writes `scheduleRule: 1` on attempts without one and keeps any integer from 1 to 1,000 (capping larger ones). The scheduler treats rule ≥ 2 as early-aware, so #149's rule 3 needs no normalizer change and keeps this branch. Cost if wrong: about 17 bytes (2.6%) more per attempt recorded before this build.
+- Ruling (revised after Task 2's review): the normalizer keeps a valid rule (an integer from 1 to 1,000, capping larger ones) and stores nothing for an attempt without one or with a malformed one; such an attempt replays under rule 1, and the event identity compares the normalized rule. Writing `scheduleRule: 1` onto every older attempt grew existing profiles by about 17 bytes per attempt in one save, and the 20 MiB workspace budget refuses any growing save above the cap, so a learner near it would have every save refused after the upgrade. The scheduler treats rule ≥ 2 as early-aware, so #149's rule 3 needs no normalizer change. Cost if wrong: an absent rule and an explicit 1 are two spellings of rule 1; the identity and replay normalize both.
 - Ruling: the regression guards (due and overdue cards, sub-day steps, new cards, Again, FSRS 13 → 14 → 14, undo) pass on main by design; every check of new behaviour fails on main first. Cost if wrong: none for correctness; the PR names which tests are guards.
 - Ruling: the notice keeps the issue's words with the app's typographic apostrophes (’), as every ReviewCenter string does ("Today’s queue"). Cost if wrong: a one-character copy edit.
 - Ruling: FSRS keeps today's rules entirely, including `repetitions + 1` on early grades, so Crunch under FSRS can still move Mastered (the probe card reaches 14 days after two passes). Cost if wrong: FSRS learners still see Mastered inflate; it needs its own issue.
@@ -238,7 +238,7 @@ git commit -m "Grow early Classic reviews from the time actually waited" -m "A G
 
 **Interfaces:**
 - Consumes: `normalizeScheduleRule` from Task 1 (`src/lib/review.js`).
-- Produces: every normalized attempt has an integer `scheduleRule` (1 when the stored attempt had none); `reviewAttemptEvent` includes `scheduleRule`; replay grades each attempt with `scheduleRule: normalizeScheduleRule(attempt.scheduleRule)`, so an attempt without a rule replays under rule 1, never the current rule. The rewritten attempt keeps its own rule (the existing `...attempt` spread).
+- Produces: a normalized attempt keeps a valid `scheduleRule` (an integer 1–1,000, capped) and has no `scheduleRule` key when the stored attempt had none or a malformed one, so older attempts keep their size; `reviewAttemptEvent` includes `scheduleRule: normalizeScheduleRule(attempt?.scheduleRule)`, so an absent rule and 1 compare equal; replay grades each attempt with `scheduleRule: normalizeScheduleRule(attempt.scheduleRule)`, so an attempt without a rule replays under rule 1, never the current rule. The rewritten attempt keeps its own rule (the existing `...attempt` spread).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -246,14 +246,14 @@ git commit -m "Grow early Classic reviews from the time actually waited" -m "A G
 
 ```js
 // Issue #148: the attempt normalizer keeps scheduleRule. Attempts recorded
-// before it read as rule 1, a later build's rule (#149 writes 3) survives,
-// and malformed values fall back to 1.
+// before it, and malformed values, store no rule (they replay as rule 1), so
+// older attempts keep their size; a later build's rule (#149 writes 3) survives.
 {
   const card = createReviewItem({ front: "rule card", back: "a" }, new Date("2026-08-21T12:00:00.000Z"));
   const attempt = (id, extra = {}) => ({ id, reviewItemId: card.id, rating: "good", reviewedAt: "2026-08-21T12:00:00.000Z", ...extra });
-  const rules = normalizeProfile({ reviewItems: [card], reviewAttempts: [attempt("current", { scheduleRule: 2 }), attempt("legacy"), attempt("newer", { scheduleRule: 3 }), attempt("fraction", { scheduleRule: 2.5 }), attempt("zero", { scheduleRule: 0 }), attempt("text", { scheduleRule: "x" }), attempt("huge", { scheduleRule: 5_000 })] })
-    .reviewAttempts.map((entry) => [entry.id, entry.scheduleRule]);
-  assert.deepEqual(rules, [["current", 2], ["legacy", 1], ["newer", 3], ["fraction", 1], ["zero", 1], ["text", 1], ["huge", 1_000]], "the attempt normalizer must keep scheduleRule");
+  const normalized = normalizeProfile({ reviewItems: [card], reviewAttempts: [attempt("current", { scheduleRule: 2 }), attempt("legacy"), attempt("newer", { scheduleRule: 3 }), attempt("fraction", { scheduleRule: 2.5 }), attempt("zero", { scheduleRule: 0 }), attempt("text", { scheduleRule: "x" }), attempt("huge", { scheduleRule: 5_000 })] }).reviewAttempts;
+  assert.deepEqual(normalized.map((entry) => [entry.id, entry.scheduleRule]), [["current", 2], ["legacy", undefined], ["newer", 3], ["fraction", undefined], ["zero", undefined], ["text", undefined], ["huge", 1_000]], "the attempt normalizer must keep scheduleRule");
+  assert.deepEqual(normalized.filter((entry) => !("scheduleRule" in entry)).map((entry) => entry.id), ["legacy", "fraction", "zero", "text"], "an attempt without a valid rule stores none, so older attempts keep their size");
 }
 ```
 
@@ -269,7 +269,7 @@ git commit -m "Grow early Classic reviews from the time actually waited" -m "A G
 and to the v4 round-trip test, after the mistake assertions:
 
 ```js
-  assert.deepEqual(checked.data.profile.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule]), [["attempt-rule-2", 2], ["attempt-legacy", 1]], "scheduleRule survives a backup round trip, and an attempt without one restores as rule 1");
+  assert.deepEqual(checked.data.profile.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule]), [["attempt-rule-2", 2], ["attempt-legacy", undefined]], "scheduleRule survives a backup round trip, and an attempt without one restores without one");
 ```
 
 `src/lib/profileSync.test.mjs`: give `gradeProfile` an optional sixth argument `{ scheduleRule, olderBuild = false } = {}` that passes `scheduleRule` into `gradeReviewItem`'s metadata and, when `olderBuild`, deletes `scheduleRule` from the stored attempt (an older build never wrote it). Then add:
@@ -286,9 +286,22 @@ test("a rule-1 and a rule-2 grade of one card merge to the same card in either o
   const leftFirst = mergeProfileVersions(base, oldTab, newTab, { now: NOW, advanceRevision: false }).profile;
   const rightFirst = mergeProfileVersions(base, newTab, oldTab, { now: NOW, advanceRevision: false }).profile;
   assert.deepEqual(reviewMergeProjection(leftFirst), reviewMergeProjection(rightFirst));
-  assert.deepEqual(leftFirst.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule, attempt.nextIntervalDays]), [["attempt-rule-2", 2, 10], ["attempt-rule-1", 1, 25]]);
+  assert.deepEqual(leftFirst.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule, attempt.nextIntervalDays]), [["attempt-rule-2", 2, 10], ["attempt-rule-1", undefined, 25]]);
   const merged = leftFirst.reviewItems[0];
   assert.deepEqual([merged.intervalDays, merged.repetitions, merged.reviewCount], [25, 5, 6]);
+});
+
+// The rule is part of the event identity: an attempt whose rule an older build
+// dropped is a changed event, and its card is rebuilt under rule 1.
+test("an attempt that loses its rule in an older build is replayed under rule 1 (#148)", () => {
+  const gradedAt = new Date("2026-08-23T09:00:00.000Z");
+  const card = { ...reviewRecord("lost-rule", "Lost rule card"), intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0, lastReviewedAt: new Date(gradedAt.getTime() - 86_400_000).toISOString(), dueAt: new Date(gradedAt.getTime() + 9 * 86_400_000).toISOString() };
+  const base = gradeProfile(normalizeProfile({ ...initialProfile, reviewItems: [card] }), card.id, "good", gradedAt.toISOString(), "attempt-kept");
+  assert.deepEqual([base.reviewItems[0].intervalDays, base.reviewAttempts[0].scheduleRule], [10, 2]);
+  const stripped = normalizeProfile({ ...base, reviewAttempts: base.reviewAttempts.map(({ scheduleRule: _dropped, ...attempt }) => attempt) });
+  const merged = mergeProfileVersions(base, base, stripped, { now: NOW, advanceRevision: false }).profile;
+  assert.equal("scheduleRule" in merged.reviewAttempts[0], false);
+  assert.deepEqual([merged.reviewItems[0].intervalDays, merged.reviewItems[0].repetitions], [25, 5]);
 });
 ```
 
@@ -299,7 +312,7 @@ Expected: unit audit fails "the attempt normalizer must keep scheduleRule" (ever
 
 - [ ] **Step 3: Implement**
 
-`src/lib/db.js`: import `normalizeScheduleRule` from `./review.js`; the attempt normalizer adds `scheduleRule: normalizeScheduleRule(attempt.scheduleRule)` after `crunch`. `src/lib/profileSync.js`: import `normalizeScheduleRule`; `reviewAttemptEvent` adds `scheduleRule: attempt?.scheduleRule`; `replayReviewAttempt` passes `scheduleRule: normalizeScheduleRule(attempt.scheduleRule)` in the `gradeReviewItem` metadata. Nothing else in the merge changes.
+`src/lib/db.js`: import `normalizeScheduleRule` from `./review.js`; the attempt normalizer keeps `scheduleRule` after `crunch` only when `normalizeScheduleRule(attempt.scheduleRule, 0)` is non-zero (spread conditionally, so an attempt without a valid rule stores no key). `src/lib/profileSync.js`: import `normalizeScheduleRule`; `reviewAttemptEvent` adds `scheduleRule: normalizeScheduleRule(attempt?.scheduleRule)`; `replayReviewAttempt` passes `scheduleRule: normalizeScheduleRule(attempt.scheduleRule)` in the `gradeReviewItem` metadata. Nothing else in the merge changes.
 
 - [ ] **Step 4: Run the tests**
 
