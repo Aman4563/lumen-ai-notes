@@ -90,7 +90,11 @@ export default function TeachingMode({ title, source, documentId, onClose, onOpe
     event.preventDefault();
     if (target.notADocument) onNotify?.(LINK_NOTICES.notADocument, "warning");
     else if (target.documentId && (target.documentId !== documentId || !target.anchor)) {
-      // The lecture opens in the Reader, so Teaching Mode ends first.
+      // The lecture opens in the Reader, so Teaching Mode ends first. The
+      // parent must open it only after this dialog has unmounted, as the
+      // Reader's openAfterTeaching does: opened while the dialog's inert
+      // background is still applied, focus ends on the Teach button
+      // (workflow case "Teaching (h)").
       close();
       onOpenDocument(target.documentId, { anchor: target.anchor });
     } else jumpToHeading(target.anchor);
