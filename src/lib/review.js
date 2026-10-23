@@ -203,6 +203,39 @@ const weakFirst = (left, right) => (
   || String(left.id).localeCompare(String(right.id))
 );
 
+// How far ahead of its due time a learning step may be offered when the learner asks for
+// it. Nothing counts such a card as due until its time comes.
+export const LEARN_AHEAD_MINUTES = 20;
+
+/**
+ * A learning step: a card the learner has already seen whose interval is under a day,
+ * like the 10-minute step Again sets. A step stored as 0.01 day by an earlier build is
+ * one too; it is read as it is and never rewritten.
+ */
+export const isLearningStep = (item) => {
+  const intervalDays = Number(item.intervalDays) || 0;
+  return !isNewReviewItem(item) && intervalDays > 0 && intervalDays < 1;
+};
+
+/**
+ * Learning steps that are not due yet but come due within `minutes`, earliest first:
+ * what a review session may offer early instead of an empty queue while a failed card
+ * waits out its step. Suspended, archived and buried-today cards are left out. This
+ * only lists; a card enters a queue when the caller passes its id to buildReviewQueue.
+ */
+export const learnAheadCards = (items, now = new Date(), { minutes = LEARN_AHEAD_MINUTES, timeZone = currentTimeZone() } = {}) => {
+  const todayKey = localDayKey(now, timeZone);
+  const nowMilliseconds = now.getTime();
+  const horizon = nowMilliseconds + minutes * 60_000;
+  return items
+    .filter((item) => {
+      if (item.suspended || item.archived || item.buriedOnDay === todayKey || !isLearningStep(item)) return false;
+      const dueAt = Date.parse(item.dueAt);
+      return Number.isFinite(dueAt) && dueAt > nowMilliseconds && dueAt <= horizon;
+    })
+    .sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt) || String(left.id).localeCompare(String(right.id)));
+};
+
 export const buildReviewQueue = (items, settings, now = new Date(), sessions = [], options = {}) => {
   const timeZone = options.timeZone || currentTimeZone();
   const todayKey = localDayKey(now, timeZone);
@@ -226,14 +259,33 @@ export const buildReviewQueue = (items, settings, now = new Date(), sessions = [
   }
   due.sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt) || weakFirst(left, right));
   fresh.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || String(left.id).localeCompare(String(right.id)));
-  return [...due.slice(0, reviewRemaining), ...fresh.slice(0, newRemaining)];
+  // A due learning step is not held back by the daily review limit: a card failed on the
+  // last allowed review must still come back after its step, not tomorrow. Steps keep
+  // their due order among the reviews and use no slot; other reviews fill what is left.
+  let reviewSlots = reviewRemaining;
+  const reviews = [];
+  for (const item of due) {
+    if (isLearningStep(item)) reviews.push(item);
+    else if (reviewSlots > 0) {
+      reviews.push(item);
+      reviewSlots -= 1;
+    }
+  }
+  // Learning ahead is opt-in: only steps the caller lists, and of those only the ones
+  // learnAheadCards allows, so a stale or unknown id admits nothing.
+  const listed = Array.isArray(options.learnAheadIds) && options.learnAheadIds.length > 0 ? new Set(options.learnAheadIds) : null;
+  const early = listed ? learnAheadCards(items, now, { timeZone }).filter((item) => listed.has(item.id)) : [];
+  return [...reviews, ...fresh.slice(0, newRemaining), ...early];
 };
 
 /**
  * The single due count every surface shows (Home widgets, the sidebar and
  * app-icon badges, the review hero): cards actionable in today's queue — not
  * suspended, archived, or buried for today, and within the remaining daily
- * new/review limits. It is exactly the queue that Start review opens.
+ * new/review limits (a learning step that is due now is past the review limit).
+ * It is exactly the queue that Start review opens, and it stays "due now": it
+ * never passes `learnAheadIds`, so a card reachable only by learning ahead is
+ * not counted.
  */
 export const actionableReviewCount = ({ reviewItems = [], reviewSettings = {}, reviewSessions = [] } = {}, now = new Date(), timeZone = currentTimeZone()) => (
   buildReviewQueue(reviewItems, reviewSettings, now, reviewSessions, { timeZone }).length
