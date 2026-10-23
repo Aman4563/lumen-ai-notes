@@ -391,6 +391,13 @@ try {
     await inspect("review-session", ".review-session-page");
     await clickText(page, ".review-session-page button", "Show answer");
     await inspect("review-answer", ".review-session-page");
+    // Issue #149: failing the only due card swaps it for the retry panel (the
+    // seeded profile's other cards are due in 2099), which must wrap inside the
+    // page at every size, 320px and 200% text included, with Retry now in reach.
+    await clickText(page, ".review-rating", "Again");
+    await page.waitForSelector(".review-retry");
+    await inspect("review-retry", ".review-session-page");
+    await reach(".review-retry .button.primary");
     // Issue #148: Extra practice adds a notice above the card, which must wrap
     // inside the page at every size, 320px and 200% text included.
     await clickText(page, ".review-session-header button", "End session");

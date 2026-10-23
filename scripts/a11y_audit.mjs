@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
-import { settleAnimations, waitForTheme } from "./audit_waits.mjs";
+import { pollValue, settleAnimations, waitForTheme } from "./audit_waits.mjs";
 import { installSpeechMock, stepToSpokenBlock } from "./speech_mock.mjs";
 
 // axe-core is a pinned dev dependency. The app CSP blocks injected <script>
@@ -32,8 +32,9 @@ const THEMES = [["paper", "Paper"], ["dark", "Night"], ["contrast", "Contrast"]]
 // must hold focus. A state with its own `viewport` is scanned once per theme,
 // in that viewport, during the phone pass. An optional `verify(page, label)`
 // records structural findings once axe has run. A state that needs cards the
-// routes' empty profile lacks (extra-practice, #148) stores them in `setup`
-// and removes them in `close`, so the route scans keep their empty deck.
+// routes' empty profile lacks (extra-practice, #148; review-retry, #149)
+// stores them in `setup` and removes them in `close`, so the route scans keep
+// their empty deck.
 // Issue #98 adds its dialog states to this list.
 const clickText = (page, selector, text) => page.$$eval(selector, (nodes, expected) => {
   const node = nodes.find((item) => item.textContent.replace(/\s+/g, " ").trim().includes(expected));
@@ -51,12 +52,13 @@ const startNarration = async (page) => {
   await page.waitForSelector(".audio-bar");
 };
 const stopNarration = (page) => page.evaluate(() => document.querySelector('button[aria-label="Stop narration"]')?.click());
-// Extra practice (#148) needs a card in the deck. The stored profile also holds
-// the theme the route scans chose, so the card goes in (or out, for null) by a
-// read-modify-write of the review cards alone, never a fixture that replaces
-// the record. Taking it out is by id, so a repeated close finds nothing to do.
+// Extra practice (#148) and the retry state (#149) need cards in the deck. The
+// stored profile also holds the theme the route scans chose, so cards go in (or
+// out) by a read-modify-write of the review cards alone, never a fixture that
+// replaces the record: `ids` are removed, then `cards` added. Taking them out is
+// by id, so a repeated close finds nothing to do.
 const PRACTICE_CARD_ID = "a11y-practice";
-const storePracticeCard = (page, card) => page.evaluate((id, practice) => new Promise((resolve, reject) => {
+const storeAuditCards = (page, ids, cards) => page.evaluate((removed, added) => new Promise((resolve, reject) => {
   const request = indexedDB.open("lumen-ai-notes", 1);
   request.onerror = () => reject(request.error);
   request.onsuccess = () => {
@@ -68,16 +70,17 @@ const storePracticeCard = (page, card) => page.evaluate((id, practice) => new Pr
     get.onsuccess = () => {
       const profile = get.result;
       if (!profile || typeof profile !== "object") {
-        reject(new Error("there is no stored profile to put the practice card into"));
+        reject(new Error("there is no stored profile to put the audit cards into"));
         return;
       }
-      profile.reviewItems = [...(profile.reviewItems || []).filter((item) => item.id !== id), ...(practice ? [practice] : [])];
+      profile.reviewItems = [...(profile.reviewItems || []).filter((item) => !removed.includes(item.id)), ...added];
       store.put(profile, "profile");
     };
     transaction.oncomplete = () => { db.close(); resolve(); };
     transaction.onerror = () => { db.close(); reject(transaction.error); };
   };
-}), PRACTICE_CARD_ID, card);
+}), ids, cards);
+const storePracticeCard = (page, card) => storeAuditCards(page, [PRACTICE_CARD_ID], card ? [card] : []);
 // A card in review, last reviewed a day ago and due in nine: Extra practice
 // reaches it early, which is when its notice promises an unchanged interval.
 const practiceCard = () => {
@@ -89,6 +92,49 @@ const practiceCard = () => {
     lastReviewedAt: stamp(-1), dueAt: stamp(9), createdAt: stamp(-60), updatedAt: stamp(-1),
   };
 };
+// The retry state (#149): a session offers to retry when its queue is empty and
+// a learning step comes due within 20 minutes. Burying the due card empties the
+// queue and, unlike failing it, leaves no attempt, usage row or mistake behind;
+// the step beside it is the 10-minute step Again sets. The times are relative
+// to the run, so the cards are built at setup.
+const RETRY_DUE_ID = "a11y-retry-due";
+const RETRY_STEP_ID = "a11y-retry-step";
+const RETRY_CARD_IDS = [RETRY_DUE_ID, RETRY_STEP_ID];
+const RETRY_DUE_FRONT = "Why hold out a validation split?";
+const retryCards = () => {
+  const inMinutes = (minutes) => new Date(Date.now() + minutes * 60_000).toISOString();
+  const card = (id, front, back, schedule) => ({
+    id, type: "basic", front, back, tags: [],
+    documentId: "notes/part-05-supervised-learning/01-linear-regression.md",
+    suspended: false, archived: false, buriedOnDay: "", ease: 2.5, createdAt: inMinutes(-60 * 1_440), ...schedule,
+  });
+  return [
+    // Reviewed three days ago, due an hour ago: Start review opens with it.
+    card(RETRY_DUE_ID, RETRY_DUE_FRONT, "To tune choices without touching the test split.", {
+      intervalDays: 3, repetitions: 2, reviewCount: 2, lapses: 0,
+      lastReviewedAt: inMinutes(-3 * 1_440), dueAt: inMinutes(-60), updatedAt: inMinutes(-3 * 1_440),
+    }),
+    // Failed a minute ago and back in nine: the step the panel waits for.
+    card(RETRY_STEP_ID, "Which split reports the final error?", "The test split.", {
+      intervalDays: 10 / 1_440, repetitions: 0, reviewCount: 3, lapses: 1,
+      lastReviewedAt: inMinutes(-1), dueAt: inMinutes(9), updatedAt: inMinutes(-1),
+    }),
+  ];
+};
+// The app saves a change on a debounce, and a save that lands after a card was
+// taken out merges an edited card back in (the profile merge lets an edit win
+// over a deletion). Burying a card edits it, so the state that buries one waits
+// here for the day it is buried for to be saved before it takes the cards out.
+const storedBuriedDay = (page, id) => page.evaluate((cardId) => new Promise((resolve, reject) => {
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const db = request.result;
+    const get = db.transaction("study-data", "readonly").objectStore("study-data").get("profile");
+    get.onsuccess = () => { db.close(); resolve(get.result?.reviewItems?.find((item) => item.id === cardId)?.buriedOnDay || ""); };
+    get.onerror = () => { db.close(); reject(get.error); };
+  };
+}), id);
 // A reload brings the theme back from the stored profile: wait until the page
 // wears it again, so axe never reads the previous theme's colours (#138).
 const reloadInTheme = async (page, ready) => {
@@ -307,6 +353,57 @@ const STATES = [
     close: async (page) => {
       await page.keyboard.press("Escape");
       await page.waitForSelector(".teach-mode", { hidden: true });
+    },
+  },
+  // The retry state of a review session (#149), never scanned before: with the
+  // queue empty and a learning step a few minutes out, a panel (title, body,
+  // Retry now, End session) takes the card's place under the session header,
+  // in every theme. verify: the panel fits the layout viewport in both passes;
+  // on the phone pass its title holds focus and every session button is a
+  // 44 px target. The due card is buried and both cards are stored for this
+  // state only.
+  {
+    name: "review-retry",
+    route: ROUTES[4],
+    setup: async (page) => {
+      await storeAuditCards(page, RETRY_CARD_IDS, retryCards());
+      await reloadInTheme(page, `.review-deck-card[data-card-id="${RETRY_DUE_ID}"]`);
+      // Axe cannot measure the session header's text over the page's gradient
+      // (see extra-practice): scan it on the theme's paper colour.
+      await page.evaluate(() => { document.body.style.backgroundImage = "none"; });
+      assert.ok(await clickText(page, ".review-hero-actions button", "Start review"), "the review center offers no Start review button");
+      await page.waitForFunction((front) => document.querySelector(".review-question")?.textContent.trim() === front, { timeout: 10_000 }, RETRY_DUE_FRONT);
+      assert.ok(await clickText(page, ".review-session-actions button", "Bury today"), "the review session offers no Bury today button");
+    },
+    ready: ".review-retry",
+    verify: async (page, label) => {
+      // Against the layout viewport, as in extra-practice.
+      const panel = await page.evaluate(() => ({
+        right: document.querySelector(".review-retry").getBoundingClientRect().right,
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+        focused: document.activeElement?.id || document.activeElement?.tagName,
+        buttons: [...document.querySelectorAll(".review-session-page button")].filter((button) => button.getClientRects().length).map((button) => {
+          const box = button.getBoundingClientRect();
+          return { text: button.textContent.trim(), width: box.width, height: box.height };
+        }),
+      }));
+      check(panel.right <= panel.clientWidth && panel.scrollWidth <= panel.clientWidth, `${label}: the retry panel overflows (${JSON.stringify({ right: panel.right, scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth })})`);
+      // The phone's rules: the header buttons grow to 44 px at (max-width: 740px).
+      if (page.viewport().width <= 740) {
+        check(panel.focused === "review-retry-title", `${label}: the retry title does not hold focus (it is on ${panel.focused})`);
+        const undersized = panel.buttons.filter((button) => button.width < 44 || button.height < 44).map((button) => `${button.text} ${Math.round(button.width)}×${Math.round(button.height)}`);
+        check(panel.buttons.length > 0 && undersized.length === 0, `${label}: session buttons under 44×44 (${undersized.join(", ") || "none found"})`);
+      }
+    },
+    close: async (page) => {
+      assert.ok(await clickText(page, ".review-retry button", "End session"), "the retry panel offers no End session button");
+      assert.ok(await pollValue(() => storedBuriedDay(page, RETRY_DUE_ID), Boolean), "the bury was never saved, so the cards cannot be taken out before its save lands");
+      await storeAuditCards(page, RETRY_CARD_IDS, []);
+      await reloadInTheme(page, ".review-center-page");
+      for (const id of RETRY_CARD_IDS) {
+        assert.equal(await page.$(`.review-deck-card[data-card-id="${id}"]`), null, `the ${id} card is still in the deck, so the next route scans would not see an empty one`);
+      }
     },
   },
 ];
