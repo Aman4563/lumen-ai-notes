@@ -28,7 +28,13 @@ afterEach(async () => {
 const fixtureDistDirectory = await mkdtemp(join(tmpdir(), "lumen-server-test-dist-"));
 // Removed when this file's tests end, passed or failed.
 after(() => rm(fixtureDistDirectory, { recursive: true, force: true }));
-await writeFile(join(fixtureDistDirectory, "index.html"), "<!doctype html><html><body><div id=\"root\"></div></body></html>\n", "utf8");
+// A failure here comes before the first test starts, when node:test runs no hook.
+try {
+  await writeFile(join(fixtureDistDirectory, "index.html"), "<!doctype html><html><body><div id=\"root\"></div></body></html>\n", "utf8");
+} catch (error) {
+  await rm(fixtureDistDirectory, { recursive: true, force: true });
+  throw error;
+}
 
 const start = async ({ enabled = true, env = {}, fetchImpl = async () => {
   throw new Error("Unexpected local-service request");
