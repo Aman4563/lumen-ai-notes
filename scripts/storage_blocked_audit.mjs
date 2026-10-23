@@ -770,6 +770,9 @@ const storageHealthState = (page) => page.$eval(".settings-drawer .storage-healt
     visible: Boolean(message?.getClientRects().length),
     quotaLine: panel.querySelector(".storage-health-heading small")?.textContent || "",
     workspace: panel.querySelector(".storage-budget-line strong")?.textContent || "",
+    workspaceMeter: Boolean(panel.querySelector(".storage-meter.workspace")),
+    profile: row("Study profile"),
+    boards: row("Whiteboards"),
     offlineAssets: row("Offline assets"),
     announced: [...panel.querySelectorAll("[role='status']")].map((node) => node.textContent).join(" | "),
   };
@@ -844,6 +847,11 @@ const storageHealthBlockedFlows = (viewportName) => async ({ page, open }) => {
   assert.equal(first.offlineAssets, "Not measured", "a Cache Storage the browser refused was shown as a measured size");
   assert.match(first.quotaLine, / used by this origin$/, "the quota estimate, which Chrome still answers, was dropped with the refused Cache Storage");
   assert.doesNotMatch(first.workspace, /\/ 0 B$/, "the workspace limit read 0 B");
+  // The blocked database cannot be read either, so the workspace was not measured.
+  assert.equal(first.workspace, "Not measured", `a workspace budget the blocked database could not measure was shown as measured: “${first.workspace}”`);
+  assert.equal(first.profile, "Not measured", `a study profile the blocked database could not measure was shown as measured: “${first.profile}”`);
+  assert.equal(first.boards, "Not measured", `whiteboards the blocked database could not measure were shown as measured: “${first.boards}”`);
+  assert.equal(first.workspaceMeter, false, "a workspace meter was drawn for a budget that could not be measured");
   await page.waitForFunction(() => window.__lumenAuditHealth.fills > 0, { timeout: 8_000 })
     .catch(() => assert.fail("Storage health did not announce its message"));
   assert.deepEqual(await healthAnnouncements(page), { fills: 1, filledAfterEmpty: 1 }, "the Storage health message went into a status region that was never on screen empty");
@@ -859,6 +867,9 @@ const storageHealthBlockedFlows = (viewportName) => async ({ page, open }) => {
     .catch(() => assert.fail("the Storage health message stayed in a status region after it was announced, so browse mode reads it twice"));
   await page.$eval(REFRESH_HEALTH, (button) => button.click());
   await storageHealthReady(page);
+  // Closing Settings would cancel a re-armed announcement, so Refresh is checked first.
+  await delay(600); // bounds a check that something must not happen: Refresh must not re-arm the announcement
+  assert.equal((await healthAnnouncements(page)).fills, 1, "Refresh announced the Storage health message again");
   await closeSettings(page);
   await openSettings(page);
   await storageHealthReady(page);

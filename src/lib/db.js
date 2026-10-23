@@ -798,7 +798,11 @@ export const getAllData = async () => {
  * phones. */
 export const getStorageBudgetSummary = async () => {
   if (!budgetLedgerCache) await getAllData();
-  const ledger = budgetLedgerCache || makeBudgetLedgerFromRecords({});
+  // Issue #147: a database that would not open leaves no ledger (Chrome's
+  // cookie blocking), and an empty one would read as a measured empty
+  // workspace, so Storage health is told it is not measured.
+  if (!budgetLedgerCache) throw unknownBudgetError();
+  const ledger = budgetLedgerCache;
   const recordBytes = { ...ledger.recordBytes };
   return {
     bytes: ledger.bytes,
