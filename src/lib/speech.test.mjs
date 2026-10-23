@@ -300,6 +300,37 @@ test("a norm with subscript F is the Frobenius norm", () => {
   assert.equal(speech.speakable(`‖A‖${so}F${sc}²`), "the squared Frobenius norm of A");
 });
 
+test("a function name joins a formula run only as a whole word, and two long words keep their slash", () => {
+  assert.equal(speech.speakable("true/false → bool"), "true/false leads to bool");
+  assert.equal(speech.speakable("train/test → leakage"), "train/test leads to leakage");
+  assert.match(speech.speakable("### Normal/Gaussian(μ, σ²)"), /Normal\/Gaussian/u);
+  assert.equal(speech.speakable("log(a/b) = log a − log b"), "log of (a over b) equals log a minus log b");
+  assert.equal(speech.speakable("∂L/∂p"), "partial L over partial p");
+});
+
+test("a word reading stays joined to an apostrophe", () => {
+  assert.equal(speech.speakable("θ's value"), "theta's value");
+  assert.equal(speech.speakable("θ’s value"), "theta’s value");
+});
+
+test("a subscript says sub by what the page shows, not by a replacement's words", () => {
+  const { subOpen: so, subClose: sc } = speech.SPEECH_MARK;
+  assert.equal(speech.speakable(`W${so}KV${sc}`), "W K V");
+  assert.equal(speech.speakable(`h${so}LLM${sc}`), "h L L M");
+  assert.equal(speech.speakable(`r${so}t+k+1${sc}`), "r sub t plus k plus 1");
+  assert.equal(speech.speakable(`d${so}model${sc}`), "d model");
+});
+
+test("a long run of unpaired norm bars reads in linear time", () => {
+  const input = "‖a ".repeat(8_000);
+  const started = performance.now();
+  const spoken = speech.speakable(input);
+  const elapsed = performance.now() - started;
+  assert.equal(spoken, input.trim(), "an unpaired bar is read as a bare symbol");
+  // Generous: it guards the complexity (quadratic took about a second), not the machine.
+  assert.ok(elapsed < 200, `8,000 unpaired bars took ${Math.round(elapsed)} ms`);
+});
+
 test("ASCII operators are words only inside a formula run with a math symbol", () => {
   assert.equal(speech.speakable("Gaussian + identity → linear regression"), "Gaussian + identity leads to linear regression");
   assert.equal(speech.speakable("stale read then write → version/ETag optimistic concurrency"), "stale read then write leads to version/ETag optimistic concurrency");
@@ -366,6 +397,40 @@ test("speakableWithMap maps every spoken character back to its source", () => {
   assert.equal(input[sourceOf("y hat")], "ŷ");
   assert.equal(input.slice(sourceOf("uses"), sourceOf("uses") + 4), "uses");
   assert.deepEqual(speech.collapseWithOffsets("  a \n b"), { text: "a b", offsets: [0, 0, 0, 1, 2, 2, 2, 3] });
+});
+
+test("speakableWithMap keeps the map contract around markers and constructs", () => {
+  const { subOpen: so, subClose: sc, supOpen: po, supClose: pc, plainOpen, plainClose } = speech.SPEECH_MARK;
+  const inputs = [
+    // a big operator's limits and a norm with sub and sup groups
+    `J = Σ${so}i=1${sc}${po}n${pc} ‖x${so}i${sc} − μ‖${so}2${sc}${po}2${pc}`,
+    // an inserted "of", a replaced term inside a sub group, inline code
+    `P(y ∣ x) uses W${so}KV${sc} and ${plainOpen}lstsq(X, y)${plainClose}.`,
+    // groups inside groups
+    `e${po}x${pc} ∈ ℝ${po}d${so}model${sc}${pc}, so x${po}${so}2${sc}${pc}`,
+    // Unicode scripts, a stray close and an unclosed open
+    `rₜ₊₁ ${sc}x${po}T${pc} ½‖w‖² ${so}`,
+  ];
+  for (const input of inputs) {
+    const label = speech.stripSpeechMarks(input);
+    const { text, map } = speech.speakableWithMap(input);
+    assert.equal(map[0].spoken[0], 0, label);
+    assert.equal(map.at(-1).spoken[1], text.length, label);
+    map.forEach((piece, index) => {
+      const [start, end] = piece.source;
+      assert.ok(piece.spoken[0] < piece.spoken[1], `${label}: piece ${index} is empty`);
+      assert.ok(start >= 0 && start <= end && end <= input.length, `${label}: piece ${index} is out of bounds`);
+      assert.equal(speech.stripSpeechMarks(input.slice(start, end)), input.slice(start, end), `${label}: piece ${index} covers a marker`);
+      if (index) {
+        assert.equal(piece.spoken[0], map[index - 1].spoken[1], `${label}: a gap before piece ${index}`);
+        assert.ok(start >= map[index - 1].source[1], `${label}: piece ${index} overlaps the one before`);
+      }
+    });
+  }
+  const [norm] = inputs;
+  const { text, map } = speech.speakableWithMap(norm);
+  assert.equal(text, "J equals sum from i equals 1 to n of the squared L2 norm of x i minus mu");
+  assert.equal(speech.sourceOffsetAt(map, text.indexOf("the squared L2 norm")), norm.indexOf("‖"), "the norm's words start at its opening bar");
 });
 
 test("endSentence and TERMINAL_PUNCTUATION live in speech.js", () => {

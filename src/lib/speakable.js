@@ -180,17 +180,20 @@ const SYMBOLIC = new RegExp(`[${[
 const FORMULA_CHARACTERS = /^[\p{L}\p{N}_.,;:!?%'"()[\]{}|*^=+\-\/<>~&]+$/u;
 const LONG_WORD = /\p{L}{4}/u;
 const FUNCTION_NAMES = Object.freeze(["log", "exp", "max", "min", "softmax", "sigmoid", "tanh", "sin", "cos", "tan", "det", "tr", "Var", "Cov", "lim", "clip", "sign"]);
+// A function name counts only as a whole word: "tr(A)" and "log" join a
+// formula run, "true", "train" and "minimum" do not.
+const FUNCTION_PREFIX = new RegExp(`^(?:${FUNCTION_NAMES.join("|")})(?!\\p{L})`, "u");
 
 const isFormulaCompatible = (token, symbolic) => symbolic
   || (FORMULA_CHARACTERS.test(token) && !LONG_WORD.test(token))
-  || FUNCTION_NAMES.some((name) => token.startsWith(name));
+  || FUNCTION_PREFIX.test(token);
 
 /**
  * Writes spoken text with the spacing words need: a word gets a space before
  * it unless it follows whitespace or ( [ {, and one after it unless
- * whitespace, , . ; : ! ? ) ] } % or the end follows. A hyphen or en dash
- * stays joined on either side, so ε-greedy is "epsilon-greedy" and 1-α
- * "1-alpha". The builder collapses the rest.
+ * whitespace, , . ; : ! ? ) ] } % or the end follows. A hyphen, en dash or
+ * apostrophe stays joined on either side, so ε-greedy is "epsilon-greedy",
+ * 1-α "1-alpha" and θ's "theta's". The builder collapses the rest.
  */
 const createSpeaker = () => {
   const builder = createSpokenBuilder();
@@ -198,7 +201,7 @@ const createSpeaker = () => {
   let spaceAt = null;
   const write = (text, start, end) => {
     if (text && spaceAt !== null) {
-      if (!/^[\s,.;:!?)\]}%\-–]/u.test(text)) builder.append(" ", spaceAt, spaceAt);
+      if (!/^[\s,.;:!?)\]}%\-–'’]/u.test(text)) builder.append(" ", spaceAt, spaceAt);
       spaceAt = null;
     }
     builder.append(text, start, end);
@@ -206,7 +209,7 @@ const createSpeaker = () => {
   };
   const lead = (at) => {
     if (spaceAt !== null) builder.append(" ", spaceAt, spaceAt);
-    else if (last && !/[\s([{\-–]/u.test(last)) builder.append(" ", at, at);
+    else if (last && !/[\s([{\-–'’]/u.test(last)) builder.append(" ", at, at);
     else return;
     spaceAt = null;
     last = " ";
@@ -229,6 +232,10 @@ const isSpace = (item) => item?.char !== undefined && /\s/u.test(item.char);
 const isLetter = (item) => item?.char !== undefined && /^\p{L}$/u.test(item.char);
 // A group's content as text; a replaced term counts as what it says.
 const groupText = (group) => group.items.map((item) => item.char ?? item.said ?? groupText(item)).join("");
+// A group's content as the page shows it: markers dropped, replaced terms as
+// written. Whether a subscript is compound depends on this, not on a
+// replacement's words, so W_KV is "W K V", not "W sub K V".
+const groupSource = (group) => group.items.map((item) => item.char ?? item.term ?? groupSource(item)).join("");
 
 // The words a run of Unicode sub- or superscript characters stands for: each
 // character as its base character, operators and Greek letters as words.
@@ -248,10 +255,22 @@ const scriptRun = (items, index, table) => {
   return { chars, text: chars.join(""), start: items[index].start, end: items[next - 1].end, next };
 };
 
-// The sub- or superscript at `index`: a marked group or a Unicode run.
+// The sub- or superscript at `index`: a marked group or a Unicode run. A
+// group with groups inside (`nested`) is read item by item, never as one
+// word over its range, which would cover the inner markers.
 const scriptAt = (items, index, kind) => {
   const item = items[index];
-  if (item?.group === kind) return { group: item, text: groupText(item).trim(), start: item.start, end: item.end, next: index + 1 };
+  if (item?.group === kind) {
+    return {
+      group: item,
+      text: groupText(item).trim(),
+      source: groupSource(item).trim(),
+      nested: item.items.some((child) => child.group),
+      start: item.start,
+      end: item.end,
+      next: index + 1,
+    };
+  }
   const table = kind === "sub" ? SUBSCRIPTS : SUPERSCRIPTS;
   return item && table.has(item.char) ? scriptRun(items, index, table) : null;
 };
@@ -269,7 +288,7 @@ const readScript = (script, table, out) => {
 };
 
 const readSuperscript = (script, out) => {
-  const word = SUPERSCRIPT_WORDS.get(script.text);
+  const word = script.nested ? "" : SUPERSCRIPT_WORDS.get(script.text);
   if (word) out.word(word, script.start, script.end);
   else if (!script.group) out.word(`to the power of ${scriptWords(script.chars, SUPERSCRIPTS)}`, script.start, script.end);
   else {
@@ -280,7 +299,7 @@ const readSuperscript = (script, out) => {
 };
 
 const readSubscript = (script, out) => {
-  if (script.group && COMPOUND_SCRIPT.test(script.text)) out.word("sub", script.start, script.start);
+  if (script.group && COMPOUND_SCRIPT.test(script.source)) out.word("sub", script.start, script.start);
   readScript(script, SUBSCRIPTS, out);
   return script.next;
 };
@@ -290,12 +309,25 @@ const readSubscript = (script, out) => {
 // non-space and closes it only after one, so the bar in KL(P ‖ Q) stays a
 // bar. The words go where the opening bar was; the closing bar and its
 // scripts become a gap.
+// Once the search for a closing bar fails from one position, it fails from
+// every later one in the same items, so the failure is kept per items and
+// bar: a long run of lone bars reads in linear time rather than rescanning
+// to its end for each bar.
+const unclosedFrom = new WeakMap();
+const closingBar = (items, bar, from) => {
+  const failed = unclosedFrom.get(items) ?? new Map();
+  if (from >= (failed.get(bar) ?? Infinity)) return -1;
+  for (let at = from; at < items.length; at += 1) if (items[at].char === bar && !isSpace(items[at - 1])) return at;
+  failed.set(bar, Math.min(from, failed.get(bar) ?? Infinity));
+  unclosedFrom.set(items, failed);
+  return -1;
+};
+
 const readNorm = (items, index, out) => {
   const bar = items[index];
   if (!items[index + 1] || isSpace(items[index + 1])) return 0;
-  let close = index + 2;
-  while (close < items.length && !(items[close].char === bar.char && !isSpace(items[close - 1]))) close += 1;
-  if (close >= items.length) return 0;
+  const close = closingBar(items, bar.char, index + 2);
+  if (close < 0) return 0;
   let next = close + 1;
   let order = "";
   const sub = scriptAt(items, next, "sub");
@@ -315,12 +347,14 @@ const readNorm = (items, index, out) => {
   return next;
 };
 
-// ℝᵐˣⁿ → "R m by n", ℝᵈ → "R d", ℝ<sup>V×d</sup> → "R V by d".
+// ℝᵐˣⁿ → "R m by n", ℝᵈ → "R d", ℝ<sup>V×d</sup> → "R V by d", and
+// ℝ<sup>d<sub>model</sub></sup>, groups inside, read as math: "R d model".
 const readReals = (items, index, out) => {
   out.word("R", items[index].start, items[index].end);
   const sup = scriptAt(items, index + 1, "sup");
   if (!sup) return index + 1;
-  out.word(sup.group ? sup.text.replace(/\s*[×ˣ]\s*/gu, " by ") : scriptWords(sup.chars, SUPERSCRIPTS, "by"), sup.start, sup.end);
+  if (sup.nested) readScript(sup, SUPERSCRIPTS, out);
+  else out.word(sup.group ? sup.text.replace(/\s*[×ˣ]\s*/gu, " by ") : scriptWords(sup.chars, SUPERSCRIPTS, "by"), sup.start, sup.end);
   return sup.next;
 };
 
@@ -363,14 +397,25 @@ const readBigOperator = (items, index, out) => {
   return limits.next;
 };
 
+// How many letters, up to `limit`, stand right beside items[index] in the
+// direction of `step`.
+const lettersBeside = (items, index, step, limit = 4) => {
+  let count = 0;
+  for (let at = index + step; count < limit && isLetter(items[at]); at += step) count += 1;
+  return count;
+};
+
 // = + / alone: not part of == <= ++ //, and not against the inside of a
-// bracket, where "(D ∣ +)" names the sign itself.
+// bracket, where "(D ∣ +)" names the sign itself. A slash between two words
+// of four or more letters pairs them (Normal/Gaussian) rather than dividing.
 const operatorWord = (items, index) => {
-  const { word, partners } = LONE_OPERATORS.get(items[index].char);
+  const { char } = items[index];
+  const { word, partners } = LONE_OPERATORS.get(char);
   const before = items[index - 1]?.char ?? "";
   const after = items[index + 1]?.char ?? "";
-  const beside = (char, set) => char !== "" && set.includes(char);
-  return beside(before, partners) || beside(after, partners) || beside(before, "([{") || beside(after, ")]}") ? "" : word;
+  const beside = (value, set) => value !== "" && set.includes(value);
+  if (beside(before, partners) || beside(after, partners) || beside(before, "([{") || beside(after, ")]}")) return "";
+  return char === "/" && lettersBeside(items, index, -1) >= 4 && lettersBeside(items, index, 1) >= 4 ? "" : word;
 };
 
 // A letter read as itself: not a Greek or other named letter, a big
@@ -441,7 +486,7 @@ const runItems = (source, start, end, spans) => {
     const top = stack.at(-1);
     if (spans[next]?.start === index) {
       const span = spans[next];
-      top.items.push({ said: span.spoken, start: span.start, end: span.end });
+      top.items.push({ said: span.spoken, term: source.slice(span.start, span.end), start: span.start, end: span.end });
       next += 1;
       index = span.end;
       continue;
