@@ -4258,6 +4258,10 @@ Whiteboards as "Not measured" and drops the workspace meter. A refused quota
 estimate on its own keeps the plain "Browser quota estimate unavailable"
 line.
 
+Where `caches` does not exist at all (an insecure context), nothing can be
+stored offline, so Offline assets reads "0 B · 0 files", a real zero, and the
+Install card explains the HTTPS requirement.
+
 "Remove optional offline files" shows only Lumen's own reasons ("The server
 could not be reached. Offline files were kept.", and its two siblings). Any
 other failure gets a fixed sentence that counts what it had removed. Device
@@ -4290,25 +4294,44 @@ Checks, each failing first:
     On main both sizes fail with "Storage health showed the browser's own
     error text: "…Failed to execute 'keys' on 'CacheStorage': An attempt was
     made to break through the security policy of the user agent.…"".
-  - "Storage health with failing Cache Storage" runs in a working browser.
-    It injects a `NotAllowedError`, a `QuotaExceededError` and a `TypeError`
+  - "Storage health with failing Cache Storage" runs in a working browser,
+    where the panel must first show no message and measure both offline
+    assets and the workspace. Once the service worker has stored this
+    build's offline files, it makes the cleanup's server check fail with a
+    `TypeError` carrying the marker and requires the toast "Optional cache
+    cleanup failed. Offline files were kept." with no injected text. It then
+    injects a `NotAllowedError`, a `QuotaExceededError` and a `TypeError`
     into Cache Storage, then a refused estimate alone. It requires each
     kind's message with no injected text, "Not measured", no message for the
     estimate alone with no stale announcement, and device evidence
-    recording `NotAllowedError` for StorageManager. On main it fails with
-    "after Refresh Storage health did not show “This browser is not saving
-    offline files on this device”", because the panel showed
-    "lumen-raw-147 NotAllowedError".
+    recording `NotAllowedError` for StorageManager. On main it now fails at
+    the cleanup, with "a cleanup that failed on a browser error did not say
+    that offline files were kept (toasts: ["Error: Optional cache cleanup
+    failed: lumen-raw-147 Failed to fetch"])". Before that step was added, it
+    failed on main with "after Refresh Storage health did not show “This
+    browser is not saving offline files on this device”", because the panel
+    showed "lumen-raw-147 NotAllowedError".
+  - Until that step, no check drove a failed cleanup: the visual audit drives
+    only the success toast. With the toast's old wording,
+    `Optional cache cleanup failed: ${error.message}`, put back on the
+    branch, the suite failed at that step alone, with the same message as on
+    main.
   - On the branch before the budget fix, both blocked cases failed with "a
     workspace budget the blocked database could not measure was shown as
     measured: “2 B / 20.0 MB”".
   - Before the device-evidence change, the three cases failed with "the
     device-evidence report did not record Cache Storage's error name" or
     "…StorageManager's error name".
-- `audit:storage` requires two results: a summary with IndexedDB and Web
-  Storage both refused rejects with `BUDGET_STATE_UNAVAILABLE`, and a working
-  one resolves. Before the fix it failed with "Missing expected rejection: a
-  workspace that could not be measured was summarized as a measured one".
+- `audit:storage` requires three results: a summary with IndexedDB and Web
+  Storage both refused rejects with `BUDGET_STATE_UNAVAILABLE`, a working
+  one resolves, and so does a working one from a fresh module, whose ledger
+  cache is cold, as on a healthy browser's first read. Before the fix it
+  failed with "Missing expected rejection: a workspace that could not be
+  measured was summarized as a measured one". With every cold-cache read
+  made to reject, as review tried, the cold read failed with the summary's
+  own rejection: "StorageBudgetError: Lumen cannot safely measure the
+  existing workspace while durable storage is unavailable.…" (code
+  `BUDGET_STATE_UNAVAILABLE`).
 
 Found and not fixed here:
 
@@ -4316,8 +4339,6 @@ Found and not fixed here:
   workspace reads "Not measured" until something is saved that visit,
   because `getAllData()`'s fallback path does not cache the journal's
   ledger.
-- Where `caches` does not exist at all (an insecure context), Offline assets
-  still reads "0 B · 0 files".
 - If failures changed from one kind to none and back within the
   announcement's 5 s, that kind could be announced twice. The Settings notice
   has the same pattern. A stable refusal never does this.

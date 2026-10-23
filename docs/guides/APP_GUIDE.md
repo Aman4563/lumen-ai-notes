@@ -412,8 +412,11 @@ offline files on this device": reading online works as usual, but lectures
 will not open offline, and downloads such as the On-device Lite model are not
 saved. If the browser is out of room, the message asks you to free up space
 on the device. If it gives no reason, the message says that storage details
-are unavailable right now. Any size Lumen could not measure reads "Not
-measured" rather than 0 B. The browser's own error name appears only under
+are unavailable right now. A size Lumen could not measure is never shown as
+0 B: it reads "Not measured" or is left out. If the browser will not estimate
+its storage quota, you see "Browser quota estimate unavailable", and if the
+size of a downloaded On-device AI model cannot be measured, that row is left
+out. The browser's own error name appears only under
 **Settings → Help and diagnostics → Device evidence**.
 
 ## Updating the curriculum or interface

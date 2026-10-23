@@ -348,16 +348,17 @@ in issue #7.
    - Record what Offline assets, Backup-safe workspace, Study profile and
      Whiteboards read: a size, or "Not measured".
 2. **VoiceOver.** Turn VoiceOver on, open Lumen afresh and open Settings.
-   - The Storage health message must be read once, after the preferences
-     notice. Swiping through Storage health a few seconds later must meet it
-     once, not twice.
+   - The Storage health message must be read once. Swiping through Storage
+     health a few seconds later must meet it once, not twice.
    - Tap Refresh, then close and reopen Settings: neither may read it again.
-   - Record whether both announcements were read in full, or one cut the
-     other off.
+   - Record whether both announcements, this message and the preferences
+     notice, were read in full, or one cut the other off.
 3. **Device evidence.** Open Settings → Help and diagnostics → Device
    evidence.
-   - If Storage health showed a message, the Offline caches row must read
-     "unavailable (" followed by an error name.
+   - Record what the Offline caches row reads. Device evidence calls only
+     `caches.keys()`, while the Storage health message can come from any call
+     its measurement makes, so this row may show a cache count even when a
+     message showed. If it reads "unavailable (", an error name must follow.
    - If the Persistent storage row reads "query failed", an error name must
      follow it too.
    - Download the JSON: `auto.cacheStorageError` and
