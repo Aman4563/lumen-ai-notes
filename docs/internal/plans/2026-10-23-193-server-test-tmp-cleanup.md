@@ -31,7 +31,7 @@
 
 - Concurrent runs share the real temp folder (other worktrees, and `audit:ai`'s own `server.test.mjs` process beside the new file) and create matching directories at any moment: the check reads only its child's private folder. Pinned by `runServerSuite` (Task 1).
 - The runner's environment (`NODE_TEST_CONTEXT=child-v8`, `NODE_TEST_WORKER_ID`) leaks into the child: a nested `node --test` then skips every file and exits 0, and a direct run reports in the runner's serialized format instead of TAP. The helper drops every `NODE_TEST*` key, both tests require `# pass` > 0, and Step 2 runs the check through `node --test`, as `audit:ai` does.
-- A failure while building the fixture (the `writeFile` after the `mkdtemp`) still leaves the directory, wherever the hook is registered: node:test rethrows an error raised while the file loads, before its first test starts, and runs no hook (exit 7 run directly, 1 under `node --test`, on Node 26.12.1). A throw after a test has started does run the hook. Accepted, and not pinned by a test: it takes a failed 63-byte write into a folder `mkdtemp` has just made, and building the fixture in a `before()` hook would close it.
+- A failure while building the fixture (the `writeFile` after the `mkdtemp`) comes while the file loads, before its first test starts: node:test rethrows the error and runs no hook, wherever the hook is registered (exit 7 run directly, 1 under `node --test`, on Node 26.12.1). A throw after a test has started does run the hook. First accepted as a known gap, it is closed in Task 2: the write's own `catch` removes the folder before rethrowing, and a third test pins it. A `before()` hook was rejected (see Task 2).
 - A slow runner (2-vCPU CI; the suite generates an RSA key and has a 20 s TLS case): the child is bounded at 120 s, far above its ~1 s local run, and a killed child fails both tests on its exit status.
 - The check's own folders: each is removed by `t.after`, even when an assertion fails. Step 2 confirms it on main, where both tests fail.
 
@@ -134,3 +134,74 @@ git commit -m "Remove the server tests' fixture directory when the suite ends" -
   - Ruling: `run.fail` stays `>= 1` — the acceptance criterion is about leftovers, not hook timing — cost if wrong: a Node change that ran `after()` hooks early in the forced-failure arrangement would go unnoticed by that test.
   - Ruling: main moved during the work (#199), so the branch was rebased before these docs were written and gated once on the rebased head (8b45059); the docs commit on top changes no file the gate or the build loads — cost if wrong: none beyond order.
   - Ruling: the worktree was made with `git worktree add` at the brief's path, since the native worktree tool cannot name the branch — cost if wrong: it is removed by hand after merge.
+
+## Follow-up: a failed fixture build
+
+Before merging PR #202, the reviewer would not leave one leak open. The issue says no `lumen-server-test-dist-*` directory may remain after the suite passes or fails, yet a failure while writing the fixture, before the first test starts, left it.
+
+### Task 2: Remove the fixture when writing it fails, and prove it
+
+**Files:**
+- Modify: `server/ai/server.cleanup.test.mjs` (the header comment at :9-10; a new constant after `FORCED_FAILURE`; a third test at the end)
+- Modify: `server/ai/server.test.mjs:31` (the fixture write)
+
+**Interfaces (file-local):**
+- Consumes Task 1's `runServerSuite(t, { preload } = {})` unchanged.
+- `FIXTURE_WRITE_FAILURE` is a preload that makes the fixture's write reject. Every other write goes through.
+
+```js
+const FIXTURE_WRITE_FAILURE = `data:text/javascript,${encodeURIComponent([
+  'import fsp from "node:fs/promises";',
+  'import { syncBuiltinESMExports } from "node:module";',
+  "const { writeFile } = fsp;",
+  'fsp.writeFile = (path, ...rest) => (String(path).includes("lumen-server-test-dist-") ? Promise.reject(new Error("forced fixture write failure")) : writeFile(path, ...rest));',
+  "syncBuiltinESMExports();",
+].join("\n"))}`;
+```
+
+Decided, with evidence from scratch runs on Node 26.12.1:
+- The fixture build stays at top level; it does not move into a `before()` hook. Here is what a `before()` hook did when a test was registered ahead of the file's hooks, as the failing-run test's preload does:
+  - node:test ran the root `after()` while `before()` was still creating the folder.
+  - It never ran `after()` again, so the folder leaked.
+  - The instrumented log read "before start", then "after undefined", then "before made …".
+- The `mkdtemp` line, the `after()` hook and its comment stay as they are.
+- `syncBuiltinESMExports()` is what makes `server.test.mjs`'s named `writeFile` import resolve to the patched function. On 6d820b7 the preload made the run exit 7 with the forced message and leave the folder.
+
+- [ ] **Step 1: Write the failing test** at the end of `server/ai/server.cleanup.test.mjs`. Also change the header comment's "in a child, passing and failing." to "in a child: passing, failing, and with its fixture write failing." (re-wrap the comment lines as needed).
+
+```js
+test("the server suite leaves nothing in its temp folder when writing its fixture fails", async (t) => {
+  const run = await runServerSuite(t, { preload: FIXTURE_WRITE_FAILURE });
+  assert.ok(run.status > 0, `the fixture write failure did not fail the child:\n${run.output}`);
+  assert.match(run.output, /forced fixture write failure/, `the child never reached the fixture write:\n${run.output}`);
+  assert.deepEqual(run.leftovers, [], `server.test.mjs left ${run.leftovers.join(", ")} after writing its fixture failed`);
+});
+```
+
+- [ ] **Step 2: Watch it fail on this branch and on main, for the right reason**
+
+On this branch, with `server.test.mjs` unmodified from 6d820b7: `OUTER=$(mktemp -d) && TMPDIR=$OUTER timeout 300 node --test server/ai/server.cleanup.test.mjs; echo "exit $?"; ls -A "$OUTER"; rmdir "$OUTER"`
+
+Expected:
+- exit 1;
+- the two Task 1 tests pass;
+- the new test fails only at the leftovers assertion, naming one `lumen-server-test-dist-XXXXXX`;
+- `ls -A` prints nothing.
+
+On main:
+1. Make a detached scratch worktree at `origin/main` (986b759) in the scratchpad and symlink its `node_modules`.
+2. Copy in the branch's `server/ai/server.cleanup.test.mjs`.
+3. Run the same command there. Expected: exit 1, and all three tests fail only at their leftovers assertions.
+4. Remove the scratch worktree with `git worktree remove --force` (it holds the symlink and the copied file).
+
+- [ ] **Step 3: Remove the folder when the fixture write fails** in `server/ai/server.test.mjs`. Wrap the `await writeFile(...)` at :31 in `try { … } catch (error) { await rm(fixtureDistDirectory, { recursive: true, force: true }); throw error; }`. Put a one-line comment above it saying that a failure there comes before the first test starts, when node:test runs no hook. Nothing else changes.
+
+- [ ] **Step 4: Watch it pass**
+
+| Run | Expected |
+|---|---|
+| `OUTER=$(mktemp -d) && TMPDIR=$OUTER timeout 300 node --test server/ai/server.cleanup.test.mjs server/ai/server.test.mjs; echo "exit $?"; ls -A "$OUTER"; rmdir "$OUTER"` | exit 0; 33/33 (3 + 30); nothing listed |
+| `OUTER=$(mktemp -d) && TMPDIR=$OUTER timeout 600 node --test 'server/**/*.test.mjs' 'src/lib/*.test.mjs'; echo "exit $?"; ls -A "$OUTER"; rmdir "$OUTER"` | exit 0; 623/623 (622 + 1); nothing listed |
+| `timeout 600 npm run audit:ai` | exit 0; 623/623 |
+
+- [ ] **Step 5: Commit** both files as "Remove the server tests' fixture when writing it fails". The why-body: a failed fixture write came before the first test, when node:test runs no hook, and left the folder. The new test makes that write reject through a preload, and it fails on main and on the previous head.
