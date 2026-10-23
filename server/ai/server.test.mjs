@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { connect as connectTls } from "node:tls";
 
 import { AI_REQUEST_CONTRACT_ID } from "../../src/lib/aiContract.js";
@@ -26,7 +26,15 @@ afterEach(async () => {
 // A hermetic app-shell fixture: the repository's real dist/ is a build
 // product that does not exist on a fresh clone or CI runner.
 const fixtureDistDirectory = await mkdtemp(join(tmpdir(), "lumen-server-test-dist-"));
-await writeFile(join(fixtureDistDirectory, "index.html"), "<!doctype html><html><body><div id=\"root\"></div></body></html>\n", "utf8");
+// Removed when this file's tests end, passed or failed.
+after(() => rm(fixtureDistDirectory, { recursive: true, force: true }));
+// A failure here comes before the first test starts, when node:test runs no hook.
+try {
+  await writeFile(join(fixtureDistDirectory, "index.html"), "<!doctype html><html><body><div id=\"root\"></div></body></html>\n", "utf8");
+} catch (error) {
+  await rm(fixtureDistDirectory, { recursive: true, force: true });
+  throw error;
+}
 
 const start = async ({ enabled = true, env = {}, fetchImpl = async () => {
   throw new Error("Unexpected local-service request");
