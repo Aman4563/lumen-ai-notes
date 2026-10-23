@@ -1,39 +1,19 @@
-import { resolveDocumentLink } from "./links.js";
-import { slugifyHeading } from "./markdown.js";
+import { documentAnchorIds, linkTarget } from "./links.js";
+
+// The anchor ids live with the Reader-side link rule; re-exported for existing importers.
+export { documentAnchorIds };
 
 /**
  * Broken-internal-link audit (CONTENT-001, issue #12). Scans the learner's
  * OWN content — custom documents and edited built-in copies — because
- * shipped built-ins are already gated at generation time. The verdict reuses
- * resolveDocumentLink and slugifyHeading, so a link reported broken here is
- * exactly a link that fails when clicked in the Reader.
+ * shipped built-ins are already gated at generation time. The verdict comes
+ * from linkTarget and documentAnchorIds, the rule the Reader acts on, so a
+ * link reported broken here is exactly a link that fails when clicked in the
+ * Reader.
  */
 const LINK_PATTERN = /\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 
 const stripFences = (markdown) => String(markdown || "").replace(/```[\s\S]*?```/g, "");
-
-/** Approximates rendered heading text: link/emphasis markers removed. */
-const headingText = (line) => line
-  .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-  .replace(/[*_~`]/g, "")
-  .trim();
-
-/** The h2/h3 anchor ids one document exposes, duplicate-suffixed in order. */
-export const documentAnchorIds = (markdown) => {
-  const ids = [];
-  const counts = new Map();
-  let index = 0;
-  for (const line of stripFences(markdown).split("\n")) {
-    const match = line.match(/^(##|###)\s+(.+)$/);
-    if (!match) continue;
-    const base = slugifyHeading(headingText(match[2]), index);
-    const seen = counts.get(base) || 0;
-    counts.set(base, seen + 1);
-    ids.push(seen === 0 ? base : `${base}-${seen + 1}`);
-    index += 1;
-  }
-  return ids;
-};
 
 /**
  * Audits one document's markdown. `knownIds` is the set of every openable
@@ -45,30 +25,29 @@ export const auditDocumentLinks = (documentId, markdown, knownIds, anchorsFor) =
   const source = stripFences(markdown);
   for (const match of source.matchAll(LINK_PATTERN)) {
     const [, label, href] = match;
-    if (/^(https?:|mailto:|tel:)/i.test(href)) continue;
-    if (href.startsWith("#")) {
+    const target = linkTarget(documentId, href);
+    if (target === null) continue;
+    if (target.notADocument) {
+      // Non-.md relative links can never open in the Reader.
+      findings.push({ documentId, href, label: label.slice(0, 120), kind: "not-a-document" });
+      continue;
+    }
+    if (!("documentId" in target)) {
+      // An in-page link: the heading has to exist in this document.
       const anchors = anchorsFor?.(documentId);
-      if (anchors && !anchors.includes(href.slice(1))) {
+      if (anchors && !anchors.includes(target.anchor)) {
         findings.push({ documentId, href, label: label.slice(0, 120), kind: "missing-anchor" });
       }
       continue;
     }
-    const targetId = resolveDocumentLink(documentId, href);
-    if (targetId === null) {
-      // Non-.md relative links can never open in the Reader.
-      if (!href.endsWith(".md") && !href.includes(":")) {
-        findings.push({ documentId, href, label: label.slice(0, 120), kind: "not-a-document" });
-      }
-      continue;
-    }
+    const targetId = target.documentId;
     if (!knownIds.has(targetId)) {
       findings.push({ documentId, href, label: label.slice(0, 120), kind: "missing-document", targetId });
       continue;
     }
-    const fragment = href.split("#")[1];
-    if (fragment) {
+    if (target.anchor) {
       const anchors = anchorsFor?.(targetId);
-      if (anchors && !anchors.includes(fragment)) {
+      if (anchors && !anchors.includes(target.anchor)) {
         findings.push({ documentId, href, label: label.slice(0, 120), kind: "missing-anchor", targetId });
       }
     }

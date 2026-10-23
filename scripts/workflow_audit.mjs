@@ -181,7 +181,9 @@ try {
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 402, height: 874, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
-  await page.evaluateOnNewDocument(() => {
+  // A speech engine and clipboard the audit controls, in place before the app
+  // runs. The lecture link checks' page installs the same ones.
+  const installAuditMocks = () => {
     class TestUtterance {
       constructor(text) {
         this.text = text;
@@ -204,7 +206,8 @@ try {
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: TestUtterance });
     Object.defineProperty(window, "speechSynthesis", { configurable: true, value: synthesis });
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { window.__lumenCopiedText = String(value); } } });
-  });
+  };
+  await page.evaluateOnNewDocument(installAuditMocks);
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error" && !message.text().includes("Failed to load resource")) runtimeErrors.push(message.text());
@@ -1780,6 +1783,427 @@ try {
   assert.ok(assessedProfile.mistakes.filter((mistake) => (mistake.tags || []).includes("assessment")).length >= 2, "assessment misses must land in the mistake notebook");
   await page.waitForFunction(() => document.querySelector(".mastery-grid")?.textContent.includes("last check 100%"), { timeout: 5_000 })
     .catch(() => assert.fail("the mastery row did not surface the latest readiness score"));
+
+  // Issue #150: lecture links land on their heading. A fragment moves within
+  // the lecture and leaves the hash route alone, a lecture link opens that
+  // lecture at its heading, and a relative link to anything else stays in the
+  // app with a notice. Its own browser context keeps the seeded note out of
+  // the main profile, whose document counts the flows above pin. Each case
+  // opens its own route, and failures are collected, so one run reports
+  // every case.
+  {
+    const linkContext = await browser.createBrowserContext();
+    try {
+      const linkPage = await linkContext.newPage();
+      await linkPage.evaluateOnNewDocument(installAuditMocks); // Teaching Mode's Space narrates
+      await linkPage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+      await linkPage.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+      linkPage.on("pageerror", (error) => runtimeErrors.push(`links: ${error.message}`));
+      linkPage.on("console", (message) => {
+        if (message.type() === "error" && !message.text().includes("Failed to load resource")) runtimeErrors.push(`links: ${message.text()}`);
+      });
+      // Every document the tab loads. goto and reload load one too, so a case
+      // compares the count before and after its click.
+      const navigations = [];
+      linkPage.on("request", (request) => {
+        if (request.isNavigationRequest() && request.frame() === linkPage.mainFrame()) navigations.push(request.url());
+      });
+      const linkFailures = [];
+      const expectLink = (condition, message) => {
+        if (!condition) linkFailures.push(message);
+      };
+      const linkCase = async (name, run) => {
+        try {
+          await run();
+        } catch (error) {
+          expectLink(false, `${name}: ${error.message}`);
+        }
+      };
+      const nextFrames = () => linkPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      // Where a case left the learner: the route, the focus, and how far the
+      // heading sits below the top of the reading view. A jump leaves that
+      // distance equal to the heading's scroll-margin-top.
+      const readLinkState = (headingId = "") => linkPage.evaluate((id) => {
+        const scroller = document.querySelector(".reader-scroll");
+        const heading = id ? scroller?.querySelector(`.markdown-body #${CSS.escape(id)}`) : null;
+        const active = document.activeElement;
+        return {
+          hash: location.hash,
+          home: Boolean(document.querySelector(".dashboard-page")),
+          scrollTop: scroller ? Math.round(scroller.scrollTop) : null,
+          active: active ? `${active.tagName}${active.id ? `#${active.id}` : ""}` : "nothing",
+          focused: Boolean(heading) && heading === active,
+          offset: heading ? Math.round(heading.getBoundingClientRect().top - scroller.getBoundingClientRect().top) : null,
+          margin: heading ? Number.parseFloat(getComputedStyle(heading).scrollMarginTop) || 0 : null,
+        };
+      }, headingId);
+      const waitForLinkState = async (headingId, done, timeout) => {
+        const deadline = Date.now() + timeout;
+        let state = await readLinkState(headingId);
+        while (!done(state) && Date.now() < deadline) {
+          await delay(100);
+          state = await readLinkState(headingId);
+        }
+        return state;
+      };
+      const atTop = (state) => state.offset !== null && Math.abs(state.offset - state.margin) <= 4;
+      const landing = (state) => `focus on ${state.active}, ${state.offset === null ? "the heading is not on the page" : `the heading ${state.offset} px below the top of the reading view (scroll-margin-top ${state.margin} px)`}, scrollTop ${state.scrollTop}`;
+      const expectRoute = (label, state, route) => expectLink(state.hash === route, `${label}: the hash became ${state.hash || "empty"}${state.home ? " and Home is shown" : ""}, not ${route}`);
+      const expectNoNavigation = async (label, before) => {
+        await delay(300); // a navigation request is reported a moment after its click
+        expectLink(navigations.length === before, `${label}: the click loaded ${navigations.slice(before).join(", ")}`);
+      };
+      // A notice is a warning toast, announced through the polite live region.
+      const waitForNotice = (text) => linkPage.waitForFunction(
+        (expected) => [".toast.warning", ".toast-live--polite"].every((selector) => document.querySelector(selector)?.textContent.includes(expected)),
+        { timeout: 5_000 },
+        text,
+      ).then(() => true, () => false);
+      // Lecture links are DOM-clicked, so a toast or the phone sheet over the
+      // article cannot take the click; "focus" readies a keyboard case. `article`
+      // is the Reader's, or Teaching Mode's slide.
+      const articleLink = (text, method, article = ".reader-scroll .markdown-body") => linkPage.evaluate((label, action, scope) => {
+        const link = [...document.querySelectorAll(`${scope} a[href]`)].find((node) => node.textContent.trim() === label);
+        if (!link) throw new Error(`the lecture has no “${label}” link`);
+        link[action]();
+        if (action === "focus" && document.activeElement !== link) throw new Error(`the “${label}” link did not take focus`);
+      }, text, method, article);
+      // Opens a lecture by its route and waits for its own content, since
+      // another lecture's can still be on screen. A case starts with no toast
+      // and the reading view at the top, whatever the case before it left.
+      const openLinkRoute = async (documentId, readySelector) => {
+        const route = `#/read/${encodeURIComponent(documentId)}`;
+        await linkPage.goto(`${baseUrl}${route}`, { waitUntil: "networkidle2", timeout: 30_000 });
+        await linkPage.waitForFunction((hash, selector) => location.hash === hash && Boolean(document.querySelector(selector)), { timeout: 15_000 }, route, readySelector);
+        await nextFrames(); // a lecture restores its saved place a frame after it opens
+        await linkPage.evaluate(() => document.querySelector('.toast button[aria-label="Dismiss notification"]')?.click());
+        await linkPage.waitForFunction(() => !document.querySelector(".toast"), { timeout: 5_000 });
+        await linkPage.$eval(".reader-scroll", (node) => { node.scrollTop = 0; });
+        return route;
+      };
+
+      const coverageAudit = "notes/01-advanced-curriculum-coverage-audit.md";
+      const coverageReady = '.reader-scroll .markdown-body a[href="README.md#all-parts"]';
+      const linkFixtureId = "custom/link-fixture.md";
+      const fixtureReady = ".reader-scroll .markdown-body h2#third-section";
+      const filler = Array(12).fill("Filler that keeps the page long enough for every heading to reach the top of the reading view.").join("\n\n");
+      const linkFixture = [
+        "# Link fixture",
+        "[Jump to second](#2-second-section) · [Jump to detail](#detail-point) · [Missing](#no-such-heading) · [Top](#) · [Third by file name](link-fixture.md#third-section) · [Figure](figure.png) · [Docs](https://example.com/docs)",
+        "## First section",
+        filler,
+        "## 2. Second section",
+        filler,
+        "[Down to the detail](#detail-point)",
+        "### Detail point",
+        filler,
+        "## Third section",
+        filler,
+      ].join("\n\n");
+      // Seeded as the readiness cards are, once the first lecture has stored
+      // a profile to add the note to.
+      await linkPage.goto(`${baseUrl}#/read/${encodeURIComponent(coverageAudit)}`, { waitUntil: "networkidle2", timeout: 30_000 });
+      await linkPage.waitForSelector(coverageReady, { timeout: 15_000 });
+      await waitForStored(linkPage, "profile", (stored) => stored.recent?.[0] === coverageAudit, "the link checks' first lecture never reached the stored profile");
+      await linkPage.evaluate((id, raw) => new Promise((resolve, reject) => {
+        const request = indexedDB.open("lumen-ai-notes", 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const transaction = request.result.transaction("study-data", "readwrite");
+          const store = transaction.objectStore("study-data");
+          const get = store.get("profile");
+          get.onsuccess = () => {
+            const profile = get.result;
+            const stamp = new Date().toISOString();
+            profile.customDocuments = [...(profile.customDocuments || []), { id, title: "Link fixture", raw, createdAt: stamp, updatedAt: stamp, tags: [], collectionId: "", archived: false, pinned: false }];
+            store.put(profile, "profile");
+          };
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+        };
+      }), linkFixtureId, linkFixture);
+      // replaceState sets the hash without a hashchange: the running app has
+      // not loaded the note, and would send that route Home before the reload.
+      await linkPage.evaluate((route) => history.replaceState(null, "", route), `#/read/${encodeURIComponent(linkFixtureId)}`);
+      await linkPage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+      await linkPage.waitForSelector(fixtureReady, { timeout: 15_000 });
+
+      await linkCase("(a) README.md#all-parts", async () => {
+        await openLinkRoute(coverageAudit, coverageReady);
+        await linkPage.$eval('article a[href="README.md#all-parts"]', (link) => link.click());
+        const state = await waitForLinkState("all-parts", (current) => current.focused && atTop(current), 10_000);
+        expectRoute("(a) README.md#all-parts", state, `#/read/${encodeURIComponent("notes/README.md")}`);
+        expectLink(state.focused && atTop(state), `(a) README.md#all-parts: README did not open at #all-parts within 10 s — ${landing(state)}`);
+      });
+      await linkCase("(b) Jump to second", async () => {
+        const route = await openLinkRoute(linkFixtureId, fixtureReady);
+        const before = navigations.length;
+        await articleLink("Jump to second", "click");
+        await nextFrames(); // reduced motion: the jump is instant
+        const state = await readLinkState("2-second-section");
+        expectLink(state.focused && atTop(state), `(b) Jump to second: h2#2-second-section was not at the top and focused two frames after the click — ${landing(state)}`);
+        expectRoute("(b) Jump to second", state, route);
+        await expectNoNavigation("(b) Jump to second", before);
+      });
+      // No heading has the empty id "Top" links to, so it stays put too.
+      for (const text of ["Missing", "Top"]) {
+        await linkCase(`(c) ${text}`, async () => {
+          const route = await openLinkRoute(linkFixtureId, fixtureReady);
+          const start = await linkPage.$eval(".reader-scroll", (node) => node.scrollTop);
+          await articleLink(text, "click");
+          const noticed = await waitForNotice("That section isn't in this lecture");
+          const state = await readLinkState();
+          expectLink(noticed, `(c) ${text}: no “That section isn't in this lecture” notice`);
+          expectRoute(`(c) ${text}`, state, route);
+          expectLink(state.scrollTop !== null && Math.abs(state.scrollTop - start) <= 1, `(c) ${text}: the reading view moved from scrollTop ${start} to ${state.scrollTop ?? "nothing (no reading view)"}`);
+        });
+      }
+      await linkCase("(d) Third by file name", async () => {
+        const route = await openLinkRoute(linkFixtureId, fixtureReady);
+        const before = navigations.length;
+        await articleLink("Third by file name", "click");
+        await nextFrames();
+        const state = await readLinkState("third-section");
+        expectLink(state.focused && atTop(state), `(d) Third by file name: h2#third-section was not at the top and focused — ${landing(state)}`);
+        expectRoute("(d) Third by file name", state, route);
+        await expectNoNavigation("(d) Third by file name", before);
+      });
+      await linkCase("(e) Jump to detail by keyboard", async () => {
+        const route = await openLinkRoute(linkFixtureId, fixtureReady);
+        await articleLink("Jump to detail", "focus");
+        await linkPage.keyboard.press("Enter");
+        await nextFrames();
+        const state = await readLinkState("detail-point");
+        expectLink(state.focused && atTop(state), `(e) Enter on Jump to detail: h3#detail-point was not at the top and focused — ${landing(state)}`);
+        expectRoute("(e) Enter on Jump to detail", state, route);
+      });
+      await linkCase("(f) Figure", async () => {
+        const route = await openLinkRoute(linkFixtureId, fixtureReady);
+        const before = navigations.length;
+        await articleLink("Figure", "click");
+        const noticed = await waitForNotice("That link isn't a lecture or note");
+        await expectNoNavigation("(f) Figure", before);
+        expectLink(noticed, "(f) Figure: no “That link isn't a lecture or note” notice");
+        expectRoute("(f) Figure", await readLinkState(), route);
+      });
+      // Review Focus 1: the article stays live behind the phone's outline
+      // sheet, and a link there must find the sheet open and close it.
+      await linkCase("(g) Jump to second behind the outline sheet", async () => {
+        const route = await openLinkRoute(linkFixtureId, fixtureReady);
+        // What a tap at the button's centre lands on, so a sheet that does not
+        // open says what took the tap.
+        const tableOfContents = 'button[aria-label="Table of contents"]';
+        const hitTarget = () => linkPage.$eval(tableOfContents, (button) => {
+          const box = button.getBoundingClientRect();
+          const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+          const name = hit ? `${hit.tagName.toLowerCase()}${hit.id ? `#${hit.id}` : ""}${[...hit.classList].map((item) => `.${item}`).join("")}` : "nothing";
+          return `${button.contains(hit) ? "the button" : name} (button at ${Math.round(box.left)},${Math.round(box.top)}, scrollY ${Math.round(scrollY)}, aria-expanded ${button.getAttribute("aria-expanded")})`;
+        });
+        const beforeTap = await hitTarget();
+        await linkPage.click(tableOfContents);
+        const opened = await linkPage.waitForSelector("#reader-side-panel.open", { timeout: 5_000 }).then(() => true, () => false);
+        if (!opened) throw new Error(`the sheet did not open; the tap's point hit ${beforeTap}, and after 5 s hits ${await hitTarget()}`);
+        await articleLink("Jump to second", "click");
+        const closed = await linkPage.waitForFunction(() => !document.querySelector("#reader-side-panel.open"), { timeout: 5_000 }).then(() => true, () => false);
+        const state = await waitForLinkState("2-second-section", (current) => current.focused, 5_000);
+        expectLink(closed, "(g) Jump to second behind the outline sheet: the sheet stayed open");
+        expectLink(state.focused, `(g) Jump to second behind the outline sheet: focus ended on ${state.active}, not h2#2-second-section`);
+        expectRoute("(g) Jump to second behind the outline sheet", state, route);
+      });
+
+      // Teaching Mode follows the same links. Its slide is a second article
+      // over the Reader's, and only the Reader gives headings ids, so a case
+      // reads the slide label and the focused element. Each case opens
+      // Teaching Mode afresh, except (c), which needs the focus (b) left.
+      const slide = ".teach-mode .teaching-markdown";
+      const readTeachingState = () => linkPage.evaluate(() => {
+        const active = document.activeElement;
+        const onSlide = Boolean(active?.closest(".teaching-markdown")) && active.matches("h2, h3");
+        return {
+          path: location.pathname,
+          hash: location.hash,
+          home: Boolean(document.querySelector(".dashboard-page")),
+          shell: Boolean(document.querySelector("#main-content")),
+          open: Boolean(document.querySelector(".teach-mode")),
+          label: document.querySelector(".teach-section-label")?.textContent.trim() ?? null,
+          active: !active ? "nothing" : active === document.body ? "BODY" : `${active.tagName} “${(active.getAttribute("aria-label") || active.textContent).trim().slice(0, 48)}”`,
+          slideHeading: onSlide ? `${active.tagName} ${active.textContent.trim()}` : null,
+          lectureTitle: active?.matches(".reader-scroll .markdown-body h1") ? active.textContent.trim() : null,
+        };
+      });
+      const waitForTeaching = async (done, timeout) => {
+        const deadline = Date.now() + timeout;
+        let state = await readTeachingState();
+        while (!done(state) && Date.now() < deadline) {
+          await delay(100);
+          state = await readTeachingState();
+        }
+        return state;
+      };
+      // The Reader keeps Teaching Mode open across a route change, so a case
+      // that opens another lecture leaves it first.
+      const exitTeaching = async () => {
+        await linkPage.evaluate(() => document.querySelector('.teach-mode button[aria-label="Exit teaching mode"]')?.click());
+        await linkPage.waitForFunction(() => !document.querySelector(".teach-mode"), { timeout: 5_000 });
+      };
+      // Teach is focused and then pressed, as a keyboard or VoiceOver press
+      // leaves it, so Teaching Mode has an opener to return focus to.
+      const openTeaching = async (documentId, readySelector) => {
+        await exitTeaching();
+        const route = await openLinkRoute(documentId, readySelector);
+        await linkPage.$$eval(".document-tools button", (buttons) => {
+          const teach = buttons.find((button) => button.textContent.trim() === "Teach");
+          teach.focus();
+          teach.click();
+        });
+        await linkPage.waitForSelector(slide, { timeout: 5_000 });
+        return route;
+      };
+      const showSlide = async (title) => {
+        const picker = '.teach-mode select[aria-label="Jump to teaching section"]';
+        const value = await linkPage.$$eval(`${picker} option`, (options, text) => options.find((option) => option.textContent.includes(text))?.value, title);
+        await linkPage.select(picker, value);
+        await linkPage.waitForFunction((text) => document.querySelector(".teach-section-label")?.textContent.includes(text), { timeout: 5_000 }, title);
+      };
+      // Next section, pressed until a slide shows `selector`, as a presenter steps through.
+      const stepToSlideWith = async (selector) => {
+        for (let step = 0; step < 30 && !await linkPage.$(selector); step += 1) {
+          await linkPage.$eval('.teach-mode button[aria-label="Next section"]', (button) => button.click());
+          await nextFrames();
+        }
+        if (!await linkPage.$(selector)) throw new Error(`no slide shows ${selector}`);
+      };
+
+      await linkCase("Teaching (a) Jump to second", async () => {
+        const name = "Teaching (a) Jump to second";
+        const route = await openTeaching(linkFixtureId, fixtureReady);
+        const before = navigations.length;
+        await articleLink("Jump to second", "click", slide);
+        const state = await waitForTeaching((current) => current.slideHeading === "H2 2. Second section", 5_000);
+        expectLink(state.open, `${name}: Teaching Mode closed`);
+        expectLink(Boolean(state.label?.includes("2. Second section")), `${name}: the slide label reads ${state.label ?? "nothing"}, not 2. Second section`);
+        expectLink(state.slideHeading === "H2 2. Second section", `${name}: focus on ${state.active}, not the slide's h2 “2. Second section”`);
+        expectRoute(name, state, route);
+        await expectNoNavigation(name, before);
+      });
+      // Review Focus 5: the heading is on the slide already shown, so the
+      // slide index does not change, and focus must still move.
+      await linkCase("Teaching (b) Enter on Down to the detail", async () => {
+        const name = "Teaching (b) Enter on Down to the detail";
+        const route = await openTeaching(linkFixtureId, fixtureReady);
+        await showSlide("2. Second section");
+        const label = await linkPage.$eval(".teach-section-label", (node) => node.textContent.trim());
+        await articleLink("Down to the detail", "focus", slide);
+        await linkPage.keyboard.press("Enter");
+        const state = await waitForTeaching((current) => current.slideHeading === "H3 Detail point", 5_000);
+        expectLink(state.open, `${name}: Teaching Mode closed`);
+        expectLink(state.label === label, `${name}: the slide label changed from ${label} to ${state.label ?? "nothing"}`);
+        expectLink(state.slideHeading === "H3 Detail point", `${name}: focus on ${state.active}, not the slide's h3 “Detail point”`);
+        expectRoute(name, state, route);
+      });
+      // Review Focus 4: a heading a jump focused is not a control, so Space
+      // narrates. On a fresh Teaching Mode, Space would press the focused
+      // narration button and pass for the wrong reason, so (c) needs the focus
+      // (b) left.
+      await linkCase("Teaching (c) Space after the jump", async () => {
+        const name = "Teaching (c) Space after the jump";
+        const state = await readTeachingState();
+        if (state.slideHeading !== "H3 Detail point") throw new Error(`focus is on ${state.active}, not the slide's h3 “Detail point” that (b) jumped to, so Space was not pressed`);
+        if (await linkPage.evaluate(() => Boolean(window.speechSynthesis.current))) throw new Error("narration was already running before Space");
+        await linkPage.keyboard.press("Space");
+        const narrated = await linkPage.waitForFunction(() => Boolean(window.speechSynthesis.current), { timeout: 5_000 }).then(() => true, () => false);
+        expectLink(narrated, `${name}: Space with focus on the slide's h3 “Detail point” did not narrate`);
+        await linkPage.evaluate(() => document.querySelector('.teach-mode button[aria-label="Stop narration"]')?.click());
+        await linkPage.waitForFunction(() => !window.speechSynthesis.current, { timeout: 5_000 });
+      });
+      // A fresh Teaching Mode opens on slide 1, where the fixture's links are.
+      await linkCase("Teaching (d) Missing", async () => {
+        const name = "Teaching (d) Missing";
+        const route = await openTeaching(linkFixtureId, fixtureReady);
+        const label = await linkPage.$eval(".teach-section-label", (node) => node.textContent.trim());
+        await articleLink("Missing", "click", slide);
+        const noticed = await waitForNotice("That section isn't in this lecture");
+        const state = await readTeachingState();
+        expectLink(noticed, `${name}: no “That section isn't in this lecture” notice`);
+        expectLink(state.open, `${name}: Teaching Mode closed`);
+        expectLink(state.label === label, `${name}: the slide label changed from ${label} to ${state.label ?? "nothing"}`);
+        expectRoute(name, state, route);
+      });
+      await linkCase("Teaching (e) Figure", async () => {
+        const name = "Teaching (e) Figure";
+        await openTeaching(linkFixtureId, fixtureReady);
+        const before = navigations.length;
+        await articleLink("Figure", "click", slide);
+        const noticed = await waitForNotice("That link isn't a lecture or note");
+        await expectNoNavigation(name, before);
+        expectLink(noticed, `${name}: no “That link isn't a lecture or note” notice`);
+        expectLink((await readTeachingState()).open, `${name}: Teaching Mode closed`);
+      });
+      // A guard: a web link keeps its new tab, so the app leaves its click alone.
+      await linkCase("Teaching (f) Docs", async () => {
+        const name = "Teaching (f) Docs";
+        await openTeaching(linkFixtureId, fixtureReady);
+        const click = await linkPage.evaluate(() => {
+          const link = [...document.querySelectorAll(".teach-mode .teaching-markdown a[href]")].find((node) => node.textContent.trim() === "Docs");
+          if (!link) throw new Error("the slide has no “Docs” link");
+          const seen = {};
+          // Runs after the app's handlers: it records their verdict, then
+          // cancels the click so no tab opens.
+          window.addEventListener("click", (event) => { seen.defaultPrevented = event.defaultPrevented; event.preventDefault(); }, { once: true });
+          link.click();
+          return { target: link.getAttribute("target"), defaultPrevented: seen.defaultPrevented };
+        });
+        expectLink(click.target === "_blank", `${name}: the link's target is ${click.target}, not _blank`);
+        expectLink(click.defaultPrevented === false, `${name}: the app cancelled the click (defaultPrevented ${click.defaultPrevented})`);
+      });
+      await linkCase("Teaching (g) README.md#all-parts", async () => {
+        const name = "Teaching (g) README.md#all-parts";
+        const link = '.teach-mode a[href="README.md#all-parts"]';
+        await openTeaching(coverageAudit, coverageReady);
+        await stepToSlideWith(link);
+        const before = navigations.length;
+        await linkPage.$eval(link, (node) => node.click());
+        await expectNoNavigation(name, before);
+        await waitForLinkState("all-parts", (current) => current.focused && atTop(current), 10_000);
+        await nextFrames(); // a closed dialog returns focus to its opener a frame later
+        const state = await readLinkState("all-parts");
+        expectLink(!await linkPage.$(".teach-mode"), `${name}: Teaching Mode stayed open`);
+        expectRoute(name, state, `#/read/${encodeURIComponent("notes/README.md")}`);
+        expectLink(state.focused && atTop(state), `${name}: README did not open at #all-parts — ${landing(state)}`);
+      });
+      // Offline, a lecture whose source is in memory opens with no request.
+      // Last: before the fix this click leaves the app for a 404 page.
+      await linkCase("Teaching (h) part-01-foundations/README.md offline", async () => {
+        const name = "Teaching (h) part-01-foundations/README.md offline";
+        const partOne = "notes/part-01-foundations/README.md";
+        const link = '.teach-mode a[href="part-01-foundations/README.md"]';
+        await exitTeaching();
+        await openLinkRoute(partOne, ".reader-scroll .markdown-body h2#chapter-map"); // now its source is in memory
+        await openTeaching("notes/README.md", ".reader-scroll .markdown-body h2#all-parts");
+        await stepToSlideWith(link);
+        await linkPage.setOfflineMode(true);
+        try {
+          navigations.length = 0;
+          await linkPage.$eval(link, (node) => node.click());
+          await delay(300); // a navigation request is reported a moment after its click
+          expectLink(navigations.length === 0, `${name}: the click sent a main-frame navigation request (${navigations.join(", ")}). Page offline emulation does not reach the service worker, which can still answer it, so the absence of a navigation request is the proof that the app holds offline`);
+          await waitForTeaching((current) => Boolean(current.lectureTitle?.startsWith("Part 1")), 5_000);
+          await nextFrames(); // a closed dialog returns focus to its opener a frame later
+          const state = await readTeachingState();
+          expectLink(state.path === "/" && state.shell, `${name}: the app shell is gone (path ${state.path}, #main-content ${state.shell ? "present" : "missing"})`);
+          expectLink(!state.open, `${name}: Teaching Mode stayed open`);
+          expectRoute(name, state, `#/read/${encodeURIComponent(partOne)}`);
+          expectLink(Boolean(state.lectureTitle?.startsWith("Part 1")), `${name}: focus on ${state.active}, not the lecture's h1`);
+        } finally {
+          await linkPage.setOfflineMode(false);
+        }
+      });
+
+      assert.equal(linkFailures.length, 0, `lecture link checks failed:\n${linkFailures.join("\n")}`);
+    } finally {
+      await linkContext.close();
+    }
+  }
 
   assert.equal(runtimeErrors.length, 0, `browser errors: ${runtimeErrors.join(" | ")}`);
 

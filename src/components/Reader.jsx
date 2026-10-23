@@ -43,7 +43,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { plainTextFromMarkdown, resolveDocumentLink } from "../lib/content";
+import { plainTextFromMarkdown } from "../lib/content";
+import { LINK_NOTICES, linkTarget } from "../lib/links.js";
 import { slugifyHeading } from "../lib/markdown";
 import { renderReaderMarkdown, useRenderedMarkdown } from "../lib/useRenderedMarkdown.js";
 import { diffLines, diffSummary } from "../lib/diff.js";
@@ -159,6 +160,8 @@ export default function Reader({
   const resetCancelRef = useRef(null);
   const drawerReturnFocusRef = useRef(null);
   const headingNodesRef = useRef([]);
+  const scrollToHeadingRef = useRef(null);
+  const teachingLinkRef = useRef(null);
   const lastAnchorRef = useRef(null);
   const anchorHoldRef = useRef(null);
   const trackFrameRef = useRef(0);
@@ -392,21 +395,36 @@ export default function Reader({
           .catch(() => onNotify?.("The code could not be copied.", "error"));
         return;
       }
-      const anchor = event.target.closest("a");
-      if (!anchor) return;
-      const href = anchor.getAttribute("href");
-      const targetId = resolveDocumentLink(document.path, href);
-      if (targetId) {
-        event.preventDefault();
-        onOpenDocument(targetId);
-      }
+      const link = event.target.closest("a[href]");
+      if (!link) return;
+      const target = linkTarget(document.path, link.getAttribute("href"));
+      // A link with a scheme is the browser's to follow (web links open a new tab).
+      if (!target) return;
+      // Anything else stays in the app. Followed by the browser, a fragment
+      // would replace the hash route and a relative URL would leave the app.
+      event.preventDefault();
+      if (target.notADocument) onNotify?.(LINK_NOTICES.notADocument, "warning");
+      else if (target.documentId && (target.documentId !== document.id || !target.anchor)) onOpenDocument(target.documentId, { anchor: target.anchor });
+      else if (!scrollToHeadingRef.current(target.anchor)) onNotify?.(LINK_NOTICES.missingSection, "warning");
     };
     article.addEventListener("click", handleLink);
 
     return () => {
       article.removeEventListener("click", handleLink);
     };
-  }, [document.path, editing, html, onNotify, onOpenDocument, previewEdit]);
+  }, [document.id, document.path, editing, html, onNotify, onOpenDocument, previewEdit]);
+
+  // A lecture link in Teaching Mode opens once Teaching Mode has unmounted.
+  // Until its dialog cleanup runs the reader is inert, so App's move of focus
+  // to the new lecture's heading would not land, and the cleanup would then
+  // return focus to Teach.
+  useEffect(() => {
+    const link = teachingLinkRef.current;
+    if (teaching || !link) return;
+    teachingLinkRef.current = null;
+    onOpenDocument(link.id, link.target);
+  }, [onOpenDocument, teaching]);
+  const openAfterTeaching = (id, target) => { teachingLinkRef.current = { id, target }; };
 
   useEffect(() => {
     if (!navigationTarget || navigationTarget.documentId !== document.id || (editing && !previewEdit)) return undefined;
@@ -435,9 +453,11 @@ export default function Reader({
         // A lecture opened for this target jumps instantly and stays pinned
         // while diagrams above it finish rendering; a same-lecture jump glides.
         releaseAnchor();
+        // Focusable first, as in scrollToHeading, so the scroll and the hold
+        // keep the scroll-margin-top the focused heading has on phones.
+        destination.setAttribute("tabindex", "-1");
         destination.scrollIntoView({ behavior: justOpened ? "auto" : scrollBehavior(), block: "start" });
         if (justOpened && scrollRef.current) holdAnchor(destination, destination.getBoundingClientRect().top - scrollRef.current.getBoundingClientRect().top, 2_500);
-        destination.setAttribute("tabindex", "-1");
         destination.focus({ preventScroll: true });
       } else if (justOpened) restoreSavedPosition();
       onNavigationHandled?.();
@@ -626,17 +646,24 @@ export default function Reader({
   };
 
   const scrollToHeading = (id) => {
-    const heading = articleRef.current?.querySelector(`#${CSS.escape(id)}`);
-    if (!heading) return;
+    // "#" alone is not a valid selector, and no heading has an empty id.
+    const heading = id ? articleRef.current?.querySelector(`#${CSS.escape(id)}`) : null;
+    if (!heading) return false;
     releaseAnchor();
-    heading.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+    // Focusable before the scroll: on phones styles.css gives a focusable
+    // heading a larger scroll-margin-top, and the scroll must use that one.
     heading.setAttribute("tabindex", "-1");
-    if (narrow) {
+    heading.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+    if (narrow && drawer) {
       // Closing the sheet hands focus to the section the learner chose.
       drawerReturnFocusRef.current = heading;
       setDrawer(null);
     } else heading.focus({ preventScroll: true });
+    return true;
   };
+  // The article's link handler is bound when the lecture renders, not when the
+  // drawer opens or closes, so it calls the current scrollToHeading through this.
+  scrollToHeadingRef.current = scrollToHeading;
 
   const moveFind = (direction) => {
     const query = findQuery.trim().toLocaleLowerCase();
@@ -1222,7 +1249,7 @@ export default function Reader({
           second line and Retry, beside Stop, replays that sentence. Retry
           takes the place of Pause, so the bar keeps seven controls. */}
       {playerVisible && <div ref={attachAudioBar} className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button>{!speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button>}<button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong>{playerNotice ? <span className="audio-message">{playerNotice.message}</span> : <span>{speech.currentText}</span>}</div>{speech.activeLabel === "Full lecture" && <button className="icon-button" onClick={bookmarkCurrentSentence} aria-label="Bookmark this sentence" title="Bookmark this sentence" type="button"><BookmarkPlus size={17} /></button>}{speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} aria-label="Retry narration" title="Retry narration" type="button"><RotateCcw size={18} /></button>}<button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
-      {teaching && <TeachingMode title={document.title} source={source} onClose={() => setTeaching(false)} speech={speech} />}
+      {teaching && <TeachingMode title={document.title} source={source} documentId={document.id} onClose={() => setTeaching(false)} onOpenDocument={openAfterTeaching} onNotify={onNotify} speech={speech} />}
       <AnnotationDialog draft={annotationDraft} onClose={() => setAnnotationDraft(null)} onSave={saveAnnotation} />
     </section>
   );

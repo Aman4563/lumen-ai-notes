@@ -10,7 +10,9 @@ like an ordinary app. No account or server-side database is required.
 - ranked full-text search plus Part, bookmark, in-progress, guide, and upload filters;
 - a responsive long-form reader with native MathML formulas, Mermaid diagrams,
   copyable code blocks, tables, external images, in-lecture find, reading progress,
-  chapter navigation, sharing, link copy, completion, and Markdown export;
+  chapter navigation, sharing, link copy, completion, and Markdown export. A link
+  to a section of another lecture opens that lecture at the section, and a link
+  to a section of the lecture you are reading moves there without leaving it;
 - bookmarks, per-lecture private notes, and selection-based clippings collected
   in the notebook;
 - source-linked review cards with Again/Hard/Good/Easy grades, daily limits,
@@ -29,7 +31,9 @@ like an ordinary app. No account or server-side database is required.
 - teaching mode, which turns each major section into a presentation-style slide
   with section navigation, narration (Space starts and pauses it), active-recall
   conceal/reveal, adjustable type, a resettable timer, keyboard control, swipe
-  navigation, and fullscreen where the browser supports it;
+  navigation, and fullscreen where the browser supports it. A link to another
+  lecture opens that lecture in the Reader, and a link to a section of the same
+  lecture moves to the slide that holds it;
 - a versioned, multi-page whiteboard with page create, rename, duplicate, delete,
   and navigation; grid, dot, and plain backgrounds; select/move, pen, highlighter,
   eraser, line, rectangle, ellipse, arrow, text, and sticky-note tools; object

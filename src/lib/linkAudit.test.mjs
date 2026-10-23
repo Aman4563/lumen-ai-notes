@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { applyBatchDelete, applyBatchOrganize } from "./contentOps.js";
 import { htmlToMarkdown, isHtmlFileName } from "./htmlImport.js";
 import { auditDocumentLinks, auditLearnerLinks, documentAnchorIds } from "./linkAudit.js";
+import { documentAnchorIds as linkAnchorIds, headingAnchors, linkTarget, teachingSlideForAnchor } from "./links.js";
+import { splitTeachingSections } from "./markdown.js";
 
 const now = new Date("2026-09-02T12:00:00.000Z");
 
@@ -41,6 +43,64 @@ test("the link audit flags exactly what the reader cannot open", () => {
   assert.equal(sweep.scanned, 2);
   assert.equal(sweep.findings.length, 1, "custom-doc relative links into notes/ resolve to custom/notes/... and are honestly broken");
   assert.equal(sweep.findings[0].kind, "missing-document");
+});
+
+test("the link audit flags an in-page link to a heading the document lacks, naming no other document", () => {
+  // A guard: the audit already did this before it classified links with linkTarget.
+  const findings = auditDocumentLinks("notes/p/a.md", "[gone](#nope) [top](#)", new Set(["notes/p/a.md"]), () => ["real"]);
+  assert.deepEqual(findings, [
+    { documentId: "notes/p/a.md", href: "#nope", label: "gone", kind: "missing-anchor" },
+    { documentId: "notes/p/a.md", href: "#", label: "top", kind: "missing-anchor" },
+  ]);
+});
+
+test("linkTarget names the lecture and the decoded heading a link points to", () => {
+  assert.deepEqual(linkTarget("notes/01-advanced-curriculum-coverage-audit.md", "README.md#all-parts"), { documentId: "notes/README.md", anchor: "all-parts" });
+  assert.deepEqual(linkTarget("notes/part-01/a.md", "#local-heading"), { anchor: "local-heading" });
+  assert.deepEqual(linkTarget("notes/part-01/a.md", "./b.md"), { documentId: "notes/part-01/b.md", anchor: "" });
+  assert.deepEqual(linkTarget("custom/x.md", "../notes/part-01/a.md#gradient-descent"), { documentId: "notes/part-01/a.md", anchor: "gradient-descent" });
+  assert.deepEqual(linkTarget("notes/a.md", "#caf%C3%A9"), { anchor: "café" });
+  assert.deepEqual(linkTarget("notes/a.md", "#100%"), { anchor: "100%" }, "a malformed escape keeps its raw text");
+  assert.deepEqual(linkTarget("notes/a.md", "#"), { anchor: "" });
+  for (const href of ["https://example.com/a.md#x", "mailto:a@b.c", "tel:+15551234"]) assert.equal(linkTarget("notes/a.md", href), null, href);
+  for (const href of ["./image.png", "figure.png", "", "?q=1", "/assets/app.css", "//example.com/page", "figure.png#fig:1", "page.html?t=10:30", "notes/a:b.png", "//example.com:8080/page"]) assert.deepEqual(linkTarget("notes/a.md", href), { notADocument: true }, href);
+});
+
+test("every heading id documentAnchorIds lists is a link target that lands on it", () => {
+  const markdown = ["# Title", "## Gradient Descent", "### Learning **Rate** [link](x.md)", "## Gradient Descent", "## ???", "## 2. Second section"].join("\n");
+  const ids = documentAnchorIds(markdown); // the linkAudit.js import
+  assert.equal(documentAnchorIds, linkAnchorIds, "the audit re-exports the Reader-side function, not a copy");
+  assert.deepEqual(ids, ["gradient-descent", "learning-rate-link", "gradient-descent-2", "section-4", "2-second-section"]);
+  assert.deepEqual(headingAnchors(markdown).map((heading) => heading.line), [1, 2, 3, 4, 5]);
+  for (const id of ids) {
+    assert.deepEqual(linkTarget("notes/p/a.md", `#${id}`), { anchor: id });
+    assert.deepEqual(linkTarget("notes/p/b.md", `a.md#${id}`), { documentId: "notes/p/a.md", anchor: id });
+  }
+  const known = new Set(["notes/p/a.md", "notes/p/b.md", "notes/p/x.md"]); // x.md: the link inside the h3
+  const anchorsFor = (id) => (id === "notes/p/a.md" ? ids : ["real-section"]);
+  const links = [...ids.map((id) => `[in page](#${id})`), "[encoded](./b.md#real%2Dsection)", "[cross](./b.md#real-section)"].join("\n");
+  assert.deepEqual(auditDocumentLinks("notes/p/a.md", `${markdown}\n${links}`, known, anchorsFor), [], "a link the audit calls valid is one linkTarget resolves");
+});
+
+test("teaching slides find the heading a link names", () => {
+  // splitTeachingSections is not fence-aware: it also starts a slide at the
+  // fenced "## not a heading" line. The mapping must not drift past it.
+  const source = ["", "# Fixture", "Intro", "## First section", "text", "```python", "## not a heading in a fence", "```", "## 2. Second section", "### Detail point", "## First section"].join("\n");
+  const sections = splitTeachingSections(source);
+  assert.equal(sections.length, 5);
+  assert.deepEqual(teachingSlideForAnchor(sections, "first-section"), { index: 1, ordinal: 0 });
+  assert.deepEqual(teachingSlideForAnchor(sections, "2-second-section"), { index: 3, ordinal: 0 });
+  assert.deepEqual(teachingSlideForAnchor(sections, "detail-point"), { index: 3, ordinal: 1 });
+  assert.deepEqual(teachingSlideForAnchor(sections, "first-section-2"), { index: 4, ordinal: 0 });
+  assert.equal(teachingSlideForAnchor(sections, "not-a-heading-in-a-fence"), null);
+  assert.equal(teachingSlideForAnchor(sections, "missing"), null);
+});
+
+test("headings are found in a lecture saved with CRLF line endings", () => {
+  // Uploads keep their line endings. splitTeachingSections is not CRLF-aware, so the whole lecture is one slide.
+  const source = "# T\r\n\r\n## Alpha\r\ntext\r\n### Beta\r\n";
+  assert.deepEqual(documentAnchorIds(source), ["alpha", "beta"]);
+  assert.deepEqual(teachingSlideForAnchor(splitTeachingSections(source), "beta"), { index: 0, ordinal: 1 });
 });
 
 test("HTML import converts the allowlist, drops danger, and keeps titles", () => {
