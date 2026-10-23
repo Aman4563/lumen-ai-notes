@@ -40,7 +40,7 @@ import { documentMap, documents, guides, loadDocumentSearchIndex, loadDocumentSo
 import { deleteData, getAllData, getData, initialProfile, normalizeProfile, replaceAllData, updateData } from "./lib/db";
 import { isProfileReplacementNewer, mergeProfileVersions, prepareProfileReplacement, profilePayloadEqual, PROFILE_REPLACEMENT_EVENT, PROFILE_SYNC_CHANNEL, PROFILE_SYNC_SIGNAL_KEY } from "./lib/profileSync.js";
 import { useSpeech } from "./hooks/useSpeech";
-import { TUTOR_SPEECH_LABEL } from "./lib/speech.js";
+import { PRONUNCIATION_TEST_LABEL, TUTOR_SPEECH_LABEL } from "./lib/speech.js";
 import { useWakeLock } from "./hooks/useWakeLock";
 import { pruneRecentSearches, pushRecentSearch, searchDocuments, SEARCH_RESULT_LIMIT } from "./lib/search";
 import { createId } from "./lib/id.js";
@@ -1505,9 +1505,11 @@ export default function App() {
     // its message is a toast. That screen has no Retry or Resume, and opening
     // the lecture again starts a fresh session (Listen resumes a full lecture
     // from its saved sentence), so the toast names no control, only where to
-    // go. A tutor shows its own reading's messages.
+    // go. A tutor shows its own reading's messages. Settings' Try it is no
+    // lecture, even over the Reader: its message is a toast on its own.
     onNotice: (notice) => {
       if (notice.code === "sleep-ended") notify(notice.message, "info", 8000);
+      else if (notice.label === PRONUNCIATION_TEST_LABEL) notify(notice.plain, notice.severity === "error" ? "error" : "warning");
       else if (view === "reader") setNarrationNoticeId(notice.id);
       else if (notice.label !== TUTOR_SPEECH_LABEL) notify(`${notice.plain} Open the lecture to listen again.`, notice.severity === "error" ? "error" : "warning");
     },

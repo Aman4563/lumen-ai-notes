@@ -144,3 +144,10 @@ test("a reworded sentence in a queue of the same length keeps its index", () => 
   assert.deepEqual(locatePosition({ ...at(7), snippet: "Reworded closing question." }, queue, sectionStarts), { index: 5, how: "section" });
   assert.deepEqual(locatePosition({ ...at(7), snippet: "Reworded closing question." }, queue, sectionStarts, { allowLast: true }), { index: 7, how: "index" });
 });
+
+test("positions are found in a queue of entries", () => {
+  const entry = (text) => ({ text, unit: null, map: [], section: "" });
+  const queue = ["One.", "Two sentence here.", "Three.", "Four."].map(entry);
+  assert.deepEqual(locatePosition({ v: 2, index: 1, total: 4, snippet: "Two sentence", section: "" }, queue, []), { index: 1, how: "exact" });
+  assert.deepEqual(locatePosition({ v: 2, index: 0, total: 9, snippet: "Three.", section: "" }, queue, []), { index: 2, how: "snippet" });
+});

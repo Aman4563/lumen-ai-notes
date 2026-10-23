@@ -57,6 +57,9 @@ export const writePosition = (documentId, position, storage) => {
 
 export const clearPosition = (documentId, storage) => (storageFor(storage).removeItem(`${KEY_PREFIX}${documentId}`) ? true : null);
 
+// A queue holds speech's entries (`{ text, … }`, issue #100) or plain strings.
+const entryText = (entry) => (typeof entry === "string" ? entry : entry?.text || "");
+
 /**
  * Finds a saved position in a freshly built queue. In order: the chunk at
  * `index` still starts with the snippet; the nearest chunk that starts with
@@ -75,7 +78,7 @@ export const locatePosition = (position, queue, sectionStarts = [], { allowLast 
   const usable = (index) => Number.isInteger(index) && index >= 0 && index < end;
   const { snippet } = saved;
   if (!snippet) return usable(saved.index) ? { index: saved.index, how: "index" } : { index: 0, how: "changed" };
-  const matches = (index) => usable(index) && queue[index].startsWith(snippet);
+  const matches = (index) => usable(index) && entryText(queue[index]).startsWith(snippet);
   if (matches(saved.index)) return { index: saved.index, how: "exact" };
   let nearest = -1;
   queue.forEach((_, index) => {
