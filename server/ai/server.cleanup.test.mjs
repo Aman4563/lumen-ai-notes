@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-// An after() hook can only be seen from outside its process, so this file runs
-// server.test.mjs in a child: passing, failing, and with its fixture write
-// failing. The child gets its own temp folder (the real one is shared with
-// concurrent runs) and none of the runner's NODE_TEST* variables (they would
-// change how it runs and reports).
+// The cleanup (an after() hook, a catch around the fixture write) can only be
+// seen from outside its process, so this file runs server.test.mjs in a child:
+// passing, failing, and with its fixture write failing. The child gets its own
+// temp folder (the real one is shared with concurrent runs) and none of the
+// runner's NODE_TEST* variables (they would change how it runs and reports).
 
 const SERVER_SUITE = fileURLToPath(new URL("./server.test.mjs", import.meta.url));
 const FORCED_FAILURE = 'data:text/javascript,import { test } from "node:test"; test("forced failure", () => { throw new Error("forced failure"); });';
@@ -64,6 +64,6 @@ test("the server suite leaves nothing in its temp folder after a failing run", a
 test("the server suite leaves nothing in its temp folder when writing its fixture fails", async (t) => {
   const run = await runServerSuite(t, { preload: FIXTURE_WRITE_FAILURE });
   assert.ok(run.status > 0, `the fixture write failure did not fail the child:\n${run.output}`);
-  assert.match(run.output, /forced fixture write failure/, `the child never reached the fixture write:\n${run.output}`);
+  assert.match(run.output, /^Error: forced fixture write failure$/m, `the child never reached the fixture write:\n${run.output}`);
   assert.deepEqual(run.leftovers, [], `server.test.mjs left ${run.leftovers.join(", ")} after writing its fixture failed`);
 });
