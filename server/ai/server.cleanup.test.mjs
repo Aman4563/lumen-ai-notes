@@ -24,7 +24,11 @@ const runServerSuite = async (t, { preload } = {}) => {
     TEMP: folder,
   };
   const result = spawnSync(process.execPath, ["--test-reporter=tap", ...(preload ? [`--import=${preload}`] : []), SERVER_SUITE], { env, encoding: "utf8", timeout: 120_000 });
-  const output = result.stdout + result.stderr;
+  const output = [
+    (result.stdout ?? "") + (result.stderr ?? ""),
+    result.signal && `(child killed by ${result.signal})`,
+    result.error && `(${result.error.message})`,
+  ].filter(Boolean).join("\n");
   return {
     status: result.status,
     output,
