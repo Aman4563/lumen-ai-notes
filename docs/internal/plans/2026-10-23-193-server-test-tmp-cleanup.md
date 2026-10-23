@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Gate on Node 26 (`.nvmrc`): `npm run check` and the full `npm run check:browser`, run through `/Users/macbookpro/Desktop/ML-learning/.claude/bin/gate-slot`; rerun a failed suite alone with `LUMEN_BROWSER_RETRIES=0`.
+- Gate on Node 26 (`.nvmrc`): `npm run check` and the full `npm run check:browser`, run through the machine-wide `gate-slot` lock; rerun a failed suite alone with `LUMEN_BROWSER_RETRIES=0`.
 - Accessibility: axe WCAG 2.2 AA with an empty allowlist; theme tokens only (Paper, Night, Contrast, System); 44 px touch targets and ≥ 16 px form text on phones; 320 px, 393 px, 200% text and landscape. This change touches no UI; the browser gate must pass unchanged.
 - Budgets: startup entry < 750,000 B; install route screens < 900,000 B (last recorded on main after #148: 623,709 B and 690,627 B). No app code changes, so both stay as they are.
 - Local-first: no network request, no paid or cloud AI, no tracking; learner data stays on the device. Not affected (test-only).
@@ -31,7 +31,7 @@
 
 - Concurrent runs share the real temp folder (other worktrees, and `audit:ai`'s own `server.test.mjs` process beside the new file) and create matching directories at any moment: the check reads only its child's private folder. Pinned by `runServerSuite` (Task 1).
 - The runner's environment (`NODE_TEST_CONTEXT=child-v8`, `NODE_TEST_WORKER_ID`) leaks into the child: a nested `node --test` then skips every file and exits 0, and a direct run reports in the runner's serialized format instead of TAP. The helper drops every `NODE_TEST*` key, both tests require `# pass` > 0, and Step 2 runs the check through `node --test`, as `audit:ai` does.
-- A failure while building the fixture (the `writeFile` after the `mkdtemp`): the hook is registered first, so the directory still goes (a scratch run confirmed that a top-level throw after `after()` still runs the hook). Pinned by the line order in Step 3.
+- A failure while building the fixture (the `writeFile` after the `mkdtemp`) still leaves the directory, wherever the hook is registered: node:test rethrows an error raised while the file loads, before its first test starts, and runs no hook (exit 7 run directly, 1 under `node --test`, on Node 26.12.1). A throw after a test has started does run the hook. Accepted, and not pinned by a test: it takes a failed 63-byte write into a folder `mkdtemp` has just made, and building the fixture in a `before()` hook would close it.
 - A slow runner (2-vCPU CI; the suite generates an RSA key and has a 20 s TLS case): the child is bounded at 120 s, far above its ~1 s local run, and a killed child fails both tests on its exit status.
 - The check's own folders: each is removed by `t.after`, even when an assertion fails. Step 2 confirms it on main, where both tests fail.
 
@@ -67,7 +67,7 @@
 - `runServerSuite(t, { preload } = {}) => Promise<{ status, output, pass, fail, leftovers }>`:
   - makes a private folder with `mkdtemp(join(tmpdir(), "lumen-server-cleanup-test-"))` and at once registers `t.after(() => rm(folder, { recursive: true, force: true }))`;
   - runs `spawnSync(process.execPath, ["--test-reporter=tap", ...(preload ? [`--import=${preload}`] : []), SERVER_SUITE], { env, encoding: "utf8", timeout: 120_000 })`, where `env` is `process.env` without any key starting with `NODE_TEST`, with `TMPDIR`, `TMP` and `TEMP` set to the folder (`os.tmpdir()` reads `TMPDIR` on POSIX, `TEMP`/`TMP` on Windows);
-  - returns `output` (stdout then stderr), `pass` and `fail` parsed from TAP's `# pass N` and `# fail N` lines (`NaN` when missing), and `leftovers`, the folder's sorted `readdir`.
+  - returns `output` (stdout, then stderr, then the child's signal or spawn error when there is one), `pass` and `fail` parsed from TAP's `# pass N` and `# fail N` lines (`NaN` when missing), and `leftovers`, the folder's sorted `readdir`.
 
 - [ ] **Step 1: Write the failing tests** in `server/ai/server.cleanup.test.mjs`, under a short header comment saying why: an `after()` hook can only be observed from outside its process; the real temp folder is shared with concurrent runs; the runner's `NODE_TEST*` keys would change how the child runs and reports.
 
