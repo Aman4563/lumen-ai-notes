@@ -16,6 +16,7 @@ import {
 // fails its own test instead of the whole file.
 import * as speech from "./speech.js";
 import * as speechContent from "./speechContent.js";
+import pack from "../data/pronunciations.ml.v1.json" with { type: "json" };
 
 const { buildSpeechTarget, currentSpeechBlock } = speechContent;
 
@@ -243,4 +244,145 @@ test("narration errors name the Retry control only where it exists", () => {
 test("narration speed shows as chosen: 1.25×, not 1.3×", () => {
   assert.equal(typeof speech.formatSpeechRate, "function", "speech.js has no formatSpeechRate");
   assert.deepEqual([1.25, 1, 0.8, 0.6, 1.6, 1.05, "1.35", Number.NaN].map(speech.formatSpeechRate), ["1.25×", "1×", "0.8×", "0.6×", "1.6×", "1.05×", "1.35×", "1×"]);
+});
+
+test("the verbalizer reads Unicode math the issue's way", () => {
+  const cases = [
+    ["ŷ = wᵀx + b", "y hat equals w transpose x plus b"],
+    ["ŵ = (XᵀX)⁻¹Xᵀy", "w hat equals (X transpose X) inverse X transpose y"],
+    ["∇J = 2Xᵀ(Xw − y)", "gradient of J equals 2X transpose (Xw minus y)"],
+    ["x² + y³", "x squared plus y cubed"],
+    ["x̄ ≈ μ", "x bar approximately mu"],
+    ["Σxᵢ", "sum of x i"],
+    ["√d", "square root of d"],
+    ["A ∈ ℝᵐˣⁿ", "A in R m by n"],
+    ["a ≤ b ≥ c ≠ d", "a less than or equal to b greater than or equal to c not equal to d"],
+    ["P(y ∣ x)", "P of (y given x)"],
+    ["‖x‖₂", "the L2 norm of x"],
+    ["½‖w‖²", "one half the squared norm of w"],
+    ["𝔼[X]", "expected value of [X]"],
+    ["θ, λ, σ", "theta, lambda, sigma"],
+    ["x₁ + xᵢ", "x 1 plus x i"],
+    ["rₜ₊₁", "r t plus 1"],
+    ["e⁻ᶻ", "e to the power of minus z"],
+    ["3 × 4 ÷ 2", "3 times 4 divided by 2"],
+    ["∂L/∂b = p − y", "partial L over partial b equals p minus y"],
+    ["σ(z) = 1 / (1 + e⁻ᶻ)", "sigma of (z) equals 1 over (1 plus e to the power of minus z)"],
+    ["data → model", "data leads to model"],
+  ];
+  for (const [input, expected] of cases) assert.equal(speech.speakable(input), expected, input);
+});
+
+test("ASCII operators are words only inside a formula run with a math symbol", () => {
+  assert.equal(speech.speakable("Gaussian + identity → linear regression"), "Gaussian + identity leads to linear regression");
+  assert.equal(speech.speakable("stale read then write → version/ETag optimistic concurrency"), "stale read then write leads to version/ETag optimistic concurrency");
+  assert.equal(speech.speakable("Use x = 5 and y/2 here."), "Use x = 5 and y/2 here.");
+  assert.equal(speech.speakable("P(D ∣ +) = 95/590 ≈ 16.1%"), "P of (D given +) equals 95 over 590 approximately 16.1%");
+  assert.equal(speech.speakable("See https://x.org/a/b → b"), "See https://x.org/a/b leads to b");
+  assert.equal(speech.speakable("An intelligent product observes some context."), "An intelligent product observes some context.");
+});
+
+test("marked sub, sup and inline-code spans read as the DOM wrote them", () => {
+  const { subOpen: so, subClose: sc, supOpen: po, supClose: pc, plainOpen, plainClose } = speech.SPEECH_MARK;
+  assert.equal(speech.speakable(`Σ${so}i=1${sc}${po}n${pc} x${so}i${sc}`), "sum from i equals 1 to n of x i");
+  assert.equal(speech.speakable(`x${po}2${pc}`), "x squared");
+  assert.equal(speech.speakable(`X${po}T${pc}`), "X transpose");
+  assert.equal(speech.speakable(`A${po}−1${pc}`), "A inverse");
+  assert.equal(speech.speakable(`e${po}x${pc}`), "e to the power of x");
+  assert.equal(speech.speakable(`d${so}model${sc}`), "d model");
+  assert.equal(speech.speakable(`r${so}t+k+1${sc}`), "r sub t plus k plus 1");
+  assert.equal(speech.speakable(`Run ${plainOpen}θ = a/b${plainClose} once.`), "Run θ = a/b once.");
+  assert.equal(speech.speakable(`${plainOpen}np.linalg.lstsq(X, y)${plainClose}`), "np.linalg.least squares(X, y)");
+  assert.equal(speech.stripSpeechMarks(`x${so}i${sc} and ${plainOpen}a${plainClose}`), "xi and a");
+});
+
+test("a learner's entry beats the pack and nothing is replaced twice", () => {
+  assert.equal(speech.speakable("ReLU then tanh"), "ray-loo then tanch");
+  assert.equal(speech.speakable("ReLU then tanh", { pronunciations: [{ term: "relu", spoken: "rectifier" }] }), "rectifier then tanch");
+  assert.equal(speech.speakable("alpha beta", { pronunciations: [{ term: "alpha", spoken: "beta" }, { term: "beta", spoken: "gamma" }] }), "beta gamma");
+  assert.equal(speech.speakable("QLoRA beats LoRA in KV cache use"), "Q lora beats lora in K V cache use");
+  assert.equal(speech.speakable("CUDAx and xCUDA"), "CUDAx and xCUDA");
+  assert.equal(speech.speakable("MAP and map and mAP"), "M A P and map and mean average precision");
+  assert.equal(speech.speakable("C++ code", { pronunciations: [{ term: "C++", spoken: "C plus plus" }] }), "C plus plus code");
+  assert.equal(speech.speakable("ReLU, tanh and lstsq"), "ray-loo, tanch and least squares");
+});
+
+test("term = skips a term, and overrides parse from Settings lines", () => {
+  assert.deepEqual(speech.parsePronunciationLines("ReLU = ray loo\num =\n  = nothing\nno equals sign\nSQL = sequel = query"), [
+    { term: "ReLU", spoken: "ray loo" },
+    { term: "um", spoken: "" },
+    { term: "SQL", spoken: "sequel = query" },
+  ]);
+  assert.equal(speech.speakable("So um this works", { pronunciations: [{ term: "um", spoken: "" }] }), "So this works");
+  assert.equal(speech.speakable("ReLU", { pronunciations: [{ term: "ReLU", spoken: "" }] }), "");
+  assert.deepEqual(speech.normalizePronunciations([{ term: " um ", spoken: "" }, { term: "UM", spoken: "x" }, { term: "", spoken: "y" }]), [{ term: "um", spoken: "" }]);
+  assert.equal(speech.normalizePronunciations(Array.from({ length: 60 }, (_, index) => ({ term: `t${index}`, spoken: "x" }))).length, 50);
+  assert.equal(speech.samePronunciations([{ term: "a", spoken: "b" }], [{ term: " a ", spoken: "b " }]), true);
+  assert.equal(speech.samePronunciations([{ term: "a", spoken: "b" }], [{ term: "a", spoken: "c" }]), false);
+});
+
+test("speakableWithMap maps every spoken character back to its source", () => {
+  const input = "The loss ŷ = b uses ReLU.";
+  const { text, map } = speech.speakableWithMap(input);
+  assert.equal(text, "The loss y hat equals b uses ray-loo.");
+  assert.equal(map[0].spoken[0], 0);
+  assert.equal(map.at(-1).spoken[1], text.length);
+  map.forEach((piece, index) => {
+    assert.ok(piece.source[0] <= piece.source[1]);
+    if (index) {
+      assert.equal(piece.spoken[0], map[index - 1].spoken[1]);
+      assert.ok(piece.source[0] >= map[index - 1].source[1]);
+    }
+  });
+  const sourceOf = (word) => speech.sourceOffsetAt(map, text.indexOf(word));
+  assert.equal(input.slice(sourceOf("ray-loo"), sourceOf("ray-loo") + 4), "ReLU");
+  assert.equal(input[sourceOf("y hat")], "ŷ");
+  assert.equal(input.slice(sourceOf("uses"), sourceOf("uses") + 4), "uses");
+  assert.deepEqual(speech.collapseWithOffsets("  a \n b"), { text: "a b", offsets: [0, 0, 0, 1, 2, 2, 2, 3] });
+});
+
+test("endSentence and TERMINAL_PUNCTUATION live in speech.js", () => {
+  assert.equal(speech.endSentence("Ridge regression"), "Ridge regression.");
+  assert.equal(speech.endSentence("Done!"), "Done!");
+  assert.equal(speech.endSentence(""), "");
+  assert.equal(speech.TERMINAL_PUNCTUATION.test("Note:"), true);
+});
+
+test("the built-in pack covers the issue's terms and lists nothing twice", () => {
+  assert.equal(pack.version, 1);
+  assert.ok(pack.entries.length >= 110 && pack.entries.length <= 130, `the pack has ${pack.entries.length} entries`);
+  for (const term of ["ReLU", "tanh", "SGD", "NDCG", "PR-AUC", "k-NN", "LLM", "LoRA", "QLoRA", "vLLM", "KV cache", "i.i.d.", "argmin", "argmax", "p99", "lstsq", "PyTorch"]) {
+    assert.ok(pack.entries.some((entry) => entry.term === term), `the pack has no ${term}`);
+  }
+  const keys = pack.entries.map((entry) => (entry.matchCase ? entry.term : entry.term.toLowerCase()));
+  assert.equal(new Set(keys).size, keys.length, "a pack term is listed twice");
+  for (const entry of pack.entries) assert.ok(entry.term.trim() && entry.spoken.trim() && entry.term.length <= 60 && entry.spoken.length <= 120, entry.term);
+  assert.equal(speech.PRONUNCIATION_PACK.length, pack.entries.length);
+});
+
+// Task 2 composes and slices these maps; the brief's tests above only reach
+// them through speakableWithMap and sourceOffsetAt.
+test("offset maps build, compose and slice by the MapPiece rules", async () => {
+  const { createSpokenBuilder } = await import("./spokenMap.js");
+  const piece = (spoken, source) => ({ spoken, source });
+  const builder = createSpokenBuilder();
+  builder.append("  a  b ", 0, 7);
+  builder.append("y hat", 7, 8);
+  builder.append(" c", 8, 10);
+  assert.deepEqual(builder.build(), {
+    text: "a b y hat c",
+    map: [piece([0, 1], [2, 3]), piece([1, 2], [3, 4]), piece([2, 3], [5, 6]), piece([3, 4], [6, 7]), piece([4, 9], [7, 8]), piece([9, 10], [8, 9]), piece([10, 11], [9, 10])],
+  });
+  const map = [piece([0, 5], [10, 15]), piece([5, 10], [15, 16])];
+  assert.deepEqual(speech.sliceMap(map, 2, 7), [piece([0, 3], [12, 15]), piece([3, 5], [15, 16])], "an identity piece is cut exactly; any other keeps its source");
+  assert.deepEqual(
+    speech.composeMaps([piece([0, 3], [0, 3]), piece([3, 4], [3, 4]), piece([4, 9], [4, 5])], [piece([0, 4], [10, 14]), piece([4, 5], [20, 30])]),
+    [piece([0, 3], [10, 13]), piece([3, 4], [13, 14]), piece([4, 9], [20, 30])],
+  );
+  assert.deepEqual(speech.composeMaps([piece([0, 2], [0, 2]), piece([2, 3], [2, 3]), piece([3, 5], [3, 5])], [piece([0, 5], [40, 60])]), [piece([0, 5], [40, 60])], "pieces inside one non-identity piece merge");
+  assert.deepEqual(speech.composeMaps([piece([0, 1], [0, 1]), piece([1, 2], [1, 1])], [piece([0, 1], [5, 6])]), [piece([0, 1], [5, 6]), piece([1, 2], [6, 6])], "inserted text keeps an empty source range");
+  assert.equal(speech.sourceOffsetAt([], 3), 0);
+  assert.equal(speech.sourceOffsetAt(map, 3), 13);
+  assert.equal(speech.sourceOffsetAt(map, 7), 15);
+  assert.equal(speech.sourceOffsetAt(map, 10), 16, "a non-identity piece's spoken end is its source end");
 });

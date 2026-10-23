@@ -1,3 +1,18 @@
+import { normalizePronunciations } from "./speakable.js";
+
+// The text pass (issue #100) lives in speakable.js and its offset maps in
+// spokenMap.js; narration reaches both through this module.
+export {
+  MAX_PRONUNCIATIONS,
+  PRONUNCIATION_PACK,
+  SPEECH_MARK,
+  normalizePronunciations,
+  speakable,
+  speakableWithMap,
+  stripSpeechMarks,
+} from "./speakable.js";
+export { collapseWithOffsets, composeMaps, sliceMap, sourceOffsetAt } from "./spokenMap.js";
+
 export const SPEECH_TEXT_LIMIT = 500_000;
 export const SPEECH_CHUNK_LIMIT = 180;
 
@@ -163,6 +178,13 @@ export const chunkSpeechText = (text, limit = SPEECH_CHUNK_LIMIT, language = "au
   return chunks;
 };
 
+// A heading, table row or list item heard as its own sentence ends with a
+// full stop unless it already ends in punctuation. The tutor's Listen and
+// lecture narration share it (issue #100).
+export const TERMINAL_PUNCTUATION = /[.!?:;…)"”]$/u;
+
+export const endSentence = (text) => (text && !TERMINAL_PUNCTUATION.test(text) ? `${text}.` : text);
+
 const PREVIEW_TEXT = Object.freeze({
   de: "Dies ist eine Vorschau der ausgewählten Stimme.",
   en: "This is a preview of your selected study voice.",
@@ -177,31 +199,26 @@ const PREVIEW_TEXT = Object.freeze({
 });
 
 /**
- * Pronunciation overrides (AUDIO-001): learner-defined replacements applied
- * to narration text before chunking. Whole-word, case-insensitive, single
- * pass (a replacement never re-triggers another term), bounded to 50 terms.
+ * Settings lines as overrides: each line splits at its first `=`, so
+ * `SQL = sequel = query` says "sequel = query" and `um =` skips "um". A line
+ * without `=` or with an empty term is ignored.
  */
-export const MAX_PRONUNCIATIONS = 50;
+export const parsePronunciationLines = (text) => normalizePronunciations(String(text ?? "").split("\n").flatMap((line) => {
+  const at = line.indexOf("=");
+  return at < 0 ? [] : [{ term: line.slice(0, at), spoken: line.slice(at + 1) }];
+}));
 
-export const normalizePronunciations = (value) => (Array.isArray(value) ? value : [])
-  .filter((entry) => entry && typeof entry.term === "string" && typeof entry.spoken === "string" && entry.term.trim() && entry.spoken.trim())
-  .map((entry) => ({ term: entry.term.trim().slice(0, 60), spoken: entry.spoken.trim().slice(0, 120) }))
-  .filter((entry, index, list) => list.findIndex((other) => other.term.toLocaleLowerCase() === entry.term.toLocaleLowerCase()) === index)
-  .slice(0, MAX_PRONUNCIATIONS);
-
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-export const applyPronunciations = (text, pronunciations) => {
-  const list = normalizePronunciations(pronunciations);
-  if (!list.length) return String(text || "");
-  let output = String(text || "");
-  for (const { term, spoken } of list) {
-    const boundary = /^[a-z0-9]/i.test(term) && /[a-z0-9]$/i.test(term);
-    const pattern = new RegExp(boundary ? `\\b${escapeRegExp(term)}\\b` : escapeRegExp(term), "gi");
-    output = output.replace(pattern, spoken);
-  }
-  return output;
+/** Equal override lists once normalized, order included. */
+export const samePronunciations = (left, right) => {
+  const a = normalizePronunciations(left);
+  const b = normalizePronunciations(right);
+  return a.length === b.length && a.every((entry, index) => entry.term === b[index].term && entry.spoken === b[index].spoken);
 };
+
+// How narration reads code blocks and tables (issue #100); the first is the
+// default.
+export const NARRATION_CODE_MODES = Object.freeze(["announce", "skip", "read"]);
+export const NARRATION_TABLE_MODES = Object.freeze(["rows", "announce"]);
 
 export const speechPreviewText = (language, selectedVoice) => {
   const candidate = normalizeSpeechLanguage(selectedVoice?.lang || language);
@@ -212,6 +229,9 @@ export const speechPreviewText = (language, selectedVoice) => {
 // their own reading from a lecture's (TFEAT-09), and App leaves a tutor's
 // narration messages to the tutor's own controls (issue #97).
 export const TUTOR_SPEECH_LABEL = "Tutor answer";
+// Settings' Try it speaks under its own label, so it never passes for the
+// open lecture's reading (issue #100).
+export const PRONUNCIATION_TEST_LABEL = "Pronunciation test";
 
 /**
  * Where narration voices come from (issue #97). Each browser speaks with the

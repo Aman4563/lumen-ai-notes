@@ -1,6 +1,7 @@
 import { Marked, Renderer } from "marked";
 import { exemptFromChunkRecovery } from "./chunkRecovery.js";
 import { markdownRenderer, sanitizeMarkdownHtml } from "./markdown.js";
+import { endSentence } from "./speech.js";
 import { escapeAttribute, lineBreakExtension, untrustedRenderer, untrustedTokenizer } from "./untrustedMarkdown.js";
 import { tutorPlainText } from "./tutorExport.js";
 
@@ -286,9 +287,6 @@ export const tutorMarkdownPlainText = tutorPlainText;
 const SPOKEN_CODE = "Code example shown on screen.";
 const SPOKEN_DIAGRAM = "Diagram shown on screen.";
 const SPOKEN_EQUATION = "equation";
-const TERMINAL_PUNCTUATION = /[.!?:;…)"”]$/u;
-
-const endSentence = (text) => (text && !TERMINAL_PUNCTUATION.test(text) ? `${text}.` : text);
 
 // One line of prose as it should be heard: math is "equation", inline code
 // keeps its text, links and images keep their words, and [S#]/[W#] labels,
