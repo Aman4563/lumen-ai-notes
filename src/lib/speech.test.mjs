@@ -478,3 +478,81 @@ test("offset maps build, compose and slice by the MapPiece rules", async () => {
   assert.equal(speech.sourceOffsetAt(map, 7), 15);
   assert.equal(speech.sourceOffsetAt(map, 10), 16, "a non-identity piece's spoken end is its source end");
 });
+
+const SENTENCE_250 = "Gradient descent repeats three steps for every batch of examples, measuring the loss on that batch, computing the gradient of the loss for every single weight, and moving each weight a smaller step against its gradient until the loss stops improving.";
+
+test("an enumerator-only sentence joins the sentence after it", () => {
+  assert.deepEqual(["6.", "5.1", "(a)", "a)", "iv.", "Done.", "6. Task", "Hi."].map(speech.isEnumeratorOnly), [true, true, true, true, true, false, false, false]);
+  assert.deepEqual(chunkSpeechText("6. Task taxonomy"), ["6. Task taxonomy"]);
+  assert.deepEqual(speech.splitSpeechSentenceRanges("5. Learning paradigms"), [{ start: 0, end: 21 }]);
+  // The text path still packs whole sentences up to the limit (the tutors' first utterance).
+  assert.deepEqual(chunkSpeechText("Holdout evaluation. A final holdout remains useful."), ["Holdout evaluation. A final holdout remains useful."]);
+});
+
+test("an oversized sentence splits at clauses and leaves no piece under three words", () => {
+  assert.equal(SENTENCE_250.length, 250);
+  assert.deepEqual(chunkSpeechText(SENTENCE_250), [
+    "Gradient descent repeats three steps for every batch of examples, measuring the loss on that batch, computing the gradient of the loss for every single weight,",
+    "and moving each weight a smaller step against its gradient until the loss stops improving.",
+  ]);
+  const words = Array.from({ length: 20 }, (_, index) => `token${String(index).padStart(2, "0")}a`);
+  const pieces = chunkSpeechText(`${words.join(" ")} succeeds.`);
+  assert.deepEqual(pieces.map((piece) => piece.split(" ").length), [18, 3]);
+  assert.equal(pieces[1], `${words[18]} ${words[19]} succeeds.`);
+  const yes = `Yes, ${Array.from({ length: 40 }, (_, index) => `w${String(index).padStart(3, "0")}`).join(" ")}.`;
+  const yesPieces = chunkSpeechText(yes);
+  assert.ok(yesPieces.every((piece) => piece.split(" ").length >= 3 && [...piece].length <= 180), JSON.stringify(yesPieces));
+  assert.equal(yesPieces.join(" "), yes);
+  const row = `Row 1. A: ${"a".repeat(70)}; B: ${"b".repeat(70)}; C: ${"c".repeat(70)}.`;
+  assert.deepEqual(speech.splitSpokenSentence(row, { kind: "row" }).map(({ start, end }) => row.slice(start, end)), [
+    `Row 1. A: ${"a".repeat(70)}; B: ${"b".repeat(70)};`,
+    `C: ${"c".repeat(70)}.`,
+  ]);
+});
+
+test("units become queue entries without merging across units", () => {
+  const units = [
+    { text: "Optimization.", unit: { blockIndex: 0, start: 0, end: 12 }, map: [{ spoken: [0, 12], source: [0, 12] }, { spoken: [12, 13], source: [12, 12] }], section: "Optimization", sectionStart: true },
+    { text: "Short.", unit: { blockIndex: 1, start: 0, end: 6 }, map: [{ spoken: [0, 6], source: [0, 6] }], section: "Optimization" },
+    { text: "Table, 2 columns: A, B.", unit: { blockIndex: 2, start: 0, end: 0 }, map: [], section: "Optimization", kind: "announcement" },
+    { text: "Momentum.", unit: { blockIndex: 3, start: 0, end: 8 }, map: [{ spoken: [0, 8], source: [0, 8] }, { spoken: [8, 9], source: [8, 8] }], section: "Momentum", sectionStart: true },
+  ];
+  const { queue, sectionStarts } = speech.buildSpeechQueue(units);
+  assert.deepEqual(queue.map((entry) => entry.text), ["Optimization.", "Short.", "Table, 2 columns: A, B.", "Momentum."]);
+  assert.deepEqual(queue.map((entry) => entry.unit), units.map((unit) => unit.unit));
+  assert.deepEqual(queue[2].map, []);
+  assert.deepEqual(queue.map((entry) => entry.section), ["Optimization", "Optimization", "Optimization", "Momentum"]);
+  assert.deepEqual(sectionStarts, [{ index: 0, label: "Optimization" }, { index: 3, label: "Momentum" }]);
+});
+
+test("a long unit splits into entries whose source ranges tile the unit", () => {
+  const unit = { text: SENTENCE_250, unit: { blockIndex: 4, start: 10, end: 260 }, map: [{ spoken: [0, 250], source: [10, 260] }], section: "S" };
+  const { queue } = speech.buildSpeechQueue([unit]);
+  assert.equal(queue.length, 2);
+  const seam = 10 + SENTENCE_250.indexOf("and moving");
+  assert.deepEqual(queue.map((entry) => [entry.unit.start, entry.unit.end]), [[10, seam], [seam, 260]]);
+  for (const entry of queue) {
+    assert.equal(entry.map[0].spoken[0], 0);
+    assert.equal(entry.map.at(-1).spoken[1], entry.text.length);
+  }
+  assert.equal(queue[1].map[0].source[0], seam);
+});
+
+test("the text pass runs inside the queue on both paths", () => {
+  const { queue } = speech.buildSpeechQueue("The model predicts ŷ = wᵀx + b for each input. ReLU helps.");
+  assert.deepEqual(queue.map((entry) => entry.text), ["The model predicts y hat equals w transpose x plus b for each input. ray-loo helps."]);
+  assert.equal(queue[0].unit, null);
+  assert.deepEqual(queue[0].map, []);
+  assert.equal(speech.buildSpeechQueue("ReLU helps.", { pronunciations: [{ term: "ReLU", spoken: "rectifier" }] }).queue[0].text, "rectifier helps.");
+  const sectioned = speech.buildSpeechQueue("ignored", { sections: [{ label: "A", text: "First." }, { label: "B", text: "Second." }] });
+  assert.deepEqual(sectioned.queue.map((entry) => [entry.text, entry.section]), [["First.", "A"], ["Second.", "B"]]);
+  assert.deepEqual(sectioned.sectionStarts, [{ index: 0, label: "A" }, { index: 1, label: "B" }]);
+  const code = { text: "w = np.linalg.lstsq(X, y)[0]", unit: { blockIndex: 0, start: 0, end: 28 }, map: [{ spoken: [0, 28], source: [0, 28] }], kind: "code" };
+  assert.equal(speech.buildSpeechQueue([code]).queue[0].text, "w = np.linalg.least squares(X, y)[0]");
+});
+
+test("the tutor's Listen gets the same pass", async () => {
+  const { tutorSpeechText } = await import("./tutorMarkdown.js");
+  const spoken = tutorSpeechText("## Linear model\n\nŷ = wᵀx + b");
+  assert.equal(speech.buildSpeechQueue(spoken.text, { sections: spoken.sections }).queue[0].text, "Linear model. y hat equals w transpose x plus b");
+});

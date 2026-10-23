@@ -2,12 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SPEECH_TEXT_LIMIT,
   TUTOR_SPEECH_LABEL,
-  chunkSpeechText,
+  buildSpeechQueue,
   groupSpeechVoices,
   normalizeSpeechLanguage,
   normalizeSpeechVoices,
   selectSpeechVoice,
-  speakable,
   speechCopy,
   speechErrorMessage,
   speechLanguages,
@@ -56,7 +55,11 @@ export function useSpeech({
   // Reader, where no player or Listen panel is on screen.
   const [notice, setNotice] = useState(null);
   const noticeIdRef = useRef(0);
+  // The queue as entries `{ text, unit, map, section }` (issue #100):
+  // `queueRef` for the playback callbacks, `queueUnits` for the screens that
+  // follow along. Both are emptied when the reading ends.
   const queueRef = useRef([]);
+  const [queueUnits, setQueueUnits] = useState([]);
   const indexRef = useRef(0);
   const utteranceRef = useRef(null);
   const sessionRef = useRef(0);
@@ -152,6 +155,7 @@ export function useSpeech({
     clearResumeTimer();
     utteranceRef.current = null;
     queueRef.current = [];
+    setQueueUnits([]);
     indexRef.current = 0;
     sectionStartsRef.current = [];
     restartRequiredRef.current = false;
@@ -192,7 +196,7 @@ export function useSpeech({
     clearResumeTimer();
     restartRequiredRef.current = false;
     indexRef.current = index;
-    const text = queue[index];
+    const { text } = queue[index];
     const utterance = new window.SpeechSynthesisUtterance(text);
     const config = configRef.current;
     const selectedVoice = selectSpeechVoice(voicesRef.current, config);
@@ -281,6 +285,7 @@ export function useSpeech({
     if (supported) cancelEngine();
     utteranceRef.current = null;
     queueRef.current = [];
+    setQueueUnits([]);
     indexRef.current = 0;
     sectionStartsRef.current = [];
     restartRequiredRef.current = false;
@@ -292,14 +297,19 @@ export function useSpeech({
     clearMessages();
   }, [cancelEngine, clearMessages, clearResumeTimer, supported, updateStatus]);
 
-  const speak = useCallback((text, options = {}) => {
+  // `input` is text, or a lecture's speech units (issue #100). A call's own
+  // `pronunciations` replace the saved list for this reading only, so
+  // Settings' Try it can test a draft before it is saved.
+  const speak = useCallback((input, options = {}) => {
     if (!supported) {
       updateStatus("unsupported");
       report("error", copy.unsupported);
       return false;
     }
-    const raw = String(text || "");
-    if (raw.length > SPEECH_TEXT_LIMIT) {
+    const units = Array.isArray(input) ? input : null;
+    const raw = units ? "" : String(input || "");
+    const length = units ? units.reduce((sum, unit) => sum + String(unit?.text ?? "").length, 0) : raw.length;
+    if (length > SPEECH_TEXT_LIMIT) {
       // Nothing is queued for this target, so the reading it replaces ends
       // too: the player never offers Retry for a queue the learner left.
       stop();
@@ -308,26 +318,18 @@ export function useSpeech({
       return false;
     }
     const config = configRef.current;
-    const spoken = (value) => speakable(value, { pronunciations: config.pronunciations });
-    // Section-aware queueing: each section's chunks are tracked by their
+    // Section-aware queueing: each section's entries are tracked by their
     // first index so heading skip can jump between sections.
-    let queue;
-    const sectionStarts = [];
-    if (Array.isArray(options.sections) && options.sections.length > 1) {
-      queue = [];
-      for (const section of options.sections) {
-        const chunks = chunkSpeechText(spoken(section.text), undefined, config.language);
-        if (!chunks.length) continue;
-        sectionStarts.push({ index: queue.length, label: String(section.label || "Section").slice(0, 80) });
-        queue.push(...chunks);
-      }
-    } else {
-      queue = chunkSpeechText(spoken(raw), undefined, config.language);
-    }
+    const { queue, sectionStarts } = buildSpeechQueue(units || raw, {
+      pronunciations: Array.isArray(options.pronunciations) ? options.pronunciations : config.pronunciations,
+      language: config.language,
+      sections: options.sections,
+    });
     clearResumeTimer();
     sessionRef.current += 1;
     cancelEngine();
     queueRef.current = queue;
+    setQueueUnits(queue);
     sectionStartsRef.current = sectionStarts;
     indexRef.current = 0;
     restartRequiredRef.current = false;
@@ -345,8 +347,8 @@ export function useSpeech({
     if (endIfSleepLapsed()) return false;
     activeLabelRef.current = String(options.label || "Narration").slice(0, 80);
     setActiveLabel(activeLabelRef.current);
-    // `resolveStart(queue, sectionStarts)` places the start in the queue as
-    // built here, after pronunciation overrides (saved positions).
+    // `resolveStart(queue, sectionStarts)` places the start in the queue of
+    // entries as built here, after pronunciation overrides (saved positions).
     const requested = typeof options.resolveStart === "function" ? options.resolveStart(queue, sectionStarts) : options.startIndex;
     const startIndex = Number.isInteger(requested) ? Math.max(0, Math.min(queue.length - 1, requested)) : 0;
     // True when the utterance was issued, or scheduled for the next task
@@ -528,6 +530,8 @@ export function useSpeech({
     availabilityReason,
     status,
     progress,
+    queueUnits,
+    currentIndex: progress.current,
     currentText,
     activeLabel,
     error,
