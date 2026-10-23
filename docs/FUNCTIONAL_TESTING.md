@@ -4142,3 +4142,39 @@ the first attempt with no retries and no "Passed only on retry", including
 `audit:a11y` with 126 axe runs (WCAG 2.2 A/AA plus best practice), the empty
 allowlist and 553 structural checks; it ran on ff54025 from a load average of
 about 6 that peaked near 67 from other projects' builds and tests.
+
+## Bugs reproduced on 2026-10-23: server tests leave a temp folder behind (#193)
+
+Against main (97d3e2e), every run of the server tests left one
+`lumen-server-test-dist-*` directory in the system temp folder: a plain
+`npm run audit:ai` took this Mac's count from 193 to 194, and runs in other
+worktrees took it to 200 the same day. `server/ai/server.test.mjs` made its
+app-shell fixture with `mkdtemp` when the file loaded and never removed it.
+
+The file now removes the fixture in an `after()` hook, so the fixture goes
+whether the tests pass or fail. One case is accepted and still leaks: if
+writing the fixture's `index.html` fails while the file loads, before its
+first test starts, node:test rethrows the error and runs no hook. An
+interrupted run (Ctrl-C, SIGTERM, a cancelled CI job) can also leave it.
+
+How it is now checked: `server/ai/server.cleanup.test.mjs` runs
+`server.test.mjs` in a child process with a private, empty temp folder,
+once as it is and once with a preloaded test that always fails, and
+requires the folder to be empty afterwards. On main both tests fail and
+name the leftover ("server.test.mjs left lumen-server-test-dist-JbJf1p
+after a passing run", and the same after a failing run). The check never
+reads the real temp folder, which other runs (other worktrees, and
+`audit:ai`'s own `server.test.mjs` process beside it) fill at any moment.
+The child starts without the test runner's `NODE_TEST_*` variables: with
+them, a nested `node --test` skips every file and exits 0, so a check built
+that way passes on main. Each test also requires the child to have run
+tests, and a child stopped by the check's 120 s bound names its signal and
+error.
+
+Gate on the branch (8b45059, rebased on main 986b759, Node 26.12.1):
+`npm run check` passed (`audit:ai` 622/622, `audit:ai-eval` 27 cases,
+`audit:app`), and `npm run check:browser` passed all 14 suites on the first
+attempt with no retries, at a load average of about 11 to 14. A plain
+`npm run audit:ai` on the branch left the real temp folder's count at 200.
+The directories main already left are not removed; delete them by hand when
+no test run is active.

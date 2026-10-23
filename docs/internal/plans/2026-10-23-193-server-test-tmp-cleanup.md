@@ -69,7 +69,7 @@
   - runs `spawnSync(process.execPath, ["--test-reporter=tap", ...(preload ? [`--import=${preload}`] : []), SERVER_SUITE], { env, encoding: "utf8", timeout: 120_000 })`, where `env` is `process.env` without any key starting with `NODE_TEST`, with `TMPDIR`, `TMP` and `TEMP` set to the folder (`os.tmpdir()` reads `TMPDIR` on POSIX, `TEMP`/`TMP` on Windows);
   - returns `output` (stdout, then stderr, then the child's signal or spawn error when there is one), `pass` and `fail` parsed from TAP's `# pass N` and `# fail N` lines (`NaN` when missing), and `leftovers`, the folder's sorted `readdir`.
 
-- [ ] **Step 1: Write the failing tests** in `server/ai/server.cleanup.test.mjs`, under a short header comment saying why: an `after()` hook can only be observed from outside its process; the real temp folder is shared with concurrent runs; the runner's `NODE_TEST*` keys would change how the child runs and reports.
+- [x] **Step 1: Write the failing tests** in `server/ai/server.cleanup.test.mjs`, under a short header comment saying why: an `after()` hook can only be observed from outside its process; the real temp folder is shared with concurrent runs; the runner's `NODE_TEST*` keys would change how the child runs and reports.
 
 ```js
 test("the server suite leaves nothing in its temp folder after a passing run", async (t) => {
@@ -88,17 +88,17 @@ test("the server suite leaves nothing in its temp folder after a failing run", a
 });
 ```
 
-- [ ] **Step 2: Run them against main's `server.test.mjs` and watch them fail for the right reason**
+- [x] **Step 2: Run them against main's `server.test.mjs` and watch them fail for the right reason**
 
 Run from the worktree root, through the runner as `audit:ai` does:
 `OUTER=$(mktemp -d) && TMPDIR=$OUTER timeout 300 node --test server/ai/server.cleanup.test.mjs; echo "exit $?"; ls -A "$OUTER"; rmdir "$OUTER"`
 Expected: exit 1; both tests fail only at the leftovers assertion, each naming one `lumen-server-test-dist-XXXXXX`; the status, count and forced-failure assertions hold; `ls -A` prints nothing and `rmdir` succeeds (the check removed its own folders although it failed).
 
-- [ ] **Step 3: Remove the fixture in `server/ai/server.test.mjs`**
+- [x] **Step 3: Remove the fixture in `server/ai/server.test.mjs`**
 
 Add `after` to the `node:test` import. On the line right after the `mkdtemp`, before the `writeFile`, register `after(() => rm(fixtureDistDirectory, { recursive: true, force: true }));` with a one-line comment that it runs when the file's tests end, passed or failed. Nothing else changes.
 
-- [ ] **Step 4: Run the tests and watch them pass**
+- [x] **Step 4: Run the tests and watch them pass**
 
 Run: `OUTER=$(mktemp -d) && TMPDIR=$OUTER timeout 300 node --test server/ai/server.cleanup.test.mjs server/ai/server.test.mjs; echo "exit $?"; ls -A "$OUTER"; rmdir "$OUTER"`
 Expected: exit 0, 32 tests pass (2 + 30), nothing listed.
@@ -106,7 +106,7 @@ Run `audit:ai`'s file set without npm (npm adds its own `node-compile-cache`): `
 Expected: exit 0, 617/617 pass (615 on main + 2), nothing listed (main leaves one `lumen-server-test-dist-*`).
 Run: `timeout 600 npm run audit:ai`. Expected: exit 0, 617/617 pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/ai/server.test.mjs server/ai/server.cleanup.test.mjs
@@ -118,3 +118,19 @@ git commit -m "Remove the server tests' fixture directory when the suite ends" -
 - The acceptance criterion against the literal command: list `lumen-server-test-dist-*` in the real `os.tmpdir()` before and after a plain `npm run audit:ai`. On main one name was added (`lumen-server-test-dist-ZLJlG8`, 193 to 194); on the branch none may be.
 - Gate: `npm run check`, then the full browser gate through `gate-slot`; record `audit:app`'s budget numbers.
 - Docs: a dated verification-log row in `docs/internal/PRODUCT_REQUIREMENTS.md` and a dated entry in `docs/FUNCTIONAL_TESTING.md`.
+
+## As built
+
+- Task 1 landed as planned. On main both new tests failed only at the leftovers assertion, each naming one `lumen-server-test-dist-*`; on the branch the two files ran 32/32 and `audit:ai` 617/617 (622/622 after the rebase onto main 986b759).
+- The final review found the Review Focus claim about the hook's line order false; it is corrected above. node:test rethrows an error raised before the first test starts and runs no hook, so registering the hook before the `writeFile` is harmless, not protective. A deferred suggestion to explain that order in a comment was dropped for the same reason.
+- `output` also names the child's signal and spawn error, so a child stopped by the 120 s bound says so: with the bound cut to 50 ms for one run it read `(child killed by SIGTERM)` and `… ETIMEDOUT`, and nothing was left behind.
+- The failing-run test keeps `run.fail >= 1`: the passing-run test already fails if the fixture is removed mid-suite in a normal run.
+- Known risks:
+  - A failure while building the fixture, before the first test starts, leaves its directory (accepted; building it in a `before()` hook would close it).
+  - An interrupted run (Ctrl-C, SIGTERM, a cancelled CI job) leaves the fixture, and the check's private folder too: no hook runs when the process is killed.
+- Rulings made during execution:
+  - Ruling: the fixture-build gap is recorded, not closed — the issue reads "passes or fails" as test outcomes, and the gap takes a failed 63-byte write into a folder `mkdtemp` has just made — cost if wrong: on a full disk a failed run can leave one fixture directory.
+  - Ruling: no comment explains the hook's order — the order protects nothing — cost: none.
+  - Ruling: `run.fail` stays `>= 1` — the acceptance criterion is about leftovers, not hook timing — cost if wrong: a Node change that ran `after()` hooks early in the forced-failure arrangement would go unnoticed by that test.
+  - Ruling: main moved during the work (#199), so the branch was rebased before these docs were written and gated once on the rebased head (8b45059); the docs commit on top changes no file the gate or the build loads — cost if wrong: none beyond order.
+  - Ruling: the worktree was made with `git worktree add` at the brief's path, since the native worktree tool cannot name the branch — cost if wrong: it is removed by hand after merge.
