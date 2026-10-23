@@ -8,6 +8,7 @@ import puppeteer from "puppeteer-core";
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { createBackup } from "../src/lib/backup.js";
 import { encryptBackupJson } from "../src/lib/backupCrypto.js";
+import { waitForTheme } from "./audit_waits.mjs";
 import { installSpeechMock } from "./speech_mock.mjs";
 
 // Issue #139: where a browser blocks site storage, reading localStorage
@@ -29,6 +30,9 @@ import { installSpeechMock } from "./speech_mock.mjs";
 // again (the notice and Save status recover with the next save), and a
 // nearly full store that refuses only large values (no notice, sync on, and
 // a vault it would not store says it lasts this visit only, on the card too).
+// Issue #147: Storage health, under that cookie blocking and with Cache
+// Storage failures injected, must show plain copy instead of the browser's
+// error text, announce it once, and keep every measurement it could make.
 const axeSource = await readFile(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 const baseUrl = (process.env.LUMEN_URL || "http://127.0.0.1:4173/").replace(/\/$/, "");
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -734,6 +738,175 @@ const studyDataRecoversFlows = async ({ page, open }) => {
     .catch(async () => assert.fail(`after IndexedDB recovered and a save landed, Settings still said study data is not being saved (Save status "${await saveStatusText(page)}"): ${JSON.stringify(await noticeState(page))}`));
 };
 
+// Issue #147: Storage health with failing Cache Storage. Chrome's cookie
+// blocking rejects every Cache Storage call with a SecurityError whose text
+// the panel used to show; the other kinds are injected into a working
+// browser. The copy is pinned in src/lib/storageFailure.test.mjs.
+const OFFLINE_FILES_BLOCKED = "This browser is not saving offline files on this device";
+const OFFLINE_FILES_FULL = "This browser has no room for more offline files";
+const STORAGE_DETAILS_UNAVAILABLE = "Storage details are unavailable right now";
+const HEALTH_TITLES = [OFFLINE_FILES_BLOCKED, OFFLINE_FILES_FULL, STORAGE_DETAILS_UNAVAILABLE];
+// Words only a browser's own error text uses; the injected errors carry the marker.
+const RAW_STORAGE_ERROR = /Failed to execute|CacheStorage|StorageManager|security policy|DOMException|SecurityError|NotAllowedError|QuotaExceededError|UnknownError|TypeError/;
+const RAW_MARKER = "lumen-raw-147";
+const REFRESH_HEALTH = ".settings-drawer .storage-health button[aria-label='Refresh storage estimate']";
+// The message wears the #139 notice's tokens in every theme.
+const HEALTH_TOKEN_SAMPLES = [
+  { selector: ".settings-drawer .storage-health-message", property: "backgroundColor", token: "--gold-soft" },
+  { selector: ".settings-drawer .storage-health-message strong", property: "color", token: "--ai-warn" },
+  { selector: ".settings-drawer .storage-health-message span", property: "color", token: "--ink" },
+];
+const storageHealthReady = (page) => page.waitForFunction((selector) => {
+  const refresh = document.querySelector(selector);
+  return Boolean(refresh) && !refresh.disabled;
+}, { timeout: 15_000 }, REFRESH_HEALTH).catch(() => assert.fail("Storage health never finished measuring"));
+const storageHealthState = (page) => page.$eval(".settings-drawer .storage-health", (panel) => {
+  const message = panel.querySelector(".storage-health-message");
+  const row = (label) => [...panel.querySelectorAll(".storage-breakdown > div")].find((item) => item.querySelector("dt")?.textContent === label)?.querySelector("dd")?.textContent || "";
+  return {
+    text: panel.innerText,
+    title: message?.querySelector("strong")?.textContent || "",
+    detail: message?.querySelector("span")?.textContent || "",
+    visible: Boolean(message?.getClientRects().length),
+    quotaLine: panel.querySelector(".storage-health-heading small")?.textContent || "",
+    workspace: panel.querySelector(".storage-budget-line strong")?.textContent || "",
+    offlineAssets: row("Offline assets"),
+    announced: [...panel.querySelectorAll("[role='status']")].map((node) => node.textContent).join(" | "),
+  };
+});
+// Counts the times a status region in Storage health filled with `title`, and
+// how many of those regions had been on screen empty first: a region inserted
+// already filled may never be announced.
+const watchHealthAnnouncements = (page, title) => page.evaluate((expected) => {
+  const result = { fills: 0, filledAfterEmpty: 0 };
+  window.__lumenAuditHealth = result;
+  const seenEmpty = new WeakSet();
+  const holding = new WeakSet();
+  const scan = () => {
+    for (const region of document.querySelectorAll(".storage-health [role='status']")) {
+      if (!region.textContent.trim()) {
+        seenEmpty.add(region);
+        holding.delete(region);
+      } else if (region.textContent.includes(expected) && !holding.has(region)) {
+        holding.add(region);
+        result.fills += 1;
+        if (seenEmpty.has(region)) result.filledAfterEmpty += 1;
+      }
+    }
+  };
+  new MutationObserver(scan).observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+  scan();
+}, title);
+const healthAnnouncements = (page) => page.evaluate(() => window.__lumenAuditHealth);
+// Changes what the browser answers with `install`, presses Refresh and waits
+// until Storage health shows `title` ("" for no message).
+const refreshHealth = async (page, title, install, ...args) => {
+  await page.evaluate(install, ...args);
+  await page.$eval(REFRESH_HEALTH, (button) => button.click());
+  await page.waitForFunction((selector, expected) => {
+    const refresh = document.querySelector(selector);
+    const shown = document.querySelector(".settings-drawer .storage-health-message strong")?.textContent || "";
+    return Boolean(refresh) && !refresh.disabled && shown === expected;
+  }, { timeout: 15_000 }, REFRESH_HEALTH, title)
+    .catch(async () => assert.fail(`after Refresh Storage health did not show ${title ? `“${title}”` : "no message"}: ${JSON.stringify(await storageHealthState(page))}`));
+  return storageHealthState(page);
+};
+// Every Cache Storage listing fails with `name` and the marker as its text;
+// "TypeError" stands for a failure that is no storage refusal at all.
+const refuseCacheKeys = (marker, name) => {
+  window.__lumenAuditKeys ||= CacheStorage.prototype.keys;
+  CacheStorage.prototype.keys = function keys() {
+    return Promise.reject(name === "TypeError" ? new TypeError(`${marker} TypeError`) : new DOMException(`${marker} ${name}`, name));
+  };
+};
+// Cache Storage answers again; the quota estimate is refused instead.
+const refuseEstimateOnly = (marker) => {
+  CacheStorage.prototype.keys = window.__lumenAuditKeys;
+  StorageManager.prototype.estimate = function estimate() {
+    return Promise.reject(new DOMException(`${marker} NotAllowedError`, "NotAllowedError"));
+  };
+};
+
+// Chrome's cookie blocking: the message, never the browser's words, announced
+// once, kept on Refresh and reopening, in the theme's tokens, axe-clean, and
+// fitting a 320 px phone at 200% text and phone landscape.
+const storageHealthBlockedFlows = (viewportName) => async ({ page, open }) => {
+  await open("#/home", ".welcome-block");
+  const refusal = await page.evaluate(() => caches.keys().then(() => null, (error) => ({ name: error.name, message: error.message })));
+  assert.ok(refusal?.message, `Chrome's cookie blocking did not refuse Cache Storage, so this case proves nothing: ${JSON.stringify(refusal)}`);
+  await watchHealthAnnouncements(page, OFFLINE_FILES_BLOCKED);
+  await openSettings(page);
+  await storageHealthReady(page);
+  const first = await storageHealthState(page);
+  assert.ok(!first.text.includes(refusal.message) && !RAW_STORAGE_ERROR.test(first.text), `Storage health showed the browser's own error text: ${JSON.stringify(first.text)}`);
+  assert.ok(first.visible && first.title === OFFLINE_FILES_BLOCKED, `Storage health did not say offline files are not being saved: ${JSON.stringify(first)}`);
+  assert.ok(first.detail.startsWith("Reading online works as usual during this visit") && first.detail.includes("lectures will not open offline"), `the message did not say what still works and what does not: “${first.detail}”`);
+  assert.equal(first.offlineAssets, "Not measured", "a Cache Storage the browser refused was shown as a measured size");
+  assert.match(first.quotaLine, / used by this origin$/, "the quota estimate, which Chrome still answers, was dropped with the refused Cache Storage");
+  assert.doesNotMatch(first.workspace, /\/ 0 B$/, "the workspace limit read 0 B");
+  await page.waitForFunction(() => window.__lumenAuditHealth.fills > 0, { timeout: 8_000 })
+    .catch(() => assert.fail("Storage health did not announce its message"));
+  assert.deepEqual(await healthAnnouncements(page), { fills: 1, filledAfterEmpty: 1 }, "the Storage health message went into a status region that was never on screen empty");
+  for (const [theme, label] of THEMES) {
+    await clickByText(page, ".theme-choices button", label);
+    const applied = await waitForTheme(page, theme, { samples: HEALTH_TOKEN_SAMPLES });
+    assert.ok(applied.ok, `${label}: the Storage health message did not wear the theme's tokens: ${applied.reason}`);
+    const violations = await axeViolations(page, ".settings-drawer");
+    stats.axeRuns += 1;
+    assert.deepEqual(violations, [], `${label}: axe found violations in Settings with the Storage health message`);
+  }
+  await page.waitForFunction(() => ![...document.querySelectorAll(".storage-health [role='status']")].some((node) => node.textContent.trim()), { timeout: 10_000 })
+    .catch(() => assert.fail("the Storage health message stayed in a status region after it was announced, so browse mode reads it twice"));
+  await page.$eval(REFRESH_HEALTH, (button) => button.click());
+  await storageHealthReady(page);
+  await closeSettings(page);
+  await openSettings(page);
+  await storageHealthReady(page);
+  const reopened = await storageHealthState(page);
+  assert.ok(reopened.visible && reopened.title === OFFLINE_FILES_BLOCKED && !reopened.text.includes(refusal.message) && !RAW_STORAGE_ERROR.test(reopened.text), `after Refresh and reopening Settings Storage health changed: ${JSON.stringify(reopened)}`);
+  await delay(600); // bounds a check that something must not happen: the announcement waits 250 ms
+  assert.equal((await healthAnnouncements(page)).fills, 1, "Refresh or reopening Settings announced the Storage health message again");
+  if (viewportName === "phone") {
+    for (const [label, viewport, fontSize] of [
+      ["at 320 px and 200% text", { width: 320, height: 640, deviceScaleFactor: 1, isMobile: true, hasTouch: true }, "32px"],
+      ["in phone landscape", { width: 852, height: 393, deviceScaleFactor: 1, isMobile: true, hasTouch: true }, ""],
+    ]) {
+      await page.setViewport(viewport);
+      await page.evaluate((size) => { document.documentElement.style.fontSize = size; }, fontSize);
+      await settle(page);
+      const layout = await page.$eval(".settings-drawer .storage-health-message", (message) => {
+        const box = message.getBoundingClientRect();
+        const text = [...message.querySelectorAll("strong, span")].map((node) => node.getBoundingClientRect().right);
+        return { scrollWidth: message.scrollWidth, clientWidth: message.clientWidth, left: box.left, right: box.right, textRight: Math.max(...text), viewport: document.documentElement.clientWidth };
+      });
+      assert.ok(layout.scrollWidth <= layout.clientWidth + 1 && layout.left >= 0 && layout.right <= layout.viewport + 1 && layout.textRight <= layout.right + 1, `${label} the Storage health message does not fit: ${JSON.stringify(layout)}`);
+    }
+  }
+};
+
+// Each other kind, injected into a working browser, gets its own plain
+// message; a refused estimate alone keeps the plain quota line.
+const injectedHealthFailureFlows = async ({ page, open }) => {
+  await open("#/home", ".welcome-block");
+  await openSettings(page);
+  await storageHealthReady(page);
+  const healthy = await storageHealthState(page);
+  assert.ok(!healthy.visible && healthy.offlineAssets !== "Not measured" && !healthy.announced.trim(), `with working storage Storage health reported a failure: ${JSON.stringify(healthy)}`);
+  for (const [name, title] of [["NotAllowedError", OFFLINE_FILES_BLOCKED], ["QuotaExceededError", OFFLINE_FILES_FULL], ["TypeError", STORAGE_DETAILS_UNAVAILABLE]]) {
+    const state = await refreshHealth(page, title, refuseCacheKeys, RAW_MARKER, name);
+    assert.ok(!state.text.includes(RAW_MARKER) && !RAW_STORAGE_ERROR.test(state.text), `a Cache Storage ${name} showed the browser's own text: ${JSON.stringify(state.text)}`);
+    assert.equal(state.offlineAssets, "Not measured", `a Cache Storage ${name} was shown as a measured size`);
+  }
+  // The last message is announced; once it has gone, no status region keeps it.
+  await page.waitForFunction((title) => [...document.querySelectorAll(".storage-health [role='status']")].some((node) => node.textContent.includes(title)), { timeout: 8_000 }, STORAGE_DETAILS_UNAVAILABLE)
+    .catch(() => assert.fail("Storage health did not announce a Cache Storage failure"));
+  const estimateOnly = await refreshHealth(page, "", refuseEstimateOnly, RAW_MARKER);
+  assert.equal(estimateOnly.quotaLine, "Browser quota estimate unavailable", "a refused quota estimate did not say the estimate is unavailable");
+  assert.ok(!estimateOnly.text.includes(RAW_MARKER) && !RAW_STORAGE_ERROR.test(estimateOnly.text), `a refused quota estimate showed the browser's own text: ${JSON.stringify(estimateOnly.text)}`);
+  assert.notEqual(estimateOnly.offlineAssets, "Not measured", "with Cache Storage answering again, offline assets were not measured");
+  assert.ok(!HEALTH_TITLES.some((title) => estimateOnly.announced.includes(title)), `a status region kept a message that had gone: “${estimateOnly.announced}”`);
+};
+
 try {
   await writePeerSyncFile();
   browser = await puppeteer.launch({
@@ -777,11 +950,12 @@ try {
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("lumen-sync-vault-v1") || "null")?.vaultId), PEER_VAULT, "the joined vault never reached localStorage");
   });
 
-  // IndexedDB failing after Settings opened, IndexedDB recovering, and a
-  // nearly full Web Storage.
+  // IndexedDB failing after Settings opened, IndexedDB recovering, a nearly
+  // full Web Storage, and Storage health with Cache Storage failures injected.
   await runCase("IndexedDB failing after Settings opens", { install: MODES[0].install, viewport: VIEWPORTS[0][1] }, studyDataFailsLaterFlows);
   await runCase("IndexedDB recovering after Settings opens", { install: MODES[0].install, viewport: VIEWPORTS[0][1] }, studyDataRecoversFlows);
   await runCase(NEARLY_FULL_STORE.name, { install: NEARLY_FULL_STORE.install, viewport: VIEWPORTS[0][1] }, fullStoreFlows);
+  await runCase("Storage health with failing Cache Storage", { viewport: VIEWPORTS[0][1] }, injectedHealthFailureFlows);
 
   // Chrome's cookie blocking comes from the profile, so it needs a browser
   // of its own; its contexts inherit the block.
@@ -797,13 +971,14 @@ try {
   try {
     for (const [viewportName, viewport] of VIEWPORTS) {
       await runCase(`blocked site data at ${viewportName}`, { viewport, browserInstance: blockedBrowser }, siteDataBlockedFlows(viewportName));
+      await runCase(`Storage health with blocked site data at ${viewportName}`, { viewport, browserInstance: blockedBrowser }, storageHealthBlockedFlows(viewportName));
     }
   } finally {
     await blockedBrowser.close();
   }
 
   assert.deepEqual(failures, [], `blocked-storage failures:\n- ${failures.join("\n- ")}`);
-  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, IndexedDB failing and recovering after Settings opens, a nearly full store, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after (never keeping a sentence the notice dropped), kept it on reopening, said study data is saved only after IndexedDB took a write and that it is not being saved when IndexedDB refused (and recovered with the next save), kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so and the whiteboard advised waiting for storage access; a nearly full store kept the notice off and sync on, and a vault it would not store, created or joined, said it lasts this visit only, in a toast and on the sync card; with working storage the engine choice survived a real reload and a created or joined vault was stored.`);
+  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, IndexedDB failing and recovering after Settings opens, a nearly full store, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after (never keeping a sentence the notice dropped), kept it on reopening, said study data is saved only after IndexedDB took a write and that it is not being saved when IndexedDB refused (and recovered with the next save), kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so and the whiteboard advised waiting for storage access; a nearly full store kept the notice off and sync on, and a vault it would not store, created or joined, said it lasts this visit only, in a toast and on the sync card; with working storage the engine choice survived a real reload and a created or joined vault was stored; Storage health, under Chrome's cookie blocking and with refused, full and failing Cache Storage injected, showed plain copy and never the browser's own error text, read Not measured for what it could not measure while keeping the quota estimate, announced each message once through a region that was empty first and cleared after, kept it on Refresh and reopening, wore the theme's tokens and fit 320 px at 200% text and phone landscape.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
