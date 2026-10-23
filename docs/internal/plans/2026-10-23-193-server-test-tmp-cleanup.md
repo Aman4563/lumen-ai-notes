@@ -119,22 +119,6 @@ git commit -m "Remove the server tests' fixture directory when the suite ends" -
 - Gate: `npm run check`, then the full browser gate through `gate-slot`; record `audit:app`'s budget numbers.
 - Docs: a dated verification-log row in `docs/internal/PRODUCT_REQUIREMENTS.md` and a dated entry in `docs/FUNCTIONAL_TESTING.md`.
 
-## As built
-
-- Task 1 landed as planned. On main both new tests failed only at the leftovers assertion, each naming one `lumen-server-test-dist-*`; on the branch the two files ran 32/32 and `audit:ai` 617/617 (622/622 after the rebase onto main 986b759).
-- The final review found the Review Focus claim about the hook's line order false; it is corrected above. node:test rethrows an error raised before the first test starts and runs no hook, so registering the hook before the `writeFile` is harmless, not protective. A deferred suggestion to explain that order in a comment was dropped for the same reason.
-- `output` also names the child's signal and spawn error, so a child stopped by the 120 s bound says so: with the bound cut to 50 ms for one run it read `(child killed by SIGTERM)` and `… ETIMEDOUT`, and nothing was left behind.
-- The failing-run test keeps `run.fail >= 1`: the passing-run test already fails if the fixture is removed mid-suite in a normal run.
-- Known risks:
-  - A failure while building the fixture, before the first test starts, leaves its directory (accepted; building it in a `before()` hook would close it).
-  - An interrupted run (Ctrl-C, SIGTERM, a cancelled CI job) leaves the fixture, and the check's private folder too: no hook runs when the process is killed.
-- Rulings made during execution:
-  - Ruling: the fixture-build gap is recorded, not closed — the issue reads "passes or fails" as test outcomes, and the gap takes a failed 63-byte write into a folder `mkdtemp` has just made — cost if wrong: on a full disk a failed run can leave one fixture directory.
-  - Ruling: no comment explains the hook's order — the order protects nothing — cost: none.
-  - Ruling: `run.fail` stays `>= 1` — the acceptance criterion is about leftovers, not hook timing — cost if wrong: a Node change that ran `after()` hooks early in the forced-failure arrangement would go unnoticed by that test.
-  - Ruling: main moved during the work (#199), so the branch was rebased before these docs were written and gated once on the rebased head (8b45059); the docs commit on top changes no file the gate or the build loads — cost if wrong: none beyond order.
-  - Ruling: the worktree was made with `git worktree add` at the brief's path, since the native worktree tool cannot name the branch — cost if wrong: it is removed by hand after merge.
-
 ## Follow-up: a failed fixture build
 
 Before merging PR #202, the reviewer would not leave one leak open. The issue says no `lumen-server-test-dist-*` directory may remain after the suite passes or fails, yet a failure while writing the fixture, before the first test starts, left it.
@@ -167,7 +151,7 @@ Decided, with evidence from scratch runs on Node 26.12.1:
 - The `mkdtemp` line, the `after()` hook and its comment stay as they are.
 - `syncBuiltinESMExports()` is what makes `server.test.mjs`'s named `writeFile` import resolve to the patched function. On 6d820b7 the preload made the run exit 7 with the forced message and leave the folder.
 
-- [ ] **Step 1: Write the failing test** at the end of `server/ai/server.cleanup.test.mjs`. Also change the header comment's "in a child, passing and failing." to "in a child: passing, failing, and with its fixture write failing." (re-wrap the comment lines as needed).
+- [x] **Step 1: Write the failing test** at the end of `server/ai/server.cleanup.test.mjs`. Also change the header comment's "in a child, passing and failing." to "in a child: passing, failing, and with its fixture write failing." (re-wrap the comment lines as needed).
 
 ```js
 test("the server suite leaves nothing in its temp folder when writing its fixture fails", async (t) => {
@@ -178,7 +162,9 @@ test("the server suite leaves nothing in its temp folder when writing its fixtur
 });
 ```
 
-- [ ] **Step 2: Watch it fail on this branch and on main, for the right reason**
+(As built, the message pattern is anchored: `/^Error: forced fixture write failure$/m`; see As built.)
+
+- [x] **Step 2: Watch it fail on this branch and on main, for the right reason**
 
 On this branch, with `server.test.mjs` unmodified from 6d820b7: `OUTER=$(mktemp -d) && TMPDIR=$OUTER timeout 300 node --test server/ai/server.cleanup.test.mjs; echo "exit $?"; ls -A "$OUTER"; rmdir "$OUTER"`
 
@@ -194,9 +180,9 @@ On main:
 3. Run the same command there. Expected: exit 1, and all three tests fail only at their leftovers assertions.
 4. Remove the scratch worktree with `git worktree remove --force` (it holds the symlink and the copied file).
 
-- [ ] **Step 3: Remove the folder when the fixture write fails** in `server/ai/server.test.mjs`. Wrap the `await writeFile(...)` at :31 in `try { … } catch (error) { await rm(fixtureDistDirectory, { recursive: true, force: true }); throw error; }`. Put a one-line comment above it saying that a failure there comes before the first test starts, when node:test runs no hook. Nothing else changes.
+- [x] **Step 3: Remove the folder when the fixture write fails** in `server/ai/server.test.mjs`. Wrap the `await writeFile(...)` at :31 in `try { … } catch (error) { await rm(fixtureDistDirectory, { recursive: true, force: true }); throw error; }`. Put a one-line comment above it saying that a failure there comes before the first test starts, when node:test runs no hook. Nothing else changes.
 
-- [ ] **Step 4: Watch it pass**
+- [x] **Step 4: Watch it pass**
 
 | Run | Expected |
 |---|---|
@@ -204,4 +190,23 @@ On main:
 | `OUTER=$(mktemp -d) && TMPDIR=$OUTER timeout 600 node --test 'server/**/*.test.mjs' 'src/lib/*.test.mjs'; echo "exit $?"; ls -A "$OUTER"; rmdir "$OUTER"` | exit 0; 623/623 (622 + 1); nothing listed |
 | `timeout 600 npm run audit:ai` | exit 0; 623/623 |
 
-- [ ] **Step 5: Commit** both files as "Remove the server tests' fixture when writing it fails". The why-body: a failed fixture write came before the first test, when node:test runs no hook, and left the folder. The new test makes that write reject through a preload, and it fails on main and on the previous head.
+- [x] **Step 5: Commit** both files as "Remove the server tests' fixture when writing it fails". The why-body: a failed fixture write came before the first test, when node:test runs no hook, and left the folder. The new test makes that write reject through a preload, and it fails on main and on the previous head.
+
+## As built
+
+- Task 1 landed as planned. On main both new tests failed only at the leftovers assertion, each naming one `lumen-server-test-dist-*`; on the branch the two files ran 32/32 and `audit:ai` 617/617 (622/622 after the rebase onto main 986b759).
+- The final review found the Review Focus claim about the hook's line order false. node:test rethrows an error raised before the first test starts and runs no hook, so registering the hook before the `writeFile` protected nothing. A deferred suggestion to explain that order in a comment was dropped for the same reason.
+- `output` also names the child's signal and spawn error, so a child stopped by the 120 s bound says so. With the bound cut to 50 ms for one run, it read `(child killed by SIGTERM)` and `… ETIMEDOUT`, and nothing was left behind.
+- The failing-run test keeps `run.fail >= 1`: the passing-run test already fails if the fixture is removed mid-suite in a normal run.
+- Before merge, the PR's reviewer would not leave the fixture-build gap open, so Task 2 closed it. It landed as planned with one change from its review: the message check is anchored (`/^Error: forced fixture write failure$/m`). The unanchored pattern also matched the preload's own source line, which Node prints when that line throws, so a preload with a typo or a read-only `writeFile` passed. RED: on 6d820b7 only the new test failed, at its leftovers assertion; on main 986b759 all three did. GREEN: 33/33, `audit:ai` 623/623.
+- Known risks:
+  - An interrupted run (Ctrl-C, SIGTERM, a cancelled CI job) leaves the fixture, and the check's private folder too: no hook or catch runs when the process is killed.
+  - If `rm` fails inside the write's `catch`, its error replaces the write error. The folder cannot be removed in that case anyway.
+- Rulings made during execution:
+  - Ruling: the fixture-build gap, first recorded as accepted, is closed by Task 2 — the issue's "passes or fails" covers a failed fixture build too, as the PR's review held — cost: none now.
+  - Ruling: Task 2 uses a try/catch around the write, not a `before()` hook — `before()` leaked when a test was registered ahead of the file's hooks, and the try/catch keeps the proven top-level layout — cost if wrong: a later move to `before()` must also change how the failing-run check injects its failure.
+  - Ruling: the message check is anchored on the thrown error's line, against the plan's unanchored pattern — the review showed a broken preload passing — cost if wrong: if a later Node prints an uncaught error differently, the test fails loudly at that check.
+  - Ruling: no comment explains the hook's order — the order protects nothing — cost: none.
+  - Ruling: `run.fail` stays `>= 1` — the acceptance criterion is about leftovers, not hook timing — cost if wrong: a Node change that ran `after()` hooks early in the forced-failure arrangement would go unnoticed by that test.
+  - Ruling: main moved during the work (#199), so the branch was rebased before the docs were written. The full browser gate ran once on the rebased head (8b45059). Later commits change only the server test files and docs, which no browser suite loads, and CI's full browser gate runs on the pull request — cost if wrong: none beyond order.
+  - Ruling: the worktree was made with `git worktree add` at the brief's path, since the native worktree tool cannot name the branch — cost if wrong: it is removed by hand after merge.

@@ -4152,10 +4152,9 @@ worktrees took it to 200 the same day. `server/ai/server.test.mjs` made its
 app-shell fixture with `mkdtemp` when the file loaded and never removed it.
 
 The file now removes the fixture in an `after()` hook, so the fixture goes
-whether the tests pass or fail. One case is accepted and still leaks: if
-writing the fixture's `index.html` fails while the file loads, before its
-first test starts, node:test rethrows the error and runs no hook. An
-interrupted run (Ctrl-C, SIGTERM, a cancelled CI job) can also leave it.
+whether the tests pass or fail, and also when writing it fails (see the
+follow-up below). An interrupted run (Ctrl-C, SIGTERM, a cancelled CI job)
+can still leave it.
 
 How it is now checked: `server/ai/server.cleanup.test.mjs` runs
 `server.test.mjs` in a child process with a private, empty temp folder,
@@ -4178,3 +4177,34 @@ attempt with no retries, at a load average of about 11 to 14. A plain
 `npm run audit:ai` on the branch left the real temp folder's count at 200.
 The directories main already left are not removed; delete them by hand when
 no test run is active.
+
+### Follow-up on 2026-10-23: a failed fixture build (#193)
+
+The first version of the fix left one leak open. The fixture's `index.html`
+is written while the file loads, before its first test starts. node:test
+rethrows a failure there and runs no hook, so the directory stayed. A preload
+that makes that write reject reproduced it on main (986b759) and on the first
+fix (6d820b7): the child exited 7 with "forced fixture write failure" and
+left its `lumen-server-test-dist-*` (`lumen-server-test-dist-4fm6Yh` on
+6d820b7).
+
+The write's own `catch` now removes the directory before rethrowing. A
+`before()` hook was tried first and rejected. When a test is registered ahead
+of the file's hooks, as the failing-run check's preload does, node:test ran
+the root `after()` while `before()` was still creating the folder. It never
+ran `after()` again, so the folder leaked.
+
+`server/ai/server.cleanup.test.mjs` gains a third test whose preload makes
+the fixture write reject. It requires a failing exit, the thrown error's own
+line (`Error: forced fixture write failure`) and an empty folder. The
+preload's source cannot match that line, which matters: the task review
+found that an unanchored pattern let a preload with a typo, or a read-only
+`writeFile`, pass. On 6d820b7 the new test fails at the leftovers assertion
+while the first two pass; on main all three fail there.
+
+Gate on c4a9b89 (Node 26.12.1): `npm run check` passed (`audit:ai` 623/623,
+`audit:ai-eval` 27 cases, `audit:app`), and a plain `npm run audit:ai` left
+the real temp folder's count unchanged, at 203. No browser suite loads the
+server test files: `scripts/check_browser.mjs` imports `server/server.mjs`,
+and no audit imports a test file. The browser gate was therefore not re-run
+locally; CI runs the full gate on the pull request.
