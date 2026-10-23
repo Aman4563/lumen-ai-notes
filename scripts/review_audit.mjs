@@ -1459,11 +1459,56 @@ try {
     } finally {
       await retriedPage.close();
     }
+
+    // Scenario G: undoing the second grade of a failed card leaves its first Again standing,
+    // so its second ask still comes after the cards not yet asked, even when their grades
+    // are undone too. Three weak cards, a the weakest: a fails, b passes, c fails, a is asked
+    // again and passes. Undoing those last three grades and grading b again must ask c, and
+    // only then a.
+    const crunchC = crunchCard("crunch-c", "Crunch c: what does a settled card wait for?", { lapses: 0, ease: 2.8 });
+    const chainPage = await relearnPage();
+    try {
+      await seedRelearn(chainPage, { cards: [crunchA, crunchB, crunchC] });
+      await watchStatus(chainPage);
+      await startExtraPractice(chainPage);
+      await revealAndRate(chainPage, crunchA, "1");
+      await revealAndRate(chainPage, crunchB, "3");
+      await revealAndRate(chainPage, crunchC, "1");
+      await revealAndRate(chainPage, crunchA, "3");
+      // Undo takes back a's second grade, then c's Again, then b's Good; a's first Again stands.
+      await undoByKeyboard(chainPage);
+      await promptFocused(chainPage, crunchA);
+      await undoByKeyboard(chainPage);
+      await promptFocused(chainPage, crunchC);
+      await undoByKeyboard(chainPage);
+      await promptFocused(chainPage, crunchB);
+      await revealAndRate(chainPage, crunchB, "3");
+      // c has not been asked yet, so it comes before a's second ask.
+      await promptFocused(chainPage, crunchC);
+      await revealAndRate(chainPage, crunchC, "3");
+      await promptFocused(chainPage, crunchA);
+      const secondAsk = await eyebrow(chainPage);
+      assert.ok(secondAsk.startsWith("Learning · 10 min interval"), `a failed card asked again must read as learning: ${secondAsk}`);
+      await revealAndRate(chainPage, crunchA, "3");
+      await chainPage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("the second ask of the failed card must end Extra practice"));
+      assert.deepEqual(await pollValue(() => statusLog(chainPage), (log) => log.at(-1)?.includes("Session complete")), [
+        "Rated Again: next review in 10 min. 3 cards left.",
+        "Rated Good: next review in 10 days. 2 cards left.",
+        "Rated Again: next review in 10 min. 2 cards left.",
+        "Rated Good: next review in 3 days. 1 card left.",
+        "Rated Good: next review in 10 days. 2 cards left.",
+        "Rated Good: next review in 10 days. 1 card left.",
+        "Rated Good: next review in 3 days. Session complete.",
+      ], "a failed card must be asked again after every card not yet asked, whatever was undone, and each outcome announced once");
+    } finally {
+      await chainPage.close();
+    }
   } finally {
     await relearnContext.close();
   }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once) verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

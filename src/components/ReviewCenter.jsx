@@ -626,8 +626,9 @@ export default function ReviewCenter({
       .map((id) => profile.reviewItems.find((item) => item.id === id))
       .filter((item) => item && isAvailableToday(item, todayKey));
   }, [crunch, crunchFailedIds, crunchRetriedIds, profile.reviewItems, queueNow.getTime(), session, timeZone]);
-  // Extra practice asks the cards not yet seen first, then those to ask again. After an undo a
-  // card can be in both parts: it is queued once, at its first place.
+  // Extra practice asks the cards not yet seen first, then those to ask again. A card waiting to
+  // be asked again is always seen, so no card is in both parts; keeping the first occurrence of
+  // each id is a guard.
   const queue = session && crunch
     ? [...baseQueue.filter((item) => !sessionSeen.includes(item.id)), ...crunchRetryCards].filter((item, index, all) => all.findIndex((other) => other.id === item.id) === index)
     : baseQueue;
@@ -726,10 +727,15 @@ export default function ReviewCenter({
   const undo = useCallback(() => {
     if (!lastAttempt) return;
     onUndo();
-    setSessionSeen((seen) => seen.filter((id) => id !== lastAttempt.reviewItemId));
-    // Undoing a second grade asks the card again; undoing a first Again no longer queues it.
-    if (crunchRetriedIds.includes(lastAttempt.reviewItemId)) setCrunchRetriedIds((ids) => ids.filter((id) => id !== lastAttempt.reviewItemId));
-    else setCrunchFailedIds((ids) => (ids.includes(lastAttempt.reviewItemId) ? ids.filter((id) => id !== lastAttempt.reviewItemId) : ids));
+    // Undoing a second grade asks the card again, still after the rest of the session: its first
+    // Again stands, so it stays seen. Undoing any other grade makes the card unseen, and undoing
+    // a first Again also takes back the queueing it caused.
+    if (crunchRetriedIds.includes(lastAttempt.reviewItemId)) {
+      setCrunchRetriedIds((ids) => ids.filter((id) => id !== lastAttempt.reviewItemId));
+    } else {
+      setSessionSeen((seen) => seen.filter((id) => id !== lastAttempt.reviewItemId));
+      setCrunchFailedIds((ids) => (ids.includes(lastAttempt.reviewItemId) ? ids.filter((id) => id !== lastAttempt.reviewItemId) : ids));
+    }
     setSessionDone((done) => Math.max(0, done - 1));
     setCurrentId(lastAttempt.reviewItemId);
     // A step that was shown early comes back not yet due: admit it again so it
