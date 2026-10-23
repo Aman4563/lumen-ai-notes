@@ -8,7 +8,7 @@ import puppeteer from "puppeteer-core";
 import { AI_REQUEST_CONTRACT_ID } from "../src/lib/aiContract.js";
 import { createBackup } from "../src/lib/backup.js";
 import { encryptBackupJson } from "../src/lib/backupCrypto.js";
-import { waitForTheme } from "./audit_waits.mjs";
+import { pollValue, waitForTheme } from "./audit_waits.mjs";
 import { installSpeechMock } from "./speech_mock.mjs";
 
 // Issue #139: where a browser blocks site storage, reading localStorage
@@ -32,7 +32,8 @@ import { installSpeechMock } from "./speech_mock.mjs";
 // a vault it would not store says it lasts this visit only, on the card too).
 // Issue #147: Storage health, under that cookie blocking and with Cache
 // Storage failures injected, must show plain copy instead of the browser's
-// error text, announce it once, and keep every measurement it could make.
+// error text, announce it once, and keep every measurement it could make; the
+// device-evidence report keeps the failure's name and never its text.
 const axeSource = await readFile(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 const baseUrl = (process.env.LUMEN_URL || "http://127.0.0.1:4173/").replace(/\/$/, "");
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -132,7 +133,7 @@ const aiConfig = {
 };
 const jsonReply = (payload) => ({ status: 200, contentType: "application/json; charset=utf-8", headers: { "Cache-Control": "no-store" }, body: JSON.stringify(payload) });
 const installAiMocks = async (page) => {
-  const calls = { respond: 0 };
+  const calls = { respond: 0, evidence: [] };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -170,6 +171,10 @@ const installAiMocks = async (page) => {
       ];
       request.respond({ status: 200, contentType: "application/x-ndjson", headers: { "Cache-Control": "no-store", "X-Lumen-Stream-Protocol": "lumen.ai.ndjson.v1" }, body: `${events.map((event) => JSON.stringify(event)).join("\n")}\n` }).catch(() => {});
       return;
+    }
+    // Device evidence is posted to the real server; keep what the page sent.
+    if (request.method() === "POST" && url.pathname === "/api/evidence") {
+      try { calls.evidence.push(JSON.parse(request.postData() || "null")); } catch { /* not JSON: nothing to record */ }
     }
     request.continue().catch(() => {});
   });
@@ -829,11 +834,20 @@ const refuseEstimateOnly = (marker) => {
     return Promise.reject(new DOMException(`${marker} NotAllowedError`, "NotAllowedError"));
   };
 };
+// The auto-probe the device-evidence page posts the moment its checks exist:
+// the same `auto` object its downloaded and copied reports carry.
+const postedAutoProbe = async (calls) => {
+  const report = await pollValue(() => calls.evidence.find((payload) => payload?.kind === "auto-probe") || null, Boolean, { timeout: 10_000 });
+  assert.ok(report, "the device-evidence page posted no auto-probe");
+  return report;
+};
+const evidenceRow = (page, label) => page.$$eval(".evidence-grid > div", (rows, term) => rows.find((row) => row.querySelector("dt")?.textContent === term)?.querySelector("dd")?.textContent || "", label);
 
 // Chrome's cookie blocking: the message, never the browser's words, announced
 // once, kept on Refresh and reopening, in the theme's tokens, axe-clean, and
-// fitting a 320 px phone at 200% text and phone landscape.
-const storageHealthBlockedFlows = (viewportName) => async ({ page, open }) => {
+// fitting a 320 px phone at 200% text and phone landscape. Device evidence then
+// records Cache Storage's error name, never its text.
+const storageHealthBlockedFlows = (viewportName) => async ({ page, open, calls }) => {
   await open("#/home", ".welcome-block");
   const refusal = await page.evaluate(() => caches.keys().then(() => null, (error) => ({ name: error.name, message: error.message })));
   assert.ok(refusal?.message, `Chrome's cookie blocking did not refuse Cache Storage, so this case proves nothing: ${JSON.stringify(refusal)}`);
@@ -893,11 +907,19 @@ const storageHealthBlockedFlows = (viewportName) => async ({ page, open }) => {
       assert.ok(layout.scrollWidth <= layout.clientWidth + 1 && layout.left >= 0 && layout.right <= layout.viewport + 1 && layout.textRight <= layout.right + 1, `${label} the Storage health message does not fit: ${JSON.stringify(layout)}`);
     }
   }
+  await open("#/device-evidence", ".device-evidence-page");
+  await page.waitForSelector(".evidence-grid", { timeout: 10_000 });
+  const report = await postedAutoProbe(calls);
+  assert.equal(report.auto.cacheStorageError, refusal.name, "the device-evidence report did not record Cache Storage's error name");
+  assert.equal(report.auto.storageManagerError, "", "the device-evidence report recorded a StorageManager error Chrome never raised");
+  assert.ok(!JSON.stringify(report).includes(refusal.message), "the device-evidence report carried the browser's error text, not only its name");
+  assert.equal(await evidenceRow(page, "Offline caches"), `unavailable (${refusal.name})`, "the device-evidence page did not show Cache Storage's error name");
 };
 
 // Each other kind, injected into a working browser, gets its own plain
-// message; a refused estimate alone keeps the plain quota line.
-const injectedHealthFailureFlows = async ({ page, open }) => {
+// message; a refused estimate alone keeps the plain quota line, and device
+// evidence then records StorageManager's error name, never its text.
+const injectedHealthFailureFlows = async ({ page, open, calls }) => {
   await open("#/home", ".welcome-block");
   await openSettings(page);
   await storageHealthReady(page);
@@ -916,6 +938,14 @@ const injectedHealthFailureFlows = async ({ page, open }) => {
   assert.ok(!estimateOnly.text.includes(RAW_MARKER) && !RAW_STORAGE_ERROR.test(estimateOnly.text), `a refused quota estimate showed the browser's own text: ${JSON.stringify(estimateOnly.text)}`);
   assert.notEqual(estimateOnly.offlineAssets, "Not measured", "with Cache Storage answering again, offline assets were not measured");
   assert.ok(!HEALTH_TITLES.some((title) => estimateOnly.announced.includes(title)), `a status region kept a message that had gone: “${estimateOnly.announced}”`);
+  await closeSettings(page);
+  await page.evaluate(() => { location.hash = "#/device-evidence"; });
+  await page.waitForSelector(".device-evidence-page .evidence-grid", { timeout: 15_000 });
+  const report = await postedAutoProbe(calls);
+  assert.equal(report.auto.storageManagerError, "NotAllowedError", "the device-evidence report did not record StorageManager's error name");
+  assert.equal(report.auto.cacheStorageError, "", "with Cache Storage answering, the device-evidence report recorded a Cache Storage error");
+  assert.ok(!JSON.stringify(report).includes(RAW_MARKER), "the device-evidence report carried the browser's error text, not only its name");
+  assert.equal(await evidenceRow(page, "Persistent storage"), "query failed (NotAllowedError)", "the device-evidence page did not show StorageManager's error name");
 };
 
 try {
@@ -989,7 +1019,7 @@ try {
   }
 
   assert.deepEqual(failures, [], `blocked-storage failures:\n- ${failures.join("\n- ")}`);
-  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, IndexedDB failing and recovering after Settings opens, a nearly full store, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after (never keeping a sentence the notice dropped), kept it on reopening, said study data is saved only after IndexedDB took a write and that it is not being saved when IndexedDB refused (and recovered with the next save), kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so and the whiteboard advised waiting for storage access; a nearly full store kept the notice off and sync on, and a vault it would not store, created or joined, said it lasts this visit only, in a toast and on the sync card; with working storage the engine choice survived a real reload and a created or joined vault was stored; Storage health, under Chrome's cookie blocking and with refused, full and failing Cache Storage injected, showed plain copy and never the browser's own error text, read Not measured for what it could not measure while keeping the quota estimate, announced each message once through a region that was empty first and cleared after, kept it on Refresh and reopening, wore the theme's tokens and fit 320 px at 200% text and phone landscape.`);
+  console.log(`Blocked-storage audit passed: ${stats.cases} cases (${MODES.map((mode) => mode.name).join(" and ")} and Chrome's own cookie blocking at 393x852 and 1280x800, IndexedDB failing and recovering after Settings opens, a nearly full store, plus working storage) loaded ${stats.loads} routes as new documents (Home, Library, Reader with Listen, Review, Notebook, Board, both AI engines, device evidence, Settings) without “Lumen ${CRASH}”; library search, narration and bookmarks, review grading, whiteboard saving and a Mac tutor answer worked, and the engine choice and an unsent draft held for the visit; Settings announced the notice once through a region that was empty first and cleared after (never keeping a sentence the notice dropped), kept it on reopening, said study data is saved only after IndexedDB took a write and that it is not being saved when IndexedDB refused (and recovered with the next save), kept sync off, fit 320 px at 200% text and passed ${stats.axeRuns} axe runs in Paper, Night and Contrast; with IndexedDB blocked too, Export backup downloaded and said so and the whiteboard advised waiting for storage access; a nearly full store kept the notice off and sync on, and a vault it would not store, created or joined, said it lasts this visit only, in a toast and on the sync card; with working storage the engine choice survived a real reload and a created or joined vault was stored; Storage health, under Chrome's cookie blocking and with refused, full and failing Cache Storage injected, showed plain copy and never the browser's own error text, read Not measured for what it could not measure while keeping the quota estimate, announced each message once through a region that was empty first and cleared after, kept it on Refresh and reopening, wore the theme's tokens and fit 320 px at 200% text and phone landscape; device evidence recorded the error's name only.`);
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
