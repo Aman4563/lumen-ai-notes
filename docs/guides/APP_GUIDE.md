@@ -406,6 +406,16 @@ change you make shows an error saying it could not be saved. Export a backup
 before closing or reloading Lumen: it still downloads, and the message says
 only that its export date could not be recorded.
 
+**Settings → Storage health** says in plain words when the browser will not
+keep Lumen's offline files. The message reads "This browser is not saving
+offline files on this device": reading online works as usual, but lectures
+will not open offline, and downloads such as the On-device Lite model are not
+saved. If the browser is out of room, the message asks you to free up space
+on the device. If it gives no reason, the message says that storage details
+are unavailable right now. Any size Lumen could not measure reads "Not
+measured" rather than 0 B. The browser's own error name appears only under
+**Settings → Help and diagnostics → Device evidence**.
+
 ## Updating the curriculum or interface
 
 Edit files in `notes/` or `src/`, then run:

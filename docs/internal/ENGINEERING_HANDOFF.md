@@ -1841,6 +1841,11 @@ the current sentence. The app cannot manufacture voices absent from the OS inven
   default: Settings says so only after IndexedDB committed a probe write, and says it is not
   being saved when that probe fails. A refused write never sets the device status; reads and
   the probe do. A vault is reported as lasting only when the browser really stored it.
+- Storage health never shows a browser's error text (#147). Each measurement settles on its
+  own, and one that failed reads "Not measured", never a default 0 B:
+  `getStorageBudgetSummary()` rejects when no ledger was measured. A Cache Storage failure
+  shows the plain copy for its kind from `src/lib/storageFailure.js`, announced once per
+  visit. Only Device evidence records the error's name, never its text.
 
 ### AI input/output
 
