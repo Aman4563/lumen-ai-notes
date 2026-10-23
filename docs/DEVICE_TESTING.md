@@ -325,3 +325,43 @@ evidence report in issue #7.
    Motion and follow a section link, such as the coverage audit's "All
    parts": the heading must appear at once, near the top of the reading view
    and fully visible below the reader toolbar, with no scrolling animation.
+
+## Storage health checks that need a device (issue #147)
+
+`audit:storage-blocked` checks Storage health in Chrome in two ways: under
+Chrome's own cookie blocking, where every Cache Storage call is refused with a
+`SecurityError`, and with refused, full and failing Cache Storage injected.
+Only an iPhone shows which calls Safari's own Block All Cookies refuses and
+what VoiceOver reads. Note the iOS version and whether Lumen ran in a Safari
+tab or from the Home Screen, and add the verdict to the device evidence report
+in issue #7.
+
+1. **The message.** Turn on Settings → Apps → Safari → Block All Cookies
+   (Settings → Safari on iOS 17 and earlier), then open Lumen and open
+   Settings. Scroll to Storage health and wait until Refresh is available
+   again.
+   - It must show plain words only, never an error name or a browser
+     sentence such as "SecurityError" or "The operation is insecure".
+   - Record which message it shows: "This browser is not saving offline files
+     on this device", "This browser has no room for more offline files",
+     "Storage details are unavailable right now", or none.
+   - Record what Offline assets, Backup-safe workspace, Study profile and
+     Whiteboards read: a size, or "Not measured".
+2. **VoiceOver.** Turn VoiceOver on, open Lumen afresh and open Settings.
+   - The Storage health message must be read once, after the preferences
+     notice. Swiping through Storage health a few seconds later must meet it
+     once, not twice.
+   - Tap Refresh, then close and reopen Settings: neither may read it again.
+   - Record whether both announcements were read in full, or one cut the
+     other off.
+3. **Device evidence.** Open Settings → Help and diagnostics → Device
+   evidence.
+   - If Storage health showed a message, the Offline caches row must read
+     "unavailable (" followed by an error name.
+   - If the Persistent storage row reads "query failed", an error name must
+     follow it too.
+   - Download the JSON: `auto.cacheStorageError` and
+     `auto.storageManagerError` must hold the same names, or be empty, and no
+     browser sentence. Record the names.
+4. **Recovery.** Turn Block All Cookies off and reload. Storage health shows
+   sizes again and no message.

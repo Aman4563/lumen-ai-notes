@@ -4208,3 +4208,130 @@ the real temp folder's count unchanged, at 203. No browser suite loads the
 server test files: `scripts/check_browser.mjs` imports `server/server.mjs`,
 and no audit imports a test file. The browser gate was therefore not re-run
 locally; CI runs the full gate on the pull request.
+
+## Bugs reproduced on 2026-10-23: Storage health under blocked storage (#147)
+
+Against main (97d3e2e; main 986b759 leaves these files unchanged), with
+Chrome's own cookie blocking set in the profile as `audit:storage-blocked`
+does, at 393×852 and 1280×800:
+
+- Every Cache Storage call (`keys`, `open`, `has`, `match`, `delete`) was
+  refused with a `SecurityError`. `navigator.storage.estimate()` still
+  answered (a 10 GB quota, 0 B used), reading `localStorage` threw a
+  `SecurityError` and `indexedDB.open` failed with an `UnknownError`.
+- Settings → Storage health showed the browser's own sentence, "Failed to
+  execute 'keys' on 'CacheStorage': An attempt was made to break through the
+  security policy of the user agent.", in a `role="status"` paragraph
+  inserted already filled. `refresh()` awaited one `Promise.all` in which the
+  Cache Storage count had no catch. The refusal therefore also threw away the
+  estimate, so the panel read "Browser quota estimate unavailable", and the
+  workspace budget, so it read "0 B / 0 B" and "Whiteboards 0 B · 0/0".
+  "Offline assets 0 B · 0 files" read as if it had been measured.
+- Any other failure showed its own text the same way: an injected
+  `NotAllowedError` printed "lumen-raw-147 NotAllowedError".
+- Review found a second false zero. With IndexedDB blocked, the budget
+  summary answered with an empty fallback ledger. Once the panel no longer
+  failed as a whole, it read "2 B / 20.0 MB" and "Study profile 0 B" for a
+  workspace it could not measure, so study data still on the device would
+  have read as 0 B.
+
+Each measurement now settles on its own. A Cache Storage failure is
+classified by its error name, never its text (`src/lib/storageFailure.js`):
+
+- `SecurityError` and `NotAllowedError` read "This browser is not saving
+  offline files on this device".
+- `QuotaExceededError` reads "This browser has no room for more offline
+  files".
+- Anything else reads "Storage details are unavailable right now".
+
+Each message adds one sentence on what still works (reading online, as usual,
+during this visit) and what does not (offline lectures, and downloads such as
+the On-device Lite model), in the #139 notice's tokens. It is announced once
+per visit per kind, through a visually hidden status region that is on
+screen empty first, is filled 250 ms after the message appears, and empties
+5 s later. Refresh and reopening Settings do not repeat it.
+
+A measurement that failed reads "Not measured". `getStorageBudgetSummary()`
+now rejects with `BUDGET_STATE_UNAVAILABLE` when no budget ledger was
+measured, and the panel then reads the workspace, Study profile and
+Whiteboards as "Not measured" and drops the workspace meter. A refused quota
+estimate on its own keeps the plain "Browser quota estimate unavailable"
+line.
+
+"Remove optional offline files" shows only Lumen's own reasons ("The server
+could not be reached. Offline files were kept.", and its two siblings). Any
+other failure gets a fixed sentence that counts what it had removed. Device
+evidence records only the error's name, as `auto.cacheStorageError` and
+`auto.storageManagerError`, and its Automatic checks show it ("Offline
+caches: unavailable (SecurityError)").
+
+Checks, each failing first:
+
+- `src/lib/storageFailure.test.mjs` (4 tests) covers four things: kinds by
+  name only (an `Error` whose message is a storage name, non-errors and a
+  throwing `name` getter included), bounded names, the exact copy, and the
+  cleanup sentences. It
+  fails to load on main with `ERR_MODULE_NOT_FOUND`.
+- `audit:storage-blocked` has three new cases, 13 in all.
+  - "Storage health with blocked site data" runs at 393×852 and 1280×800
+    under Chrome's cookie blocking. It first proves that Cache Storage
+    really refuses. It then requires:
+    - no browser text in the panel and the blocked message;
+    - "Not measured" for offline assets and the workspace, while the quota
+      estimate stays;
+    - exactly one announcement, through a region that was empty first and
+      clears after it, and none on Refresh (checked before Settings closes)
+      or on reopening;
+    - the message in the theme's tokens, with axe clean, in Paper, Night and
+      Contrast;
+    - a fit at 320 px with 200% text and in phone landscape;
+    - device evidence recording `SecurityError` and no browser sentence.
+
+    On main both sizes fail with "Storage health showed the browser's own
+    error text: "…Failed to execute 'keys' on 'CacheStorage': An attempt was
+    made to break through the security policy of the user agent.…"".
+  - "Storage health with failing Cache Storage" runs in a working browser.
+    It injects a `NotAllowedError`, a `QuotaExceededError` and a `TypeError`
+    into Cache Storage, then a refused estimate alone. It requires each
+    kind's message with no injected text, "Not measured", no message for the
+    estimate alone with no stale announcement, and device evidence
+    recording `NotAllowedError` for StorageManager. On main it fails with
+    "after Refresh Storage health did not show “This browser is not saving
+    offline files on this device”", because the panel showed
+    "lumen-raw-147 NotAllowedError".
+  - On the branch before the budget fix, both blocked cases failed with "a
+    workspace budget the blocked database could not measure was shown as
+    measured: “2 B / 20.0 MB”".
+  - Before the device-evidence change, the three cases failed with "the
+    device-evidence report did not record Cache Storage's error name" or
+    "…StorageManager's error name".
+- `audit:storage` requires two results: a summary with IndexedDB and Web
+  Storage both refused rejects with `BUDGET_STATE_UNAVAILABLE`, and a working
+  one resolves. Before the fix it failed with "Missing expected rejection: a
+  workspace that could not be measured was summarized as a measured one".
+
+Found and not fixed here:
+
+- With IndexedDB refused but a Web Storage journal that holds a ledger, the
+  workspace reads "Not measured" until something is saved that visit,
+  because `getAllData()`'s fallback path does not cache the journal's
+  ledger.
+- Where `caches` does not exist at all (an insecure context), Offline assets
+  still reads "0 B · 0 files".
+- If failures changed from one kind to none and back within the
+  announcement's 5 s, that kind could be announced twice. The Settings notice
+  has the same pattern. A stable refusal never does this.
+
+Budgets (`npm run size`, against main 986b759 built the same way): the
+startup entry is 623,753 bytes against 623,709, +44, because the lazy
+screens' preload list now names the shared `storageFailure` chunk. The
+JavaScript the HTML loads is 653,704 bytes against 653,660. The install route
+screens are 695,105 bytes in 42 files against 692,990 in 41, +2,115, with
+204,895 bytes of headroom. The warm tools are unchanged at 304,647.
+
+Gate on the branch (868c50c, rebased on main 986b759, Node 26.12.1):
+`npm run check` passed, with `audit:ai` 624/624 and `audit:ai-eval` 27 cases
+(hit@1 0.913). `npm run check:browser` passed all 14 suites on the first
+attempt with no retries and no "Passed only on retry": `storage-blocked` ran
+13 cases with 18 axe runs, and `a11y` 126 axe runs with the empty allowlist.
+The load average was 4 to 7.
