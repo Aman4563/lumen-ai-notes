@@ -190,7 +190,7 @@ test("learnAheadCards returns active learning steps due within 20 minutes, earli
   ];
   assert.deepEqual(learnAheadCards(cards, NOW, { timeZone: "UTC" }).map((item) => item.id), ["legacy-in-5", "in-9-a", "in-9-b", "in-20"]);
   assert.deepEqual(learnAheadCards(cards, NOW, { minutes: 10, timeZone: "UTC" }).map((item) => item.id), ["legacy-in-5", "in-9-a", "in-9-b"]);
-  assert.deepEqual([stepCard("s", 0), stepCard("l", 0, { intervalDays: 0.01 }), probeCard(), createReviewItem({ front: "n", back: "c" }, NOW), probeCard({ intervalDays: 0 })].map(isLearningStep), [true, true, false, false, false]);
+  assert.deepEqual([stepCard("s", 0), stepCard("l", 0, { intervalDays: 0.01 }), probeCard(), createReviewItem({ front: "n", back: "c" }, NOW), probeCard({ intervalDays: 0 }), probeCard({ intervalDays: 1 })].map(isLearningStep), [true, true, false, false, false, false]); // a 1-day card is not a step
 });
 
 test("due learning steps bypass the spent daily review limit; other reviews still wait (#149)", () => {
@@ -201,6 +201,9 @@ test("due learning steps bypass the spent daily review limit; other reviews stil
   assert.deepEqual(queue(1), ["review-due", "legacy-due", "step-due"]); // main: ["review-due"]
   assert.deepEqual(queue(0), ["review-due", "legacy-due", "step-due"]); // main: ["review-due", "legacy-due"]
   assert.equal(actionableReviewCount({ reviewItems: cards, reviewSettings: settings, reviewSessions: todayUsage(2) }, NOW, "UTC"), 2); // main: 0
+  // A step takes no review slot: sorted between two reviews, it leaves both their places (limit 2, nothing done today).
+  const around = [probeCard({ id: "review-early", lastReviewedAt: iso(-5 * DAY_MS), intervalDays: 3, dueAt: iso(-2 * DAY_MS) }), stepCard("step-mid", -MINUTE_MS), probeCard({ id: "review-late", lastReviewedAt: iso(-3 * DAY_MS - 30_000), intervalDays: 3, dueAt: iso(-30_000) })];
+  assert.deepEqual(buildReviewQueue(around, settings, NOW, todayUsage(0), { timeZone: "UTC" }).map((item) => item.id), ["review-early", "step-mid", "review-late"]); // main: ["review-early", "step-mid"]
 });
 
 test("a card failed on the last allowed review is due again 10 minutes later the same day (#149)", () => {
@@ -219,7 +222,8 @@ test("a card failed on the last allowed review is due again 10 minutes later the
 
 test("learning ahead never counts as due: only listed steps in the window are admitted (#149)", () => {
   const settings = { dailyNewLimit: 5, dailyReviewLimit: 50 };
-  const cards = [stepCard("in-9", 9 * MINUTE_MS), stepCard("in-30", 30 * MINUTE_MS), probeCard({ id: "review-in-5", lastReviewedAt: iso(-3 * DAY_MS), intervalDays: 3, dueAt: iso(5 * MINUTE_MS) }), { ...createReviewItem({ front: "new", back: "card" }, at(-DAY_MS)), id: "fresh" }];
+  // "in-12" is inside the window but never listed, so it must stay out.
+  const cards = [stepCard("in-9", 9 * MINUTE_MS), stepCard("in-12", 12 * MINUTE_MS), stepCard("in-30", 30 * MINUTE_MS), probeCard({ id: "review-in-5", lastReviewedAt: iso(-3 * DAY_MS), intervalDays: 3, dueAt: iso(5 * MINUTE_MS) }), { ...createReviewItem({ front: "new", back: "card" }, at(-DAY_MS)), id: "fresh" }];
   const ids = (options) => buildReviewQueue(cards, settings, NOW, [], { timeZone: "UTC", ...options }).map((item) => item.id);
   assert.deepEqual(ids({}), ["fresh"]);
   assert.equal(actionableReviewCount({ reviewItems: cards, reviewSettings: settings, reviewSessions: [] }, NOW, "UTC"), 1);
