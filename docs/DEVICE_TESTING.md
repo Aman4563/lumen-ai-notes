@@ -282,3 +282,46 @@ verdict to the device evidence report in issue #7.
 4. **A hardware keyboard** (iPad or iPhone). In Extra practice, Space reveals
    the answer, 1 to 4 rate it, and Tab reaches End session, Undo and the
    rating buttons.
+
+## Lecture links that need a device (issue #150)
+
+`audit:workflow` follows lecture links in Chrome at 393×852 with reduced
+motion on, and `audit:a11y` scans Teaching Mode after an in-page jump. Only
+an iPhone shows what a Home Screen app does when a link would take it out of
+the app, what VoiceOver says when a link lands on a heading, and whether
+Safari honours reduced motion. Note the iOS version and whether Lumen ran in
+a Safari tab or from the Home Screen, and add the verdict to the device
+evidence report in issue #7.
+
+1. **A lecture link in Teaching Mode stays in the app.** Open Lumen from its
+   Home Screen icon, open the notes' README (`notes/README.md`) and tap
+   Teach. Step through the slides to a lecture link, such as Part 1's
+   (`part-01-foundations/README.md`), and tap it. Teaching Mode must close
+   and the lecture must open in the Reader. The app must never leave: no 404
+   page and no browser chrome (a Home Screen app has no back button, so a 404
+   would strand you). Then open that Part 1 lecture once while online, turn
+   on Airplane Mode, relaunch from the Home Screen and repeat: the same
+   result with no network.
+2. **A section link from another lecture, with VoiceOver.** Turn VoiceOver on.
+   Open the coverage audit (`notes/01-advanced-curriculum-coverage-audit.md`)
+   and activate its "All parts" link. README must open with the "All parts"
+   heading near the top of the reading view, fully visible below the reader
+   toolbar, and VoiceOver must announce that heading.
+3. **A section link inside a lecture, in the Reader.** Built-in lectures have
+   no in-page links, so create a note (Notebook → New note) with a title, the
+   line `[Jump](#second-section)`, a `## First section` heading and a
+   `## Second section` heading. Give each heading about ten short paragraphs
+   (paste one sentence ten times, with a blank line between), so the note is
+   longer than two screens: a heading cannot scroll past the end of the page,
+   so in a shorter note the second heading would stop lower down the view and
+   a correct jump would look wrong. With VoiceOver on, open the note and
+   activate the link. The heading must land near the top of the reading view,
+   fully visible below the reader toolbar, and VoiceOver must announce it.
+4. **The same link in Teaching Mode.** With the note from step 3, tap Teach
+   and activate the link on the first slide. Teaching Mode must stay open and
+   show the Second section slide, and VoiceOver must announce the heading it
+   landed on.
+5. **Reduced motion.** Turn on Settings → Accessibility → Motion → Reduce
+   Motion and follow a section link, such as the coverage audit's "All
+   parts": the heading must appear at once, near the top of the reading view
+   and fully visible below the reader toolbar, with no scrolling animation.

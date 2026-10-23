@@ -408,7 +408,8 @@ re-renders, the offline status, the Ctrl+K dialog guard, and forced colors.
 After the routes it scans screen states the routes never open (its `STATES`
 list, issue #97): narration speaking, a failed sentence, the Listen panel,
 the sleep timer's toast, Teaching Mode, Teaching Mode on a failed
-sentence, and an Extra practice session (#148), each in every theme and
+sentence, an Extra practice session (#148), and Teaching Mode after an
+in-page link jump (#150), each in every theme and
 viewport, plus a failed sentence in phone landscape (852×393), once per
 theme: a state with its own `viewport` runs only in the phone pass. An open
 dialog must hold focus. The Extra practice state adds one card to the
@@ -3963,3 +3964,181 @@ Gate on the branch (c0767de, Node 26.12.1): `npm run check` passed
 `npm run check:browser` passed all 14 suites on the first attempt, with no
 retries, in 14 minutes at a load average of 2 to 5 (`review` 45.6 s,
 `responsive` 142 s, `a11y` 62.4 s).
+
+## Bugs reproduced on 2026-10-23: lecture links (#150)
+
+Against a fresh build of main (45826f7; its app source is identical to
+d4a69cd's), served by the real Lumen server on a random port, with Chrome at
+393×852:
+
+- A link to a section of another lecture opened the lecture at its top. On
+  `notes/01-advanced-curriculum-coverage-audit.md`, the link
+  `README.md#all-parts` opened README with `.reader-scroll` at scrollTop 0.
+  The `#all-parts` heading was 2,154 px below the top of the reading view,
+  and focus was on `MAIN#main-content`.
+- A link to a section of the same lecture replaced the route. An
+  `<a href="#all-parts">` in the Reader, by click and by Enter, set the URL
+  to `/#all-parts` and showed Home.
+- Teaching Mode's lecture links left the app. On `notes/README.md`, in
+  Teaching Mode, the link `part-01-foundations/README.md` navigated the whole
+  page to `/part-01-foundations/README.md`. That returned 404 with the app
+  shell gone, and a Home Screen app has no back button. With page offline
+  emulation it was the same 404: that emulation does not reach the service
+  worker, which passed the server's 404 through.
+
+One rule now decides every link for the Reader, Teaching Mode and the link
+audit: `linkTarget(currentPath, href)` in `src/lib/links.js`. It names a
+lecture and a heading, an in-page heading, or "not a document", and it
+returns nothing for a link with a leading URL scheme, which stays the
+browser's to follow (`http(s)` links open in a new tab, `mailto:` and `tel:`
+go to the system). Fragments are percent-decoded, and a malformed escape
+keeps its raw text. `headingAnchors` and `documentAnchorIds` moved into
+`links.js` from the warm link audit, which re-exports the same function, and
+`teachingSlideForAnchor` gives the slide that holds a heading and the
+heading's position on it. Lectures saved with CRLF line endings now get
+heading ids. Before, a `##` line ending in a carriage return failed the
+heading match, so the audit flagged every anchored link in them.
+
+In the Reader, a link to another lecture opens it with the heading at the top
+and focused. A `#fragment` link, or `this-file.md#fragment`, scrolls to the
+heading and focuses it without touching the route. That works on a phone with
+no sheet open and with the outline sheet open, where the sheet closes and
+hands focus to the heading. A fragment no heading has, `#` and `#top`
+included, stays put and shows "That section isn't in this lecture." Any other
+relative link (an image, a page, `?q`, `//host`) stays in the app and shows
+"That link isn't a lecture or note, so it can't open here." Headings get
+`tabindex="-1"` before they scroll. On phones (up to 980 px) a focusable
+element has a 75 px `scroll-margin-top`, so section landings, AI citation
+landings included, now sit 75 px below the top of the reading view instead of
+30 px. At 393×852 the heading is fully visible just under the reader toolbar.
+
+In Teaching Mode one delegated click handler on the slide applies the same
+rule. A heading in this lecture shows the slide that holds it and takes
+focus, also when it is on the slide already shown; Space still narrates from
+that focused heading. Another lecture closes Teaching Mode and opens in the
+Reader at its heading, once Teaching Mode has unmounted. Opened in the same
+click, the lecture left focus on the Teach button, because App's heading
+focus ran while the reader was still inert under the dialog. A missing
+heading or a link that is not a document shows the same notices, and
+Teaching Mode stays open.
+
+The link audit classifies with `linkTarget`, so a link it calls valid is a
+link the app opens. Its verdicts change only on unusual hrefs:
+
+- percent-encoded fragments are decoded (`b.md#real%2Dsection` is valid now);
+- a second `#` belongs to the fragment (`b.md#x#y` names the anchor `x#y`);
+- relative non-documents that main skipped are now reported as not a
+  document: `readme#intro.md`, `//[a.md`, and relative links containing a
+  colon, such as `figure.png#fig:1`.
+
+The real notes' 259 links all keep their verdicts. The change adds no profile
+field and no CSS, and leaves `App.jsx` and `markdown.js` alone.
+
+How each is now checked, with the branch's final scripts run against a
+pristine main build (d4a69cd; its app source is identical to 97d3e2e's in the
+files this change touches):
+
+- `src/lib/linkAudit.test.mjs` adds tests for:
+  - `linkTarget`: its shapes, decoding, and scheme and non-document hrefs;
+  - its agreement with `documentAnchorIds` and the audit;
+  - the Teaching Mode slide mapping, including a slide split inside a code
+    fence;
+  - CRLF headings;
+  - a guard for the audit's in-page missing-anchor finding.
+
+  On main the file fails to load: "The requested module './links.js' does
+  not provide an export named 'headingAnchors'".
+- `scripts/workflow_audit.mjs` adds a lecture-link block. It runs in its own
+  browser context at 393×852 with reduced motion and a seeded note,
+  `custom/link-fixture.md`. On main every earlier check passed and the block
+  failed with 40 lines. In the Reader:
+  - (a) from the coverage audit, `README.md#all-parts`: focus on `MAIN`, the
+    heading 2,171 px down, scrollTop 0;
+  - (b) the in-page "Jump to second": the hash became `#2-second-section`
+    and Home was shown;
+  - (c) "Missing" and "Top": no notice, the hash changed, Home;
+  - (d) "Third by file name": focus on the H1 at the top and no jump, because
+    the Reader reopened the same note without its fragment;
+  - (e) Enter on "Jump to detail": Home;
+  - (f) "Figure": the click loaded `/figure.png`;
+  - (g) a jump with the outline sheet open: Home.
+
+  In Teaching Mode:
+  - (a) and (b), slide jumps: Teaching Mode closed and Home was shown;
+  - (c) Space after a jump: no heading had focus;
+  - (d) a missing heading: no notice, Home;
+  - (e) "Figure": the click loaded `/figure.png`;
+  - (g) `README.md#all-parts`: the click loaded `/README.md#all-parts`;
+  - (h) a lecture link under page offline emulation: a main-frame navigation
+    request for `/part-01-foundations/README.md`, and the app shell gone.
+
+  The Teaching Mode guard (f), an `https` link left to the browser in a new
+  tab, passed before and after.
+- `scripts/a11y_audit.mjs` adds the state `teaching-mode-link-jump`: Teaching
+  Mode after an in-page link, scanned by axe in Paper, Night and Contrast at
+  393×852 and 1280×800 with the allowlist empty. Built-in lectures have no
+  in-page links, so the state injects the link itself; the workflow audit's
+  seeded note covers an authored link. The state uses
+  `notes/part-05-supervised-learning/03-trees-and-ensembles.md` and jumps to
+  the first section that holds tabbable content, which is a diagram. It waits
+  until the diagram has drawn before axe runs. On main it reports "the state
+  could not be scanned" in all six (Waiting for selector
+  `.teach-mode .teaching-markdown h2:focus` failed).
+
+Page offline emulation does not reach the service worker, so the offline case
+does not rest on an emulated failure. Its proof is that no main-frame
+navigation request is issued, with the app shell still there.
+
+Found and not fixed here. The first two are added to #98's scope:
+
+- A Teaching Mode slide taller than its scroller, with nothing tabbable on
+  it, fails axe `scrollable-region-focusable` (`.teach-stage` on phones,
+  `.teach-card` on desktop). An example is slide 4 of the Part 5
+  linear-regression lecture, reached with "Next section" on main. It is why
+  the new state does not use that lecture.
+- Teaching Mode table headers fail axe `color-contrast` in Paper (1.17:1,
+  `#172035` on `#202d46`) and Contrast (1.52:1, `#000` on `#202d46`). An
+  example is slide 9 of `02-classification-models.md`, reached with "Next
+  section" on main. The new state relies on its first qualifying section not
+  being a table.
+- A workflow flake outside this change: "clicking a facet chip did not focus
+  its Part" (the advanced-search flow in `workflow_audit.mjs`) failed 2 of 20
+  runs during this work. This branch does not touch it.
+
+Follow-ups, not in this change:
+
+- `#` and `#top` could scroll to the top of the lecture instead of showing
+  the notice.
+- Teaching Mode could stay open when a link names a document App cannot open.
+- Space could narrate from any non-control slide target.
+- Jumps could open a closed `<details>` that holds the heading.
+- One shared link dispatch before #158 hooks both handlers.
+
+Budgets (`npm run size` and `audit:app`, against main 97d3e2e, both built
+here): the startup entry is 623,709 bytes on both, +0, with 126,291 bytes of
+headroom. The install route screens are 692,990 bytes against 690,627
+(+2,363: the Reader chunk 82,089 against 80,882, +1,207, and the `links`
+chunk 1,408 against 252, +1,156), with 207,010 bytes of headroom. The warm
+tools are 304,647 bytes against 305,006 (−359, since `documentAnchorIds`
+moved out of the warm link audit). `src/lib/content.js` dropped an unused
+re-export of `resolveDocumentLink`; otherwise rolldown would have pulled
+`links.js` into the startup bundle.
+
+Earlier full runs of `npm run check:browser` were taken before the branch was
+rebased from d4a69cd onto main 97d3e2e, so before #148's Extra practice state
+joined `a11y`. On the build before the final-review fixes, all 14 suites
+passed on the first attempt with no retries. On the build after those fixes,
+before the rebase, `a11y` (120 axe runs, empty allowlist) and `workflow`
+passed with retries off. A full gate attempt on that build at a load average
+of about 19 (other projects' builds and tests) failed in unrelated suites on
+CDP protocol and navigation timeouts. It was stopped and is not evidence.
+
+Gate on the branch (ff54025, rebased on main 97d3e2e, Node 26.12.1):
+`npm run check` passed: the curriculum (notes) audit, the unit audit, scale
+(5/5), storage, backup memory (plain 494 ms at 90 MB RSS; encrypted round
+trip 155 ms at 65 MB RSS), `audit:ai` 620/620, `audit:ai-eval` (27 cases,
+hit@1 0.913) and `audit:app`. `npm run check:browser` passed all 14 suites on
+the first attempt with no retries and no "Passed only on retry", including
+`audit:a11y` with 126 axe runs (WCAG 2.2 A/AA plus best practice), the empty
+allowlist and 553 structural checks; it ran on ff54025 from a load average of
+about 6 that peaked near 67 from other projects' builds and tests.
