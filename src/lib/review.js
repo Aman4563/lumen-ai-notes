@@ -168,8 +168,11 @@ export const createReviewItem = ({ front, back, documentId = "", sourceClippingI
 
 export const isNewReviewItem = (item) => (Number(item.reviewCount) || 0) === 0 && !item.lastReviewedAt;
 
+// Whether a card may be offered today: it is not suspended, not archived and not buried on `todayKey`.
+export const isAvailableToday = (item, todayKey) => !item.suspended && !item.archived && item.buriedOnDay !== todayKey;
+
 const isDueAt = (item, nowMilliseconds, todayKey) => {
-  if (item.suspended || item.archived || item.buriedOnDay === todayKey) return false;
+  if (!isAvailableToday(item, todayKey)) return false;
   const dueAt = Date.parse(item.dueAt);
   return Number.isFinite(dueAt) && dueAt <= nowMilliseconds;
 };
@@ -229,7 +232,7 @@ export const learnAheadCards = (items, now = new Date(), { minutes = LEARN_AHEAD
   const horizon = nowMilliseconds + minutes * 60_000;
   return items
     .filter((item) => {
-      if (item.suspended || item.archived || item.buriedOnDay === todayKey || !isLearningStep(item)) return false;
+      if (!isAvailableToday(item, todayKey) || !isLearningStep(item)) return false;
       const dueAt = Date.parse(item.dueAt);
       return Number.isFinite(dueAt) && dueAt > nowMilliseconds && dueAt <= horizon;
     })
@@ -242,7 +245,7 @@ export const buildReviewQueue = (items, settings, now = new Date(), sessions = [
   const nowMilliseconds = now.getTime();
   if (options.crunch) {
     return items
-      .filter((item) => !item.suspended && !item.archived && item.buriedOnDay !== todayKey)
+      .filter((item) => isAvailableToday(item, todayKey))
       .sort(weakFirst)
       .slice(0, clamp(Number(options.crunchLimit) || 20, 1, 100));
   }
