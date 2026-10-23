@@ -48,9 +48,11 @@ import {
   renderClozePrompt,
   formatLatency,
   getTodayReviewUsage,
+  isAvailableToday,
   isLearningStep,
   isNewReviewItem,
   learnAheadCards,
+  localDayKey,
   previewReviewIntervals,
   REVIEW_CARD_TYPES,
   REVIEW_RATINGS,
@@ -493,6 +495,10 @@ export default function ReviewCenter({
   const [confidence, setConfidence] = useState(3);
   const [crunch, setCrunch] = useState(false);
   const [sessionSeen, setSessionSeen] = useState([]);
+  // Extra practice asks a card failed once more, after the rest of the session (issue #149):
+  // the cards failed so far, in fail order, and the ones already asked the second time.
+  const [crunchFailedIds, setCrunchFailedIds] = useState([]);
+  const [crunchRetriedIds, setCrunchRetriedIds] = useState([]);
   const [deckQuery, setDeckQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [deckPage, setDeckPage] = useState(1);
@@ -610,7 +616,21 @@ export default function ReviewCenter({
   }, []);
   const trackBank = useMemo(() => (trackLib ? trackLib.normalizeTrackBank(trackBankRaw) : { tracks: [], questions: [] }), [trackBankRaw, trackLib]);
   const labBank = useMemo(() => normalizeLabBank(labBankRaw), [labBankRaw]);
-  const queue = session && crunch ? baseQueue.filter((item) => !sessionSeen.includes(item.id)) : baseQueue;
+  // Extra practice: the cards failed and not yet asked again, in fail order, as the profile
+  // now has them; one buried, paused or archived since is left out.
+  const crunchRetryCards = useMemo(() => {
+    if (!session || !crunch) return [];
+    const todayKey = localDayKey(queueNow, timeZone);
+    return crunchFailedIds
+      .filter((id) => !crunchRetriedIds.includes(id))
+      .map((id) => profile.reviewItems.find((item) => item.id === id))
+      .filter((item) => item && isAvailableToday(item, todayKey));
+  }, [crunch, crunchFailedIds, crunchRetriedIds, profile.reviewItems, queueNow.getTime(), session, timeZone]);
+  // Extra practice asks the cards not yet seen first, then those to ask again. After an undo a
+  // card can be in both parts: it is queued once, at its first place.
+  const queue = session && crunch
+    ? [...baseQueue.filter((item) => !sessionSeen.includes(item.id)), ...crunchRetryCards].filter((item, index, all) => all.findIndex((other) => other.id === item.id) === index)
+    : baseQueue;
   const queueSignature = queue.map((item) => `${String(item.id).length}:${item.id}`).join("");
   // With the queue empty and a step a few minutes out, the session offers to retry it.
   const retryCards = aheadCards.filter((item) => !queue.some((entry) => entry.id === item.id));
@@ -662,8 +682,10 @@ export default function ReviewCenter({
   // Queue arrays can be recomputed when the wall clock advances even when
   // membership is unchanged, so this transition is keyed to IDs. The reveal
   // resets with the card shown (below), so a card joining the queue never
-  // hides an answer the learner has already revealed.
-  }, [queueSignature, retrySignature, session]);
+  // hides an answer the learner has already revealed. Failing the last card of
+  // Extra practice leaves the same card queued, so a grade also keys it through
+  // the lists of failed and asked-again cards, or its outcome would go unheard.
+  }, [queueSignature, retrySignature, session, crunchFailedIds, crunchRetriedIds]);
 
   const grade = useCallback((rating) => {
     if (!current) return;
@@ -677,7 +699,13 @@ export default function ReviewCenter({
     pendingOutcomeRef.current = `Rated ${label}: next review in ${formatInterval(interval)}.`;
     setAnnouncement("");
     onGrade(current.id, rating, Date.now() - startedAt.current, { confidence, crunch, timeZone });
-    if (crunch) setSessionSeen((seen) => [...seen, current.id]);
+    if (crunch) {
+      setSessionSeen((seen) => [...seen, current.id]);
+      // A card's first Again queues it once more after the rest; its second grade, whatever
+      // it is, ends that.
+      if (crunchFailedIds.includes(current.id)) setCrunchRetriedIds((ids) => (ids.includes(current.id) ? ids : [...ids, current.id]));
+      else if (rating === "again") setCrunchFailedIds((ids) => [...ids, current.id]);
+    }
     // A graded card leaves the steps shown early, so failing it again offers it again.
     setLearnAheadIds((ids) => (ids.includes(current.id) ? ids.filter((id) => id !== current.id) : ids));
     setSessionDone((done) => done + 1);
@@ -685,7 +713,7 @@ export default function ReviewCenter({
     setCurrentId("");
     setConfidence(3);
     startedAt.current = Date.now();
-  }, [confidence, crunch, current, onGrade, profile.reviewSettings, timeZone]);
+  }, [confidence, crunch, crunchFailedIds, current, onGrade, profile.reviewSettings, timeZone]);
 
   const bury = useCallback(() => {
     if (!current) return;
@@ -699,6 +727,9 @@ export default function ReviewCenter({
     if (!lastAttempt) return;
     onUndo();
     setSessionSeen((seen) => seen.filter((id) => id !== lastAttempt.reviewItemId));
+    // Undoing a second grade asks the card again; undoing a first Again no longer queues it.
+    if (crunchRetriedIds.includes(lastAttempt.reviewItemId)) setCrunchRetriedIds((ids) => ids.filter((id) => id !== lastAttempt.reviewItemId));
+    else setCrunchFailedIds((ids) => (ids.includes(lastAttempt.reviewItemId) ? ids.filter((id) => id !== lastAttempt.reviewItemId) : ids));
     setSessionDone((done) => Math.max(0, done - 1));
     setCurrentId(lastAttempt.reviewItemId);
     // A step that was shown early comes back not yet due: admit it again so it
@@ -707,7 +738,7 @@ export default function ReviewCenter({
     // The undone grade is not announced, and grading the card again is.
     pendingOutcomeRef.current = "";
     setAnnouncement("");
-  }, [lastAttempt, onUndo]);
+  }, [crunchRetriedIds, lastAttempt, onUndo]);
 
   // The card on screen; empty outside a session and on the retry panel.
   const sessionCardId = session ? current?.id || "" : "";
@@ -752,6 +783,8 @@ export default function ReviewCenter({
   const startSession = (useCrunch = false) => {
     setCrunch(useCrunch);
     setSessionSeen([]);
+    setCrunchFailedIds([]);
+    setCrunchRetriedIds([]);
     setSessionDone(0);
     setAnnouncement("");
     setLearnAheadIds([]);
