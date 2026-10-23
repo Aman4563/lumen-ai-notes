@@ -58,6 +58,101 @@ const readProfile = (page) => page.evaluate(() => new Promise((resolve, reject) 
 // action has landed instead of sleeping a guessed time first (#138).
 const savedProfile = (page, landed) => pollValue(() => readProfile(page), landed);
 
+// Focuses the first `selector` control whose text includes `text` once earlier focus
+// moves have settled, and confirms it still has focus a few frames later; otherwise a
+// key pressed next can land on another control. Resolves to whether it held.
+const focusAndHold = (page, selector, text) => page.waitForFunction(async (scope, label) => {
+  const control = [...document.querySelectorAll(scope)].find((node) => node.textContent.includes(label));
+  if (!control) return false;
+  control.focus();
+  for (let frame = 0; frame < 3; frame += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+  return document.activeElement === control;
+}, { timeout: 5_000, polling: 200 }, selector, text).then(() => true, () => false);
+
+// #149: the page's clock, advanced on demand. Every `new Date()` and `Date.now()`
+// in the page runs `offset` ms ahead; a new page starts at real time.
+function installAdjustableClock() {
+  const RealDate = Date;
+  let offset = 0;
+  function AdjustableDate(...args) {
+    if (!new.target) return new RealDate(RealDate.now() + offset).toString();
+    return args.length ? new RealDate(...args) : new RealDate(RealDate.now() + offset);
+  }
+  AdjustableDate.prototype = RealDate.prototype;
+  AdjustableDate.now = () => RealDate.now() + offset;
+  AdjustableDate.parse = RealDate.parse;
+  AdjustableDate.UTC = RealDate.UTC;
+  window.Date = AdjustableDate;
+  window.__lumenAdvanceClock = (ms) => { offset += ms; };
+  // The opt-in app badge, recorded: a count, or 0 when cleared.
+  window.__lumenBadges = [];
+  navigator.setAppBadge = (count) => { window.__lumenBadges.push(count); return Promise.resolve(); };
+  navigator.clearAppBadge = () => { window.__lumenBadges.push(0); return Promise.resolve(); };
+}
+// The review center refreshes its clock on window focus, as its 30-second tick does.
+const advanceClock = (page, ms) => page.evaluate((delta) => { window.__lumenAdvanceClock(delta); window.dispatchEvent(new Event("focus")); }, ms);
+// Every text an existing status line in the review views changes to: updates
+// only (an inserted view's initial text is not an announcement), with
+// consecutive repeats of one mutation batch folded and empty texts dropped.
+const watchStatus = (page) => page.evaluate(() => {
+  window.__lumenStatus = [];
+  new MutationObserver((records) => {
+    for (const record of records) {
+      const node = record.type === "characterData" ? record.target.parentElement : record.target;
+      if (node?.getAttribute?.("role") !== "status" || !node.closest(".review-session-page, .review-center-page")) continue;
+      if (window.__lumenStatus.at(-1) !== node.textContent) window.__lumenStatus.push(node.textContent);
+    }
+  }).observe(document.body, { subtree: true, childList: true, characterData: true });
+});
+const statusLog = (page) => page.evaluate(() => window.__lumenStatus.filter(Boolean));
+
+// #149: replaces the stored cards, attempts, mistakes and daily usage, as the #148
+// block does, at the page's own clock and time zone, then reloads. Each card is a
+// basic Part 05 card reviewed `reviewedAgoMs` ago and due in `dueInMs` (negative:
+// overdue); Classic scheduling and the app badge are on, and `reviewCompletedToday`
+// reviews are spent today. Resolves to today's usage key, built in the page as
+// localDayKey builds it.
+const seedRelearn = async (page, { cards, reviewSettings = {}, reviewCompletedToday = 0 }) => {
+  const todayKey = await page.evaluate((seed) => new Promise((resolve, reject) => {
+    const base = Date.now();
+    const stamp = (offset) => new Date(base + offset).toISOString();
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const day = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(base)).map((part) => [part.type, part.value]));
+    const key = `${day.year}-${day.month}-${day.day}@${zone}`;
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction("study-data", "readwrite");
+      const store = transaction.objectStore("study-data");
+      const get = store.get("profile");
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => {
+        const profile = get.result && typeof get.result === "object" ? get.result : {};
+        profile.reviewItems = seed.cards.map(({ id, front, intervalDays, repetitions, reviewCount, lapses = 0, ease = 2.5, reviewedAgoMs, dueInMs }) => ({
+          id, type: "basic", front, back: `The answer to ${id}.`, tags: [],
+          documentId: "notes/part-05-supervised-learning/01-linear-regression.md",
+          suspended: false, archived: false, buriedOnDay: "", intervalDays, ease, repetitions, reviewCount, lapses,
+          lastReviewedAt: stamp(-reviewedAgoMs), dueAt: stamp(dueInMs), createdAt: stamp(-60 * 86_400_000), updatedAt: stamp(-reviewedAgoMs),
+        }));
+        profile.reviewAttempts = [];
+        profile.mistakes = [];
+        profile.settings = { ...profile.settings, dueBadgeEnabled: true };
+        profile.reviewSettings = { ...profile.reviewSettings, scheduler: "sm2", ...seed.reviewSettings };
+        // The fields of emptyReviewSession, with today's spent reviews.
+        profile.reviewSessions = seed.reviewCompletedToday > 0
+          ? [{ id: key, localDate: key.split("@")[0], timeZone: zone, newIntroduced: 0, reviewCompleted: seed.reviewCompletedToday, crunchCompleted: 0, reviewedItemIds: [], createdAt: stamp(0), updatedAt: stamp(0) }]
+          : [];
+        store.put(profile, "profile");
+      };
+      transaction.oncomplete = () => resolve(key);
+      transaction.onerror = () => reject(transaction.error);
+    };
+  }), { cards, reviewSettings, reviewCompletedToday });
+  await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".review-center-page", { timeout: 10_000 });
+  return todayKey;
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -215,6 +310,12 @@ try {
   await clickByText(page, ".review-hero button", "Start review");
   await clickByText(page, ".review-session-page button", "Show answer");
   await clickByText(page, ".review-rating", "Again");
+  // Issue #149: failing the last card offers to retry it instead of ending the
+  // session; ending it from there reaches the notebook.
+  await page.waitForSelector(".review-retry", { timeout: 5_000 })
+    .catch(() => assert.fail("failing the last card must offer to retry it"));
+  assert.ok((await page.$eval("#review-retry-title", (node) => node.textContent)).startsWith("1 card to retry"), "the retry panel must name the one card to retry");
+  await clickByText(page, ".review-retry button", "End session");
   await page.waitForSelector(".review-mistakes");
   assert.equal((await page.$$(".mistake-card")).length, 1, "an Again grade did not log exactly one mistake");
   const mistakeCopy = await page.$eval(".mistake-card", (node) => node.textContent);
@@ -252,6 +353,10 @@ try {
   await clickByText(page, ".review-hero button", "Start review");
   await clickByText(page, ".review-session-page button", "Show answer");
   await clickByText(page, ".review-rating", "Again");
+  await page.waitForSelector(".review-retry", { timeout: 5_000 })
+    .catch(() => assert.fail("failing the corrective card, the last one, must offer to retry it"));
+  assert.ok((await page.$eval("#review-retry-title", (node) => node.textContent)).startsWith("1 card to retry"), "the retry panel must name the one card to retry");
+  await clickByText(page, ".review-retry button", "End session");
   await page.waitForSelector(".review-mistakes");
   await page.waitForFunction(() => document.querySelector(".mistake-card")?.textContent.includes("×2"), { timeout: 5_000 });
   assert.equal((await page.$$(".mistake-card")).length, 1, "a repeated failure duplicated the mistake instead of merging");
@@ -931,13 +1036,7 @@ try {
     // Keyboard only from here: Enter starts Extra practice, Space reveals, 3 rates Good.
     // Focus the button once earlier focus moves have settled, and confirm it is
     // still there a few frames later, or Enter can land on another control.
-    const crunchFocused = await earlyPage.waitForFunction(async () => {
-      const button = [...document.querySelectorAll(".review-hero-actions button")].find((node) => node.textContent.includes("Crunch weak cards"));
-      if (!button) return false;
-      button.focus();
-      for (let frame = 0; frame < 3; frame += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
-      return document.activeElement === button;
-    }, { timeout: 5_000, polling: 200 }).then(() => true, () => false);
+    const crunchFocused = await focusAndHold(earlyPage, ".review-hero-actions button", "Crunch weak cards");
     assert.ok(crunchFocused, "the Crunch weak cards control must be a focusable button that keeps focus");
     await earlyPage.keyboard.press("Enter");
     await earlyPage.waitForSelector(".review-session-page .review-crunch-notice", { timeout: 5_000 });
@@ -1009,8 +1108,229 @@ try {
   } finally {
     await earlyContext.close();
   }
+
+  // Issue #149: failing the last card of a session ended it, so the card was never
+  // asked again in a short sitting. A fresh Classic context hosts these checks. Each
+  // scenario has its own page, closed when it ends, so its clock starts at real time
+  // and no older page syncs into it; the page clock is advanced, never slept through.
+  const relearnContext = await browser.createBrowserContext();
+  try {
+    const relearnPage = async () => {
+      const relearn = await relearnContext.newPage();
+      await relearn.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+      relearn.on("pageerror", (error) => errors.push(error.message));
+      await relearn.evaluateOnNewDocument(installAdjustableClock);
+      await relearn.goto(`${baseUrl}#/review`, { waitUntil: "networkidle2", timeout: 30_000 });
+      await relearn.waitForSelector(".review-center-page");
+      return relearn;
+    };
+    const MINUTE = 60_000;
+    const HOUR = 60 * MINUTE;
+    const DAY = 24 * HOUR;
+    // A card three days into a three-day interval, due `dueInMs` from now.
+    const dueCard = (id, front, dueInMs) => ({ id, front, intervalDays: 3, repetitions: 2, reviewCount: 2, reviewedAgoMs: 3 * DAY, dueInMs });
+    const waitForHero = (page, count, why) => page.waitForFunction((expected) => document.querySelector(".review-hero strong")?.textContent === expected, { timeout: 5_000 }, count)
+      .catch(async () => assert.fail(`${why}: the hero must read ${count}, not ${await page.evaluate(() => document.querySelector(".review-hero strong")?.textContent ?? "nothing")}`));
+    // The prompt of `card` holds focus: it is the card shown.
+    const promptFocused = (page, card) => page.waitForFunction((front) => document.activeElement?.classList.contains("review-question") && document.activeElement.textContent.trim() === front, { timeout: 5_000 }, card.front)
+      .catch(async () => assert.fail(`the prompt of “${card.id}” must take focus; shown: ${await page.evaluate(() => document.querySelector(".review-question")?.textContent.trim() || (document.querySelector(".review-retry") ? "the retry panel" : document.querySelector(".page")?.className) || "nothing")}`));
+    // Space reveals the answer; once the answer has focus the key handler sees the
+    // reveal (as in the #148 block), so `key` rates the card.
+    const revealAndRate = async (page, card, key) => {
+      await promptFocused(page, card);
+      await page.keyboard.press("Space");
+      await page.waitForFunction(() => document.activeElement?.classList.contains("review-answer") && document.querySelectorAll(".review-rating").length === 4, { timeout: 5_000 })
+        .catch(() => assert.fail(`revealing “${card.id}” must focus its answer and show the rating buttons`));
+      await page.keyboard.press(key);
+    };
+    // The retry panel replaces the card, and its title takes focus.
+    const retryShown = async (page, why) => {
+      await page.waitForSelector(".review-retry", { timeout: 5_000 })
+        .catch(() => assert.fail(`${why} must offer a retry instead of ending the session`));
+      await page.waitForFunction(() => document.activeElement?.id === "review-retry-title", { timeout: 5_000 })
+        .catch(() => assert.fail(`${why}: the retry panel's title must take focus`));
+    };
+    // From the focused retry title, Tab reaches Retry now and Enter takes it.
+    const retryNowByKeyboard = async (page) => {
+      await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => document.activeElement?.closest(".review-retry") ? document.activeElement.textContent.trim() : null), "Retry now", "Tab from the retry title must reach Retry now");
+      await page.keyboard.press("Enter");
+    };
+    const sessionHeader = (page) => page.$eval(".review-session-header > div", (node) => [node.querySelector("strong")?.textContent, node.querySelector("span")?.textContent]);
+    const eyebrow = (page) => page.$eval(".review-flashcard .eyebrow", (node) => node.textContent);
+    const lastBadge = (page, expected) => pollValue(() => page.evaluate(() => window.__lumenBadges.at(-1)), (value) => value === expected);
+    // The count on each navigation Review item, "" when it shows none. The bottom
+    // navigation has no Review item: on a phone the count is on the menu drawer's.
+    const reviewNavCounts = (page) => page.$$eval(".sidebar-primary button, .bottom-nav button", (buttons) => buttons
+      .filter((button) => button.querySelector(":scope > span")?.textContent === "Review")
+      .map((button) => button.querySelector("small")?.textContent ?? ""));
+
+    // Scenario A, keyboard only: failing the only due card offers a retry and never
+    // says the session is complete; undo brings the card back; Retry now shows it
+    // early; and each outcome is announced once, a repeated one included.
+    const solo = dueCard("retry-solo", "Retry solo: what does a learning step wait for?", -MINUTE);
+    const soloPage = await relearnPage();
+    try {
+      await seedRelearn(soloPage, { cards: [solo] });
+      assert.equal(await lastBadge(soloPage, 1), 1, "the app badge must count the due card");
+      assert.deepEqual(await reviewNavCounts(soloPage), ["1 due"], "the navigation's Review item must count the due card");
+      await watchStatus(soloPage);
+      assert.ok(await focusAndHold(soloPage, ".review-hero-actions button", "Start review"), "the Start review control must be a focusable button that keeps focus");
+      await soloPage.keyboard.press("Enter");
+      await revealAndRate(soloPage, solo, "1");
+      await retryShown(soloPage, "failing the only due card");
+      // The outcome is composed once the grade lands: read the page after it.
+      await soloPage.waitForFunction(() => document.querySelector(".review-session-page [role='status']")?.textContent, { timeout: 5_000 })
+        .catch(() => assert.fail("failing the only due card must be announced"));
+      const panel = await soloPage.evaluate(() => ({
+        title: document.querySelector("#review-retry-title").textContent,
+        progress: document.querySelector(".review-progress").getAttribute("aria-valuetext"),
+        buttons: [...document.querySelectorAll(".review-retry button")].map((button) => button.textContent.trim()),
+        undersized: [...document.querySelectorAll(".review-session-page button")].flatMap((button) => {
+          const box = button.getBoundingClientRect();
+          return box.width < 44 || box.height < 44 ? [`${button.textContent.trim()} ${Math.round(box.width)}×${Math.round(box.height)}`] : [];
+        }),
+        claimsComplete: document.body.textContent.includes("Session complete"),
+      }));
+      assert.equal(panel.title, "1 card to retry · due in 10 min", "the retry title must name the card and when its step is due");
+      assert.deepEqual(await sessionHeader(soloPage), ["1", "to retry"], "the session header must count the card to retry");
+      assert.equal(panel.progress, "1 of 2 reviewed", "the progress bar must count the card to retry as still to review");
+      assert.deepEqual(panel.buttons, ["Retry now", "End session"], "the retry panel must offer exactly Retry now and End session");
+      assert.deepEqual(panel.undersized, [], "every session button must be at least 44×44 at 393×852");
+      assert.equal(panel.claimsComplete, false, "a card is pending, so nothing may say the session is complete");
+      assert.equal(await lastBadge(soloPage, 0), 0, "the app badge must clear while the card waits out its step");
+      assert.deepEqual(await reviewNavCounts(soloPage), [""], "the navigation's Review item must show no count while the card waits out its step");
+      const failed = await savedProfile(soloPage, (profile) => profile.reviewAttempts?.length === 1);
+      assert.equal(failed.reviewAttempts.length, 1, "failing the card must store one attempt");
+      const [attempt] = failed.reviewAttempts;
+      assert.equal(attempt.scheduleRule, 3, "the attempt must record schedule rule 3");
+      assert.equal(attempt.nextIntervalDays, 10 / 1_440, "Again must store the 10-minute step");
+      assert.equal(Date.parse(attempt.nextDueAt) - Date.parse(attempt.reviewedAt), 600_000, "the step must come due exactly 10 minutes after the grade");
+      const stepped = failed.reviewItems.find((item) => item.id === solo.id);
+      assert.equal(stepped.intervalDays, 10 / 1_440, "the card must store the 10-minute step");
+      assert.equal(Date.parse(stepped.dueAt) - Date.parse(stepped.lastReviewedAt), 600_000, "the card must be due exactly 10 minutes after its review");
+
+      // Undo right after the failure: the card returns, due, with its schedule restored.
+      await soloPage.keyboard.down("Control");
+      await soloPage.keyboard.press("z");
+      await soloPage.keyboard.up("Control");
+      await promptFocused(soloPage, solo);
+      assert.deepEqual(await sessionHeader(soloPage), ["1", "remaining today"], "undo must bring the card back into today's queue");
+      assert.deepEqual((await savedProfile(soloPage, (profile) => profile.reviewAttempts?.length === 0)).reviewAttempts, [], "undo must remove the attempt");
+      await revealAndRate(soloPage, solo, "1");
+      await retryShown(soloPage, "failing the card again after undo");
+      await retryNowByKeyboard(soloPage);
+      await promptFocused(soloPage, solo);
+      const early = await eyebrow(soloPage);
+      assert.ok(early.startsWith("Learning · 10 min interval"), `a step shown early must read as learning: ${early}`);
+      await revealAndRate(soloPage, solo, "3");
+      await soloPage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("rating the retried card Good must end the session"));
+      await waitForHero(soloPage, "0", "the retried card is done for today");
+      assert.deepEqual(await pollValue(() => statusLog(soloPage), (log) => log.at(-1)?.includes("Session complete")), [
+        "Rated Again: next review in 10 min. 1 card to retry.",
+        "Rated Again: next review in 10 min. 1 card to retry.",
+        "Retrying 1 card.",
+        "Rated Good: next review in 3 days. Session complete.",
+      ], "each outcome must be announced once, after its grade lands");
+    } finally {
+      await soloPage.close();
+    }
+
+    // Scenario B: a step that comes due while another card's answer is revealed rejoins
+    // the queue on the clock refresh without hiding that answer, and waits its turn;
+    // then two cards pending retry are counted and come back earliest first.
+    const first = dueCard("rejoin-first", "Rejoin first: why hold out a validation split?", -2 * HOUR);
+    const second = dueCard("rejoin-second", "Rejoin second: what does early stopping watch?", -HOUR);
+    const rejoinPage = await relearnPage();
+    try {
+      await seedRelearn(rejoinPage, { cards: [first, second] });
+      await watchStatus(rejoinPage);
+      await clickByText(rejoinPage, ".review-hero button", "Start review");
+      await revealAndRate(rejoinPage, first, "1");
+      await promptFocused(rejoinPage, second);
+      await rejoinPage.keyboard.press("Space");
+      await rejoinPage.waitForFunction(() => document.activeElement?.classList.contains("review-answer"), { timeout: 5_000 })
+        .catch(() => assert.fail(`revealing “${second.id}” must focus its answer`));
+      await advanceClock(rejoinPage, 10 * MINUTE + 1_000);
+      await rejoinPage.waitForFunction(() => document.querySelector(".review-session-header strong")?.textContent === "2", { timeout: 5_000 })
+        .catch(async () => assert.fail(`ten minutes on, the failed step must rejoin the queue: the header reads ${await rejoinPage.evaluate(() => document.querySelector(".review-session-header strong")?.textContent ?? "nothing")}`));
+      // Read across a frame boundary, so a reset that follows the rejoin has landed.
+      await rejoinPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.deepEqual(await rejoinPage.evaluate(() => ({
+        answer: Boolean(document.querySelector(".review-answer")),
+        focused: Boolean(document.activeElement?.classList.contains("review-answer")),
+        prompt: document.querySelector(".review-question")?.textContent.trim(),
+        ratings: document.querySelectorAll(".review-rating").length,
+      })), { answer: true, focused: true, prompt: second.front, ratings: 4 }, "a card rejoining the queue must leave the revealed answer, its focus and the rating buttons in place");
+      await rejoinPage.keyboard.press("1");
+      await promptFocused(rejoinPage, first);
+      const rejoined = await eyebrow(rejoinPage);
+      assert.ok(rejoined.startsWith("Learning · 10 min interval"), `the rejoined step must read as learning: ${rejoined}`);
+      await revealAndRate(rejoinPage, first, "1");
+      await retryShown(rejoinPage, "failing the last card with another step pending");
+      assert.equal(await rejoinPage.$eval("#review-retry-title", (node) => node.textContent), "2 cards to retry · next due in 10 min", "the retry title must count both cards and say when the next is due");
+      await retryNowByKeyboard(rejoinPage);
+      await revealAndRate(rejoinPage, second, "3");
+      await revealAndRate(rejoinPage, first, "3");
+      await rejoinPage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("rating both retried cards Good must end the session"));
+      assert.deepEqual(await pollValue(() => statusLog(rejoinPage), (log) => log.at(-1)?.includes("Session complete")), [
+        "Rated Again: next review in 10 min. 1 card left.",
+        "Rated Again: next review in 10 min. 1 card left.",
+        "Rated Again: next review in 10 min. 2 cards to retry.",
+        "Retrying 2 cards.",
+        "Rated Good: next review in 3 days. 1 card left.",
+        "Rated Good: next review in 3 days. Session complete.",
+      ], "each outcome must be announced once, after its grade lands");
+    } finally {
+      await rejoinPage.close();
+    }
+
+    // Scenario C: a card failed on the last review today's limit allows waits out its
+    // step and comes back past the spent limit, while the due count stays "due now".
+    const last = dueCard("limit-last", "Limit last: what does the learning rate scale?", -2 * HOUR);
+    const waiting = dueCard("limit-waiting", "Limit waiting: what does weight decay shrink?", -HOUR);
+    const limitPage = await relearnPage();
+    try {
+      const todayKey = await seedRelearn(limitPage, { cards: [last, waiting], reviewSettings: { dailyReviewLimit: 20 }, reviewCompletedToday: 19 });
+      const reviewsToday = (profile) => profile.reviewSessions?.find((session) => session.id === todayKey)?.reviewCompleted;
+      // Home's due widget, read on Home; back on the review center afterwards.
+      const homeDue = async () => {
+        await limitPage.evaluate(() => { location.hash = "#/home"; });
+        await limitPage.waitForSelector(".today-widgets");
+        const due = await limitPage.$eval(".today-widget strong", (node) => node.textContent);
+        await limitPage.evaluate(() => { location.hash = "#/review"; });
+        await limitPage.waitForSelector(".review-center-page", { timeout: 5_000 });
+        return due;
+      };
+      await waitForHero(limitPage, "1", "one of today's 20 reviews is left");
+      await clickByText(limitPage, ".review-hero button", "Start review");
+      await revealAndRate(limitPage, last, "1");
+      await retryShown(limitPage, "failing the card on the last review the limit allows");
+      assert.equal(reviewsToday(await savedProfile(limitPage, (profile) => reviewsToday(profile) === 20)), 20, "the failed review must spend the last of today's 20 reviews");
+      await clickByText(limitPage, ".review-retry button", "End session");
+      await waitForHero(limitPage, "0", "after the session ends nothing is due now");
+      const heroStatus = await limitPage.$eval("#review-hero-status", (node) => node.textContent);
+      assert.ok(heroStatus.includes("1 due card waits for tomorrow"), `the card the spent limit holds back must wait for tomorrow: ${heroStatus}`);
+      assert.equal(await homeDue(), "0", "Home's due widget must not count a step that is not due yet");
+      await advanceClock(limitPage, 10 * MINUTE + 1_000);
+      await waitForHero(limitPage, "1", "ten minutes on, the step is due past the spent limit");
+      assert.equal(await homeDue(), "1", "Home's due widget must count the step once it is due");
+      await clickByText(limitPage, ".review-hero button", "Start review");
+      await revealAndRate(limitPage, last, "3");
+      await limitPage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("rating the step Good must end the session: the waiting card has no review left today"));
+      await waitForHero(limitPage, "0", "the step is done and the waiting card has no review left today");
+      assert.equal(reviewsToday(await savedProfile(limitPage, (profile) => reviewsToday(profile) === 21)), 21, "the step graded past the limit must still count in today's reviews");
+    } finally {
+      await limitPage.close();
+    }
+  } finally {
+    await relearnContext.close();
+  }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, and early Crunch grades that keep their interval and Mastered count verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

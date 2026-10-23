@@ -3080,6 +3080,13 @@ input[type="range"] {
 .review-answer p { margin: 9px 0 0; color: var(--ink-soft); font-size: 1rem; line-height: 1.72; white-space: pre-wrap; }
 .review-session-actions { display: flex; align-items: center; justify-content: center; gap: 9px; margin-top: 18px; }
 .review-session-actions .review-reveal { margin-top: 0; }
+/* The retry panel takes the card's place when only steps a few minutes out are
+   left (issue #149), so it is drawn like the card. */
+.review-retry { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: clamp(27px, 6vw, 58px); border: 1px solid var(--line); border-radius: 28px; color: var(--ink-soft); background: var(--paper); box-shadow: var(--shadow-md); }
+.review-retry h2 { margin: 4px 0 0; color: var(--ink); font-family: "Manrope", sans-serif; font-size: clamp(1.3rem, 4vw, 1.85rem); line-height: 1.25; letter-spacing: -0.04em; }
+.review-retry h2:focus:not(:focus-visible) { outline: none; }
+.review-retry p { max-width: 34rem; margin: 0; font-size: 0.82rem; line-height: 1.6; }
+.review-retry .review-session-actions { flex-wrap: wrap; }
 .interview-timer { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--paper); color: var(--ink-soft); font-family: "Manrope", sans-serif; font-size: 0.82rem; font-variant-numeric: tabular-nums; font-weight: 800; }
 .interview-timer.is-low { border-color: rgba(226, 106, 78, 0.5); color: var(--coral-text); }
 .interview-round .review-question { width: 100%; margin-top: 14px; text-align: left; }
@@ -3150,7 +3157,8 @@ input[type="range"] {
   .review-flashcard { min-height: min(330px, 40dvh); padding: 25px 20px; border-radius: 22px; }
   .review-ratings { grid-template-columns: 1fr 1fr; }
   .review-rating { min-height: 62px; }
-  .review-session-header > .button { padding: 7px 9px; font-size: 0.66rem; }
+  .review-session-header > .button { min-height: 44px; padding: 7px 9px; font-size: 0.66rem; }
+  .review-retry .review-session-actions .button { flex: 1 1 10rem; }
   .review-confidence { flex-wrap: wrap; justify-content: space-between; gap: 6px 10px; margin-bottom: 8px; text-align: left; }
   .review-analytics > article:nth-child(3),
   .review-analytics > .review-forecast { grid-column: 1 / -1; }
