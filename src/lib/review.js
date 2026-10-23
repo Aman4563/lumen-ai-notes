@@ -261,13 +261,16 @@ export const reviewStats = (items, now = new Date(), timeZone = currentTimeZone(
   return stats;
 };
 
-// The Classic rule every new attempt records, so sync replay grades it the way it
+// The schedule rule every new attempt records, so sync replay grades it the way it
 // was graded. Rule 1 multiplied the interval however recently the card was
 // reviewed (attempts recorded before #148 carry no rule and replay under it);
-// rule 2 grows an early review from the elapsed time. #149 bumps this constant.
-export const REVIEW_SCHEDULE_RULE = 2;
+// rule 2 grows an early review from the elapsed time; rule 3 stores a step under a
+// day to the minute under Classic and FSRS, so 10 minutes is due in 10 minutes.
+export const REVIEW_SCHEDULE_RULE = 3;
 // From this rule on, Classic grading is early-aware; a later build's rule keeps it.
 const EARLY_AWARE_SCHEDULE_RULE = 2;
+// From this rule on, a step under a day is stored to the minute; a later build's rule keeps it.
+const MINUTE_STEP_SCHEDULE_RULE = 3;
 const MAX_SCHEDULE_RULE = 1_000;
 
 export const normalizeScheduleRule = (value, fallback = 1) => {
@@ -298,13 +301,27 @@ const intervalForRating = (item, rating, now, scheduleRule) => {
   return { intervalDays: firstReview ? 4 : Math.max(4, priorInterval * priorEase * 1.3), ease: clamp(priorEase + 0.15, 1.3, 3.5), repetitions: (Number(item.repetitions) || 0) + 1 };
 };
 
+// The interval a rule stores and how long until it is due. From rule 3 a step under
+// a day is kept to the minute, since 0.01 day is 14.4 minutes and a 10-minute step
+// came due late; a longer interval, and any older rule, rounds to 0.01 day, so
+// replaying an earlier attempt rebuilds the card it was graded into.
+const scheduledInterval = (days, scheduleRule) => {
+  const clamped = clamp(days, 10 / 1_440, 36_500);
+  if (scheduleRule >= MINUTE_STEP_SCHEDULE_RULE && clamped < 1) {
+    const minutes = Math.round(clamped * 1_440);
+    return { intervalDays: minutes / 1_440, dueInMs: minutes * 60_000 };
+  }
+  const intervalDays = Math.round(clamped * 100) / 100;
+  return { intervalDays, dueInMs: intervalDays * DAY_MS };
+};
+
 export const previewReviewIntervals = (item, { scheduler = "sm2", requestRetention = FSRS_DEFAULT_RETENTION, weights, now = new Date() } = {}) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
   if (scheduler === "fsrs") {
     const result = fsrsGrade(item, id, now, { requestRetention, ...(Array.isArray(weights) && weights.length === 17 ? { weights } : {}) });
-    return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
+    return [id, scheduledInterval(result.intervalDays, REVIEW_SCHEDULE_RULE).intervalDays];
   }
   const result = intervalForRating(item, id, now, REVIEW_SCHEDULE_RULE);
-  return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
+  return [id, scheduledInterval(result.intervalDays, REVIEW_SCHEDULE_RULE).intervalDays];
 }));
 
 const schedulingSnapshot = (item) => ({
@@ -338,8 +355,8 @@ export const gradeReviewItem = (item, rating, now = new Date(), elapsedMs = 0, m
       repetitions: rating === "again" ? 0 : (Number(item.repetitions) || 0) + 1,
     }
     : intervalForRating(item, rating, now, scheduleRule);
-  const intervalDays = Math.round(clamp(schedule.intervalDays, 10 / 1_440, 36_500) * 100) / 100;
-  const nextDueAt = new Date(now.getTime() + intervalDays * DAY_MS).toISOString();
+  const { intervalDays, dueInMs } = scheduledInterval(schedule.intervalDays, scheduleRule);
+  const nextDueAt = new Date(now.getTime() + dueInMs).toISOString();
   const lapses = (Number(item.lapses) || 0) + (rating === "again" && priorReviewCount > 0 ? 1 : 0);
   const updated = {
     ...item,

@@ -860,7 +860,7 @@ try {
         back: "Nothing: it is switched off, so every unit is active.",
         seed: { intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0 },
         waitedDays: 1,
-        previews: [[0, "14 min · 1"], [1, "10 days · 2"], [2, "10 days · 3"], [3, "10 days · 4"]],
+        previews: [[0, "10 min · 1"], [1, "10 days · 2"], [2, "10 days · 3"], [3, "10 days · 4"]],
         announced: "Rated Good: next review in 10 days",
         kept: { intervalDays: 10, repetitions: 4, ease: 2.5 },
         multipliedDays: 25,
@@ -985,7 +985,7 @@ try {
       assert.equal(Date.parse(item.dueAt) - Date.parse(attempt.reviewedAt), card.kept.intervalDays * 86_400_000, `an early Crunch grade must keep the interval: dueAt is now + ${card.kept.intervalDays} days, not + ${card.multipliedDays}`);
       assert.equal(attempt.crunch, true, `the attempt on “${card.id}” must be marked as Extra practice`);
       assert.equal(attempt.sessionKind, "crunch", `the attempt on “${card.id}” must be an Extra practice session`);
-      assert.equal(attempt.scheduleRule, 2, `the attempt on “${card.id}” must record the schedule rule it was graded under`);
+      assert.equal(attempt.scheduleRule, 3, `the attempt on “${card.id}” must record the schedule rule it was graded under`);
     }
     assert.equal(await earlyPage.$eval(".review-hero strong", (node) => node.textContent), "0", "Extra practice must leave today's queue empty");
     assert.equal(await masteredTile(), "1", "early Crunch grades must not raise the Mastered count: the 10-day card stays at 10 days");
@@ -1004,7 +1004,7 @@ try {
     await newLimit.select("20");
     const reloaded = await savedProfile(earlyPage, (profile) => profile.reviewSettings?.dailyNewLimit === 20);
     assert.equal(reloaded.reviewSettings?.dailyNewLimit, 20, "the Daily limits change made after the reload was not saved");
-    assert.deepEqual(reloaded.reviewAttempts.map((attempt) => [attempt.reviewItemId, attempt.scheduleRule]).sort(), [["early-mastered", 2], ["early-probe", 2]], "scheduleRule must survive a reload");
+    assert.deepEqual(reloaded.reviewAttempts.map((attempt) => [attempt.reviewItemId, attempt.scheduleRule]).sort(), [["early-mastered", 3], ["early-probe", 3]], "scheduleRule must survive a reload");
     await earlyPage.close();
   } finally {
     await earlyContext.close();

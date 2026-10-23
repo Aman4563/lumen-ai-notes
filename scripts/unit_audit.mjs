@@ -351,7 +351,7 @@ assert.equal(secondGood.item.intervalDays, 3);
 const lapse = gradeReviewItem(secondGood.item, "again", new Date("2026-08-25T12:00:00.000Z"));
 assert.equal(lapse.item.repetitions, 0);
 assert.equal(lapse.item.lapses, 1);
-assert.equal(lapse.item.intervalDays, 0.01);
+assert.equal(lapse.item.intervalDays, 10 / 1_440);
 assert.deepEqual(reviewStats([secondGood.item], new Date("2026-09-30T12:00:00.000Z")), { due: 1, overdue: 1, newCount: 0, learning: 1, mastered: 0, suspended: 0, archived: 0 });
 
 const thirdCard = createReviewItem({ front: "Third", back: "Answer" }, new Date(reviewNow.getTime() + 2_000));
