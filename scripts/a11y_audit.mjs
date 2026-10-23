@@ -261,9 +261,20 @@ const STATES = [
     name: "teaching-mode-link-jump",
     route: { name: "reader-trees", hash: `#/read/${encodeURIComponent("notes/part-05-supervised-learning/03-trees-and-ensembles.md")}`, ready: ".reader-view .markdown-body h1" },
     setup: async (page) => {
-      // Chosen as the state runs, so it survives edits to the lecture. A
-      // section is an h2's following siblings, up to the next h2. Waiting for
-      // one also waits out the lecture shown before, which has none.
+      // The route's ready selector is already met by the lecture shown before
+      // (linear regression), so wait for the trees lecture's own title,
+      // the h1 of 03-trees-and-ensembles.md, before reading anything.
+      const title = "Chapter 3 — Trees, Bagging, Random Forests, and Boosting";
+      await page.waitForFunction((expected) => document.querySelector(".reader-view article.markdown-body:not(.teaching-markdown) h1")?.textContent.replace(/\s+/g, " ").trim() === expected, { timeout: 20_000 }, title).catch((error) => {
+        throw new Error(`the Reader did not show the trees lecture "${title}" (${error.message})`);
+      });
+      // The target is picked as the state runs: the first h2 whose section
+      // (its following siblings, up to the next h2) holds tabbable content.
+      // That relies on the trees lecture's first such section not being a
+      // table. A table slide hits Teaching Mode's table-header contrast gap,
+      // which is pre-existing, shows without any jump, and is tracked for
+      // #98; a lecture edit that puts a table first turns this state red
+      // until #98 is fixed.
       const id = await page.waitForFunction(() => {
         const tabbable = "a[href], pre[tabindex], .table-scroll, .diagram-shell";
         const holdsTabbable = (heading) => {
@@ -273,8 +284,9 @@ const STATES = [
           return false;
         };
         return [...document.querySelectorAll(".reader-view article.markdown-body:not(.teaching-markdown) h2")].find(holdsTabbable)?.id || false;
-      }, { timeout: 10_000 }).then((handle) => handle.jsonValue(), () => "");
-      if (!id) throw new Error("no h2 section of the lecture holds a link, code, a table or a diagram to jump to");
+      }, { timeout: 10_000 }).then((handle) => handle.jsonValue(), (error) => {
+        throw new Error(`no h2 section of the lecture holds a link, code, a table or a diagram to jump to (${error.message})`);
+      });
       await clickText(page, ".document-tools button", "Teach");
       await page.waitForSelector(".teach-mode .teaching-markdown");
       await page.$eval(".teach-mode .teaching-markdown", (article, target) => {
@@ -284,6 +296,12 @@ const STATES = [
         article.prepend(link);
         link.click();
       }, id);
+      // Diagrams draw asynchronously, and axe must scan the drawn SVG, not
+      // the source text shown while one is pending or the busy placeholder.
+      // Mermaid renders the Reader's copy behind the dialog too, so the wait
+      // covers the whole page. A diagram that never settles throws here, and
+      // the audit reports the state as could not be scanned.
+      await page.waitForFunction(() => !document.querySelector('.diagram-shell:is([data-diagram-status="pending"], [data-diagram-status="rendering"])'), { timeout: 20_000 });
     },
     ready: ".teach-mode .teaching-markdown h2:focus",
     close: async (page) => {
