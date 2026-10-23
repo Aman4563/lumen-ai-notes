@@ -1146,13 +1146,17 @@ try {
     const promptFocused = (page, card) => page.waitForFunction((front) => document.activeElement?.classList.contains("review-question") && document.activeElement.textContent.trim() === front, { timeout: 5_000 }, card.front)
       .catch(async () => assert.fail(`the prompt of “${card.id}” must take focus; shown: ${await page.evaluate(() => document.querySelector(".review-question")?.textContent.trim() || (document.querySelector(".review-retry") ? "the retry panel" : document.querySelector(".page")?.className) || "nothing")}`));
     // Space reveals the answer; once the answer has focus the key handler sees the
-    // reveal (as in the #148 block), so `key` rates the card.
+    // reveal (as in the #148 block), so `key` rates the card. The grade clears the
+    // status at once and its outcome lands a render later: wait for it, or a key
+    // pressed next can preempt that render and its own status replaces the outcome.
     const revealAndRate = async (page, card, key) => {
       await promptFocused(page, card);
       await page.keyboard.press("Space");
       await page.waitForFunction(() => document.activeElement?.classList.contains("review-answer") && document.querySelectorAll(".review-rating").length === 4, { timeout: 5_000 })
         .catch(() => assert.fail(`revealing “${card.id}” must focus its answer and show the rating buttons`));
       await page.keyboard.press(key);
+      await page.waitForFunction(() => document.querySelector(".review-session-page [role='status'], .review-center-page [role='status']")?.textContent, { timeout: 5_000 })
+        .catch(() => assert.fail(`rating “${card.id}” must be announced`));
     };
     // The retry panel replaces the card, and its title takes focus.
     const retryShown = async (page, why) => {
@@ -1190,9 +1194,6 @@ try {
       await soloPage.keyboard.press("Enter");
       await revealAndRate(soloPage, solo, "1");
       await retryShown(soloPage, "failing the only due card");
-      // The outcome is composed once the grade lands: read the page after it.
-      await soloPage.waitForFunction(() => document.querySelector(".review-session-page [role='status']")?.textContent, { timeout: 5_000 })
-        .catch(() => assert.fail("failing the only due card must be announced"));
       const panel = await soloPage.evaluate(() => ({
         title: document.querySelector("#review-retry-title").textContent,
         progress: document.querySelector(".review-progress").getAttribute("aria-valuetext"),
