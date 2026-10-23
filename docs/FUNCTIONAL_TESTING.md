@@ -407,10 +407,17 @@ close, that toasts reach persistent live regions and dismiss while the app
 re-renders, the offline status, the Ctrl+K dialog guard, and forced colors.
 After the routes it scans screen states the routes never open (its `STATES`
 list, issue #97): narration speaking, a failed sentence, the Listen panel,
-the sleep timer's toast, Teaching Mode, and Teaching Mode on a failed
-sentence, each in every theme and viewport, plus a failed sentence in phone
-landscape (852×393), once per theme: a state with its own `viewport` runs
-only in the phone pass. An open dialog must hold focus.
+the sleep timer's toast, Teaching Mode, Teaching Mode on a failed
+sentence, and an Extra practice session (#148), each in every theme and
+viewport, plus a failed sentence in phone landscape (852×393), once per
+theme: a state with its own `viewport` runs only in the phone pass. An open
+dialog must hold focus. The Extra practice state adds one card to the
+stored profile and removes it again, so the routes keep their empty deck.
+It checks that the notice fits the layout viewport
+(`document.documentElement.clientWidth`; on a phone-emulated page
+`innerWidth` grows to fit overflowing content). It also turns off the body's
+decorative gradient before axe runs, because axe reports text over a
+gradient as incomplete and never measures its contrast.
 
 `src/lib/themeContrast.test.mjs` runs in `npm run check`. It parses the theme
 token blocks in `src/styles.css`. It requires 4.5:1 for every text token on
@@ -3819,3 +3826,140 @@ are kept. On 2026-10-23 the gate passed again on the merged tree:
 `npm run check` (`audit:ai` 600/600; startup entry 623,582 bytes, route
 screens 690,571 bytes) and the full `npm run check:browser`, now 14 suites
 with `storage-blocked`, all on the first attempt with no retries.
+
+## Bugs reproduced on 2026-10-23: early reviews in Extra practice (#148)
+
+Against main (d4a69cd), under the default Classic scheduler:
+
+- A card with a 10-day interval, last reviewed a day ago and due in nine
+  days, was graded Good in three Extra practice ("Crunch weak cards") passes
+  a minute apart. Its interval went to 25, 62.5 and 156.25 days, its
+  repetitions to 5, 6 and 7, and it counted as Mastered. An early Hard gave
+  12 days with ease 2.35, and an early Easy 32.5 days with ease 2.65.
+  `intervalForRating` multiplied the stored interval by ease however
+  recently the card was reviewed; `crunch` only labelled the attempt. FSRS
+  gave 13, 14 and 14 days, because it uses elapsed time.
+- Four quick passes took a new card to 1, 3, 7.5 and 18.75 days, and to
+  Mastered.
+- In Extra practice the rating buttons read "12 days", "25 days" and
+  "1 mo" for that card. The notice said Extra practice "records attempts
+  separately from daily limits", which read as if the schedule were
+  untouched.
+- Attempts did not record the rule they were graded under, so sync replay
+  could not tell old grades from new ones.
+
+An early Hard, Good or Easy is now graded from the time waited. That is a
+card in review (an interval of a day or more) answered before its interval
+has elapsed. It takes the larger of its prior interval and the time waited
+times 1.2, ease or ease × 1.3, and keeps its ease and repetitions. Due and
+overdue cards, learning steps, new cards, Again and FSRS are graded as
+before. The wait is compared in whole milliseconds: a stored due time is
+exactly the last review plus the rounded interval, so a due card never reads
+as early. Crunch on cards that are not due raises an interval, and so the
+Mastered count, only as far as the time waited earns, and an early grade
+gives no repetition credit.
+
+New attempts record `scheduleRule: 2`. The attempt normalizer keeps a valid
+rule and stores none for older attempts, which replay under rule 1 and keep
+their size; sync's attempt identity compares the normalized rule. The
+rating preview grades at the time it is shown.
+
+The notice now reads "Extra practice doesn’t use today’s limits. Your answers
+still reschedule cards: the rating buttons show when each card comes back."
+The issue proposed a second sentence, "A card you answer early keeps its
+current interval." It was not used: six days into a 10-day interval Good
+earns 15 days, and a card in its 10-minute step moves on to days.
+
+How each is now checked:
+
+- `src/lib/review.test.mjs` is new and runs in `audit:ai`, with 12 tests. On
+  main it fails to load (there is no `REVIEW_SCHEDULE_RULE`). Without that
+  import, 8 fail with main's values:
+  - the probe `[25, 62.5, 156.25]`;
+  - an early Hard at 12 days, ease 2.35 and repetitions 5;
+  - six days in, 12, 25 and 32.5 days;
+  - 6.5 days in, 25 days instead of 16.25;
+  - the preview `{ hard: 12, good: 25, easy: 32.5 }`;
+  - Mastered at 2 on both the tile and the Part ladder;
+  - no `scheduleRule`;
+  - a card made due by corrective review at 25 days.
+
+  Four pass on main as guards: FSRS at 13, 14 and 14; due and overdue cards
+  graded as before; new cards, learning steps and Again; and undo.
+- `src/lib/profileSync.test.mjs`:
+  - A rule-1 and a rule-2 grade of one card merge to the same card in either
+    order. Main gives intervals 25 and 62.5 and keeps no rules.
+  - An attempt whose rule an older build dropped is rebuilt under rule 1. On
+    main the starting grade is already 25 days.
+  - A rule-less attempt and the same attempt with rule 1 are one event, so a
+    concurrent reschedule survives. It passes on main, which has no rule in
+    the identity, and guards this branch against comparing the raw rule.
+- `scripts/unit_audit.mjs`: the normalizer keeps 2 and 3, caps 5,000 at
+  1,000, and stores no rule for a missing value, 0, 2.5 or "x". Main drops
+  every rule.
+- `src/lib/backup.test.mjs`: a rule-2 attempt keeps its rule through a v4
+  round trip, and an older one restores without one. Main drops both.
+- `audit:review` runs Extra practice by keyboard only on a fresh 393×852
+  profile. It holds a 10-day card reviewed yesterday and a 30-day Mastered
+  card, both on a Part 05 lecture; the audit presses Enter on Crunch weak
+  cards, then Space, then 3. It checks that:
+  - the notice reads the new text, here under Classic and in the main flow
+    under FSRS, and fits the 393 px layout viewport;
+  - the buttons read "10 days" for the 10-day card and "1 mo" for the 30-day
+    one;
+  - the stored cards keep 10 and 30 days, `dueAt` lands exactly that far
+    after the grade, and repetitions (4 and 5) and ease (2.5) are unchanged;
+  - both attempts are marked `crunch` with `scheduleRule: 2`;
+  - the Mastered tile stays at 1 and Part 05's row at "1/2 cards mastered";
+  - the rule survives a reload followed by a saved settings change.
+
+  Main fails first at the FSRS notice. Skipping each failed check in turn, it
+  then fails at the Classic notice (the old text), the buttons
+  (`["14 min · 1", "12 days · 2", "25 days · 3", "1 mo · 4"]`), the stored
+  card (25 days, repetitions 5), the Mastered tile ("2") and Part 05 ("2/2
+  cards mastered").
+- `audit:responsive` inspects the Extra practice session (`review-crunch`) at
+  all 11 viewports, including 320 px, 200% text and phone landscape.
+  `audit:a11y` adds an `extra-practice` state. It is scanned in Paper, Night
+  and Contrast at 393×852 and 1280×800 (120 axe runs and 8 states in all) and
+  checks that the notice fits the layout viewport. Before axe runs it turns
+  off the body's decorative gradient, so axe measures the notice's contrast:
+  5.67, 7.11 and 8.56 to 1. Both suites also pass on main; a nowrap notice or
+  a low-contrast one makes them fail. The review audit's own fit check had
+  compared against `innerWidth` and passed a notice that did not wrap; it now
+  measures the client width as well.
+
+Found and not fixed here:
+
+- Device sync (SYNC-001) across builds. Say a device on this build grades a
+  card early, and a peer still on an older build folds the sync file and
+  exports it. Folding it back against a baseline from before the grade keeps
+  two copies of the one attempt. After a second exchange both devices hold a
+  phantom attempt and a 62.5-day card. Main already does this when two
+  devices on one build grade the same card between syncs. Update every
+  device before importing sync files.
+- A tab on a build from before #148 strips `scheduleRule` from the attempts
+  it saves, until it reloads after the update. The next merge on the new
+  build reads those attempts as rule 1 and can rebuild an early-graded card
+  at its multiplied interval.
+- Under FSRS, early grades still add repetitions. Two quick Crunch passes
+  count the probe card as Mastered (14 days).
+- The rating buttons are named "Rate Again" to "Rate Easy", so VoiceOver does
+  not read their intervals. The status line after a grade does: "Rated Good:
+  next review in 10 days."
+- The accessibility audit never measures contrast for text sitting directly
+  on the body's gradient: axe reports it as incomplete, and the audit reads
+  only violations. The visual, controls, AI tutor, On-device Lite, Mermaid
+  and workflow audits compare page width with `innerWidth` on
+  phone-emulated pages, where it grows with overflow.
+
+Budgets (`npm run size`, against main d4a69cd built the same way): entry
+623,709 bytes (main 623,582); the HTML loads 653,660 bytes of JavaScript
+(main 653,122); install 690,627 bytes in 41 files (main 690,571); warm tools
+unchanged at 305,006.
+
+Gate on the branch (c0767de, Node 26.12.1): `npm run check` passed
+(`audit:ai` 615/615; `audit:ai-eval` 27 cases, hit@1 0.913). The full
+`npm run check:browser` passed all 14 suites on the first attempt, with no
+retries, in 14 minutes at a load average of 2 to 5 (`review` 45.6 s,
+`responsive` 142 s, `a11y` 62.4 s).

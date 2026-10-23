@@ -13,6 +13,12 @@ like an ordinary app. No account or server-side database is required.
   chapter navigation, sharing, link copy, completion, and Markdown export;
 - bookmarks, per-lecture private notes, and selection-based clippings collected
   in the notebook;
+- source-linked review cards with Again/Hard/Good/Easy grades, daily limits,
+  undo, and Extra practice ("Crunch weak cards"), which works outside the
+  daily limits. With the default Classic scheduler, a card in review that you
+  answer before it is due keeps its interval unless the time since its last
+  review earns a longer one, so practising ahead of an interview never pushes
+  cards months away. The rating buttons show when each card comes back;
 - editable local copies of built-in lectures;
 - creation and upload of `.md`, `.markdown`, and `.txt` notes;
 - text-to-speech using the voices the device and browser report (on iPhone,

@@ -254,3 +254,31 @@ that Safari retries a request on a connection the server closed.
    reload (the card list keeps its scroll place and no loading screen
    shows). Only the first tap is the check: once loaded, the optimizer is
    kept for later taps. Note the iOS version.
+
+## Extra practice checks that need a device (issue #148)
+
+`audit:review`, `audit:responsive` and `audit:a11y` check Extra practice in
+Chrome: grading by keyboard only, the notice at 320 px, 393×852 and 200%
+text in Paper, Night and Contrast, and axe. Only an iPhone shows what
+VoiceOver reads and how iOS text sizes wrap. Note the iOS version and
+whether Lumen ran in a Safari tab or from the Home Screen, and add the
+verdict to the device evidence report in issue #7.
+
+1. **The notice with VoiceOver.** With at least one card in review, open
+   Review and tap Crunch weak cards. Focus lands on the prompt; swipe left
+   once. VoiceOver must read "Extra practice doesn’t use today’s limits. Your
+   answers still reschedule cards: the rating buttons show when each card
+   comes back." once, as one paragraph, without announcing the flame icon.
+2. **Grading.** Double-tap Show answer, then Good. The buttons read "Rate
+   Again", "Rate Hard", "Rate Good" and "Rate Easy". Their intervals are not
+   part of their names, which is a known gap. After the grade VoiceOver must
+   announce "Rated Good: next review in …" once. Use a card whose label reads
+   "Review · N days interval" and that you graded within the last day: the
+   interval announced must be its N days, not a multiple of it.
+3. **Larger text.** Set Settings → Accessibility → Display & Text Size →
+   Larger Text to its largest size short of the accessibility sizes. The
+   notice must wrap inside the screen with nothing cut off, in portrait and
+   landscape and in Paper, Night and Contrast.
+4. **A hardware keyboard** (iPad or iPhone). In Extra practice, Space reveals
+   the answer, 1 to 4 rate it, and Tab reaches End session, Undo and the
+   rating buttons.
