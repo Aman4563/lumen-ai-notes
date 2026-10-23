@@ -1,6 +1,6 @@
 import { normalizeProfile } from "./db.js";
 import { createId } from "./id.js";
-import { gradeReviewItem } from "./review.js";
+import { gradeReviewItem, normalizeScheduleRule } from "./review.js";
 
 export const PROFILE_SYNC_CHANNEL = "lumen-profile-sync-v1";
 export const PROFILE_SYNC_SIGNAL_KEY = "lumen-profile-sync-signal-v1";
@@ -416,6 +416,8 @@ const reviewAttemptEvent = (attempt) => ({
   sessionKind: attempt?.sessionKind,
   sessionKey: attempt?.sessionKey,
   crunch: attempt?.crunch,
+  // As replay reads it, so no rule and an explicit rule 1 are one event.
+  scheduleRule: normalizeScheduleRule(attempt?.scheduleRule),
 });
 
 const compareReviewAttempts = (left, right) => (
@@ -434,6 +436,9 @@ const replayReviewAttempt = (item, attempt, scheduling = {}) => {
     sessionKind,
     sessionKey: attempt.sessionKey,
     crunch: attempt.crunch,
+    // Each attempt replays under the rule it was graded with. One recorded before
+    // #148 carries none and reads as rule 1, never as the current rule.
+    scheduleRule: normalizeScheduleRule(attempt.scheduleRule),
     // Reconciliation must replay under the same scheduler the merged profile
     // uses, or two devices would rebuild different card states.
     scheduler: scheduling.scheduler,

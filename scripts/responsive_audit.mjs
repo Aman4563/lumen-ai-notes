@@ -391,6 +391,15 @@ try {
     await inspect("review-session", ".review-session-page");
     await clickText(page, ".review-session-page button", "Show answer");
     await inspect("review-answer", ".review-session-page");
+    // Issue #148: Extra practice adds a notice above the card, which must wrap
+    // inside the page at every size, 320px and 200% text included.
+    await clickText(page, ".review-session-header button", "End session");
+    await page.waitForSelector(".review-hero-actions");
+    await clickText(page, ".review-hero-actions button", "Crunch weak cards");
+    await page.waitForSelector(".review-crunch-notice");
+    await inspect("review-crunch", ".review-session-page");
+    await clickText(page, ".review-session-header button", "End session");
+    await page.waitForSelector(".review-hero");
     await navigate("ai", ".ai-tutor");
     await inspect("ai-mac", ".ai-learning-studio");
     await click(page, '[data-ai-engine-option="phone-local"]');

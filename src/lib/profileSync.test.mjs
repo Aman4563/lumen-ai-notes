@@ -43,7 +43,9 @@ const reviewRecord = (id, front) => ({
   updatedAt: earlier,
 });
 
-const gradeProfile = (profileValue, id, rating, reviewedAt, attemptId) => {
+// `scheduleRule` grades under that rule instead of the build's current one;
+// `olderBuild` drops it from the attempt, as a build from before #148 saved it.
+const gradeProfile = (profileValue, id, rating, reviewedAt, attemptId, { scheduleRule, olderBuild = false } = {}) => {
   const profile = normalizeProfile(profileValue);
   const item = profile.reviewItems.find((candidate) => candidate.id === id);
   const now = new Date(reviewedAt);
@@ -52,11 +54,14 @@ const gradeProfile = (profileValue, id, rating, reviewedAt, attemptId) => {
     confidence: 4,
     sessionKind: usage.kind,
     sessionKey: usage.sessionKey,
+    scheduleRule,
   });
+  const attempt = { ...result.attempt, id: attemptId };
+  if (olderBuild) delete attempt.scheduleRule;
   return normalizeProfile({
     ...profile,
     reviewItems: profile.reviewItems.map((candidate) => candidate.id === id ? result.item : candidate),
-    reviewAttempts: [...profile.reviewAttempts, { ...result.attempt, id: attemptId }],
+    reviewAttempts: [...profile.reviewAttempts, attempt],
     reviewSessions: usage.sessions,
   });
 };
@@ -286,6 +291,47 @@ test("an ordinary single-tab grade and undo keep their exact schedule semantics"
   const undone = undoLastGrade(graded);
   const mergedUndo = mergeProfileVersions(graded, undone, graded, { now: NOW, advanceRevision: false }).profile;
   assert.deepEqual(reviewMergeProjection(mergedUndo), reviewMergeProjection(undone));
+});
+
+test("a rule-1 and a rule-2 grade of one card merge to the same card in either order (#148)", () => {
+  const gradedAt = new Date("2026-08-23T09:00:00.000Z");
+  const card = { ...reviewRecord("rule-review", "Rule card"), intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0, lastReviewedAt: new Date(gradedAt.getTime() - 86_400_000).toISOString(), dueAt: new Date(gradedAt.getTime() + 9 * 86_400_000).toISOString() };
+  const base = normalizeProfile({ ...initialProfile, reviewItems: [card] });
+  // This build grades early: the card keeps 10 days and the attempt records rule 2.
+  const newTab = gradeProfile(base, card.id, "good", gradedAt.toISOString(), "attempt-rule-2");
+  // A tab still on an older build grades a minute later; it multiplied and wrote no rule.
+  const oldTab = gradeProfile(base, card.id, "good", new Date(gradedAt.getTime() + 60_000).toISOString(), "attempt-rule-1", { scheduleRule: 1, olderBuild: true });
+  const leftFirst = mergeProfileVersions(base, oldTab, newTab, { now: NOW, advanceRevision: false }).profile;
+  const rightFirst = mergeProfileVersions(base, newTab, oldTab, { now: NOW, advanceRevision: false }).profile;
+  assert.deepEqual(reviewMergeProjection(leftFirst), reviewMergeProjection(rightFirst));
+  assert.deepEqual(leftFirst.reviewAttempts.map((attempt) => [attempt.id, attempt.scheduleRule, attempt.nextIntervalDays]), [["attempt-rule-2", 2, 10], ["attempt-rule-1", undefined, 25]]);
+  const merged = leftFirst.reviewItems[0];
+  assert.deepEqual([merged.intervalDays, merged.repetitions, merged.reviewCount], [25, 5, 6]);
+});
+
+// The rule is part of the event identity: an attempt whose rule an older build
+// dropped is a changed event, and its card is rebuilt under rule 1.
+test("an attempt that loses its rule in an older build is replayed under rule 1 (#148)", () => {
+  const gradedAt = new Date("2026-08-23T09:00:00.000Z");
+  const card = { ...reviewRecord("lost-rule", "Lost rule card"), intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0, lastReviewedAt: new Date(gradedAt.getTime() - 86_400_000).toISOString(), dueAt: new Date(gradedAt.getTime() + 9 * 86_400_000).toISOString() };
+  const base = gradeProfile(normalizeProfile({ ...initialProfile, reviewItems: [card] }), card.id, "good", gradedAt.toISOString(), "attempt-kept");
+  assert.deepEqual([base.reviewItems[0].intervalDays, base.reviewAttempts[0].scheduleRule], [10, 2]);
+  const stripped = normalizeProfile({ ...base, reviewAttempts: base.reviewAttempts.map(({ scheduleRule: _dropped, ...attempt }) => attempt) });
+  const merged = mergeProfileVersions(base, base, stripped, { now: NOW, advanceRevision: false }).profile;
+  assert.equal("scheduleRule" in merged.reviewAttempts[0], false);
+  assert.deepEqual([merged.reviewItems[0].intervalDays, merged.reviewItems[0].repetitions], [25, 5]);
+});
+
+test("a rule-less attempt and the same attempt with rule 1 are one event, so a concurrent reschedule survives (#148)", () => {
+  const gradedAt = new Date("2026-08-23T09:00:00.000Z");
+  const card = { ...reviewRecord("one-event", "One event card"), intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0, lastReviewedAt: new Date(gradedAt.getTime() - 86_400_000).toISOString(), dueAt: new Date(gradedAt.getTime() + 9 * 86_400_000).toISOString() };
+  // An attempt an older build recorded: graded under rule 1, no rule stored.
+  const base = gradeProfile(normalizeProfile({ ...initialProfile, reviewItems: [card] }), card.id, "good", gradedAt.toISOString(), "attempt-old", { scheduleRule: 1, olderBuild: true });
+  assert.equal("scheduleRule" in base.reviewAttempts[0], false);
+  const explicit = normalizeProfile({ ...base, reviewAttempts: base.reviewAttempts.map((attempt) => ({ ...attempt, scheduleRule: 1 })) });
+  const rescheduled = normalizeProfile({ ...base, reviewItems: base.reviewItems.map((item) => ({ ...item, dueAt: NOW, updatedAt: NOW })) });
+  const merged = mergeProfileVersions(base, rescheduled, explicit, { now: NOW, advanceRevision: false }).profile;
+  assert.equal(merged.reviewItems[0].dueAt, NOW);
 });
 
 test("rolling review-attempt retention never replays an expired oldest snapshot as an undo", () => {

@@ -647,7 +647,7 @@ export default function ReviewCenter({
   const grade = useCallback((rating) => {
     if (!current) return;
     const { scheduler, requestRetention, fsrsWeights } = profile.reviewSettings;
-    const interval = previewReviewIntervals(current, { scheduler, requestRetention, weights: fsrsWeights })[rating];
+    const interval = previewReviewIntervals(current, { scheduler, requestRetention, weights: fsrsWeights, now: new Date() })[rating];
     const label = REVIEW_RATINGS.find((entry) => entry.id === rating)?.label || rating;
     const left = Math.max(0, queueLengthRef.current - 1);
     onGrade(current.id, rating, Date.now() - startedAt.current, { confidence, crunch, timeZone });
@@ -794,7 +794,7 @@ export default function ReviewCenter({
 
   if (session && current) {
     const source = documentMap.get(current.documentId);
-    const intervals = previewReviewIntervals(current, { scheduler: profile.reviewSettings.scheduler, requestRetention: profile.reviewSettings.requestRetention, weights: profile.reviewSettings.fsrsWeights });
+    const intervals = previewReviewIntervals(current, { scheduler: profile.reviewSettings.scheduler, requestRetention: profile.reviewSettings.requestRetention, weights: profile.reviewSettings.fsrsWeights, now: queueNow });
     const sessionTotal = sessionDone + queue.length;
     return (
       <div className="page review-session-page">
@@ -807,7 +807,8 @@ export default function ReviewCenter({
         </header>
         <div className="review-stage">
           <div className="review-progress" role="progressbar" aria-label="Session progress" aria-valuemin={0} aria-valuemax={sessionTotal} aria-valuenow={sessionDone} aria-valuetext={`${sessionDone} of ${sessionTotal} reviewed`}><span style={{ width: `${sessionTotal ? (sessionDone / sessionTotal) * 100 : 0}%` }} /></div>
-          {crunch && <p className="review-crunch-notice"><Flame size={15} /> Extra practice mode prioritizes weak cards and records attempts separately from daily limits.</p>}
+          {/* Answers still reschedule cards, and the rating buttons show the true intervals, so the notice promises no interval of its own. */}
+          {crunch && <p className="review-crunch-notice"><Flame size={15} /> Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back.</p>}
           <article className={revealed ? "review-flashcard revealed" : "review-flashcard"}>
             <span className="eyebrow">{(() => {
               const queueClass = classifyReviewItem(current);
