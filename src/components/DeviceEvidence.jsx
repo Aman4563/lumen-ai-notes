@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, ClipboardCheck, Copy, Download, Play, Send, Smartphone, XCircle } from "lucide-react";
+import { storageErrorName } from "../lib/storageFailure.js";
 
 /**
  * Physical-device evidence capture (issues #7/#17, A11Y-001/AUDIO-001).
@@ -116,8 +117,10 @@ export default function DeviceEvidence({ onNotify }) {
         serviceWorker: "unsupported",
         persistentStorage: "unsupported",
         storageEstimate: "",
+        storageManagerError: "",
         lumenCaches: 0,
         webllmCachePresent: false,
+        cacheStorageError: "",
         voices: { total: 0, local: 0, network: 0, languages: 0 },
         badging: typeof navigator.setAppBadge === "function",
         wakeLock: "wakeLock" in navigator,
@@ -135,20 +138,26 @@ export default function DeviceEvidence({ onNotify }) {
           checks.serviceWorker = registration ? (registration.active ? "active" : "registered, not active") : "supported, not registered";
         }
       } catch { checks.serviceWorker = "supported, query failed"; }
+      // A storage probe the browser refuses records the error's name only
+      // (storageErrorName): the report is shared, and the browser's own text
+      // varies by browser and language. "" means the probe answered.
       try {
         if (navigator.storage?.persisted) {
           checks.persistentStorage = (await navigator.storage.persisted()) ? "granted" : "not granted";
           const estimate = await navigator.storage.estimate?.();
           if (estimate) checks.storageEstimate = `${Math.round((estimate.usage || 0) / 1048576)} MB of ${Math.round((estimate.quota || 0) / 1048576)} MB`;
         }
-      } catch { checks.persistentStorage = "query failed"; }
+      } catch (error) {
+        checks.persistentStorage = "query failed";
+        checks.storageManagerError = storageErrorName(error);
+      }
       try {
         if ("caches" in window) {
           const names = await caches.keys();
           checks.lumenCaches = names.filter((name) => name.startsWith("lumen-ai-notes-v")).length;
           checks.webllmCachePresent = names.some((name) => name.toLowerCase().startsWith("webllm"));
         }
-      } catch { /* leave defaults */ }
+      } catch (error) { checks.cacheStorageError = storageErrorName(error); }
       try {
         const readVoices = () => {
           const voices = window.speechSynthesis?.getVoices?.() || [];
@@ -265,8 +274,8 @@ export default function DeviceEvidence({ onNotify }) {
             <div><dt>Viewport</dt><dd>{auto.viewport}</dd></div>
             <div><dt>WebGPU (WebLLM gate)</dt><dd>{auto.webgpu}</dd></div>
             <div><dt>Service worker</dt><dd>{auto.serviceWorker}</dd></div>
-            <div><dt>Persistent storage</dt><dd>{auto.persistentStorage}{auto.storageEstimate ? ` · ${auto.storageEstimate}` : ""}</dd></div>
-            <div><dt>Offline caches</dt><dd>{auto.lumenCaches} app cache{auto.lumenCaches === 1 ? "" : "s"} · WebLLM cache {auto.webllmCachePresent ? "present" : "absent"}</dd></div>
+            <div><dt>Persistent storage</dt><dd>{auto.persistentStorage}{auto.storageManagerError ? ` (${auto.storageManagerError})` : ""}{auto.storageEstimate ? ` · ${auto.storageEstimate}` : ""}</dd></div>
+            <div><dt>Offline caches</dt><dd>{auto.cacheStorageError ? `unavailable (${auto.cacheStorageError})` : <>{auto.lumenCaches} app cache{auto.lumenCaches === 1 ? "" : "s"} · WebLLM cache {auto.webllmCachePresent ? "present" : "absent"}</>}</dd></div>
             <div><dt>Speech voices</dt><dd>{auto.voices.total} total · {auto.voices.local} on-device · {auto.voices.network} network · {auto.voices.languages} languages</dd></div>
             <div><dt>App badging</dt><dd>{summarize(auto.badging)}</dd></div>
             <div><dt>Wake lock</dt><dd>{summarize(auto.wakeLock)}</dd></div>
