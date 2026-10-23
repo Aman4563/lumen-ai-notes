@@ -525,6 +525,15 @@ test("units become queue entries without merging across units", () => {
   assert.deepEqual(sectionStarts, [{ index: 0, label: "Optimization" }, { index: 3, label: "Momentum" }]);
 });
 
+// A table's header announcement and its rows read the same terms the same way.
+test("an announcement reads the learner's pronunciations too", () => {
+  const announcement = { text: "Table, 2 columns: ReLU, tanh.", unit: { blockIndex: 0, start: 0, end: 0 }, map: [], kind: "announcement" };
+  const { queue } = speech.buildSpeechQueue([announcement], { pronunciations: [{ term: "relu", spoken: "rectifier" }] });
+  assert.deepEqual(queue.map((entry) => entry.text), ["Table, 2 columns: rectifier, tanch."]);
+  assert.deepEqual(queue[0].map, []);
+  assert.deepEqual(queue[0].unit, { blockIndex: 0, start: 0, end: 0 });
+});
+
 test("a long unit splits into entries whose source ranges tile the unit", () => {
   const unit = { text: SENTENCE_250, unit: { blockIndex: 4, start: 10, end: 260 }, map: [{ spoken: [0, 250], source: [10, 260] }], section: "S" };
   const { queue } = speech.buildSpeechQueue([unit]);

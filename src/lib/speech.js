@@ -342,12 +342,14 @@ const textQueue = (text, { pronunciations, language, sections }) => {
 
 // One speech unit as entries: its spoken text split only when over the
 // limit. Each entry's range starts where its words start in the block, so the
-// entries tile the unit's range, and its map is re-based to its own text.
+// entries tile the unit's range, and its map is re-based to its own text. An
+// announcement has no range or map, but it reads the learner's terms as the
+// rows under it do.
 const unitEntries = (unit, pronunciations) => {
   const section = String(unit?.section ?? "").slice(0, 80);
   const { blockIndex = 0, start = 0, end = 0 } = unit?.unit || {};
   if (unit?.kind === "announcement") {
-    const text = speakable(unit.text);
+    const text = speakable(unit.text, { pronunciations });
     return splitSpokenSentence(text).map((piece) => ({ text: text.slice(piece.start, piece.end), unit: { blockIndex, start, end }, map: [], section }));
   }
   const spoken = speakableWithMap(unit?.text, { pronunciations, math: unit?.kind !== "code" });
