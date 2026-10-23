@@ -1115,13 +1115,24 @@ try {
   // and no older page syncs into it; the page clock is advanced, never slept through.
   const relearnContext = await browser.createBrowserContext();
   try {
+    // A zone where it is now about midday, so no clock advance crosses the page's
+    // local midnight: reviews seeded as spent today would then belong to yesterday.
+    // Etc/GMT names invert the sign (Etc/GMT-5 is UTC+5), and the page reports a
+    // zero offset as UTC.
+    const middayZone = () => {
+      const offset = 12 - new Date().getUTCHours();
+      return offset === 0 ? "UTC" : `Etc/GMT${offset > 0 ? "-" : "+"}${Math.abs(offset)}`;
+    };
     const relearnPage = async () => {
       const relearn = await relearnContext.newPage();
       await relearn.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
       relearn.on("pageerror", (error) => errors.push(error.message));
       await relearn.evaluateOnNewDocument(installAdjustableClock);
+      const zone = middayZone();
+      await relearn.emulateTimezone(zone);
       await relearn.goto(`${baseUrl}#/review`, { waitUntil: "networkidle2", timeout: 30_000 });
       await relearn.waitForSelector(".review-center-page");
+      assert.equal(await relearn.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone), zone, "the #149 page must run in the emulated midday zone");
       return relearn;
     };
     const MINUTE = 60_000;
