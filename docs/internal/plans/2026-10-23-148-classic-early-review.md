@@ -26,7 +26,7 @@
   - Early Hard, Good and Easy keep `ease` and `repetitions`. Again is unchanged. New cards, sub-day steps and FSRS keep today's rules.
   - `previewReviewIntervals` takes `now`, so the rating buttons show the true interval.
   - New attempts carry `scheduleRule: 2`; attempts without it replay under rule 1.
-  - Notice copy: "Extra practice doesn't use today's limits. A card you answer early keeps its current interval."
+  - Notice copy: "Extra practice doesn't use today's limits. A card you answer early keeps its current interval." (As built, the second sentence is replaced: see As built.)
   - Probe: a 10-day card last reviewed 1 day ago stays at 10 days after three early Good grades (today 25 → 62.5 → 156.25); FSRS still gives 13 → 14 → 14.
   - Mastered = 3+ repetitions and a 14-day interval; four quick Crunch sessions take a new card to 18.75 days today.
   - Layout: the notice wraps without overflow at 393×852, 320 px and 200% text, in Paper, Night and Contrast; axe clean.
@@ -77,7 +77,7 @@
   - `previewReviewIntervals(item, { scheduler = "sm2", requestRetention, weights, now = new Date() })`: both schedulers grade at `now`; Classic uses `REVIEW_SCHEDULE_RULE`.
 - Internal: `intervalForRating(item, rating, now, scheduleRule)`; the early branch applies only when `scheduleRule >= 2` (a module constant for the early-aware threshold, separate from `REVIEW_SCHEDULE_RULE`).
 
-- [ ] **Step 1: Write the failing tests** in `src/lib/review.test.mjs`:
+- [x] **Step 1: Write the failing tests** in `src/lib/review.test.mjs`:
 
 ```js
 import assert from "node:assert/strict";
@@ -208,21 +208,21 @@ test("undo restores an early grade exactly", () => {
 });
 ```
 
-- [ ] **Step 2: Run against the unchanged code and record every failure**
+- [x] **Step 2: Run against the unchanged code and record every failure**
 
 Run: `node --test src/lib/review.test.mjs`
 Expected: the file fails to load (`REVIEW_SCHEDULE_RULE` is not exported). Temporarily delete that name from the import and the `assert.equal(REVIEW_SCHEDULE_RULE, 2)` line, rerun, and record which tests fail with which values: the probe gives `[25, 62.5, 156.25]`; early Hard/Easy give `12/2.35/5` and `32.5/2.65/5`; six days in gives `12/25/32.5`; the preview gives `{ again: 0.01, hard: 12, good: 25, easy: 32.5 }` and FSRS Good 225; Mastered counts `{ tile: 2, ladder: 2 }` and the new card `[1, 3, 7.5, 18.75]`; `scheduleRule` is `undefined`; the corrective-review card gives 25. The FSRS, due/overdue, new/step/Again and undo tests pass (guards). Restore the two lines.
 
-- [ ] **Step 3: Implement in `src/lib/review.js`**
+- [x] **Step 3: Implement in `src/lib/review.js`**
 
 Add the constants and `normalizeScheduleRule` from the Interfaces block. In `intervalForRating(item, rating, now, scheduleRule)`, before today's Hard/Good/Easy branches: when `rating !== "again"`, `scheduleRule >= 2`, the card is not new (`isNewReviewItem`), `priorInterval >= 1`, `Date.parse(item.lastReviewedAt)` is finite and `max(0, now − lastReviewedAt) < Math.round(priorInterval × DAY_MS)`, return `{ intervalDays: Math.max(priorInterval, elapsedDays × factor), ease: priorEase, repetitions: Number(item.repetitions) || 0 }` with factor 1.2 (hard), `priorEase` (good), `priorEase × 1.3` (easy) and `elapsedDays = elapsedMs / DAY_MS`. Everything else, and the 0.01-day rounding in `gradeReviewItem` and `previewReviewIntervals`, stays as it is. `gradeReviewItem` resolves the rule once, passes it to `intervalForRating` on the Classic path and stamps it on the attempt; the FSRS path ignores it. `previewReviewIntervals` passes `now` to `fsrsGrade` and `intervalForRating`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `node --test src/lib/review.test.mjs src/lib/fsrs.test.mjs src/lib/profileSync.test.mjs src/lib/mastery.test.mjs && npm run audit:unit && npm run audit:scale`
 Expected: all pass (the existing suites are unchanged by this task).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/review.js src/lib/review.test.mjs
@@ -240,7 +240,7 @@ git commit -m "Grow early Classic reviews from the time actually waited" -m "A G
 - Consumes: `normalizeScheduleRule` from Task 1 (`src/lib/review.js`).
 - Produces: a normalized attempt keeps a valid `scheduleRule` (an integer 1–1,000, capped) and has no `scheduleRule` key when the stored attempt had none or a malformed one, so older attempts keep their size; `reviewAttemptEvent` includes `scheduleRule: normalizeScheduleRule(attempt?.scheduleRule)`, so an absent rule and 1 compare equal; replay grades each attempt with `scheduleRule: normalizeScheduleRule(attempt.scheduleRule)`, so an attempt without a rule replays under rule 1, never the current rule. The rewritten attempt keeps its own rule (the existing `...attempt` spread).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `scripts/unit_audit.mjs`, a new block after the Hard/Easy scheduling block (`normalizeProfile` accepts this partial profile; no new import is needed):
 
@@ -305,21 +305,21 @@ test("an attempt that loses its rule in an older build is replayed under rule 1 
 });
 ```
 
-- [ ] **Step 2: Run against Task 1's code and record the failures**
+- [x] **Step 2: Run against Task 1's code and record the failures**
 
 Run: `npm run audit:unit; node --test src/lib/backup.test.mjs src/lib/profileSync.test.mjs`
-Expected: unit audit fails "the attempt normalizer must keep scheduleRule" (every rule `undefined`); the backup test fails with `[["attempt-rule-2", undefined], ["attempt-legacy", undefined]]`; the merge test fails with `[["attempt-rule-2", undefined, 10], ["attempt-rule-1", undefined, 10]]` (the dropped rule replays as the current rule). On main the same merge gives intervals 25 and 62.5; the controller records that in the final run against main.
+Expected: unit audit fails "the attempt normalizer must keep scheduleRule" (every rule `undefined`); the backup test fails with `[["attempt-rule-2", undefined], ["attempt-legacy", undefined]]`; the merge test fails with `[["attempt-rule-2", undefined, 10], ["attempt-rule-1", undefined, 10]]` (the dropped rule replays as the current rule); the identity test fails with `[10, undefined]` instead of `[10, 2]`. On main the same merge gives intervals 25 and 62.5; the controller records that in the final run against main.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/lib/db.js`: import `normalizeScheduleRule` from `./review.js`; the attempt normalizer keeps `scheduleRule` after `crunch` only when `normalizeScheduleRule(attempt.scheduleRule, 0)` is non-zero (spread conditionally, so an attempt without a valid rule stores no key). `src/lib/profileSync.js`: import `normalizeScheduleRule`; `reviewAttemptEvent` adds `scheduleRule: normalizeScheduleRule(attempt?.scheduleRule)`; `replayReviewAttempt` passes `scheduleRule: normalizeScheduleRule(attempt.scheduleRule)` in the `gradeReviewItem` metadata. Nothing else in the merge changes.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `npm run audit:unit && node --test src/lib/backup.test.mjs src/lib/profileSync.test.mjs src/lib/review.test.mjs && npm run audit:scale && npm run audit:storage && npm run audit:backup-memory`
 Expected: all pass, the 50,000-attempt scale case still under its 4,000 ms limit.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/db.js src/lib/profileSync.js scripts/unit_audit.mjs src/lib/backup.test.mjs src/lib/profileSync.test.mjs
@@ -335,13 +335,13 @@ git commit -m "Keep each review attempt's schedule rule through storage and sync
 **Interfaces:**
 - Consumes: `previewReviewIntervals(item, { …, now })` from Task 1; the normalizer keeping `scheduleRule` from Task 2.
 
-- [ ] **Step 1: Write the failing browser check** in `scripts/review_audit.mjs`, as a fresh browser context between the saved-AI context's `finally` and the final `errors` assertion (the main flow switches to FSRS and seeds 10,000 cards, so it cannot host this). At 393×852 (`isMobile`, `hasTouch`), open `#/review`, then read-modify-write the stored profile (as the saved-AI section does) with `reviewAttempts: []` and two Classic cards on `notes/part-05-supervised-learning/01-linear-regression.md`, then reload:
+- [x] **Step 1: Write the failing browser check** in `scripts/review_audit.mjs`, as a fresh browser context between the saved-AI context's `finally` and the final `errors` assertion (the main flow switches to FSRS and seeds 10,000 cards, so it cannot host this). At 393×852 (`isMobile`, `hasTouch`), open `#/review`, then read-modify-write the stored profile (as the saved-AI section does) with `reviewAttempts: []` and two Classic cards on `notes/part-05-supervised-learning/01-linear-regression.md`, then reload:
   - `early-probe` ("Early probe: what does dropout do at inference?"): `intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4, lapses: 0`, last review a day ago, due in nine days;
   - `early-mastered` ("Early mastered: what does L2 regularization penalize?"): `intervalDays: 30, repetitions: 5, reviewCount: 5`, last review three days ago, due in 27 days.
 
   Then assert, with these messages:
   - before: `.review-hero strong` is "0"; the `.review-stat-grid` article whose span reads "Mastered" shows "1"; on `#/home` the `.mastery-row` whose `.mastery-part` is "05" includes "1/2 cards mastered".
-  - keyboard only: focus the "Crunch weak cards" button and press Enter. `.review-crunch-notice` text (trimmed) equals `Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.`; its right edge ≤ `innerWidth` and `document.documentElement.scrollWidth` ≤ `innerWidth` ("the Extra practice notice must wrap inside a 393px phone").
+  - keyboard only: focus the "Crunch weak cards" button and press Enter. `.review-crunch-notice` text (trimmed) equals `Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.`; its right edge ≤ `innerWidth` and `document.documentElement.scrollWidth` ≤ `innerWidth` ("the Extra practice notice must wrap inside a 393px phone"). As built: the notice is `Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back.` under every scheduler, and the fit check measures `document.documentElement.clientWidth` (see As built).
   - for each card (identify it by its `.review-question` text): wait until the prompt has focus (`document.activeElement` has class `review-question`), press Space, then read `.review-rating span` texts. Probe: `["14 min · 1", "10 days · 2", "10 days · 3", "10 days · 4"]` ("Extra practice must preview early-aware intervals"; main shows `12 days`, `25 days`, `1 mo`). Mastered card: Good reads `1 mo · 3` (main `3 mo · 3`). Press "3"; the status region then includes `Rated Good: next review in 10 days` (probe) or `Rated Good: next review in 1 mo` (mastered).
   - after the session returns to `.review-center-page`, read the stored profile with the file's `savedProfile(page, landed)` until it holds both attempts: probe `intervalDays` 10, `repetitions` 4, `ease` 2.5; mastered `intervalDays` 30, `repetitions` 5; for each, `Date.parse(item.dueAt) - Date.parse(attempt.reviewedAt) === intervalDays * 86_400_000` ("an early Crunch grade must keep the interval: dueAt is now + 10 days, not + 25"), `attempt.crunch === true`, `attempt.sessionKind === "crunch"`, `attempt.scheduleRule === 2`.
   - the Mastered tile still reads "1" (main "2"), the hero still "0", and the Part 05 row still includes "1/2 cards mastered" (main "2/2").
@@ -349,21 +349,21 @@ git commit -m "Keep each review attempt's schedule rule through storage and sync
   - add "early Crunch grades that keep their interval and Mastered count" to the final "Review audit passed" line; push page errors into `errors`; close the context in `finally`.
   - every wait in the section waits for what it reads (`waitForSelector`, `waitForFunction`, `savedProfile`); no fixed sleeps.
 
-- [ ] **Step 2: Run against the unchanged UI and record the failure**
+- [x] **Step 2: Run against the unchanged UI and record the failure**
 
 Run: `npm run build && LUMEN_BROWSER_RETRIES=0 npm run check:browser -- review` (on Task 2's code, so storage keeps the rule).
 Expected: FAIL on the notice text, the old copy. That is the only UI change left: `previewReviewIntervals` already defaults `now` to the wall clock, so the buttons preview early-aware intervals on Task 2's code. Against main the same check also fails on the previews ("25 days"), the stored interval, the rule and the Mastered tile; the controller records that in the final run against main.
 
-- [ ] **Step 3: Implement in `src/components/ReviewCenter.jsx`**
+- [x] **Step 3: Implement in `src/components/ReviewCenter.jsx`**
 
-Pass `now: new Date()` to the preview in `grade` (:650) and `now: queueNow` to the session render's preview (:797), so the buttons, queue and stats read one clock. Replace the notice text with `Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.`, keeping its `Flame` icon, element and class.
+Pass `now: new Date()` to the preview in `grade` (:650) and `now: queueNow` to the session render's preview (:797), so the buttons, queue and stats read one clock. Replace the notice text with `Extra practice doesn’t use today’s limits. A card you answer early keeps its current interval.`, keeping its `Flame` icon, element and class. As built: `Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back.`, one string for every scheduler.
 
-- [ ] **Step 4: Run the check**
+- [x] **Step 4: Run the check**
 
 Run: `npm run build && LUMEN_BROWSER_RETRIES=0 npm run check:browser -- review`
 Expected: PASS, with the new phrase in the summary line.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/ReviewCenter.jsx scripts/review_audit.mjs
@@ -380,22 +380,22 @@ git commit -m "Show early-aware intervals and an accurate notice in Extra practi
 - Consumes: the Task 3 notice (`.review-crunch-notice`) and the "Crunch weak cards" / "End session" buttons.
 - Produces: a `review-crunch` responsive surface and an `extra-practice` a11y state; an optional `verify(page, label)` hook on `STATES` entries, run after axe.
 
-- [ ] **Step 1: Add the responsive surface.** After `await inspect("review-answer", ".review-session-page");`: click "End session" (`.review-session-header button`), wait for `.review-hero-actions`, click "Crunch weak cards", wait for `.review-crunch-notice`, `await inspect("review-crunch", ".review-session-page")`, then click "End session" and wait for `.review-hero`. The seeded profile already has active cards.
+- [x] **Step 1: Add the responsive surface.** After `await inspect("review-answer", ".review-session-page");`: click "End session" (`.review-session-header button`), wait for `.review-hero-actions`, click "Crunch weak cards", wait for `.review-crunch-notice`, `await inspect("review-crunch", ".review-session-page")`, then click "End session" and wait for `.review-hero`. The seeded profile already has active cards.
 
-- [ ] **Step 2: Add the a11y state.** Add a helper that read-modify-writes `reviewItems` in the stored profile (`study-data` store, key `profile`; never a whole-profile `put` from a fixture, which would reset the theme). Add a `STATES` entry `extra-practice` on `ROUTES[4]`:
+- [x] **Step 2: Add the a11y state.** Add a helper that read-modify-writes `reviewItems` in the stored profile (`study-data` store, key `profile`; never a whole-profile `put` from a fixture, which would reset the theme). Add a `STATES` entry `extra-practice` on `ROUTES[4]`:
   - `setup`: add a card `a11y-practice` ("Which split tunes hyperparameters?" / "The validation split."; `intervalDays: 10, ease: 2.5, repetitions: 4, reviewCount: 4`, last review a day ago, due in nine days), reload, wait for `.review-deck-card[data-card-id="a11y-practice"]`, click "Crunch weak cards";
   - `ready`: `.review-crunch-notice`;
-  - `verify`: `check()` that the notice's right edge ≤ `innerWidth` and `document.documentElement.scrollWidth` ≤ `innerWidth`, message `${label}: the Extra practice notice overflows (…)`;
+  - `verify`: `check()` that the notice's right edge ≤ `innerWidth` and `document.documentElement.scrollWidth` ≤ `innerWidth`, message `${label}: the Extra practice notice overflows (…)` (as built: against `document.documentElement.clientWidth`; a phone-emulated `innerWidth` grows with overflow);
   - `close`: click "End session", remove `a11y-practice` from the stored profile, reload, wait for `.review-center-page`.
 
   In the runner, call `if (state.verify) await state.verify(page, label);` right after `await runAxe(page, label);`. Update the comment above `STATES` to mention the new state. After each reload, wait for the element the next step reads (the seeded deck card, `.review-center-page`); the runner's `settle(page, label)` already waits for transitions before axe. No fixed sleeps.
 
-- [ ] **Step 3: Run both suites**
+- [x] **Step 3: Run both suites**
 
 Run: `npm run build && LUMEN_BROWSER_RETRIES=0 npm run check:browser -- responsive a11y`
 Expected: PASS; the a11y summary lists `extra-practice` among its states (8 states) with 0 allowlisted nodes, and the responsive results include `review-crunch` for every viewport. If axe reports a violation on the session page (it was never scanned before), fix it with theme tokens in this task and name it in the commit body.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/responsive_audit.mjs scripts/a11y_audit.mjs
@@ -410,3 +410,34 @@ git commit -m "Check the Extra practice notice's layout and accessibility" -m "T
 2. Gate in the worktree: `npm run check`, then the full `npm run check:browser`; record `audit:app`'s startup entry and install route screen bytes against the baseline above.
 3. Docs: a dated verification-log row in `docs/internal/PRODUCT_REQUIREMENTS.md` (LEARN-003 stays Partial); a dated "Bugs reproduced" entry in `docs/FUNCTIONAL_TESTING.md` (the probe values on main, each new check and its failure on main, budgets, gate results) plus the new state in its "Accessibility checks" list; a bullet in `docs/guides/APP_GUIDE.md` on review and Extra practice; a `docs/DEVICE_TESTING.md` section for VoiceOver in Extra practice (the notice, the rating buttons' names and intervals, the "Rated Good: next review in 10 days" announcement) at 393×852 and 200% text.
 4. PR body: what changed, the tests that fail before and pass after, the guards that pass on both, gate results with any retries, budgets, the deferred FSRS Mastered note, and `Closes #148` last.
+
+## As built (2026-10-23)
+
+The branch was rebased onto main d4a69cd before Task 2, so Tasks 3 and 4 use the observable-state waits main added (#138). Execution changed the plan here; the rulings below give each reason and its cost.
+
+- **Stored rules.** Older attempts store no `scheduleRule`; an attempt without a valid rule replays under rule 1, and the event identity compares the normalized rule. Two tests pin this.
+- **The notice.** One string for every scheduler: "Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back." The review audit checks it under Classic and, in its main flow, under FSRS.
+- **Fit checks.** The review audit's 393×852 check and the a11y state's check measure `document.documentElement.clientWidth`: on a phone-emulated page Chrome grows `innerWidth` to fit overflowing content, so a check against it cannot fail.
+- **The reload check** saves a settings change after the reload, so a rule dropped on load would show; a bare reload writes nothing.
+- **The a11y state** turns off the body's decorative gradient before axe runs. Otherwise axe files text over it as incomplete and never measures the notice's contrast.
+- **Final review additions:** a fractional-elapsed test (6.5 days into a 10-day card gives 16.25), the normalized-identity test, and comments that name the due-time invariant and the effects pass the keyboard step relies on.
+
+### Rulings made during execution
+
+- Ruling: the worktree was created with `git worktree add` on a new branch from origin/main, not with the native tool, which cannot set the branch name or path. Cost if wrong: the worktree must be removed by hand after merge.
+- Ruling: the branch was rebased onto main d4a69cd between Task 1 and Task 2, not only at the end. Main had moved the audits to observable-state waits, and no `src/lib` file overlapped. Cost if wrong: Task 1's commit IDs changed; its suites passed again after the rebase.
+- Ruling (supersedes the normalizer ruling above): older attempts store no `scheduleRule`. Writing 1 onto every older attempt grew a profile by about 17 bytes per attempt in its first save, and the 20 MiB workspace budget refuses any growing save above the cap. Cost if wrong: an absent rule and an explicit 1 are two spellings of rule 1, which the identity and replay normalize.
+- Ruling: `reviewAttemptEvent` keeps the rule, as the issue specifies. An idle tab on an older build adopts the stored profile and writes it back with the rule stripped while the card stays at 10 days. The attempt then reads as rule 1, so the inflation is latent rather than avoided. Cost if wrong: during the update window, a card graded early can come back at its multiplied interval.
+- Ruling (supersedes the apostrophe ruling's copy, and a later one that showed only the first sentence under FSRS): one notice for every scheduler, with the issue's first sentence verbatim. The issue's second sentence is false for common early grades: six days into a 10-day card, Good gives 15 days, and a card still in its 10-minute step gets 3 days. Cost if wrong: one string and two audit assertions.
+- Ruling: the plan's reload check was made able to fail, by saving a setting after the reload before the stored attempts are read. Cost if wrong: a few audit lines.
+- Ruling: the device-sync (SYNC-001) phantom-attempt path is documented, not fixed. The record merge clones two copies of one attempt that differ when the baseline lacks it. That is already possible on main between devices on the same build, and the issue says to fix the math only. This branch widens the trigger to any early grade while a peer device runs an older build. Cost if wrong: in a mixed-build window a device can gain a phantom attempt and a 62.5-day card. Update every device before importing sync files.
+- Ruling: follow-up issues are drafted, not filed. Cost if wrong: they are filed from the drafts.
+- Ruling: the final fix wave also took the reviewers' cheap Minor items. Cost if wrong: a few lines.
+
+### Known risks and follow-ups
+
+- **Older builds.** A tab on a build from before #148 strips the rule from attempts it saves, until it reloads after the update. A device on an older build that folds a sync file can turn one early grade into a phantom attempt and a 62.5-day card (see the SYNC-001 ruling).
+- **FSRS** keeps today's rules. Early grades there still add repetitions, so two quick Crunch passes count the probe card as Mastered.
+- **VoiceOver.** The rating buttons are named "Rate Good" and so on, so VoiceOver does not read their intervals. It does read the polite status after each grade.
+- **The a11y audit** never measures contrast for text directly on the body's gradient. Several other suites compare against `innerWidth` on phone-emulated pages.
+- **#149** must make the 0.01-day rounding depend on the rule, so that rule-2 attempts still replay with it.
