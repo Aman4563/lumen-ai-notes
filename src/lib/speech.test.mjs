@@ -273,6 +273,33 @@ test("the verbalizer reads Unicode math the issue's way", () => {
   for (const [input, expected] of cases) assert.equal(speech.speakable(input), expected, input);
 });
 
+test("a word reading stays joined to an adjacent hyphen or en dash", () => {
+  assert.equal(speech.speakable("ε-greedy"), "epsilon-greedy");
+  assert.equal(speech.speakable("τ-quantile"), "tau-quantile");
+  assert.equal(speech.speakable("1-α"), "1-alpha");
+});
+
+test("capital Sigma is the letter where it names a matrix and a sum elsewhere", () => {
+  const cases = [
+    ["A = UΣVᵀ", "A equals U Sigma V transpose"],
+    ["aᵀΣa", "a transpose Sigma a"],
+    ["covariance Σ.", "covariance Sigma."],
+    ["Σ: nonnegative", "Sigma: nonnegative"],
+    ["N(μ, Σ)", "N of (mu, Sigma)"],
+    ["Σxᵢ", "sum of x i"],
+    ["λΣ|w|", "lambda sum of |w|"],
+    // An operator is not a function: its own "of" is the only one.
+    ["Σ(xᵢ) and 𝔼(X)", "sum of (x i) and expected value of (X)"],
+  ];
+  for (const [input, expected] of cases) assert.equal(speech.speakable(input), expected, input);
+});
+
+test("a norm with subscript F is the Frobenius norm", () => {
+  const { subOpen: so, subClose: sc } = speech.SPEECH_MARK;
+  assert.equal(speech.speakable(`‖A‖${so}F${sc}`), "the Frobenius norm of A");
+  assert.equal(speech.speakable(`‖A‖${so}F${sc}²`), "the squared Frobenius norm of A");
+});
+
 test("ASCII operators are words only inside a formula run with a math symbol", () => {
   assert.equal(speech.speakable("Gaussian + identity → linear regression"), "Gaussian + identity leads to linear regression");
   assert.equal(speech.speakable("stale read then write → version/ETag optimistic concurrency"), "stale read then write leads to version/ETag optimistic concurrency");

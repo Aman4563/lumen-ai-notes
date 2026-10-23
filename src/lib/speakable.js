@@ -188,8 +188,9 @@ const isFormulaCompatible = (token, symbolic) => symbolic
 /**
  * Writes spoken text with the spacing words need: a word gets a space before
  * it unless it follows whitespace or ( [ {, and one after it unless
- * whitespace, , . ; : ! ? ) ] } % or the end follows. The builder collapses
- * the rest.
+ * whitespace, , . ; : ! ? ) ] } % or the end follows. A hyphen or en dash
+ * stays joined on either side, so ε-greedy is "epsilon-greedy" and 1-α
+ * "1-alpha". The builder collapses the rest.
  */
 const createSpeaker = () => {
   const builder = createSpokenBuilder();
@@ -197,7 +198,7 @@ const createSpeaker = () => {
   let spaceAt = null;
   const write = (text, start, end) => {
     if (text && spaceAt !== null) {
-      if (!/^[\s,.;:!?)\]}%]/u.test(text)) builder.append(" ", spaceAt, spaceAt);
+      if (!/^[\s,.;:!?)\]}%\-–]/u.test(text)) builder.append(" ", spaceAt, spaceAt);
       spaceAt = null;
     }
     builder.append(text, start, end);
@@ -205,7 +206,7 @@ const createSpeaker = () => {
   };
   const lead = (at) => {
     if (spaceAt !== null) builder.append(" ", spaceAt, spaceAt);
-    else if (last && !/[\s([{]/u.test(last)) builder.append(" ", at, at);
+    else if (last && !/[\s([{\-–]/u.test(last)) builder.append(" ", at, at);
     else return;
     spaceAt = null;
     last = " ";
@@ -284,10 +285,11 @@ const readSubscript = (script, out) => {
   return script.next;
 };
 
-// ‖x‖₂ → "the L2 norm of x", ½‖w‖² → "one half the squared norm of w". A bar
-// opens a norm only before a non-space and closes it only after one, so the
-// bar in KL(P ‖ Q) stays a bar. The words go where the opening bar was; the
-// closing bar and its scripts become a gap.
+// ‖x‖₂ → "the L2 norm of x", ½‖w‖² → "one half the squared norm of w",
+// ‖A‖_F → "the Frobenius norm of A". A bar opens a norm only before a
+// non-space and closes it only after one, so the bar in KL(P ‖ Q) stays a
+// bar. The words go where the opening bar was; the closing bar and its
+// scripts become a gap.
 const readNorm = (items, index, out) => {
   const bar = items[index];
   if (!items[index + 1] || isSpace(items[index + 1])) return 0;
@@ -307,7 +309,7 @@ const readNorm = (items, index, out) => {
   const sup = scriptAt(items, next, "sup");
   const squared = sup?.text === "²" || sup?.text === "2";
   if (squared) next = sup.next;
-  const lp = order === "∞" ? "L infinity " : order ? `L${order} ` : "";
+  const lp = order === "∞" ? "L infinity " : order === "F" ? "Frobenius " : order ? `L${order} ` : "";
   out.word(`the ${squared ? "squared " : ""}${lp}norm of`, bar.start, bar.end);
   readItems(items.slice(index + 1, close), out);
   return next;
@@ -322,15 +324,29 @@ const readReals = (items, index, out) => {
   return sup.next;
 };
 
+// Capital Σ names a matrix, and is the letter Sigma, between a letter,
+// digit, superscript or closing bracket and a letter (UΣVᵀ, aᵀΣa), or before
+// = , ) ] ; : . or the end of the text, spaces allowed (covariance Σ.,
+// N(μ, Σ)). Elsewhere it is a sum: Σxᵢ, λΣ|w|, (1/n)Σ y.
+const SIGMA_LETTER_FOLLOWERS = new Set(["", "=", ",", ")", "]", ";", ":", "."]);
+const namesMatrix = (items, index) => {
+  const before = items[index - 1];
+  const after = items[index + 1];
+  const operandBefore = before?.group === "sup" || SUPERSCRIPTS.has(before?.char)
+    || (before?.char !== undefined && /^[\p{L}\p{Nd})\]}]$/u.test(before.char) && !SUBSCRIPTS.has(before.char));
+  const letterAfter = isLetter(after) && !SUBSCRIPTS.has(after.char) && !SUPERSCRIPTS.has(after.char);
+  return (operandBefore && letterAfter) || SIGMA_LETTER_FOLLOWERS.has(items[index].followedBy);
+};
+
 // Σ ∑ ∏ ∫ 𝔼 with their limits: "sum from i equals 1 to n of", "sum over i
-// of", "sum of". Σ right before a superscript is the letter: Σ⁻¹ → "Sigma
-// inverse".
+// of", "sum of". Σ right before a superscript is the letter (Σ⁻¹ → "Sigma
+// inverse"), and so is a Σ that names a matrix; ∑ is always a sum.
 const readBigOperator = (items, index, out) => {
   const operator = items[index];
   const name = BIG_OPERATORS.get(operator.char);
   const sub = scriptAt(items, index + 1, "sub");
   const sup = scriptAt(items, sub ? sub.next : index + 1, "sup");
-  if (!sub && sup && operator.char === "Σ") {
+  if (operator.char === "Σ" && !sub && (sup || namesMatrix(items, index))) {
     out.word("Sigma", operator.start, operator.end);
     return index + 1;
   }
@@ -357,15 +373,22 @@ const operatorWord = (items, index) => {
   return beside(before, partners) || beside(after, partners) || beside(before, "([{") || beside(after, ")]}") ? "" : word;
 };
 
+// A letter read as itself: not a Greek or other named letter, a big
+// operator, ℝ, or a script.
+const isPlainLetter = (item) => isLetter(item)
+  && !SYMBOLS.has(item.char) && !BIG_OPERATORS.has(item.char) && item.char !== REALS
+  && !SUBSCRIPTS.has(item.char) && !SUPERSCRIPTS.has(item.char);
+
 // A single letter, a Greek letter or a listed function right before "(" is
-// applied to it: P(y ∣ x) → "P of (y given x)".
+// applied to it: P(y ∣ x) → "P of (y given x)". A big operator already ends
+// in its own "of": Σ(xᵢ) → "sum of (x i)".
 const appliesTo = (items, index) => {
   let at = index - 1;
   while (at >= 0 && COMBINING_MARKS.has(items[at].char)) at -= 1;
-  if (!isLetter(items[at])) return false;
-  if (SYMBOLS.has(items[at].char)) return true;
+  if (isLetter(items[at]) && SYMBOLS.has(items[at].char)) return true;
+  if (!isPlainLetter(items[at])) return false;
   let first = at;
-  while (first > 0 && isLetter(items[first - 1]) && !SYMBOLS.has(items[first - 1].char)) first -= 1;
+  while (first > 0 && isPlainLetter(items[first - 1])) first -= 1;
   return first === at || FUNCTION_NAMES.includes(items.slice(first, at + 1).map((item) => item.char).join(""));
 };
 
@@ -400,6 +423,13 @@ const readItems = (items, out) => {
   for (let index = 0; index < items.length;) index = readAt(items, index, out);
 };
 
+// The first non-space character of `source` from `from` on; "" at its end.
+const nextVisible = (source, from) => {
+  let at = from;
+  while (at < source.length && /\s/u.test(source[at])) at += 1;
+  return source[at] ?? "";
+};
+
 // A formula run as items: { char, start, end } per code point;
 // { group: "sub" | "sup", items, start, end } per marked group, its range the
 // content between the markers; { said, start, end } per replaced term.
@@ -428,7 +458,12 @@ const runItems = (source, start, end, spans) => {
         top.end = index;
         stack.pop();
       }
-    } else if (!isMark(code)) top.items.push({ char, start: index, end: index + char.length });
+    } else if (!isMark(code)) {
+      const item = { char, start: index, end: index + char.length };
+      // Whether Σ names a matrix can depend on what follows the run.
+      if (char === "Σ") item.followedBy = nextVisible(source, item.end);
+      top.items.push(item);
+    }
     index += char.length;
   }
   return root.items;
