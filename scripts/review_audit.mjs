@@ -1171,6 +1171,12 @@ try {
       assert.equal(await page.evaluate(() => document.activeElement?.closest(".review-retry") ? document.activeElement.textContent.trim() : null), "Retry now", "Tab from the retry title must reach Retry now");
       await page.keyboard.press("Enter");
     };
+    // Control+Z undoes the most recent grade.
+    const undoByKeyboard = async (page) => {
+      await page.keyboard.down("Control");
+      await page.keyboard.press("z");
+      await page.keyboard.up("Control");
+    };
     const sessionHeader = (page) => page.$eval(".review-session-header > div", (node) => [node.querySelector("strong")?.textContent, node.querySelector("span")?.textContent]);
     const eyebrow = (page) => page.$eval(".review-flashcard .eyebrow", (node) => node.textContent);
     const lastBadge = (page, expected) => pollValue(() => page.evaluate(() => window.__lumenBadges.at(-1)), (value) => value === expected);
@@ -1223,9 +1229,7 @@ try {
       assert.equal(Date.parse(stepped.dueAt) - Date.parse(stepped.lastReviewedAt), 600_000, "the card must be due exactly 10 minutes after its review");
 
       // Undo right after the failure: the card returns, due, with its schedule restored.
-      await soloPage.keyboard.down("Control");
-      await soloPage.keyboard.press("z");
-      await soloPage.keyboard.up("Control");
+      await undoByKeyboard(soloPage);
       await promptFocused(soloPage, solo);
       assert.deepEqual(await sessionHeader(soloPage), ["1", "remaining today"], "undo must bring the card back into today's queue");
       assert.deepEqual((await savedProfile(soloPage, (profile) => profile.reviewAttempts?.length === 0)).reviewAttempts, [], "undo must remove the attempt");
@@ -1338,11 +1342,126 @@ try {
     } finally {
       await limitPage.close();
     }
+
+    // Scenario D: in Extra practice a card's first Again asks it once more, after the rest of
+    // the session, and its second grade ends that. Undo takes the first Again back, so the
+    // card is never queued twice and still returns once when it fails again. The cards are
+    // weak but nothing is due, so Crunch weak cards is the way in.
+    const crunchCard = (id, front, extra) => ({ id, front, intervalDays: 10, repetitions: 4, reviewCount: 4, reviewedAgoMs: DAY, dueInMs: 9 * DAY, ...extra });
+    const crunchA = crunchCard("crunch-a", "Crunch a: why does a weak card come first?", { lapses: 2, ease: 1.8 });
+    const crunchB = crunchCard("crunch-b", "Crunch b: what does a steady card wait for?", { lapses: 0 });
+    // Enter on the focused Crunch weak cards button starts Extra practice.
+    const startExtraPractice = async (page) => {
+      assert.ok(await focusAndHold(page, ".review-hero-actions button", "Crunch weak cards"), "the Crunch weak cards control must be a focusable button that keeps focus");
+      await page.keyboard.press("Enter");
+    };
+    const extraPage = await relearnPage();
+    try {
+      await seedRelearn(extraPage, { cards: [crunchA, crunchB] });
+      await watchStatus(extraPage);
+      await startExtraPractice(extraPage);
+      // The prompt each grade was made on, read from the page once it holds focus.
+      const asked = [];
+      const rate = async (card, key) => {
+        await promptFocused(extraPage, card);
+        asked.push(await extraPage.$eval(".review-question", (node) => node.textContent.trim()));
+        await revealAndRate(extraPage, card, key);
+      };
+      await rate(crunchA, "1");
+      // The first outcome alone tells whether the failed card was queued again.
+      assert.deepEqual(await statusLog(extraPage), ["Rated Again: next review in 10 min. 2 cards left."], "failing a card in Extra practice must queue it again after the rest of the session");
+      await undoByKeyboard(extraPage);
+      await promptFocused(extraPage, crunchA);
+      assert.deepEqual(await sessionHeader(extraPage), ["2", "practice cards left"], "undoing the failure must leave each card queued once");
+      await rate(crunchA, "1");
+      await rate(crunchB, "3");
+      await promptFocused(extraPage, crunchA);
+      const asking = await eyebrow(extraPage);
+      assert.ok(asking.startsWith("Learning · 10 min interval"), `a failed card asked again must read as learning: ${asking}`);
+      await rate(crunchA, "1");
+      await extraPage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("the second grade of a failed card must end Extra practice"));
+      assert.deepEqual(asked, [crunchA, crunchA, crunchB, crunchA].map((card) => card.front), "Extra practice must ask the failed card again only after the other card");
+      assert.deepEqual(await pollValue(() => statusLog(extraPage), (log) => log.at(-1)?.includes("Session complete")), [
+        "Rated Again: next review in 10 min. 2 cards left.",
+        "Rated Again: next review in 10 min. 2 cards left.",
+        "Rated Good: next review in 10 days. 1 card left.",
+        "Rated Again: next review in 10 min. Session complete.",
+      ], "each outcome must be announced once, after its grade lands");
+      const stored = await savedProfile(extraPage, (profile) => profile.reviewAttempts?.length === 3);
+      assert.deepEqual(stored.reviewAttempts.map((attempt) => [attempt.reviewItemId, attempt.rating, attempt.crunch, attempt.scheduleRule]), [
+        ["crunch-a", "again", true, 3], ["crunch-b", "good", true, 3], ["crunch-a", "again", true, 3],
+      ], "the undone grade must leave no attempt, and every Extra practice grade must record the schedule rule");
+    } finally {
+      await extraPage.close();
+    }
+
+    // Scenario E: with one card in the pool, failing it leaves the queue as it was, yet the
+    // failure is announced and the card is asked once more; burying it then ends the session
+    // instead of showing it again.
+    const crunchLone = crunchCard("crunch-lone", "Crunch lone: what does a lone weak card wait for?", { lapses: 1, ease: 2.1 });
+    const lonePage = await relearnPage();
+    try {
+      const todayKey = await seedRelearn(lonePage, { cards: [crunchLone] });
+      await watchStatus(lonePage);
+      await startExtraPractice(lonePage);
+      await revealAndRate(lonePage, crunchLone, "1");
+      assert.deepEqual(await statusLog(lonePage), ["Rated Again: next review in 10 min. 1 card left."], "failing the only card in Extra practice must be announced, with the card left to ask again");
+      await promptFocused(lonePage, crunchLone);
+      assert.deepEqual(await sessionHeader(lonePage), ["1", "practice cards left"], "the failed card must be the one card left");
+      await lonePage.keyboard.press("b");
+      await lonePage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("burying the failed card must end Extra practice, not ask it again"));
+      const buried = await savedProfile(lonePage, (profile) => profile.reviewItems?.some((item) => item.id === crunchLone.id && item.buriedOnDay));
+      assert.equal(buried.reviewItems.find((item) => item.id === crunchLone.id).buriedOnDay, todayKey, "burying the card must keep it out of Extra practice for today");
+    } finally {
+      await lonePage.close();
+    }
+
+    // Scenario F: undoing the second grade of a failed card returns it among the cards still
+    // to ask, where it already waits as a failed card, so it is queued once; undoing back to
+    // its first Again leaves nothing of the grades taken back, and it fails afresh. A new
+    // Extra practice session then starts clean.
+    const retriedPage = await relearnPage();
+    try {
+      await seedRelearn(retriedPage, { cards: [crunchA, crunchB] });
+      await watchStatus(retriedPage);
+      await startExtraPractice(retriedPage);
+      await revealAndRate(retriedPage, crunchA, "1");
+      await revealAndRate(retriedPage, crunchB, "1");
+      await revealAndRate(retriedPage, crunchA, "3");
+      await undoByKeyboard(retriedPage);
+      await promptFocused(retriedPage, crunchA);
+      assert.deepEqual(await sessionHeader(retriedPage), ["2", "practice cards left"], "undoing the second grade of a failed card must queue it once, not twice");
+      await undoByKeyboard(retriedPage);
+      await promptFocused(retriedPage, crunchB);
+      await undoByKeyboard(retriedPage);
+      await promptFocused(retriedPage, crunchA);
+      assert.deepEqual(await sessionHeader(retriedPage), ["2", "practice cards left"], "undoing every grade must leave each card queued once");
+      await revealAndRate(retriedPage, crunchA, "1");
+      await revealAndRate(retriedPage, crunchB, "3");
+      await revealAndRate(retriedPage, crunchA, "3");
+      await retriedPage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("grading the failed card a second time must end Extra practice"));
+      assert.deepEqual(await pollValue(() => statusLog(retriedPage), (log) => log.at(-1)?.includes("Session complete")), [
+        "Rated Again: next review in 10 min. 2 cards left.",
+        "Rated Again: next review in 10 min. 2 cards left.",
+        "Rated Good: next review in 3 days. 1 card left.",
+        "Rated Again: next review in 10 min. 2 cards left.",
+        "Rated Good: next review in 10 days. 1 card left.",
+        "Rated Good: next review in 3 days. Session complete.",
+      ], "a card failed again after its grades were undone must be queued again, and each outcome announced once");
+      await startExtraPractice(retriedPage);
+      await revealAndRate(retriedPage, crunchA, "1");
+      assert.equal((await statusLog(retriedPage)).at(-1), "Rated Again: next review in 10 min. 2 cards left.", "a new Extra practice session must queue a card failed in it, whatever happened in the last one");
+    } finally {
+      await retriedPage.close();
+    }
   } finally {
     await relearnContext.close();
   }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due) verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
