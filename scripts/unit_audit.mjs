@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { applyPronunciations, chunkSpeechText, normalizePronunciations } from "../src/lib/speech.js";
+import { chunkSpeechText, normalizePronunciations, speakable } from "../src/lib/speech.js";
 import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFILE_VERSION } from "../src/lib/db.js";
 import { contentCapabilities, foldPluralTerm, pruneRecentSearches, pushRecentSearch, searchDocuments, spellingAlternates, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { synonymAlternatesFor } from "../src/lib/searchSynonyms.js";
@@ -151,9 +151,10 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
 // AUDIO-001 pronunciation overrides: whole-word, case-insensitive, bounded.
 {
   const glossary = [{ term: "SQL", spoken: "sequel" }, { term: "ReLU", spoken: "ray loo" }];
-  assert.equal(applyPronunciations("SQL and sql joins; NoSQL stays.", glossary), "sequel and sequel joins; NoSQL stays.", "whole-word matching must not touch embedded occurrences");
-  assert.equal(applyPronunciations("ReLU then GELU", glossary), "ray loo then GELU");
-  assert.equal(applyPronunciations("plain text", []), "plain text");
+  assert.equal(speakable("SQL and sql joins; NoSQL stays.", { pronunciations: glossary }), "sequel and sequel joins; NoSQL stays.", "whole-word matching must not touch embedded occurrences");
+  // The built-in pack (issue #100) says GELU; the learner's ReLU still wins.
+  assert.equal(speakable("ReLU then GELU", { pronunciations: glossary }), "ray loo then gee-loo");
+  assert.equal(speakable("plain text", { pronunciations: [] }), "plain text");
   const normalized = normalizePronunciations([
     { term: " SQL ", spoken: " sequel " },
     { term: "sql", spoken: "duplicate loses" },

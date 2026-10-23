@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SPEECH_TEXT_LIMIT,
   TUTOR_SPEECH_LABEL,
-  applyPronunciations,
   chunkSpeechText,
   groupSpeechVoices,
   normalizeSpeechLanguage,
   normalizeSpeechVoices,
   selectSpeechVoice,
+  speakable,
   speechCopy,
   speechErrorMessage,
   speechLanguages,
@@ -308,7 +308,7 @@ export function useSpeech({
       return false;
     }
     const config = configRef.current;
-    const spoken = (value) => applyPronunciations(value, config.pronunciations);
+    const spoken = (value) => speakable(value, { pronunciations: config.pronunciations });
     // Section-aware queueing: each section's chunks are tracked by their
     // first index so heading skip can jump between sections.
     let queue;
