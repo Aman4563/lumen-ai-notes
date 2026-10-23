@@ -10,7 +10,8 @@ test("refused storage is blocked, a full store is full, and anything else is unk
   assert.equal(storageFailureKind(new DOMException(CHROME_REFUSAL, "SecurityError")), "blocked");
   assert.equal(storageFailureKind(new DOMException("Permission denied.", "NotAllowedError")), "blocked");
   assert.equal(storageFailureKind(new DOMException("The quota has been exceeded.", "QuotaExceededError")), "full");
-  for (const error of [new DOMException("The user denied permission to access the database.", "UnknownError"), new DOMException("The database connection is closing.", "InvalidStateError"), new TypeError("Failed to fetch"), new Error("SecurityError"), "SecurityError", undefined, null, {}, { name: 42 }]) {
+  // The last three are names a lookup in a plain object would find.
+  for (const error of [new DOMException("The user denied permission to access the database.", "UnknownError"), new DOMException("The database connection is closing.", "InvalidStateError"), new TypeError("Failed to fetch"), new Error("SecurityError"), "SecurityError", undefined, null, {}, { name: 42 }, { name: "constructor" }, { name: "__proto__" }, { name: "toString" }]) {
     assert.equal(storageFailureKind(error), "unknown", `${error && typeof error === "object" ? error.name : String(error)} was not unknown`);
   }
 });
@@ -43,7 +44,10 @@ test("each message is the plain copy that says what still works and what does no
 
 test("a cleanup failure shows authored words or a fixed sentence, never the browser's", () => {
   assert.equal(cleanupFailureMessage(new OfflineCleanupError("The server could not be reached. Offline files were kept."), 0), "Optional cache cleanup failed: The server could not be reached. Offline files were kept.");
-  for (const error of [new TypeError("Failed to fetch"), new SyntaxError("Unexpected token '<', \"<!doctype \"... is not valid JSON"), new DOMException(CHROME_REFUSAL, "SecurityError"), new Error("internal detail"), "boom", undefined]) {
+  // Lumen's own words win even after removals.
+  assert.equal(cleanupFailureMessage(new OfflineCleanupError("The server could not be reached. Offline files were kept."), 2), "Optional cache cleanup failed: The server could not be reached. Offline files were kept.");
+  // The last two only borrow the name, so their text is not passed through.
+  for (const error of [new TypeError("Failed to fetch"), new SyntaxError("Unexpected token '<', \"<!doctype \"... is not valid JSON"), new DOMException(CHROME_REFUSAL, "SecurityError"), new Error("internal detail"), "boom", undefined, { name: "OfflineCleanupError", message: "raw browser text" }, new DOMException("raw browser text", "OfflineCleanupError")]) {
     assert.equal(cleanupFailureMessage(error, 0), "Optional cache cleanup failed. Offline files were kept.");
   }
   assert.equal(cleanupFailureMessage(new TypeError("Failed to fetch"), 1), "Optional cache cleanup stopped after removing 1 optional cached asset. Open a lecture to download it again.");

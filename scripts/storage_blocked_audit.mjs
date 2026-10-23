@@ -751,6 +751,8 @@ const OFFLINE_FILES_BLOCKED = "This browser is not saving offline files on this 
 const OFFLINE_FILES_FULL = "This browser has no room for more offline files";
 const STORAGE_DETAILS_UNAVAILABLE = "Storage details are unavailable right now";
 const HEALTH_TITLES = [OFFLINE_FILES_BLOCKED, OFFLINE_FILES_FULL, STORAGE_DETAILS_UNAVAILABLE];
+// The cleanup's fixed sentence for a failure that is not one of Lumen's own checks.
+const CLEANUP_FAILED = "Optional cache cleanup failed. Offline files were kept.";
 // Words only a browser's own error text uses; the injected errors carry the marker.
 const RAW_STORAGE_ERROR = /Failed to execute|CacheStorage|StorageManager|security policy|DOMException|SecurityError|NotAllowedError|QuotaExceededError|UnknownError|TypeError/;
 const RAW_MARKER = "lumen-raw-147";
@@ -833,6 +835,27 @@ const refuseEstimateOnly = (marker) => {
   StorageManager.prototype.estimate = function estimate() {
     return Promise.reject(new DOMException(`${marker} NotAllowedError`, "NotAllowedError"));
   };
+};
+// How many of this build's offline files the service worker has stored, and,
+// for a failure message, what state the worker is in.
+const offlineFileCount = (page) => page.evaluate(async () => {
+  let files = 0;
+  for (const name of await caches.keys()) {
+    if (name.startsWith("lumen-ai-notes-v")) files += (await (await caches.open(name)).keys()).length;
+  }
+  return files;
+});
+const serviceWorkerState = (page) => page.evaluate(async () => {
+  const registration = await navigator.serviceWorker.getRegistration();
+  return `controlled: ${Boolean(navigator.serviceWorker.controller)}, installing: ${registration?.installing?.state || "none"}, waiting: ${registration?.waiting?.state || "none"}, active: ${registration?.active?.state || "none"}`;
+});
+// The cleanup's server check fails the way a browser's own failed fetch does,
+// with the marker in its text; every other request goes through unchanged.
+const refuseHealthFetch = (marker) => {
+  window.__lumenAuditFetch ||= window.fetch;
+  window.fetch = (input, init) => (new URL(input instanceof Request ? input.url : String(input), location.href).pathname === "/api/health"
+    ? Promise.reject(new TypeError(`${marker} Failed to fetch`))
+    : window.__lumenAuditFetch(input, init));
 };
 // The auto-probe the device-evidence page posts the moment its checks exist:
 // the same `auto` object its downloaded and copied reports carry.
@@ -924,7 +947,24 @@ const injectedHealthFailureFlows = async ({ page, open, calls }) => {
   await openSettings(page);
   await storageHealthReady(page);
   const healthy = await storageHealthState(page);
-  assert.ok(!healthy.visible && healthy.offlineAssets !== "Not measured" && !healthy.announced.trim(), `with working storage Storage health reported a failure: ${JSON.stringify(healthy)}`);
+  assert.ok(!healthy.visible && healthy.offlineAssets !== "Not measured" && healthy.workspace !== "Not measured" && !healthy.announced.trim(), `with working storage Storage health reported a failure: ${JSON.stringify(healthy)}`);
+  // A cleanup that fails on a browser error says so in a fixed sentence, never
+  // in the browser's words. It is offered once this build's offline files are
+  // stored, so the panel measures them again first.
+  const offlineFiles = await pollValue(() => offlineFileCount(page), (files) => files > 0, { timeout: 30_000 });
+  assert.ok(offlineFiles > 0, `the service worker never stored this build's offline files, so the cleanup could not be tried (${await serviceWorkerState(page)})`);
+  await page.$eval(REFRESH_HEALTH, (button) => button.click());
+  await page.waitForSelector(".settings-drawer .storage-cleanup:not([disabled])", { timeout: 15_000 })
+    .catch(async () => assert.fail(`with offline files stored, Storage health did not offer the cleanup: ${JSON.stringify(await storageHealthState(page))}`));
+  await page.evaluate(refuseHealthFetch, RAW_MARKER);
+  await dismissToasts(page);
+  await page.$eval(".settings-drawer .storage-cleanup", (button) => button.click());
+  // An error toast closes after 10 s, so this waits 8 s: a wrong toast is still on screen for the failure to quote.
+  const cleanupToast = await toastMatching(page, CLEANUP_FAILED, "a cleanup that failed on a browser error did not say that offline files were kept", 8_000);
+  assert.ok(!cleanupToast.includes(RAW_MARKER) && !cleanupToast.includes("Failed to fetch"), `a cleanup that failed on a browser error showed the browser's own text: “${cleanupToast}”`);
+  await page.evaluate(() => { window.fetch = window.__lumenAuditFetch; });
+  // The failed cleanup measures the panel again; wait until that has finished.
+  await storageHealthReady(page);
   for (const [name, title] of [["NotAllowedError", OFFLINE_FILES_BLOCKED], ["QuotaExceededError", OFFLINE_FILES_FULL], ["TypeError", STORAGE_DETAILS_UNAVAILABLE]]) {
     const state = await refreshHealth(page, title, refuseCacheKeys, RAW_MARKER, name);
     assert.ok(!state.text.includes(RAW_MARKER) && !RAW_STORAGE_ERROR.test(state.text), `a Cache Storage ${name} showed the browser's own text: ${JSON.stringify(state.text)}`);

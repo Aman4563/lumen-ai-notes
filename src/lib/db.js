@@ -795,7 +795,8 @@ export const getAllData = async () => {
 
 /** Lightweight, non-sensitive byte inventory for Settings. The durable ledger
  * avoids serializing the learner's entire workspace again on memory-constrained
- * phones. */
+ * phones. Rejects with BUDGET_STATE_UNAVAILABLE when no ledger was measured
+ * (issue #147), so callers show "Not measured" rather than an empty workspace. */
 export const getStorageBudgetSummary = async () => {
   if (!budgetLedgerCache) await getAllData();
   // Issue #147: a database that would not open leaves no ledger (Chrome's

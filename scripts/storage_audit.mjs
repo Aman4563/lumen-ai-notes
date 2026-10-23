@@ -161,6 +161,10 @@ await assert.rejects(unmeasuredDb.getStorageBudgetSummary(), (error) => error?.c
 localBlocked = false;
 failOpen = false;
 assert.ok((await db.getStorageBudgetSummary()).maximumBytes > 0, "a working database's workspace budget was not measured");
+// That module's ledger cache is warm by now. A fresh one has none, like a
+// healthy browser's first read, so it must measure from the database.
+const coldDb = await import("../src/lib/db.js?storage-audit-cold-budget");
+assert.ok((await coldDb.getStorageBudgetSummary()).maximumBytes > 0, "a working database read on a cold ledger cache was not measured");
 
 await db.setData("board:removed-by-restore", { pages: ["private old work"] });
 failTransactions = true;

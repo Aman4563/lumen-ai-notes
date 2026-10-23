@@ -140,7 +140,9 @@ export default function DeviceEvidence({ onNotify }) {
       } catch { checks.serviceWorker = "supported, query failed"; }
       // A storage probe the browser refuses records the error's name only
       // (storageErrorName): the report is shared, and the browser's own text
-      // varies by browser and language. "" means the probe answered.
+      // varies by browser and language. "" means no error was raised: the
+      // probe answered, or did not run at all, as with no StorageManager or no
+      // Cache Storage.
       try {
         if (navigator.storage?.persisted) {
           checks.persistentStorage = (await navigator.storage.persisted()) ? "granted" : "not granted";
