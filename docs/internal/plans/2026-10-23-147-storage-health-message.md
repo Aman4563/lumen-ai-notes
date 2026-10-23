@@ -477,3 +477,29 @@ Expected: PASS: budgets within limits; all 13 cases pass on the first attempt.
 git add src/components/DeviceEvidence.jsx scripts/storage_blocked_audit.mjs
 git commit -m "Record storage error names in the device-evidence report" -m "Issue #147 keeps the raw error out of Storage health but available for diagnosis: the device-evidence probes now record the bounded name of a Cache Storage or StorageManager failure, never its text."
 ```
+
+---
+
+## As built
+
+All three tasks shipped as planned (`b980974`, `2e9fe89`, `ce9dbd7`, `868c50c` after the rebase onto main 986b759). The task reviews changed three things.
+
+- **The workspace budget.** Under cookie blocking, `getAllData()` falls back without caching a ledger, so `getStorageBudgetSummary()` answered with an empty ledger. The panel showed "2 B / 20.0 MB" and "Study profile 0 B" for a workspace it could not measure, which breaks this plan's own "Not measured" ruling.
+  - The summary now rejects with db.js's existing `BUDGET_STATE_UNAVAILABLE` error when no ledger was measured. That adds `src/lib/db.js` and `scripts/storage_audit.mjs` to the files.
+  - The blocked cases also require the workspace, Study profile and Whiteboards to read "Not measured" and the workspace meter to be absent.
+  - Cost noted in the ledger: during an IndexedDB outage with a journal ledger present, the panel reads "Not measured" until the next save.
+- **The Refresh no-repeat check.** It now runs, with a bounded wait, before Settings closes. Closing unmounts the panel and would cancel an announcement that Refresh armed.
+- **Device evidence.** `DeviceEvidence` uses `storageErrorName` in both probe catches. A comment notes that `""` means no error was raised.
+
+Deferred minors (not fixed; listed for the final whole-branch review):
+- tests that do not pin the object-lookup and `instanceof` guards in `storageFailure.js`;
+- a kind that could be announced twice within 5 s, if failures changed A → none → A;
+- the announcer effects mirrored from Settings rather than shared;
+- no check that the message does not flicker on Refresh;
+- `installAiMocks` now also records device-evidence posts;
+- the `JSON.stringify` text check that could pass vacuously for a message with quotes.
+
+Budgets at 868c50c, against main 986b759:
+- startup entry 623,753 B (+44: the shared `storageFailure` chunk in the preload list);
+- install route screens 695,105 B in 42 files (+2,115);
+- warm tools unchanged at 304,647 B.
