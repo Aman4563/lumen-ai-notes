@@ -239,6 +239,7 @@ export const learnAheadCards = (items, now = new Date(), { minutes = LEARN_AHEAD
     .sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt) || String(left.id).localeCompare(String(right.id)));
 };
 
+/** `options.learnAheadIds`: a non-empty array of ids admits those of `learnAheadCards(items, now, { timeZone })`, appended after the due and new cards, earliest first; anything else admits none. */
 export const buildReviewQueue = (items, settings, now = new Date(), sessions = [], options = {}) => {
   const timeZone = options.timeZone || currentTimeZone();
   const todayKey = localDayKey(now, timeZone);
@@ -262,17 +263,17 @@ export const buildReviewQueue = (items, settings, now = new Date(), sessions = [
   }
   due.sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt) || weakFirst(left, right));
   fresh.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || String(left.id).localeCompare(String(right.id)));
-  // A due learning step is not held back by the daily review limit: a card failed on the
-  // last allowed review must still come back after its step, not tomorrow. Steps keep
-  // their due order among the reviews and use no slot; other reviews fill what is left.
+  // A due learning step takes a review slot while one remains, in due order like any review,
+  // since grading it counts as a review: the queue shows only cards the learner can still
+  // grade today. A step passes the limit only when no slot remains, so a card failed on the
+  // last allowed review still comes back after its step, not tomorrow.
   let reviewSlots = reviewRemaining;
   const reviews = [];
   for (const item of due) {
-    if (isLearningStep(item)) reviews.push(item);
-    else if (reviewSlots > 0) {
+    if (reviewSlots > 0) {
       reviews.push(item);
       reviewSlots -= 1;
-    }
+    } else if (isLearningStep(item)) reviews.push(item);
   }
   // Learning ahead is opt-in: only steps the caller lists, and of those only the ones
   // learnAheadCards allows, so a stale or unknown id admits nothing.
@@ -285,7 +286,8 @@ export const buildReviewQueue = (items, settings, now = new Date(), sessions = [
  * The single due count every surface shows (Home widgets, the sidebar and
  * app-icon badges, the review hero): cards actionable in today's queue — not
  * suspended, archived, or buried for today, and within the remaining daily
- * new/review limits (a learning step that is due now is past the review limit).
+ * new/review limits (a learning step that is due now takes a review slot while one
+ * remains, and passes the limit only when none does).
  * It is exactly the queue that Start review opens, and it stays "due now": it
  * never passes `learnAheadIds`, so a card reachable only by learning ahead is
  * not counted.

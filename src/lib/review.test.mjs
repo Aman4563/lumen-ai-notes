@@ -201,9 +201,31 @@ test("due learning steps bypass the spent daily review limit; other reviews stil
   assert.deepEqual(queue(1), ["review-due", "legacy-due", "step-due"]); // main: ["review-due"]
   assert.deepEqual(queue(0), ["review-due", "legacy-due", "step-due"]); // main: ["review-due", "legacy-due"]
   assert.equal(actionableReviewCount({ reviewItems: cards, reviewSettings: settings, reviewSessions: todayUsage(2) }, NOW, "UTC"), 2); // main: 0
-  // A step takes no review slot: sorted between two reviews, it leaves both their places (limit 2, nothing done today).
+  // A step takes a review slot while one remains: sorted between two reviews, it leaves the later review no place (limit 2, nothing done today).
   const around = [probeCard({ id: "review-early", lastReviewedAt: iso(-5 * DAY_MS), intervalDays: 3, dueAt: iso(-2 * DAY_MS) }), stepCard("step-mid", -MINUTE_MS), probeCard({ id: "review-late", lastReviewedAt: iso(-3 * DAY_MS - 30_000), intervalDays: 3, dueAt: iso(-30_000) })];
-  assert.deepEqual(buildReviewQueue(around, settings, NOW, todayUsage(0), { timeZone: "UTC" }).map((item) => item.id), ["review-early", "step-mid", "review-late"]); // main: ["review-early", "step-mid"]
+  assert.deepEqual(buildReviewQueue(around, settings, NOW, todayUsage(0), { timeZone: "UTC" }).map((item) => item.id), ["review-early", "step-mid"]); // main: ["review-early", "step-mid"]
+});
+
+test("every card the daily queue shows can be graded today: a due step takes a review slot while one remains (#149)", () => {
+  const settings = { dailyNewLimit: 0, dailyReviewLimit: 2 };
+  const review = (id, dueInMs) => probeCard({ id, intervalDays: 3, repetitions: 2, reviewCount: 2, lastReviewedAt: iso(dueInMs - 3 * DAY_MS), dueAt: iso(dueInMs) });
+  for (const cards of [
+    [review("review-early", -2 * DAY_MS), stepCard("step-mid", -MINUTE_MS), review("review-late", -30_000)],
+    [review("r1", -2 * DAY_MS), stepCard("step-yesterday", -DAY_MS), review("r2", -12 * 3_600_000), review("r3", -MINUTE_MS)],
+  ]) {
+    let items = cards, sessions = todayUsage(0), now = NOW;
+    const shown = buildReviewQueue(items, settings, now, sessions, { timeZone: "UTC" }).map((item) => item.id);
+    const graded = [];
+    for (let queue; (queue = buildReviewQueue(items, settings, now, sessions, { timeZone: "UTC" })).length && graded.length < 10;) {
+      const usage = recordReviewUsage(sessions, queue[0], now, { timeZone: "UTC" });
+      const { item } = gradeReviewItem(queue[0], "good", now, 0, { sessionKind: usage.kind, sessionKey: usage.sessionKey });
+      graded.push(item.id);
+      items = items.map((entry) => (entry.id === item.id ? item : entry));
+      sessions = usage.sessions;
+      now = new Date(now.getTime() + 1_000);
+    }
+    assert.deepEqual(graded, shown); // fe4a359: each case shows 3 and grades 2
+  }
 });
 
 test("a card failed on the last allowed review is due again 10 minutes later the same day (#149)", () => {
