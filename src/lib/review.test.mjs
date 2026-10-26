@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { masteryByPart } from "./mastery.js";
-import { actionableReviewCount, buildReviewQueue, createReviewItem, emptyReviewSession, formatInterval, gradeReviewItem, isLearningStep, LEARN_AHEAD_MINUTES, learnAheadCards, localDayKey, previewReviewIntervals, recordReviewUsage, REVIEW_SCHEDULE_RULE, restoreReviewItemFromAttempt, reviewStats } from "./review.js";
+import { actionableReviewCount, buildReviewQueue, createReviewItem, emptyReviewSession, formatInterval, gradeReviewItem, isLearningStep, LEARN_AHEAD_MINUTES, learnAheadCards, localDayKey, previewReviewIntervals, recordReviewUsage, REVIEW_SCHEDULE_RULE, restoreReviewItemFromAttempt, reviewAnalytics, reviewStats } from "./review.js";
 
 const DAY_MS = 86_400_000;
 const NOW = new Date("2026-01-15T12:00:00.000Z");
@@ -250,4 +250,113 @@ test("learning ahead never counts as due: only listed steps in the window are ad
   assert.deepEqual(ids({}), ["fresh"]);
   assert.equal(actionableReviewCount({ reviewItems: cards, reviewSettings: settings, reviewSessions: [] }, NOW, "UTC"), 1);
   assert.deepEqual(ids({ learnAheadIds: ["in-9", "in-30", "review-in-5"] }), ["fresh", "in-9"]); // main: ["fresh"]
+});
+
+// #151: an attempt as the app stores it, oldest first. A previous interval of a day or more
+// means the card was in review when graded.
+const graded = (offsetMs, reviewItemId, rating, extra = {}) => ({
+  id: `${reviewItemId}@${offsetMs}`, reviewItemId, rating, elapsedMs: 4_000, reviewedAt: iso(offsetMs),
+  previousIntervalDays: 3, sessionKind: "review", crunch: false, ...extra,
+});
+const minutes = (count) => count * MINUTE_MS; // MINUTE_MS is defined above, for #149
+const YESTERDAY = -DAY_MS; // 2026-01-14T12:00:00Z
+// The issue's fixture: 10 scheduled reviews (r1 and r2 Again), both failures passed 10 minutes
+// later, 3 new cards' first grades and 20 Extra practice grades (half Again).
+const scheduledTen = Array.from({ length: 10 }, (_, index) => graded(YESTERDAY + minutes(index), `r${index + 1}`, index < 2 ? "again" : "good"));
+const sameDayRegrades = ["r1", "r2"].map((id, index) => graded(YESTERDAY + minutes(20 + index), id, "good", { previousIntervalDays: 10 / 1_440 }));
+const newCardFirstGrades = ["n1", "n2", "n3"].map((id, index) => graded(YESTERDAY + minutes(30 + index), id, "good", { previousIntervalDays: 0, sessionKind: "new" }));
+const crunchTwenty = Array.from({ length: 20 }, (_, index) => graded(YESTERDAY + minutes(40 + index), `r${(index % 10) + 1}`, index % 2 ? "good" : "again", { sessionKind: "crunch", crunch: true }));
+const recall = (attempts, timeZone = "UTC") => {
+  const { retention7, retention30, scheduledReviews7, scheduledReviews30, retentionTrend } = reviewAnalytics(attempts, [], NOW, timeZone);
+  return { retention7, retention30, scheduledReviews7, scheduledReviews30, thisWeek: retentionTrend[11] };
+};
+const eightyOfTen = { retention7: 80, retention30: 80, scheduledReviews7: 10, scheduledReviews30: 10, thisWeek: { count: 10, percent: 80 } };
+
+test("recall counts only scheduled reviews: the issue's fixture reads 80% of 10 (#151)", () => {
+  assert.deepEqual(recall([...scheduledTen, ...sameDayRegrades, ...newCardFirstGrades, ...crunchTwenty]), eightyOfTen); // main: 66% of 35
+});
+
+test("Extra practice attempts are left out of recall (#151)", () => {
+  assert.deepEqual(recall([...scheduledTen, ...crunchTwenty]), eightyOfTen); // main: 60% of 30
+  // Either flag alone marks Extra practice: the normalizer fills a missing kind with "review".
+  const oneFlag = [graded(YESTERDAY + minutes(70), "x1", "again", { crunch: true }), graded(YESTERDAY + minutes(71), "x2", "again", { sessionKind: "crunch" })];
+  assert.deepEqual(recall([...scheduledTen, ...oneFlag]), eightyOfTen); // main: 67% of 12
+});
+
+test("a new card's first grade is left out of recall (#151)", () => {
+  assert.deepEqual(recall([...scheduledTen, ...newCardFirstGrades]), eightyOfTen); // main: 85% of 13
+});
+
+test("a re-grade after a same-day failure is left out of recall (#151)", () => {
+  assert.deepEqual(recall([...scheduledTen, ...sameDayRegrades]), eightyOfTen); // main: 83% of 12
+});
+
+test("only a card's first scheduled review of a local day counts (#151)", () => {
+  // Graded on two devices before a sync merged them, both a day or more into the interval:
+  // the first counts though it failed, and the second never does.
+  const twice = [graded(YESTERDAY, "s1", "again"), graded(YESTERDAY + minutes(90), "s1", "good")];
+  assert.deepEqual(recall(twice), { retention7: 0, retention30: 0, scheduledReviews7: 1, scheduledReviews30: 1, thisWeek: { count: 1, percent: 0 } }); // main: 50% of 2
+  // The same card on two days counts on each.
+  const twoDays = [graded(-3 * DAY_MS, "s1", "good"), graded(YESTERDAY, "s1", "again")];
+  assert.deepEqual(recall(twoDays), { retention7: 50, retention30: 50, scheduledReviews7: 2, scheduledReviews30: 2, thisWeek: { count: 2, percent: 50 } });
+});
+
+test("the learner's local day decides which attempts share a day (#151)", () => {
+  // NOW is 07:00 on 15 January in New York (UTC−5).
+  const attempts = [
+    graded(-33 * 3_600_000, "t2", "good"), // 03:00Z on the 14th: 22:00 on the 13th in New York
+    graded(-30 * 3_600_000, "t2", "good"), // 06:00Z on the 14th: 01:00 on the 14th, a new local day
+    graded(-12.5 * 3_600_000, "t1", "good"), // 23:30Z on the 14th: 18:30 on the 14th
+    graded(-7.5 * 3_600_000, "t1", "again"), // 04:30Z on the 15th: 23:30 on the 14th, the same local day
+  ];
+  assert.deepEqual(recall(attempts, "America/New_York"), { retention7: 100, retention30: 100, scheduledReviews7: 3, scheduledReviews30: 3, thisWeek: { count: 3, percent: 100 } }); // main: 75% of 4
+  assert.deepEqual(recall(attempts, "UTC"), { retention7: 67, retention30: 67, scheduledReviews7: 3, scheduledReviews30: 3, thisWeek: { count: 3, percent: 67 } });
+});
+
+test("legacy attempts without an interval and learning steps are left out of recall (#151)", () => {
+  const legacy = graded(YESTERDAY + minutes(5), "l1", "again");
+  delete legacy.previousIntervalDays; // recorded before intervals were stored
+  const attempts = [
+    graded(YESTERDAY, "k1", "good"),
+    legacy,
+    graded(YESTERDAY + minutes(6), "l2", "again", { previousIntervalDays: 0 }), // as the normalizer stores such an attempt
+    graded(YESTERDAY + minutes(7), "l3", "again", { previousIntervalDays: 0.5 }), // a step under a day
+    graded(YESTERDAY + minutes(8), "l4", "again", { previousIntervalDays: 1 }), // exactly a day: in review, counts
+  ];
+  assert.deepEqual(recall(attempts), { retention7: 50, retention30: 50, scheduledReviews7: 2, scheduledReviews30: 2, thisWeek: { count: 2, percent: 50 } }); // main: 20% of 5
+});
+
+test("with only excluded attempts recall reads nothing yet (#151)", () => {
+  const analytics = reviewAnalytics([...sameDayRegrades, ...newCardFirstGrades, ...crunchTwenty], [], NOW, "UTC");
+  assert.deepEqual([analytics.retention7, analytics.retention30, analytics.scheduledReviews7, analytics.scheduledReviews30], [null, null, 0, 0]); // main: 60, 60, undefined, undefined
+  assert.ok(analytics.retentionTrend.every((week) => week.count === 0 && week.percent === null));
+});
+
+test("the 7- and 30-day figures and the 12-week trend count by the same rule (#151)", () => {
+  const crunch = { crunch: true, sessionKind: "crunch" };
+  const analytics = reviewAnalytics([
+    graded(-80 * DAY_MS, "w1", "good"), // 11 weeks ago
+    graded(-80 * DAY_MS + minutes(5), "w2", "again", crunch),
+    graded(-25 * DAY_MS, "w3", "again"),
+    graded(-20 * DAY_MS, "w4", "good"),
+    graded(-11 * DAY_MS, "w5", "good"),
+    graded(-10 * DAY_MS, "w6", "good"),
+    graded(-10 * DAY_MS + minutes(60), "w6", "good"), // the same card that day
+    graded(-3 * DAY_MS, "w7", "good", { sessionKind: "new", previousIntervalDays: 0 }),
+    graded(-2 * DAY_MS, "w8", "again"),
+    graded(YESTERDAY, "w9", "good"),
+    graded(YESTERDAY + minutes(10), "w10", "good", crunch),
+  ], [], NOW, "UTC");
+  assert.deepEqual([analytics.retention7, analytics.scheduledReviews7], [50, 2]); // main: 75% of 4
+  assert.deepEqual([analytics.retention30, analytics.scheduledReviews30], [67, 6]); // main: 78% of 9
+  assert.deepEqual(analytics.retentionTrend.map(({ count, percent }) => [count, percent]), [
+    [1, 100], [0, null], [0, null], [0, null], [0, null], [0, null], [0, null], [0, null],
+    [1, 0], [1, 100], [2, 100], [2, 50],
+  ]); // main: [2, 50] first, then [3, 100] and [4, 75] last
+});
+
+test("median answer time still uses every attempt in 30 days (#151)", () => {
+  const attempts = [...scheduledTen, ...sameDayRegrades, ...newCardFirstGrades, ...crunchTwenty].map((attempt, index) => ({ ...attempt, elapsedMs: (index + 1) * 1_000 }));
+  // 35 attempts taking 1 to 35 s: the median is the 18th, though the scheduled ten took 1 to 10 s.
+  assert.equal(reviewAnalytics(attempts, [], NOW, "UTC").medianLatencyMs, 18_000);
 });

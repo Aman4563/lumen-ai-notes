@@ -453,6 +453,27 @@ export const restoreReviewItemFromAttempt = (item, attempt) => {
   return { ...item, ...attempt.previousState };
 };
 
+// A scheduled review (#151): a card graded in a review session while it was in review (its
+// previous interval a day or more), outside Extra practice. A new card's first grade and a
+// learning step store less than a day, and so does an attempt recorded before intervals were
+// kept (the normalizer stores 0), so none of them counts. #164 adds practice-only sessions here.
+const isScheduledReview = (attempt) => attempt.sessionKind === "review" && !attempt.crunch && Number(attempt.previousIntervalDays) >= 1;
+
+/**
+ * Review analytics in one pass over the attempts, oldest first as the app stores them.
+ *
+ * Recall (`retention7`, `retention30` and the weekly `retentionTrend`) is the share of counted
+ * attempts not rated Again, so it can be set beside the target retention. An attempt counts when
+ * all of these hold:
+ * - it comes from a review session (`sessionKind === "review"`), not a new card's first grade;
+ * - it is not Extra practice (`crunch` is false);
+ * - the card was in review: `previousIntervalDays` is a day or more, so the re-grade of a card
+ *   failed minutes earlier (a learning step) does not count;
+ * - it is the card's first such attempt of the learner's local day, in array order, so a card
+ *   graded on two devices before a sync counts once.
+ * `scheduledReviews7` and `scheduledReviews30` are the sample sizes, and a recall figure is null
+ * exactly when its sample is 0. Median answer time and the streak use every attempt.
+ */
 export const reviewAnalytics = (attempts = [], items = [], now = new Date(), timeZone = currentTimeZone()) => {
   const nowMilliseconds = now.getTime();
   let count7 = 0;
@@ -461,6 +482,7 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
   let retained30 = 0;
   const latencies = [];
   const activeDays = new Set();
+  const countedCardDays = new Set();
   // Twelve weekly retention buckets covering ~90 days, oldest first.
   const trendWeeks = 12;
   const trendCounts = Array(trendWeeks).fill(0);
@@ -469,23 +491,30 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
     const reviewedAt = Date.parse(attempt.reviewedAt);
     if (!Number.isFinite(reviewedAt)) continue;
     const age = nowMilliseconds - reviewedAt;
+    const day = localDayKey(new Date(reviewedAt), timeZone).split("@")[0];
+    // Decided once, before any window, so the 7-day, 30-day and weekly figures count the same attempts.
+    const cardDay = `${attempt.reviewItemId}|${day}`;
+    const counted = isScheduledReview(attempt) && !countedCardDays.has(cardDay);
+    if (counted) countedCardDays.add(cardDay);
     const retained = attempt.rating !== "again";
-    if (age <= 7 * DAY_MS) {
+    if (counted && age <= 7 * DAY_MS) {
       count7 += 1;
       if (retained) retained7 += 1;
     }
     if (age <= 30 * DAY_MS) {
-      count30 += 1;
-      if (retained) retained30 += 1;
-      latencies.push(Number(attempt.elapsedMs) || 0);
+      if (counted) {
+        count30 += 1;
+        if (retained) retained30 += 1;
+      }
+      latencies.push(Number(attempt.elapsedMs) || 0); // every attempt, not only the counted ones
     }
     const week = Math.floor(age / (7 * DAY_MS));
-    if (week >= 0 && week < trendWeeks) {
+    if (counted && week >= 0 && week < trendWeeks) {
       const bucket = trendWeeks - 1 - week;
       trendCounts[bucket] += 1;
       if (retained) trendRetained[bucket] += 1;
     }
-    activeDays.add(localDayKey(new Date(reviewedAt), timeZone).split("@")[0]);
+    activeDays.add(day);
   }
   latencies.sort((left, right) => left - right);
   let streak = 0;
@@ -516,6 +545,8 @@ export const reviewAnalytics = (attempts = [], items = [], now = new Date(), tim
   return {
     retention7: count7 ? Math.round((retained7 / count7) * 100) : null,
     retention30: count30 ? Math.round((retained30 / count30) * 100) : null,
+    scheduledReviews7: count7,
+    scheduledReviews30: count30,
     medianLatencyMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
     streak,
     forecast,
