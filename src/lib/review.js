@@ -168,8 +168,11 @@ export const createReviewItem = ({ front, back, documentId = "", sourceClippingI
 
 export const isNewReviewItem = (item) => (Number(item.reviewCount) || 0) === 0 && !item.lastReviewedAt;
 
+// Whether a card may be offered today: it is not suspended, not archived and not buried on `todayKey`.
+export const isAvailableToday = (item, todayKey) => !item.suspended && !item.archived && item.buriedOnDay !== todayKey;
+
 const isDueAt = (item, nowMilliseconds, todayKey) => {
-  if (item.suspended || item.archived || item.buriedOnDay === todayKey) return false;
+  if (!isAvailableToday(item, todayKey)) return false;
   const dueAt = Date.parse(item.dueAt);
   return Number.isFinite(dueAt) && dueAt <= nowMilliseconds;
 };
@@ -203,13 +206,47 @@ const weakFirst = (left, right) => (
   || String(left.id).localeCompare(String(right.id))
 );
 
+// How far ahead of its due time a learning step may be offered when the learner asks for
+// it. Nothing counts such a card as due until its time comes.
+export const LEARN_AHEAD_MINUTES = 20;
+
+/**
+ * A learning step: a card the learner has already seen whose interval is under a day,
+ * like the 10-minute step Again sets. A step stored as 0.01 day by an earlier build is
+ * one too; it is read as it is and never rewritten.
+ */
+export const isLearningStep = (item) => {
+  const intervalDays = Number(item.intervalDays) || 0;
+  return !isNewReviewItem(item) && intervalDays > 0 && intervalDays < 1;
+};
+
+/**
+ * Learning steps that are not due yet but come due within `minutes`, earliest first:
+ * what a review session may offer early instead of an empty queue while a failed card
+ * waits out its step. Suspended, archived and buried-today cards are left out. This
+ * only lists; a card enters a queue when the caller passes its id to buildReviewQueue.
+ */
+export const learnAheadCards = (items, now = new Date(), { minutes = LEARN_AHEAD_MINUTES, timeZone = currentTimeZone() } = {}) => {
+  const todayKey = localDayKey(now, timeZone);
+  const nowMilliseconds = now.getTime();
+  const horizon = nowMilliseconds + minutes * 60_000;
+  return items
+    .filter((item) => {
+      if (!isAvailableToday(item, todayKey) || !isLearningStep(item)) return false;
+      const dueAt = Date.parse(item.dueAt);
+      return Number.isFinite(dueAt) && dueAt > nowMilliseconds && dueAt <= horizon;
+    })
+    .sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt) || String(left.id).localeCompare(String(right.id)));
+};
+
+/** `options.learnAheadIds`: a non-empty array of ids admits those of `learnAheadCards(items, now, { timeZone })`, appended after the due and new cards, earliest first; anything else admits none. */
 export const buildReviewQueue = (items, settings, now = new Date(), sessions = [], options = {}) => {
   const timeZone = options.timeZone || currentTimeZone();
   const todayKey = localDayKey(now, timeZone);
   const nowMilliseconds = now.getTime();
   if (options.crunch) {
     return items
-      .filter((item) => !item.suspended && !item.archived && item.buriedOnDay !== todayKey)
+      .filter((item) => isAvailableToday(item, todayKey))
       .sort(weakFirst)
       .slice(0, clamp(Number(options.crunchLimit) || 20, 1, 100));
   }
@@ -226,14 +263,34 @@ export const buildReviewQueue = (items, settings, now = new Date(), sessions = [
   }
   due.sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt) || weakFirst(left, right));
   fresh.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || String(left.id).localeCompare(String(right.id)));
-  return [...due.slice(0, reviewRemaining), ...fresh.slice(0, newRemaining)];
+  // A due learning step takes a review slot while one remains, in due order like any review,
+  // since grading it counts as a review: the queue shows only cards the learner can still
+  // grade today. A step passes the limit only when no slot remains, so a card failed on the
+  // last allowed review still comes back after its step, not tomorrow.
+  let reviewSlots = reviewRemaining;
+  const reviews = [];
+  for (const item of due) {
+    if (reviewSlots > 0) {
+      reviews.push(item);
+      reviewSlots -= 1;
+    } else if (isLearningStep(item)) reviews.push(item);
+  }
+  // Learning ahead is opt-in: only steps the caller lists, and of those only the ones
+  // learnAheadCards allows, so a stale or unknown id admits nothing.
+  const listed = Array.isArray(options.learnAheadIds) && options.learnAheadIds.length > 0 ? new Set(options.learnAheadIds) : null;
+  const early = listed ? learnAheadCards(items, now, { timeZone }).filter((item) => listed.has(item.id)) : [];
+  return [...reviews, ...fresh.slice(0, newRemaining), ...early];
 };
 
 /**
  * The single due count every surface shows (Home widgets, the sidebar and
  * app-icon badges, the review hero): cards actionable in today's queue — not
  * suspended, archived, or buried for today, and within the remaining daily
- * new/review limits. It is exactly the queue that Start review opens.
+ * new/review limits (a learning step that is due now takes a review slot while one
+ * remains, and passes the limit only when none does).
+ * It is exactly the queue that Start review opens, and it stays "due now": it
+ * never passes `learnAheadIds`, so a card reachable only by learning ahead is
+ * not counted.
  */
 export const actionableReviewCount = ({ reviewItems = [], reviewSettings = {}, reviewSessions = [] } = {}, now = new Date(), timeZone = currentTimeZone()) => (
   buildReviewQueue(reviewItems, reviewSettings, now, reviewSessions, { timeZone }).length
@@ -261,13 +318,16 @@ export const reviewStats = (items, now = new Date(), timeZone = currentTimeZone(
   return stats;
 };
 
-// The Classic rule every new attempt records, so sync replay grades it the way it
+// The schedule rule every new attempt records, so sync replay grades it the way it
 // was graded. Rule 1 multiplied the interval however recently the card was
 // reviewed (attempts recorded before #148 carry no rule and replay under it);
-// rule 2 grows an early review from the elapsed time. #149 bumps this constant.
-export const REVIEW_SCHEDULE_RULE = 2;
+// rule 2 grows an early review from the elapsed time; rule 3 stores a step under a
+// day to the minute under Classic and FSRS, so 10 minutes is due in 10 minutes.
+export const REVIEW_SCHEDULE_RULE = 3;
 // From this rule on, Classic grading is early-aware; a later build's rule keeps it.
 const EARLY_AWARE_SCHEDULE_RULE = 2;
+// From this rule on, a step under a day is stored to the minute; a later build's rule keeps it.
+const MINUTE_STEP_SCHEDULE_RULE = 3;
 const MAX_SCHEDULE_RULE = 1_000;
 
 export const normalizeScheduleRule = (value, fallback = 1) => {
@@ -298,13 +358,27 @@ const intervalForRating = (item, rating, now, scheduleRule) => {
   return { intervalDays: firstReview ? 4 : Math.max(4, priorInterval * priorEase * 1.3), ease: clamp(priorEase + 0.15, 1.3, 3.5), repetitions: (Number(item.repetitions) || 0) + 1 };
 };
 
+// The interval a rule stores and how long until it is due. From rule 3 a step under
+// a day is kept to the minute, since 0.01 day is 14.4 minutes and a 10-minute step
+// came due late; a longer interval, and any older rule, rounds to 0.01 day, so
+// replaying an earlier attempt rebuilds the card it was graded into.
+const scheduledInterval = (days, scheduleRule) => {
+  const clamped = clamp(days, 10 / 1_440, 36_500);
+  if (scheduleRule >= MINUTE_STEP_SCHEDULE_RULE && clamped < 1) {
+    const minutes = Math.round(clamped * 1_440);
+    return { intervalDays: minutes / 1_440, dueInMs: minutes * 60_000 };
+  }
+  const intervalDays = Math.round(clamped * 100) / 100;
+  return { intervalDays, dueInMs: intervalDays * DAY_MS };
+};
+
 export const previewReviewIntervals = (item, { scheduler = "sm2", requestRetention = FSRS_DEFAULT_RETENTION, weights, now = new Date() } = {}) => Object.fromEntries(REVIEW_RATINGS.map(({ id }) => {
   if (scheduler === "fsrs") {
     const result = fsrsGrade(item, id, now, { requestRetention, ...(Array.isArray(weights) && weights.length === 17 ? { weights } : {}) });
-    return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
+    return [id, scheduledInterval(result.intervalDays, REVIEW_SCHEDULE_RULE).intervalDays];
   }
   const result = intervalForRating(item, id, now, REVIEW_SCHEDULE_RULE);
-  return [id, Math.round(clamp(result.intervalDays, 10 / 1_440, 36_500) * 100) / 100];
+  return [id, scheduledInterval(result.intervalDays, REVIEW_SCHEDULE_RULE).intervalDays];
 }));
 
 const schedulingSnapshot = (item) => ({
@@ -338,8 +412,8 @@ export const gradeReviewItem = (item, rating, now = new Date(), elapsedMs = 0, m
       repetitions: rating === "again" ? 0 : (Number(item.repetitions) || 0) + 1,
     }
     : intervalForRating(item, rating, now, scheduleRule);
-  const intervalDays = Math.round(clamp(schedule.intervalDays, 10 / 1_440, 36_500) * 100) / 100;
-  const nextDueAt = new Date(now.getTime() + intervalDays * DAY_MS).toISOString();
+  const { intervalDays, dueInMs } = scheduledInterval(schedule.intervalDays, scheduleRule);
+  const nextDueAt = new Date(now.getTime() + dueInMs).toISOString();
   const lapses = (Number(item.lapses) || 0) + (rating === "again" && priorReviewCount > 0 ? 1 : 0);
   const updated = {
     ...item,

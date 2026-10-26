@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { masteryByPart } from "./mastery.js";
-import { createReviewItem, gradeReviewItem, previewReviewIntervals, REVIEW_SCHEDULE_RULE, restoreReviewItemFromAttempt, reviewStats } from "./review.js";
+import { actionableReviewCount, buildReviewQueue, createReviewItem, emptyReviewSession, formatInterval, gradeReviewItem, isLearningStep, LEARN_AHEAD_MINUTES, learnAheadCards, localDayKey, previewReviewIntervals, recordReviewUsage, REVIEW_SCHEDULE_RULE, restoreReviewItemFromAttempt, reviewStats } from "./review.js";
 
 const DAY_MS = 86_400_000;
 const NOW = new Date("2026-01-15T12:00:00.000Z");
@@ -70,31 +70,36 @@ test("a due or overdue card is graded exactly as before", () => {
 test("new cards, sub-day steps and Again keep today's rules", () => {
   const fresh = createReviewItem({ front: "q", back: "a" }, NOW);
   assert.deepEqual(["hard", "good", "easy"].map((rating) => gradeReviewItem(fresh, rating, NOW).item.intervalDays), [1, 1, 4]);
-  // Failed a minute ago, still inside its 10-minute step (stored as 0.01 day).
-  const step = probeCard({ intervalDays: 0.01, repetitions: 0, reviewCount: 5, lapses: 1, lastReviewedAt: iso(-60_000), dueAt: iso(804_000) });
-  assert.deepEqual(schedule(gradeReviewItem(step, "hard", NOW).item), { intervalDays: 1, ease: 2.35, repetitions: 1 });
-  assert.deepEqual(schedule(gradeReviewItem(step, "good", NOW).item), { intervalDays: 3, ease: 2.5, repetitions: 1 });
-  assert.deepEqual(schedule(gradeReviewItem(step, "easy", NOW).item), { intervalDays: 4, ease: 2.65, repetitions: 1 });
+  // Failed a minute ago, still inside its 10-minute step: stored as 0.01 day before #149 and as
+  // 10/1440 day since. Retry grades exactly such cards, so both must grade alike.
+  for (const intervalDays of [0.01, 10 / 1_440]) {
+    const step = probeCard({ intervalDays, repetitions: 0, reviewCount: 5, lapses: 1, lastReviewedAt: iso(-60_000), dueAt: iso(-60_000 + Math.round(intervalDays * DAY_MS)) });
+    assert.deepEqual(schedule(gradeReviewItem(step, "hard", NOW).item), { intervalDays: 1, ease: 2.35, repetitions: 1 }, `hard from ${intervalDays}`);
+    assert.deepEqual(schedule(gradeReviewItem(step, "good", NOW).item), { intervalDays: 3, ease: 2.5, repetitions: 1 }, `good from ${intervalDays}`);
+    assert.deepEqual(schedule(gradeReviewItem(step, "easy", NOW).item), { intervalDays: 4, ease: 2.65, repetitions: 1 }, `easy from ${intervalDays}`);
+  }
   const lapse = gradeReviewItem(probeCard(), "again", NOW).item;
-  assert.deepEqual({ ...schedule(lapse), lapses: lapse.lapses }, { intervalDays: 0.01, ease: 2.3, repetitions: 0, lapses: 1 });
+  assert.deepEqual({ ...schedule(lapse), lapses: lapse.lapses }, { intervalDays: 10 / 1_440, ease: 2.3, repetitions: 0, lapses: 1 });
 });
 
-test("attempts record schedule rule 2 and grade an older rule on request", () => {
-  assert.equal(REVIEW_SCHEDULE_RULE, 2);
-  assert.equal(gradeReviewItem(probeCard(), "good", NOW).attempt.scheduleRule, 2);
+test("attempts record schedule rule 3 and grade an older rule on request", () => {
+  assert.equal(REVIEW_SCHEDULE_RULE, 3);
+  assert.equal(gradeReviewItem(probeCard(), "good", NOW).attempt.scheduleRule, 3);
   const legacy = gradeReviewItem(probeCard(), "good", NOW, 0, { scheduleRule: 1 });
   assert.deepEqual([legacy.item.intervalDays, legacy.attempt.scheduleRule], [25, 1], "rule 1 multiplies however early the review");
-  const newer = gradeReviewItem(probeCard(), "good", NOW, 0, { scheduleRule: 3 });
-  assert.deepEqual([newer.item.intervalDays, newer.attempt.scheduleRule], [10, 3], "a later build's rule stays early-aware");
+  const earlyAware = gradeReviewItem(probeCard(), "good", NOW, 0, { scheduleRule: 2 });
+  assert.deepEqual([earlyAware.item.intervalDays, earlyAware.attempt.scheduleRule], [10, 2], "rule 2 stays early-aware");
+  const newer = gradeReviewItem(probeCard(), "good", NOW, 0, { scheduleRule: 4 });
+  assert.deepEqual([newer.item.intervalDays, newer.attempt.scheduleRule], [10, 4], "a later build's rule stays early-aware");
   for (const malformed of [0, -1, 2.5, "x", null]) {
-    assert.equal(gradeReviewItem(probeCard(), "good", NOW, 0, { scheduleRule: malformed }).attempt.scheduleRule, 2);
+    assert.equal(gradeReviewItem(probeCard(), "good", NOW, 0, { scheduleRule: malformed }).attempt.scheduleRule, 3);
   }
 });
 
 test("the rating preview grades at the given time", () => {
   const card = probeCard();
   const preview = previewReviewIntervals(card, { now: NOW });
-  assert.deepEqual(preview, { again: 0.01, hard: 10, good: 10, easy: 10 }); // main: 12, 25, 32.5
+  assert.deepEqual(preview, { again: 10 / 1_440, hard: 10, good: 10, easy: 10 }); // main: 12, 25, 32.5
   for (const rating of ["again", "hard", "good", "easy"]) assert.equal(preview[rating], gradeReviewItem(card, rating, NOW).item.intervalDays);
   assert.equal(previewReviewIntervals(card, { scheduler: "fsrs", requestRetention: 0.9, now: NOW }).good, 13); // main grades at the wall clock
 });
@@ -128,4 +133,121 @@ test("undo restores an early grade exactly", () => {
   const graded = gradeReviewItem(card, "good", NOW, 0, { crunch: true });
   const restored = restoreReviewItemFromAttempt(graded.item, graded.attempt);
   for (const field of ["dueAt", "intervalDays", "ease", "repetitions", "reviewCount", "lapses", "lastReviewedAt"]) assert.equal(restored[field], card[field], field);
+});
+
+const STEP_DAYS = 10 / 1_440;
+const STEP_MS = 600_000;
+
+test("Again sets a 10-minute step due exactly 600,000 ms later under Classic and FSRS (#149)", () => {
+  const fresh = createReviewItem({ front: "q", back: "a" }, NOW);
+  for (const [scheduler, card, rating] of [["sm2", probeCard(), "again"], ["fsrs", probeCard(), "again"], ["fsrs", fresh, "hard"]]) {
+    const { item, attempt } = gradeReviewItem(card, rating, NOW, 0, { scheduler, requestRetention: 0.9 });
+    assert.equal(item.intervalDays, STEP_DAYS, `${scheduler} ${rating}`); // main: 0.01
+    assert.equal(Date.parse(item.dueAt) - NOW.getTime(), STEP_MS); // main: 864,000
+    assert.deepEqual([attempt.nextIntervalDays, Date.parse(attempt.nextDueAt) - Date.parse(attempt.reviewedAt), attempt.scheduleRule], [STEP_DAYS, STEP_MS, 3]);
+    assert.equal(formatInterval(item.intervalDays), "10 min"); // main: "14 min"
+  }
+});
+
+test("the Again button previews the 10-minute step under both schedulers (#149)", () => {
+  for (const scheduler of ["sm2", "fsrs"]) {
+    const again = previewReviewIntervals(probeCard(), { scheduler, requestRetention: 0.9, now: NOW }).again;
+    assert.deepEqual([again, formatInterval(again)], [STEP_DAYS, "10 min"]); // main: 0.01, "14 min"
+  }
+});
+
+// Guards: these pass on main and must keep passing.
+test("an attempt graded under rule 2 or below keeps the 0.01-day step (#149)", () => {
+  for (const scheduleRule of [1, 2]) for (const scheduler of ["sm2", "fsrs"]) {
+    const { item, attempt } = gradeReviewItem(probeCard(), "again", NOW, 0, { scheduler, requestRetention: 0.9, scheduleRule });
+    assert.deepEqual([item.intervalDays, Date.parse(item.dueAt) - NOW.getTime(), attempt.scheduleRule], [0.01, 864_000, scheduleRule]);
+  }
+});
+
+test("rule 3 grades a day or more exactly as rule 2 (#149)", () => {
+  const dueNow = probeCard({ lastReviewedAt: iso(-10 * DAY_MS), dueAt: iso(0) });
+  for (const card of [dueNow, probeCard()]) for (const rating of ["hard", "good", "easy"]) {
+    const pick = ({ item }) => [item.intervalDays, item.dueAt, item.ease, item.repetitions];
+    assert.deepEqual(pick(gradeReviewItem(card, rating, NOW, 0, { scheduleRule: 3 })), pick(gradeReviewItem(card, rating, NOW, 0, { scheduleRule: 2 })));
+  }
+});
+
+const MINUTE_MS = 60_000;
+// A card failed earlier and now in its 10-minute step, due `dueInMs` from NOW.
+const stepCard = (id, dueInMs, extra = {}) => probeCard({ id, intervalDays: 10 / 1_440, repetitions: 0, reviewCount: 5, lapses: 1, lastReviewedAt: iso(dueInMs - 10 * MINUTE_MS), dueAt: iso(dueInMs), ...extra });
+const todayUsage = (reviewCompleted) => [{ ...emptyReviewSession(NOW, "UTC"), reviewCompleted }];
+
+test("learnAheadCards returns active learning steps due within 20 minutes, earliest first (#149)", () => {
+  assert.equal(LEARN_AHEAD_MINUTES, 20);
+  const cards = [
+    stepCard("in-20", 20 * MINUTE_MS), stepCard("in-9-b", 9 * MINUTE_MS), stepCard("in-9-a", 9 * MINUTE_MS),
+    stepCard("legacy-in-5", 5 * MINUTE_MS, { intervalDays: 0.01 }), // stored before #149
+    stepCard("in-21", 21 * MINUTE_MS), stepCard("due-now", 0), stepCard("overdue", -MINUTE_MS),
+    stepCard("suspended", 5 * MINUTE_MS, { suspended: true }), stepCard("archived", 5 * MINUTE_MS, { archived: true }),
+    stepCard("buried", 5 * MINUTE_MS, { buriedOnDay: localDayKey(NOW, "UTC") }),
+    probeCard({ id: "review-in-5", lastReviewedAt: iso(-3 * DAY_MS), intervalDays: 3, dueAt: iso(5 * MINUTE_MS) }),
+    { ...createReviewItem({ front: "new", back: "card" }, NOW), id: "new-in-5", dueAt: iso(5 * MINUTE_MS) },
+  ];
+  assert.deepEqual(learnAheadCards(cards, NOW, { timeZone: "UTC" }).map((item) => item.id), ["legacy-in-5", "in-9-a", "in-9-b", "in-20"]);
+  assert.deepEqual(learnAheadCards(cards, NOW, { minutes: 10, timeZone: "UTC" }).map((item) => item.id), ["legacy-in-5", "in-9-a", "in-9-b"]);
+  assert.deepEqual([stepCard("s", 0), stepCard("l", 0, { intervalDays: 0.01 }), probeCard(), createReviewItem({ front: "n", back: "c" }, NOW), probeCard({ intervalDays: 0 }), probeCard({ intervalDays: 1 })].map(isLearningStep), [true, true, false, false, false, false]); // a 1-day card is not a step
+});
+
+test("due learning steps bypass the spent daily review limit; other reviews still wait (#149)", () => {
+  const settings = { dailyNewLimit: 0, dailyReviewLimit: 2 };
+  const cards = [probeCard({ id: "review-due", lastReviewedAt: iso(-4 * DAY_MS), intervalDays: 3, dueAt: iso(-DAY_MS) }), stepCard("step-due", -MINUTE_MS), stepCard("legacy-due", -2 * MINUTE_MS, { intervalDays: 0.01 })];
+  const queue = (completed) => buildReviewQueue(cards, settings, NOW, todayUsage(completed), { timeZone: "UTC" }).map((item) => item.id);
+  assert.deepEqual(queue(2), ["legacy-due", "step-due"]); // main: []
+  assert.deepEqual(queue(1), ["review-due", "legacy-due", "step-due"]); // main: ["review-due"]
+  assert.deepEqual(queue(0), ["review-due", "legacy-due", "step-due"]); // main: ["review-due", "legacy-due"]
+  assert.equal(actionableReviewCount({ reviewItems: cards, reviewSettings: settings, reviewSessions: todayUsage(2) }, NOW, "UTC"), 2); // main: 0
+  // A step takes a review slot while one remains: sorted between two reviews, it leaves the later review no place (limit 2, nothing done today).
+  const around = [probeCard({ id: "review-early", lastReviewedAt: iso(-5 * DAY_MS), intervalDays: 3, dueAt: iso(-2 * DAY_MS) }), stepCard("step-mid", -MINUTE_MS), probeCard({ id: "review-late", lastReviewedAt: iso(-3 * DAY_MS - 30_000), intervalDays: 3, dueAt: iso(-30_000) })];
+  assert.deepEqual(buildReviewQueue(around, settings, NOW, todayUsage(0), { timeZone: "UTC" }).map((item) => item.id), ["review-early", "step-mid"]); // main: ["review-early", "step-mid"]
+});
+
+test("every card the daily queue shows can be graded today: a due step takes a review slot while one remains (#149)", () => {
+  const settings = { dailyNewLimit: 0, dailyReviewLimit: 2 };
+  const review = (id, dueInMs) => probeCard({ id, intervalDays: 3, repetitions: 2, reviewCount: 2, lastReviewedAt: iso(dueInMs - 3 * DAY_MS), dueAt: iso(dueInMs) });
+  for (const cards of [
+    [review("review-early", -2 * DAY_MS), stepCard("step-mid", -MINUTE_MS), review("review-late", -30_000)],
+    [review("r1", -2 * DAY_MS), stepCard("step-yesterday", -DAY_MS), review("r2", -12 * 3_600_000), review("r3", -MINUTE_MS)],
+  ]) {
+    let items = cards, sessions = todayUsage(0), now = NOW;
+    const shown = buildReviewQueue(items, settings, now, sessions, { timeZone: "UTC" }).map((item) => item.id);
+    const graded = [];
+    for (let queue; (queue = buildReviewQueue(items, settings, now, sessions, { timeZone: "UTC" })).length && graded.length < 10;) {
+      const usage = recordReviewUsage(sessions, queue[0], now, { timeZone: "UTC" });
+      const { item } = gradeReviewItem(queue[0], "good", now, 0, { sessionKind: usage.kind, sessionKey: usage.sessionKey });
+      graded.push(item.id);
+      items = items.map((entry) => (entry.id === item.id ? item : entry));
+      sessions = usage.sessions;
+      now = new Date(now.getTime() + 1_000);
+    }
+    assert.deepEqual(graded, shown); // fe4a359: each case shows 3 and grades 2
+  }
+});
+
+test("a card failed on the last allowed review is due again 10 minutes later the same day (#149)", () => {
+  const settings = { dailyNewLimit: 0, dailyReviewLimit: 2 };
+  const card = probeCard({ id: "last-allowed", lastReviewedAt: iso(-4 * DAY_MS), intervalDays: 3, dueAt: iso(-DAY_MS) });
+  const usage = recordReviewUsage(todayUsage(1), card, NOW, { timeZone: "UTC" });
+  const { item } = gradeReviewItem(card, "again", NOW, 0, { sessionKind: usage.kind, sessionKey: usage.sessionKey });
+  assert.equal(usage.sessions[0].reviewCompleted, 2, "the failing grade spends the last review");
+  const view = (offsetMs) => {
+    const now = new Date(NOW.getTime() + offsetMs);
+    return { queue: buildReviewQueue([item], settings, now, usage.sessions, { timeZone: "UTC" }).map((entry) => entry.id), ahead: learnAheadCards([item], now, { timeZone: "UTC" }).map((entry) => entry.id) };
+  };
+  assert.deepEqual(view(9 * MINUTE_MS), { queue: [], ahead: ["last-allowed"] });
+  assert.deepEqual(view(10 * MINUTE_MS), { queue: ["last-allowed"], ahead: [] }); // main: [] until tomorrow
+});
+
+test("learning ahead never counts as due: only listed steps in the window are admitted (#149)", () => {
+  const settings = { dailyNewLimit: 5, dailyReviewLimit: 50 };
+  // "in-12" is inside the window but never listed, so it must stay out.
+  const cards = [stepCard("in-9", 9 * MINUTE_MS), stepCard("in-12", 12 * MINUTE_MS), stepCard("in-30", 30 * MINUTE_MS), probeCard({ id: "review-in-5", lastReviewedAt: iso(-3 * DAY_MS), intervalDays: 3, dueAt: iso(5 * MINUTE_MS) }), { ...createReviewItem({ front: "new", back: "card" }, at(-DAY_MS)), id: "fresh" }];
+  const ids = (options) => buildReviewQueue(cards, settings, NOW, [], { timeZone: "UTC", ...options }).map((item) => item.id);
+  assert.deepEqual(ids({}), ["fresh"]);
+  assert.equal(actionableReviewCount({ reviewItems: cards, reviewSettings: settings, reviewSessions: [] }, NOW, "UTC"), 1);
+  assert.deepEqual(ids({ learnAheadIds: ["in-9", "in-30", "review-in-5"] }), ["fresh", "in-9"]); // main: ["fresh"]
 });

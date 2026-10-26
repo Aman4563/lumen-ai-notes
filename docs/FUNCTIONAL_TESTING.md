@@ -408,9 +408,9 @@ re-renders, the offline status, the Ctrl+K dialog guard, and forced colors.
 After the routes it scans screen states the routes never open (its `STATES`
 list, issue #97): narration speaking, a failed sentence, the Listen panel,
 the sleep timer's toast, Teaching Mode, Teaching Mode on a failed
-sentence, an Extra practice session (#148), and Teaching Mode after an
-in-page link jump (#150), each in every theme and
-viewport, plus a failed sentence in phone landscape (852×393), once per
+sentence, an Extra practice session (#148), Teaching Mode after an
+in-page link jump (#150), and a review session's retry state (#149), each in
+every theme and viewport, plus a failed sentence in phone landscape (852×393), once per
 theme: a state with its own `viewport` runs only in the phone pass. An open
 dialog must hold focus. The Extra practice state adds one card to the
 stored profile and removes it again, so the routes keep their empty deck.
@@ -418,7 +418,11 @@ It checks that the notice fits the layout viewport
 (`document.documentElement.clientWidth`; on a phone-emulated page
 `innerWidth` grows to fit overflowing content). It also turns off the body's
 decorative gradient before axe runs, because axe reports text over a
-gradient as incomplete and never measures its contrast.
+gradient as incomplete and never measures its contrast. The retry state
+stores a due card and a learning step due in 9 minutes, buries the due card
+in a session, and checks that the panel fits the layout viewport and, on the
+phone pass, that its title holds focus and every session button is a 44 px
+target. It waits for the bury to be saved before it removes both cards.
 
 `src/lib/themeContrast.test.mjs` runs in `npm run check`. It parses the theme
 token blocks in `src/styles.css`. It requires 4.5:1 for every text token on
@@ -4367,3 +4371,144 @@ attempt is not evidence. The Mac, lid closed and on battery, slept for 927 s
 inside `audit:ai`, so three timing tests failed after about 925 s each. The
 browser run that followed was stopped while the machine kept sleeping. The
 gate above ran with the machine awake throughout.
+
+## Bugs reproduced on 2026-10-26: a failed card is not asked again (#149)
+
+Against main (97d3e2e), a read-only probe imported `review.js`:
+
+- A card graded Again was due 14.4 minutes later, not 10. `gradeReviewItem`
+  rounded every interval to 0.01 day, so the 10-minute step was 864,000 ms.
+  The Again button read "14 min".
+- Two seconds after the Again the queue was empty, so the session ended, and
+  11 minutes later it was still empty: `queue before grading: 1; 2 s after
+  "Again": 0 (session ends); due again at 2026-10-22T12:14:24.000Z; queue 11
+  min later: 0`.
+- In Extra practice every graded card joined the seen list the queue filters
+  out, so a failed card never came back.
+- The daily review limit sliced every due card that is not new, so a card
+  failed on the last allowed review stayed hidden until tomorrow.
+
+What changed:
+
+- **Schedule rule 3.**
+  - New attempts record `scheduleRule: 3`. Under it, an interval shorter than
+    a day is stored to the minute, and its due time is the review time plus
+    whole minutes.
+  - Again gives `10 / 1_440` day, due exactly 600,000 ms later, reading
+    "10 min", under Classic and FSRS.
+  - Intervals of a day or more are byte-identical to rule 2.
+  - Attempts at rule 2 or below replay with the 0.01-day step, so two tabs
+    merging old and new attempts rebuild the same card.
+  - Cards already stored at 0.01 day are not rewritten.
+- **`learnAheadCards`** lists active cards in a step shorter than a day that
+  come due within 20 minutes, earliest first.
+- **The daily limit.**
+  - A due step takes a review slot while one is left, and passes the daily
+    review limit only when none is. A step always finishes today, and the
+    queue never shows a card the limit will not let the learner grade.
+  - Its grade still counts in the day's reviews.
+  - Home, the hero, the badges and the daily plan still count only cards due
+    now.
+- **The retry state.**
+  - When a daily session's queue is empty but a step is due within 20
+    minutes, the session shows "1 card to retry · due in N min" with Retry
+    now and End session, instead of "Session complete". The panel's heading
+    takes focus, the header reads "1 · to retry", and the progress bar counts
+    the pending card.
+  - Retry now shows the card early. Failing it again asks again.
+  - A step that comes due mid-session rejoins on the 30-second clock tick
+    without hiding an answer already shown. While the panel shows, the card
+    itself appears on the tick.
+  - Each grade's polite status is composed once the grade has landed, so
+    each step is announced once.
+  - Undo hides the answer again when it restores the card on screen.
+  - The session header's buttons are 44 px tall on phones.
+- **Extra practice.** A card's first Again asks it once more, after the rest
+  of the session. Undo keeps that second ask last.
+
+How each is now checked (each new check was run against main 97d3e2e with
+this branch's tests copied in):
+
+- **`src/lib/review.test.mjs`.**
+  - The file fails to load on main, which has no `LEARN_AHEAD_MINUTES`.
+  - With the three new names stubbed, 9 of 21 tests fail with main's
+    values:
+    - the lapse at 0.01 day;
+    - the current rule (2);
+    - the preview's `again: 0.01`;
+    - the step at 864,000 ms;
+    - the Again button's "14 min";
+    - `LEARN_AHEAD_MINUTES`;
+    - the bypass of a spent limit (`[]`, not the two steps);
+    - learn-ahead after the last allowed review;
+    - admitted steps (`["fresh"]`, not `["fresh", "in-9"]`).
+  - The walk-through test "every card the daily queue shows can be graded
+    today" passes on main, whose slice had no such gap. It fails on this
+    branch's earlier rule, under which steps never took a slot: 3 cards
+    shown, 2 graded.
+- **`src/lib/profileSync.test.mjs`:** a rule-2 and a rule-3 Again of one
+  card merge to the same card in either order. Main gives `[0.01, 0.01]`.
+- **`scripts/unit_audit.mjs`:** the lapse interval changes from `0.01` to
+  `10 / 1_440`. Main fails there.
+- **`audit:review`.**
+  - The main flow's two steps that fail the last card now pass through the
+    retry state.
+  - Scenarios A to I, in a context whose page clock is advanced on demand
+    and whose time zone sits near midday:
+    - A, the only card failed: by keyboard, Undo, Retry now and the exact
+      status log.
+    - B, a step rejoining while another answer is revealed. The answer
+      timer is kept.
+    - C, the spent daily limit, with Home's count.
+    - D to G, Extra practice's second ask, with undo chains and bury.
+    - H, a pending card presented on the clock tick.
+    - I, undo hiding the answer again.
+  - On main the suite fails at its first new check, "failing the last card
+    must offer to retry it".
+- **`audit:a11y`:** a `review-retry` state, scanned in Paper, Night and
+  Contrast at 393×852 and 1280×800 (six more axe runs, 132 in all after the
+  rebase). On main its six
+  passes report "could not be scanned".
+- **`audit:responsive`:** a `review-retry` surface at all 11 viewports,
+  including 320 px, 200% text and landscape (489 → 500 checks). On main it
+  stops at the first viewport, waiting for the retry panel.
+
+Assertions changed on purpose:
+
+- `unit_audit`'s lapse interval.
+- #148's `review.test.mjs`: the lapse, the current rule (now 3, with rule 2
+  listed explicitly) and the preview's Again.
+- #148's `review_audit`: "10 min · 1", and rule 3 on Extra practice
+  attempts.
+- Two #148 sync tests now pass `scheduleRule: 2` explicitly; their
+  assertions are unchanged.
+- The two main-flow steps that fail the last card now pass through the
+  retry state.
+- This branch's own slot-rule case now expects two cards.
+
+Found and not fixed here:
+
+- A step left from an earlier day, legacy 0.01-day steps included, still
+  passes a spent limit. That bound belongs to the day-boundary work the
+  issue defers.
+- A step graded past the limit counts in the day's reviews, so the hero can
+  read "21/20 reviews".
+- Under FSRS, a new card rated Hard or Good is in a 10-minute learning step
+  and is offered as "1 card to retry".
+- A tab still on the #148 build that replays a rule-3 attempt stores the
+  0.01-day step until it reloads.
+
+Budgets (`npm run size`, against main bb2467f built the same way):
+- entry 623,762 bytes (main 623,753);
+- the HTML loads 654,386 bytes of JavaScript (main 653,704);
+- install route screens 697,565 bytes in 42 files (main 695,105), of which
+  the ReviewCenter chunk is 55,313 bytes (main 52,853);
+- warm tools unchanged at 304,647 bytes.
+
+Gate on the branch (rebased onto bb2467f, Node 26.12.1): `npm run check`
+passed (`audit:ai` 637/637; `audit:ai-eval` 27 cases, hit@1 0.913).
+The full `npm run check:browser` passed all 14 suites on the first attempt,
+with no retries, in 45 minutes. It ran at a load average of 2 to 8, beside
+another gate, which slowed `audio` (960 s) and `review` (769 s). `responsive`
+took 141 s, with 500 checks and 378 controls, and `a11y` 79 s, with 132 axe
+runs and 10 states.

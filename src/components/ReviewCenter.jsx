@@ -48,7 +48,11 @@ import {
   renderClozePrompt,
   formatLatency,
   getTodayReviewUsage,
+  isAvailableToday,
+  isLearningStep,
   isNewReviewItem,
+  learnAheadCards,
+  localDayKey,
   previewReviewIntervals,
   REVIEW_CARD_TYPES,
   REVIEW_RATINGS,
@@ -491,15 +495,24 @@ export default function ReviewCenter({
   const [confidence, setConfidence] = useState(3);
   const [crunch, setCrunch] = useState(false);
   const [sessionSeen, setSessionSeen] = useState([]);
+  // Extra practice asks a card failed once more, after the rest of the session (issue #149):
+  // the cards failed so far, in fail order, and the ones already asked the second time.
+  const [crunchFailedIds, setCrunchFailedIds] = useState([]);
+  const [crunchRetriedIds, setCrunchRetriedIds] = useState([]);
   const [deckQuery, setDeckQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [deckPage, setDeckPage] = useState(1);
   const [clock, setClock] = useState(() => new Date());
   const [sessionDone, setSessionDone] = useState(0);
   const [announcement, setAnnouncement] = useState("");
+  // Learning steps the learner asked to see before they are due (Retry now, issue #149).
+  const [learnAheadIds, setLearnAheadIds] = useState([]);
+  // A grade's outcome, announced once the grade has landed (the queue effect).
+  const pendingOutcomeRef = useRef("");
   const startedAt = useRef(Date.now());
   const promptRef = useRef(null);
   const answerRef = useRef(null);
+  const retryHeadingRef = useRef(null);
   const startButtonRef = useRef(null);
   const titleRef = useRef(null);
   const deckHeadingRef = useRef(null);
@@ -528,13 +541,18 @@ export default function ReviewCenter({
   // tick. Use a render-time monotonic floor so it is immediately eligible
   // instead of briefly showing an empty queue before the effect runs.
   const queueNow = new Date(Math.max(clock.getTime(), Date.now()));
+  // Steps shown early belong to the daily session only: the hero, like Home and
+  // the badges, counts what is due now.
   const baseQueue = useMemo(() => buildReviewQueue(
     profile.reviewItems,
     profile.reviewSettings,
     queueNow,
     profile.reviewSessions,
-    { timeZone, crunch, crunchLimit: 20 },
-  ), [crunch, profile.reviewItems, profile.reviewSessions, profile.reviewSettings, queueNow.getTime(), timeZone]);
+    { timeZone, crunch, crunchLimit: 20, ...(session && !crunch ? { learnAheadIds } : {}) },
+  ), [crunch, learnAheadIds, profile.reviewItems, profile.reviewSessions, profile.reviewSettings, queueNow.getTime(), session, timeZone]);
+  // Learning steps due within 20 minutes, earliest first: in a daily session, the
+  // cards a failed card waits on instead of the session ending (issue #149).
+  const aheadCards = useMemo(() => (session && !crunch ? learnAheadCards(profile.reviewItems, queueNow, { timeZone }) : []), [crunch, profile.reviewItems, queueNow.getTime(), session, timeZone]);
   const exportMistakes = () => {
     const lines = ["# Mistake notebook", "", `Exported ${new Date().toISOString().slice(0, 10)}.`, ""];
     for (const mistake of mistakes) {
@@ -598,15 +616,32 @@ export default function ReviewCenter({
   }, []);
   const trackBank = useMemo(() => (trackLib ? trackLib.normalizeTrackBank(trackBankRaw) : { tracks: [], questions: [] }), [trackBankRaw, trackLib]);
   const labBank = useMemo(() => normalizeLabBank(labBankRaw), [labBankRaw]);
-  const queue = session && crunch ? baseQueue.filter((item) => !sessionSeen.includes(item.id)) : baseQueue;
+  // Extra practice: the cards failed and not yet asked again, in fail order, as the profile
+  // now has them; one buried, paused or archived since is left out.
+  const crunchRetryCards = useMemo(() => {
+    if (!session || !crunch) return [];
+    const todayKey = localDayKey(queueNow, timeZone);
+    return crunchFailedIds
+      .filter((id) => !crunchRetriedIds.includes(id))
+      .map((id) => profile.reviewItems.find((item) => item.id === id))
+      .filter((item) => item && isAvailableToday(item, todayKey));
+  }, [crunch, crunchFailedIds, crunchRetriedIds, profile.reviewItems, queueNow.getTime(), session, timeZone]);
+  // Extra practice asks the cards not yet seen first, then those to ask again. A card waiting to
+  // be asked again is always seen, so no card is in both parts; keeping the first occurrence of
+  // each id is a guard.
+  const queue = session && crunch
+    ? [...baseQueue.filter((item) => !sessionSeen.includes(item.id)), ...crunchRetryCards].filter((item, index, all) => all.findIndex((other) => other.id === item.id) === index)
+    : baseQueue;
   const queueSignature = queue.map((item) => `${String(item.id).length}:${item.id}`).join("");
+  // With the queue empty and a step a few minutes out, the session offers to retry it.
+  const retryCards = aheadCards.filter((item) => !queue.some((entry) => entry.id === item.id));
+  const retrySignature = retryCards.map((item) => `${String(item.id).length}:${item.id}`).join("");
+  const retrying = session && !crunch && !queue.length && retryCards.length > 0;
   const stats = useMemo(() => reviewStats(profile.reviewItems, queueNow, timeZone), [profile.reviewItems, queueNow.getTime(), timeZone]);
   const analytics = useMemo(() => reviewAnalytics(profile.reviewAttempts, profile.reviewItems, queueNow, timeZone), [profile.reviewAttempts, profile.reviewItems, queueNow.getTime(), timeZone]);
   const usage = useMemo(() => getTodayReviewUsage(profile.reviewSessions, queueNow, timeZone), [profile.reviewSessions, queueNow.getTime(), timeZone]);
   const documentMap = useMemo(() => new Map(documents.map((document) => [document.id, document])), [documents]);
   const current = queue.find((item) => item.id === currentId) || queue[0];
-  const queueLengthRef = useRef(0);
-  queueLengthRef.current = queue.length;
   const lastAttempt = profile.reviewAttempts.at(-1);
   const normalizedDeckQuery = deckQuery.trim().toLocaleLowerCase();
   const deckItems = useMemo(() => profile.reviewItems.filter((item) => (
@@ -634,33 +669,52 @@ export default function ReviewCenter({
   useEffect(() => {
     if (!session) return;
     setCurrentId((existing) => queue.some((item) => item.id === existing) ? existing : (queue[0]?.id || ""));
-    setRevealed(false);
-    setConfidence(3);
-    startedAt.current = Date.now();
-    if (!queue.length) endSession();
+    // A grade is announced from the queue it leaves behind, once it has landed: a
+    // count taken before the grade misses a step that comes back or a card the
+    // limit holds. The outcome is read and cleared here only, so a repeated run of
+    // this effect cannot announce it twice.
+    const outcome = pendingOutcomeRef.current;
+    if (outcome) {
+      pendingOutcomeRef.current = "";
+      const cards = (count) => `${count} card${count === 1 ? "" : "s"}`;
+      setAnnouncement(`${outcome} ${queue.length ? `${cards(queue.length)} left.` : retrying ? `${cards(retryCards.length)} to retry.` : "Session complete."}`);
+    }
+    if (!queue.length && !retryCards.length) endSession();
   // Queue arrays can be recomputed when the wall clock advances even when
-  // membership is unchanged. Keying this transition to IDs prevents an
-  // unrelated render (or the 30-second clock tick) from hiding an answer the
-  // learner has already revealed.
-  }, [queueSignature, session]);
+  // membership is unchanged, so this transition is keyed to IDs. The reveal
+  // resets with the card shown (below), so a card joining the queue never
+  // hides an answer the learner has already revealed. Failing the last card of
+  // Extra practice leaves the same card queued, so a grade also keys it through
+  // the lists of failed and asked-again cards, or its outcome would go unheard.
+  }, [queueSignature, retrySignature, session, crunchFailedIds, crunchRetriedIds]);
 
   const grade = useCallback((rating) => {
     if (!current) return;
     const { scheduler, requestRetention, fsrsWeights } = profile.reviewSettings;
     const interval = previewReviewIntervals(current, { scheduler, requestRetention, weights: fsrsWeights, now: new Date() })[rating];
     const label = REVIEW_RATINGS.find((entry) => entry.id === rating)?.label || rating;
-    const left = Math.max(0, queueLengthRef.current - 1);
-    onGrade(current.id, rating, Date.now() - startedAt.current, { confidence, crunch, timeZone });
-    if (crunch) setSessionSeen((seen) => [...seen, current.id]);
-    setSessionDone((done) => done + 1);
     // Graded outcomes have no toast, so this polite status line is the only
-    // announcement; focus then moves to the next prompt.
-    setAnnouncement(`Rated ${label}: next review in ${formatInterval(interval)}. ${left ? `${left} card${left === 1 ? "" : "s"} left.` : "Session complete."}`);
+    // announcement; focus then moves to the next prompt. The queue effect
+    // completes it once the grade lands. Clearing it now lets the same outcome
+    // twice in a row be announced twice.
+    pendingOutcomeRef.current = `Rated ${label}: next review in ${formatInterval(interval)}.`;
+    setAnnouncement("");
+    onGrade(current.id, rating, Date.now() - startedAt.current, { confidence, crunch, timeZone });
+    if (crunch) {
+      setSessionSeen((seen) => [...seen, current.id]);
+      // A card's first Again queues it once more after the rest; its second grade, whatever
+      // it is, ends that.
+      if (crunchFailedIds.includes(current.id)) setCrunchRetriedIds((ids) => (ids.includes(current.id) ? ids : [...ids, current.id]));
+      else if (rating === "again") setCrunchFailedIds((ids) => [...ids, current.id]);
+    }
+    // A graded card leaves the steps shown early, so failing it again offers it again.
+    setLearnAheadIds((ids) => (ids.includes(current.id) ? ids.filter((id) => id !== current.id) : ids));
+    setSessionDone((done) => done + 1);
     setRevealed(false);
     setCurrentId("");
     setConfidence(3);
     startedAt.current = Date.now();
-  }, [confidence, crunch, current, onGrade, profile.reviewSettings, timeZone]);
+  }, [confidence, crunch, crunchFailedIds, current, onGrade, profile.reviewSettings, timeZone]);
 
   const bury = useCallback(() => {
     if (!current) return;
@@ -673,47 +727,91 @@ export default function ReviewCenter({
   const undo = useCallback(() => {
     if (!lastAttempt) return;
     onUndo();
-    setSessionSeen((seen) => seen.filter((id) => id !== lastAttempt.reviewItemId));
+    // Undoing a second grade asks the card again, still after the rest of the session: its first
+    // Again stands, so it stays seen. Undoing any other grade makes the card unseen, and undoing
+    // a first Again also takes back the queueing it caused.
+    if (crunchRetriedIds.includes(lastAttempt.reviewItemId)) {
+      setCrunchRetriedIds((ids) => ids.filter((id) => id !== lastAttempt.reviewItemId));
+    } else {
+      setSessionSeen((seen) => seen.filter((id) => id !== lastAttempt.reviewItemId));
+      setCrunchFailedIds((ids) => (ids.includes(lastAttempt.reviewItemId) ? ids.filter((id) => id !== lastAttempt.reviewItemId) : ids));
+    }
     setSessionDone((done) => Math.max(0, done - 1));
     setCurrentId(lastAttempt.reviewItemId);
-  }, [lastAttempt, onUndo]);
+    // The card brought back can be the one already on screen, which the per-card reset below
+    // never sees: hide its answer again and start its confidence and timer over.
+    setRevealed(false);
+    setConfidence(3);
+    startedAt.current = Date.now();
+    // A step that was shown early comes back not yet due: admit it again so it
+    // returns as the current card. A due card or a longer interval admits nothing.
+    setLearnAheadIds((ids) => (ids.includes(lastAttempt.reviewItemId) ? ids : [...ids, lastAttempt.reviewItemId]));
+    // The undone grade is not announced, and grading the card again is.
+    pendingOutcomeRef.current = "";
+    setAnnouncement("");
+  }, [crunchRetriedIds, lastAttempt, onUndo]);
+
+  // The card on screen; empty outside a session and on the retry panel.
+  const sessionCardId = session ? current?.id || "" : "";
+  // Each card shown starts hidden, at the default confidence, with its own answer
+  // timer. Keyed to the card itself, not the queue: a step that rejoins the queue
+  // while an answer is revealed leaves that answer, its focus and its timer alone.
+  useEffect(() => {
+    setRevealed(false);
+    setConfidence(3);
+    startedAt.current = Date.now();
+  }, [sessionCardId]);
 
   useEffect(() => {
     if (!session) return undefined;
     const onKeyDown = (event) => {
       const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target?.closest?.("select");
       if (typing) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "z") { event.preventDefault(); undo(); return; }
+      // The retry panel shows no card: Space, the digits and B do nothing there,
+      // and its buttons take Enter and Space themselves.
+      if (!sessionCardId) return;
       if (event.code === "Space" && !revealed) { event.preventDefault(); setRevealed(true); return; }
       if (revealed) {
         const rating = REVIEW_RATINGS.find((entry) => entry.key === event.key);
         if (rating) { event.preventDefault(); grade(rating.id); return; }
       }
       if (event.key.toLocaleLowerCase() === "b") { event.preventDefault(); bury(); }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "z") { event.preventDefault(); undo(); }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [bury, grade, revealed, session, undo]);
+  }, [bury, grade, revealed, session, sessionCardId, undo]);
 
   // Crunch mode ends with its session: left on, it kept the hero showing the
   // weak-card practice pool instead of today's queue (REV-5).
   const endSession = () => {
     setSession(false);
     setCrunch(false);
+    setLearnAheadIds([]);
+    pendingOutcomeRef.current = "";
   };
 
   const startSession = (useCrunch = false) => {
     setCrunch(useCrunch);
     setSessionSeen([]);
+    setCrunchFailedIds([]);
+    setCrunchRetriedIds([]);
     setSessionDone(0);
     setAnnouncement("");
+    setLearnAheadIds([]);
+    pendingOutcomeRef.current = "";
     setSession(true);
     setCurrentId("");
   };
 
+  // Retry now shows the waiting steps before they are due, earliest first.
+  const retryNow = () => {
+    setLearnAheadIds(retryCards.map((item) => item.id));
+    setAnnouncement(`Retrying ${retryCards.length} card${retryCards.length === 1 ? "" : "s"}.`);
+  };
+
   // Focus follows the session (REV-7): each new card focuses its prompt, a
   // reveal focuses the answer, and leaving the session returns to Start.
-  const sessionCardId = session ? current?.id || "" : "";
   useEffect(() => {
     if (!sessionCardId) return;
     if (!revealed) {
@@ -730,6 +828,14 @@ export default function ReviewCenter({
     const panelTop = document.querySelector(".review-rating-panel")?.getBoundingClientRect().top ?? window.innerHeight;
     if (top > Math.min(panelTop, window.innerHeight) - 48) window.scrollBy({ top: top - window.innerHeight * 0.3, behavior: "auto" });
   }, [revealed, sessionCardId]);
+
+  // The retry panel replaces the last card: its title takes focus, so it is read
+  // first and Tab reaches Retry now.
+  useEffect(() => {
+    if (!retrying) return;
+    if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: "auto" });
+    retryHeadingRef.current?.focus({ preventScroll: true });
+  }, [retrying]);
 
   useEffect(() => {
     if (session) { wasInSessionRef.current = true; return; }
@@ -792,45 +898,65 @@ export default function ReviewCenter({
     return <InterviewRound cards={interviewCards} isAiCard={isAiCard} onClose={() => setInterviewCards(null)} onLogMistake={onLogMistake} />;
   }
 
-  if (session && current) {
-    const source = documentMap.get(current.documentId);
-    const intervals = previewReviewIntervals(current, { scheduler: profile.reviewSettings.scheduler, requestRetention: profile.reviewSettings.requestRetention, weights: profile.reviewSettings.fsrsWeights, now: queueNow });
-    const sessionTotal = sessionDone + queue.length;
+  // The retry panel keeps the session view, its status line included, so the
+  // polite region stays mounted from the last grade to the retry.
+  if (session && (current || retrying)) {
+    const source = current ? documentMap.get(current.documentId) : null;
+    const intervals = current ? previewReviewIntervals(current, { scheduler: profile.reviewSettings.scheduler, requestRetention: profile.reviewSettings.requestRetention, weights: profile.reviewSettings.fsrsWeights, now: queueNow }) : null;
+    // Cards waiting to be retried are still to review: the bar never reads complete.
+    const sessionTotal = sessionDone + queue.length + retryCards.length;
+    const retryMinutes = retrying ? Math.max(1, Math.ceil((Date.parse(retryCards[0].dueAt) - queueNow.getTime()) / 60_000)) : 0;
     return (
       <div className="page review-session-page">
         <h1 className="visually-hidden">{crunch ? "Extra practice" : "Review session"}</h1>
         <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
         <header className="review-session-header">
           <button className="button ghost" onClick={endSession} type="button"><ArrowLeft size={17} /> End session</button>
-          <div><strong>{queue.length}</strong><span>{crunch ? "practice cards left" : "remaining today"}</span></div>
+          <div><strong>{retrying ? retryCards.length : queue.length}</strong><span>{retrying ? "to retry" : crunch ? "practice cards left" : "remaining today"}</span></div>
           <button className="button ghost" onClick={undo} disabled={!lastAttempt} title={!lastAttempt ? "Grade a card before using undo" : "Undo the most recent grade"} type="button"><Undo2 size={16} /> Undo</button>
         </header>
         <div className="review-stage">
           <div className="review-progress" role="progressbar" aria-label="Session progress" aria-valuemin={0} aria-valuemax={sessionTotal} aria-valuenow={sessionDone} aria-valuetext={`${sessionDone} of ${sessionTotal} reviewed`}><span style={{ width: `${sessionTotal ? (sessionDone / sessionTotal) * 100 : 0}%` }} /></div>
           {/* Answers still reschedule cards, and the rating buttons show the true intervals, so the notice promises no interval of its own. */}
           {crunch && <p className="review-crunch-notice"><Flame size={15} /> Extra practice doesn’t use today’s limits. Your answers still reschedule cards: the rating buttons show when each card comes back.</p>}
-          <article className={revealed ? "review-flashcard revealed" : "review-flashcard"}>
-            <span className="eyebrow">{(() => {
-              const queueClass = classifyReviewItem(current);
-              const overdueDays = queueClass === "overdue" ? Math.floor((Date.now() - Date.parse(current.dueAt)) / 86_400_000) : 0;
-              const label = queueClass === "new" ? "New card"
-                : queueClass === "overdue" ? `Overdue by ${overdueDays} day${overdueDays === 1 ? "" : "s"}`
-                  : queueClass === "learning" ? `Learning · ${formatInterval(current.intervalDays)} interval`
-                    : `Review · ${formatInterval(current.intervalDays)} interval`;
-              return label;
-            })()} · {REVIEW_CARD_TYPES.find((type) => type.id === current.type)?.label || "Basic Q&A"}</span>
-            <div ref={promptRef} className="review-markdown review-question" tabIndex={-1} role="region" aria-label="Prompt" dangerouslySetInnerHTML={cardHtml(current.type === "cloze" && hasClozeMarkup(current.front) ? renderClozePrompt(current.front, revealed) : current.front, isAiCard(current))} />
-            {source && <button className="review-source-link" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={15} /> {source.title}</button>}
-            {revealed && <div ref={answerRef} className="review-answer" tabIndex={-1} role="region" aria-label="Answer"><span aria-hidden="true">Answer</span><div className="review-markdown" dangerouslySetInnerHTML={cardHtml(current.back, isAiCard(current))} /></div>}
-          </article>
-          {!revealed ? (
-            <div className="review-session-actions"><button className="button ghost" onClick={bury} type="button"><TimerReset size={17} /> Bury today</button><button className="button primary large review-reveal" onClick={() => setRevealed(true)} type="button"><Eye size={19} /> Show answer <kbd>Space</kbd></button></div>
+          {retrying ? (
+            // Only steps a few minutes out are left: offer them now (issue #149).
+            <section className="review-retry" aria-labelledby="review-retry-title">
+              <RotateCcw size={26} />
+              <h2 ref={retryHeadingRef} id="review-retry-title" tabIndex={-1}>{retryCards.length === 1 ? `1 card to retry · due in ${retryMinutes} min` : `${retryCards.length} cards to retry · next due in ${retryMinutes} min`}</h2>
+              <p>{retryCards.length === 1 ? "Retry now shows it early. If you end the session, it comes back when it is due." : "Retry now shows them early. If you end the session, they come back when they are due."}</p>
+              <div className="review-session-actions">
+                <button className="button primary large" onClick={retryNow} type="button"><RotateCcw size={18} /> Retry now</button>
+                <button className="button secondary large" onClick={endSession} type="button">End session</button>
+              </div>
+            </section>
           ) : (
-            <div className="review-rating-panel">
-              <div className="review-confidence"><span aria-hidden="true">Confidence</span><div role="group" aria-label="Retrieval confidence">{[1, 2, 3, 4, 5].map((value) => <button className={confidence === value ? "active" : ""} onClick={() => setConfidence(value)} aria-label={`Confidence ${value} of 5`} aria-pressed={confidence === value} key={value} type="button">{value}</button>)}</div></div>
-              <p id="review-ratings-label">How well did you retrieve the answer?</p>
-              <div className="review-ratings" role="group" aria-labelledby="review-ratings-label">{REVIEW_RATINGS.map((rating) => <button className={`review-rating ${rating.id}`} onClick={() => grade(rating.id)} aria-label={`Rate ${rating.label}`} key={rating.id} type="button"><strong>{rating.label}</strong><span>{formatInterval(intervals[rating.id])} · {rating.key}</span></button>)}</div>
-            </div>
+            <>
+              <article className={revealed ? "review-flashcard revealed" : "review-flashcard"}>
+                <span className="eyebrow">{(() => {
+                  const queueClass = classifyReviewItem(current);
+                  const overdueDays = queueClass === "overdue" ? Math.floor((Date.now() - Date.parse(current.dueAt)) / 86_400_000) : 0;
+                  // A step shown before it is due (Retry now) classifies as scheduled.
+                  const label = queueClass === "new" ? "New card"
+                    : queueClass === "overdue" ? `Overdue by ${overdueDays} day${overdueDays === 1 ? "" : "s"}`
+                      : queueClass === "learning" || (queueClass === "scheduled" && isLearningStep(current)) ? `Learning · ${formatInterval(current.intervalDays)} interval`
+                        : `Review · ${formatInterval(current.intervalDays)} interval`;
+                  return label;
+                })()} · {REVIEW_CARD_TYPES.find((type) => type.id === current.type)?.label || "Basic Q&A"}</span>
+                <div ref={promptRef} className="review-markdown review-question" tabIndex={-1} role="region" aria-label="Prompt" dangerouslySetInnerHTML={cardHtml(current.type === "cloze" && hasClozeMarkup(current.front) ? renderClozePrompt(current.front, revealed) : current.front, isAiCard(current))} />
+                {source && <button className="review-source-link" onClick={() => onOpenSource(source.id)} type="button"><BookOpen size={15} /> {source.title}</button>}
+                {revealed && <div ref={answerRef} className="review-answer" tabIndex={-1} role="region" aria-label="Answer"><span aria-hidden="true">Answer</span><div className="review-markdown" dangerouslySetInnerHTML={cardHtml(current.back, isAiCard(current))} /></div>}
+              </article>
+              {!revealed ? (
+                <div className="review-session-actions"><button className="button ghost" onClick={bury} type="button"><TimerReset size={17} /> Bury today</button><button className="button primary large review-reveal" onClick={() => setRevealed(true)} type="button"><Eye size={19} /> Show answer <kbd>Space</kbd></button></div>
+              ) : (
+                <div className="review-rating-panel">
+                  <div className="review-confidence"><span aria-hidden="true">Confidence</span><div role="group" aria-label="Retrieval confidence">{[1, 2, 3, 4, 5].map((value) => <button className={confidence === value ? "active" : ""} onClick={() => setConfidence(value)} aria-label={`Confidence ${value} of 5`} aria-pressed={confidence === value} key={value} type="button">{value}</button>)}</div></div>
+                  <p id="review-ratings-label">How well did you retrieve the answer?</p>
+                  <div className="review-ratings" role="group" aria-labelledby="review-ratings-label">{REVIEW_RATINGS.map((rating) => <button className={`review-rating ${rating.id}`} onClick={() => grade(rating.id)} aria-label={`Rate ${rating.label}`} key={rating.id} type="button"><strong>{rating.label}</strong><span>{formatInterval(intervals[rating.id])} · {rating.key}</span></button>)}</div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
