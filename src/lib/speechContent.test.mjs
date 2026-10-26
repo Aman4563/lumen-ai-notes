@@ -4,10 +4,13 @@ import { marked } from "marked";
 import { FIXTURE_MARKDOWN, FIXTURE_SPOKEN } from "../../scripts/speech_fixture.mjs";
 // markdown.js configures the shared marked renderer on import: tables, code shells and diagram shells.
 import "./markdown.js";
-import { verbalizeMath } from "./mathSpeech.js";
+// A namespace import, so the test of the shared silent set fails on its own when mathSpeech.js does not export it.
+import * as mathSpeech from "./mathSpeech.js";
 import * as speakable from "./speakable.js";
 import { SPEECH_MARK, buildSpeechQueue } from "./speech.js";
 import { blockAt, buildSpeechSections, buildSpeechTarget, buildSpeechUnits, readableBlocks, speechBlockText } from "./speechContent.js";
+
+const { verbalizeMath } = mathSpeech;
 
 // A stub DOM for the speech-unit tests: just the parts of the DOM the walkers
 // read, and no layout, so a sentence target takes its no-layout fallbacks.
@@ -457,7 +460,7 @@ test("silent markup, spaces and strange input", () => {
   assert.equal(readMath(mi("a"), el("mspace", { width: "1em" }), mi("b")), "a b");
   assert.equal(readMath(mtext("Precision@K"), mo("="), mn("1"), mo(","), el("mspace", { width: "2.0em" }), mtext("Recall@K")), "Precision@K equals 1, Recall@K");
   assert.deepEqual(verbalizeMath(el("math", {}, [])), { text: "", map: [] });
-  assert.equal(verbalizeMath(el("math", {}, [text("x")])).text, "x", "text outside a token is read as written");
+  assert.equal(verbalizeMath(el("math", {}, [text("x")])).text, "", "text outside a token is not read: the sanitizer leaves an annotation's TeX there");
   // Nesting far deeper than any formula is read as its text, not recursed into: these plain nodes
   // hold their text up front, so only the walker could overflow the stack.
   let deep = { nodeType: 1, localName: "mi", childNodes: [{ nodeType: 3, textContent: "x" }], textContent: "x" };
@@ -1176,4 +1179,57 @@ test("text blocks keep working on plain fakes with no childNodes", () => {
     ["Learning rate controls each step.", 1, 33, 66],
   ]);
   checkUnits(article, units);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// A sanitized copy of a formula (issue #100, Task 3c). The app runs rendered Markdown through DOMPurify's MathML
+// profile (sanitizeMarkdownHtml), which removes semantics, annotation and annotation-xml and keeps what they held:
+// the annotation's TeX stays behind as a bare text node inside <math>.
+// ---------------------------------------------------------------------------------------------------------
+
+// KaTeX's $\frac{a}{b}$ as the Reader holds it: the MathML with the TeX beside it as text, then the visible copy.
+const sanitizedKatex = (tex, nodes, attrs = {}) => el("span", { class: "katex" }, [
+  el("span", { class: "katex-mathml" }, [el("math", attrs, [el("mrow", {}, nodes), text(tex)])]),
+  el("span", { class: "katex-html", "aria-hidden": "true" }, [text("ab")]),
+]);
+
+test("TeX the sanitizer leaves beside a formula is not read, and still counts in the offsets", () => {
+  const { mi, mo, mn, mtext, of } = mathml;
+  assert.equal(verbalizeMath(el("math", {}, [el("mrow", {}, [mi("y")]), text("y")])).text, "y");
+  const tex = "\\frac{a}{b}";
+  const fraction = el("math", {}, [el("mrow", {}, [of("mfrac", mi("a"), mi("b"))]), text(tex)]);
+  const read = checkMap(fraction, "sanitized fraction");
+  assert.equal(read.spoken, "a over b");
+  assert.equal(read.source, `ab${tex}`);
+  assert.ok(read.map.every((piece) => piece.source[1] <= 2), "no piece reads the TeX: it is a gap after the formula");
+  // Text is read inside a token and nowhere else: a string literal and a token holding an element still speak.
+  assert.equal(verbalizeMath(el("math", {}, [el("ms", {}, [text("a string")])])).text, "a string");
+  assert.equal(readMath(mtext("latency"), mo("="), mn("1")), "latency equals 1");
+  assert.equal(verbalizeMath(el("math", {}, [el("mtext", {}, [text("see "), el("mspace"), text("above")])])).text, "see above");
+  // Loose text between the elements of a formula, where a removed annotation can leave its TeX, is not read either.
+  assert.equal(verbalizeMath(el("math", {}, [el("mrow", {}, [mi("x"), text("TEX"), mo("+"), mn("1")]), text("x+1")])).text, "x plus 1");
+  assert.equal(verbalizeMath(el("math", {}, [text("TEX"), el("mrow", {}, [mi("x")])])).text, "x");
+});
+
+test("an edited copy's sanitized KaTeX is read once, inside its sentence", () => {
+  const { mi, of } = mathml;
+  const paragraph = el("p", {}, [text("The loss "), sanitizedKatex("\\frac{a}{b}", [of("mfrac", mi("a"), mi("b"))]), text(" is low. Next one.")]);
+  const article = el("article", {}, [paragraph]);
+  assert.deepEqual(buildSpeechUnits(article).map((unit) => unit.text), ["The loss a over b is low.", "Next one."]);
+  assert.deepEqual(spoken(article), ["The loss a over b is low.", "Next one."]);
+  checkUnits(article, buildSpeechUnits(article), { exact: false });
+  // A bare <math> in the paragraph, with no KaTeX wrappers around it, reads once too.
+  const bare = el("article", {}, [el("p", {}, [text("Let "), el("math", {}, [el("mrow", {}, [mi("y")]), text("y")]), text(" be one.")])]);
+  assert.deepEqual(spoken(bare), ["Let y be one."]);
+});
+
+test("a tag the MathML walker keeps silent is silent in a text block too, from one set", () => {
+  assert.ok(mathSpeech.SILENT_TAGS instanceof Set, "mathSpeech.js exports the one set of silent tags");
+  for (const tag of ["annotation", "annotation-xml", "mphantom"]) assert.ok(mathSpeech.SILENT_TAGS.has(tag), tag);
+  for (const tag of mathSpeech.SILENT_TAGS) {
+    const sentence = el("p", {}, [text("A "), el(tag, {}, [text("HIDDEN")]), text(" B.")]);
+    assert.deepEqual(spoken(el("article", {}, [sentence])), ["A B."], `${tag} was said in a text block`);
+    const formula = el("math", {}, [el("mi", {}, [text("x")]), el(tag, {}, [el("mi", {}, [text("HIDDEN")])])]);
+    assert.equal(verbalizeMath(formula).text, "x", `${tag} was said in a formula`);
+  }
 });

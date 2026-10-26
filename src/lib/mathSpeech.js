@@ -24,12 +24,15 @@ import {
  * `verbalizeMath(math)` returns { text, map }. The map is the spokenMap.js
  * kind: MapPiece[] whose sources are offsets into `math.textContent`, the text
  * nodes joined in order. Annotation text counts in those offsets and is never
- * spoken. The pieces tile the spoken text, with non-decreasing, non-overlapping
- * sources. A word read from the source (a token, a script such as "squared") is
- * a piece over that source; a word the source only implies ("over", "of",
- * "sub", a comma) is a piece with an empty range at its position; a
- * construct that is spoken out of source order (a root) is one piece over
- * the whole construct.
+ * spoken, and neither is text outside a token element (mi, mo, mn, mtext, ms):
+ * the app sanitizes rendered Markdown with DOMPurify's MathML profile, which
+ * removes semantics and annotation but leaves the annotation's TeX behind as a
+ * bare text node inside math. The pieces tile the spoken text, with
+ * non-decreasing, non-overlapping sources. A word read from the source (a
+ * token, a script such as "squared") is a piece over that source; a word the
+ * source only implies ("over", "of", "sub", a comma) is a piece with an empty
+ * range at its position; a construct that is spoken out of source order (a
+ * root) is one piece over the whole construct.
  */
 
 const ELEMENT_NODE = 1;
@@ -40,9 +43,17 @@ const CDATA_SECTION_NODE = 4;
 // recursing, so hostile markup cannot overflow the stack.
 const MAX_DEPTH = 64;
 
-// Elements whose text is read as one unit, and markup that speaks nothing.
+// Elements whose text is read as one unit.
 const TOKENS = new Set(["mi", "mn", "mo", "mtext"]);
-const SILENT = new Set(["annotation", "annotation-xml", "mphantom"]);
+// The elements whose text is a word of the formula: the tokens and ms, a
+// string literal. Text anywhere else is not read.
+const TEXT_HOLDERS = new Set([...TOKENS, "ms"]);
+/**
+ * Markup that speaks nothing: a formula's TeX annotation and its hidden parts.
+ * speechContent.js keeps the same tags silent in a text block, so it imports
+ * this set and the two walks cannot disagree.
+ */
+export const SILENT_TAGS = new Set(["annotation", "annotation-xml", "mphantom"]);
 // Wrappers that add nothing to the reading of what they hold.
 const WRAPPERS = new Set(["mrow", "mstyle", "mpadded"]);
 // The elements whose children after the first are scripts: a subscript, a
@@ -372,9 +383,14 @@ const letterRun = (children, at) => {
 
 const read = (item, out, parent) => {
   if (isTextItem(item)) {
-    const piece = writtenAtom(item.text, item.start);
-    if (piece.text) out.push(piece);
-  } else if (SILENT.has(item.name)) {
+    // Only a token's text is a word of the formula. A bare text node anywhere
+    // else is the TeX the sanitizer left where it removed an annotation: it
+    // counts in the offsets and says nothing.
+    if (TEXT_HOLDERS.has(parent?.name)) {
+      const piece = writtenAtom(item.text, item.start);
+      if (piece.text) out.push(piece);
+    }
+  } else if (SILENT_TAGS.has(item.name)) {
     // Nothing is spoken, but its text is still part of the offsets.
   } else if (READERS.has(item.name)) {
     READERS.get(item.name)(item, out, parent);
@@ -441,7 +457,7 @@ const plainText = (item) => {
 };
 
 const tokensIn = (item, found = []) => {
-  if (isTextItem(item) || SILENT.has(item.name)) return found;
+  if (isTextItem(item) || SILENT_TAGS.has(item.name)) return found;
   if (TOKENS.has(item.name) && item.children.every(isTextItem)) found.push(item);
   else item.children.forEach((child) => tokensIn(child, found));
   return found;

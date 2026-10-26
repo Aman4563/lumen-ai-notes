@@ -1,4 +1,4 @@
-import { verbalizeMath } from "./mathSpeech.js";
+import { SILENT_TAGS, verbalizeMath } from "./mathSpeech.js";
 import {
   SPEECH_MARK,
   SPEECH_SCOPES,
@@ -54,8 +54,8 @@ const atomicKind = (node) => {
 };
 
 // Markup that is counted in the offsets and never said: a formula's TeX
-// annotation and its hidden parts...
-const SILENT_TAGS = new Set(["annotation", "annotation-xml", "mphantom"]);
+// annotation and its hidden parts (SILENT_TAGS, the set the MathML walker keeps
+// silent too)...
 // ...and screen furniture beside words that are read elsewhere: KaTeX's visible
 // copy of a formula it also writes as MathML, and the header of a code block's
 // shell (its language and Copy button; the code is a block of its own, and a
