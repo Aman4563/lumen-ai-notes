@@ -587,13 +587,15 @@ test("the MathML map is contiguous, ordered and anchors inserted words to an emp
 
 const spoken = (root, options) => buildSpeechQueue(buildSpeechUnits(root, options)).queue.map((entry) => entry.text);
 
-// The fixture lecture as the app's marked renders it (scripts/speech_fixture.mjs), as stub DOM: tables hold "\n"
-// text nodes between their cells and rows, code is div.code-shell > div.code-label + pre > code, the block
-// formula sits inside a <p>, and a Mermaid fence is a div.diagram-shell.
+// A fenced block as marked renders it: the shell, its header (the language and a Copy button) and the pre.
 const codeShell = (label, body) => el("div", { class: "code-shell" }, [
   el("div", { class: "code-label" }, [el("span", {}, [text(label)]), el("button", { class: "code-copy", type: "button", "aria-label": `Copy ${label} code` }, [text("Copy")])]),
   el("pre", { tabindex: "0", role: "group", "aria-label": `${label} code` }, [el("code", { class: `language-${label === "text" ? "" : label}` }, [text(body)])]),
 ]);
+
+// The fixture lecture as the app's marked renders it (scripts/speech_fixture.mjs), as stub DOM: tables hold "\n"
+// text nodes between their cells and rows, code is a codeShell, the block formula sits inside a <p>, and a
+// Mermaid fence is a div.diagram-shell.
 const fixture = () => {
   const nl = () => text("\n");
   const cell = (tag, value) => [el(tag, {}, [text(value)]), nl()];
@@ -802,7 +804,7 @@ test("skipped markup counts in the offsets and speaks nothing", () => {
 });
 
 test("a code block inside a list item leaves the label of its shell unread", () => {
-  // marked wraps a fence in div.code-shell, with the language and a Copy button above the pre.
+  // A fence under a list step is rendered inside that item, header included.
   const item = el("li", {}, [text("Run this first:"), codeShell("bash", "make test"), text(" then check.")]);
   const article = el("article", {}, [el("ul", {}, [item])]);
   const units = buildSpeechUnits(article);
