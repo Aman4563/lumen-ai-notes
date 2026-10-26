@@ -1282,6 +1282,10 @@ try {
       })), { answer: true, focused: true, prompt: second.front, ratings: 4 }, "a card rejoining the queue must leave the revealed answer, its focus and the rating buttons in place");
       await rejoinPage.keyboard.press("1");
       await outcomeAnnounced(rejoinPage, second);
+      // The clock moved 10 minutes and a second with this answer on screen, and the rejoin did
+      // not restart the card's answer timer: the stored grade carries all of it.
+      const rejoinedGrade = (await savedProfile(rejoinPage, (profile) => profile.reviewAttempts?.some((attempt) => attempt.reviewItemId === second.id))).reviewAttempts?.find((attempt) => attempt.reviewItemId === second.id);
+      assert.ok(rejoinedGrade?.elapsedMs >= 10 * MINUTE, `a step rejoining the queue must keep the answer timer of the card shown: the stored grade has ${rejoinedGrade?.elapsedMs} ms, not 600,000 or more`);
       await promptFocused(rejoinPage, first);
       const rejoined = await eyebrow(rejoinPage);
       assert.ok(rejoined.startsWith("Learning · 10 min interval"), `the rejoined step must read as learning: ${rejoined}`);
@@ -1505,6 +1509,36 @@ try {
       await chainPage.close();
     }
 
+    // Scenario H: a card pending retry that comes due while the retry panel shows is presented
+    // on the clock tick, its prompt holding focus, and nothing is announced for it: focus
+    // reads the prompt, so no "Retrying" line is added on this path.
+    const ticking = dueCard("tick-pending", "Tick pending: what does a clock tick bring back?", -MINUTE);
+    const tickPage = await relearnPage();
+    try {
+      await seedRelearn(tickPage, { cards: [ticking] });
+      await watchStatus(tickPage);
+      await clickByText(tickPage, ".review-hero button", "Start review");
+      await revealAndRate(tickPage, ticking, "1");
+      await retryShown(tickPage, "failing the only due card");
+      const failedOutcome = ["Rated Again: next review in 10 min. 1 card to retry."];
+      assert.deepEqual(await statusLog(tickPage), failedOutcome, "failing the only due card must announce the card to retry");
+      await advanceClock(tickPage, 10 * MINUTE + 1_000);
+      await promptFocused(tickPage, ticking);
+      // Read across a frame boundary, so any status the tick would add has landed.
+      await tickPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await tickPage.$(".review-retry"), null, "the card coming due must replace the retry panel");
+      assert.deepEqual(await statusLog(tickPage), failedOutcome, "a card presented on the clock tick must add no status line, \"Retrying\" included");
+      await revealAndRate(tickPage, ticking, "3");
+      await tickPage.waitForSelector(".review-center-page", { timeout: 5_000 })
+        .catch(() => assert.fail("rating the card presented on the tick Good must end the session"));
+      assert.deepEqual(await pollValue(() => statusLog(tickPage), (log) => log.at(-1)?.includes("Session complete")), [
+        ...failedOutcome,
+        "Rated Good: next review in 3 days. Session complete.",
+      ], "the card presented on the tick must be announced once, when it is graded");
+    } finally {
+      await tickPage.close();
+    }
+
     // Scenario I: undoing a grade hides the answer again when the card it brings back is the
     // one already on screen. With one card in the pool, failing it asks it again at once, so
     // Undo restores the card shown: the answer revealed on its second ask and the focus on it
@@ -1530,7 +1564,7 @@ try {
     await relearnContext.close();
   }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last, an undone grade hiding the answer of the card still on screen) verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer or restarting its timer, a step that comes due behind the retry panel presented on the clock tick without a status line, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last, an undone grade hiding the answer of the card still on screen) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });
