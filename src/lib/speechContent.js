@@ -9,6 +9,7 @@ import {
   splitSpeechSentences,
   stripSpeechMarks,
 } from "./speech.js";
+import { codeUnits, diagramUnits, mathUnits, rowUnits } from "./speechVerbalizers.js";
 import { createSpokenBuilder } from "./spokenMap.js";
 
 /**
@@ -350,17 +351,20 @@ const addSentences = (out, { text, map, wholes }, language) => {
 
 const childrenOf = (node) => node.childNodes || [];
 
-// The sentences of one text block, as { text, map, start }, and the length of
-// the block's text.
-const textSentences = (block, language) => {
-  const { text: blockText, offsets } = collapseWithOffsets(block.textContent);
-  const lastOffset = offsets.length - 1;
-  const toBlock = (raw) => offsets[raw < lastOffset ? raw : lastOffset];
-  const sentences = [];
+// Walks the content of `root` (a text block, or a table cell) and says it, in
+// document order, handing `emit` each stretch of it between hard breaks as a
+// segment's `finish()`: { text, map, wholes }, the map's sources in the
+// offsets `toBlock` turns a raw offset into. `raw` is where the root's text
+// starts in the textContent that `toBlock` indexes. In a text block `br` and
+// the edges of a nested block end a stretch, and a block inside it (a table
+// row, code, a diagram, a display formula) is read on its own. In a table cell
+// (`cell`) there are no hard breaks: it is one stretch of words, a break is a
+// space, and what is nested in it is read as the cell's own text.
+const walkText = (root, { raw: start = 0, toBlock, cell = false, emit }) => {
   let segment = createSegment();
-  // Offset in `block.textContent`: every text node moves it, the ones that
-  // are not spoken included, so the offsets match what the DOM reports.
-  let raw = 0;
+  // Offset in the textContent: every text node moves it, the ones that are
+  // not spoken included, so the offsets match what the DOM reports.
+  let raw = start;
   // Open marker groups (code, sub, sup): written at the first words inside
   // them, so an empty one leaves nothing, and closed and written again around
   // a hard break so every segment holds balanced markers.
@@ -383,30 +387,34 @@ const textSentences = (block, language) => {
     const done = segment.finish(toBlock);
     segment = createSegment();
     for (const group of groups) group.written = false;
-    if (done) addSentences(sentences, done, language);
+    if (done) emit(done);
+  };
+  const hardBreak = () => {
+    if (cell) segment.words(" ", raw, raw);
+    else breakSentence();
   };
   const skip = (node) => { raw += String(node.textContent ?? "").length; };
   const speakMath = (node) => {
-    const start = raw;
+    const at = raw;
     skip(node);
     const reading = verbalizeMath(node);
     if (!hasText(reading.text)) return;
-    open(start);
-    segment.mark(WHOLE_OPEN, start);
+    open(at);
+    segment.mark(WHOLE_OPEN, at);
     if (reading.map.length) {
-      for (const piece of reading.map) segment.words(reading.text.slice(piece.spoken[0], piece.spoken[1]), start + piece.source[0], start + piece.source[1]);
-    } else segment.words(reading.text, start, raw);
+      for (const piece of reading.map) segment.words(reading.text.slice(piece.spoken[0], piece.spoken[1]), at + piece.source[0], at + piece.source[1]);
+    } else segment.words(reading.text, at, raw);
     segment.mark(WHOLE_CLOSE, raw);
   };
 
   // A test double with no child nodes is one text node holding its textContent.
-  const frames = [{ nodes: block.childNodes || [{ nodeType: 3, data: block.textContent }], index: 0, marked: false, breaks: false }];
+  const frames = [{ nodes: root.childNodes || [{ nodeType: 3, data: root.textContent }], index: 0, marked: false, breaks: false }];
   while (frames.length) {
     const frame = frames.at(-1);
     if (frame.index >= frame.nodes.length) {
       frames.pop();
       if (frame.marked) close(groups.pop());
-      if (frame.breaks) breakSentence();
+      if (frame.breaks) hardBreak();
       continue;
     }
     const node = frame.nodes[frame.index];
@@ -420,23 +428,44 @@ const textSentences = (block, language) => {
     }
     if (node.nodeType !== 1) continue;
     const tag = tagOf(node);
-    if (atomicKind(node)) {
+    if (!cell && atomicKind(node)) {
       // The block is read on its own: say what came before, and none of it.
       breakSentence();
       skip(node);
     } else if (isSilent(node)) skip(node);
     else if (tag === "math") speakMath(node);
-    else if (tag === "br") breakSentence();
+    else if (tag === "br") hardBreak();
     else {
       const mark = MARKS.get(tag);
       const breaks = BREAK_TAGS.has(tag);
-      if (breaks) breakSentence();
+      if (breaks) hardBreak();
       if (mark) groups.push({ open: mark[0], close: mark[1], written: false });
       frames.push({ nodes: childrenOf(node), index: 0, marked: Boolean(mark), breaks });
     }
   }
   breakSentence();
+};
+
+// The sentences of one text block, as { text, map, start }, and the length of
+// the block's text.
+const textSentences = (block, language) => {
+  const { text: blockText, offsets } = collapseWithOffsets(block.textContent);
+  const lastOffset = offsets.length - 1;
+  const toBlock = (raw) => offsets[raw < lastOffset ? raw : lastOffset];
+  const sentences = [];
+  walkText(block, { toBlock, emit: (done) => addSentences(sentences, done, language) });
   return { sentences, length: blockText.length };
+};
+
+// What a table cell says, read as a paragraph reads its inline content (code
+// and scripts marked, a formula in words, the hidden copy of a formula
+// skipped): { text, map } with the map's sources in the offsets `toBlock`
+// gives, or null for a cell that says nothing. `raw` is where the cell starts
+// in the row's textContent.
+const cellText = (cell, raw, toBlock) => {
+  let said = null;
+  walkText(cell, { raw, toBlock, cell: true, emit: (done) => { said = done; } });
+  return said;
 };
 
 // The units of one text block. The sentences tile the block's text: the first
@@ -462,15 +491,15 @@ const textUnits = (block, blockIndex, { language }) => {
 // ---------------------------------------------------------------------------
 
 // An atomic block is a block of its own (it counts in `readableBlocks` and in
-// every `blockIndex`) but says nothing yet: Task 3c plugs each kind's
-// verbalizer in here. A verbalizer is called with (block, blockIndex,
-// { code, tables, language }) and returns that block's units, each
-// { text, unit: { blockIndex, start, end }, map, kind } without a section.
+// every `blockIndex`) and says what its verbalizer (speechVerbalizers.js)
+// makes of it. A verbalizer is called with (block, blockIndex, context) and
+// returns that block's units, each { text, unit: { blockIndex, start, end },
+// map, kind } without a section.
 const ATOMIC_UNITS = Object.freeze({
-  row: () => [], // tr: the table's header announcement and its "Row k." units
-  code: () => [], // pre: "Python example, N lines." and, with code "read", its lines
-  diagram: () => [], // .diagram-shell: "Diagram: …"
-  math: () => [], // math[display="block"]: the formula in words
+  row: rowUnits, // tr: the table's announcement and its "Row k." units
+  code: codeUnits, // pre: "Python example, N lines." and, with code "read", its lines
+  diagram: diagramUnits, // .diagram-shell: "Diagram: …"
+  math: mathUnits, // math[display="block"]: the formula in words
 });
 
 const blockUnits = (block, blockIndex, context) => {
@@ -513,7 +542,10 @@ function* sectionedUnits(blocks, from, context, to = blocks.length) {
   }
 }
 
-const speechContext = ({ code = "announce", tables = "rows", language = "auto" } = {}) => ({ code, tables, language });
+// What a verbalizer is called with: the learner's settings, the reader of a
+// table cell, and a store for what a table works out once for all its rows,
+// which lives as long as the build it was made for.
+const speechContext = ({ code = "announce", tables = "rows", language = "auto" } = {}) => ({ code, tables, language, inline: cellText, memo: new WeakMap() });
 
 const unitsOfBlocks = (blocks, context) => {
   const units = [];
@@ -528,11 +560,15 @@ const unitsOfBlocks = (blocks, context) => {
  * markers of code, subscripts and superscripts kept); `unit.blockIndex`
  * indexes `readableBlocks(root)`; `unit.start/end` are offsets in
  * `speechBlockText(block)` and `map` goes from `text` to them (see
- * spokenMap.js). `kind` is absent for a sentence of a text block.
+ * spokenMap.js). `kind` is absent for a sentence of a text block and a
+ * display formula, "announcement" for a sentence about a block that reads none
+ * of it (a table's header, "Python example, 6 lines.", a diagram: its range is
+ * empty and its map []), "row" for a table row and "code" for a line of code
+ * read aloud.
  *
  * Options: `code` ("announce", "skip" or "read") and `tables` ("rows" or
- * "announce") say how atomic blocks are read (Task 3c); `language` is the
- * voice language sentences are split for.
+ * "announce") say how code and tables are read (speechVerbalizers.js);
+ * `language` is the voice language sentences are split for.
  */
 export const buildSpeechUnits = (root, options) => unitsOfBlocks(readableBlocks(root), speechContext(options));
 

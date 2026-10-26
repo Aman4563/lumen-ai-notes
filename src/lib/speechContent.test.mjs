@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { marked } from "marked";
-import { FIXTURE_MARKDOWN, FIXTURE_SPOKEN } from "../../scripts/speech_fixture.mjs";
+import { FIXTURE_MARKDOWN, FIXTURE_SPOKEN, fixtureSpoken } from "../../scripts/speech_fixture.mjs";
 // markdown.js configures the shared marked renderer on import: tables, code shells and diagram shells.
 import "./markdown.js";
 // A namespace import, so the test of the shared silent set fails on its own when mathSpeech.js does not export it.
@@ -823,7 +823,10 @@ test("skipped markup counts in the offsets and speaks nothing", () => {
   // The code inside the list item is a block of its own: the item neither reads it nor joins its two sides.
   const item = el("li", {}, [text("A"), hidden("HIDDEN"), text(" B "), math, text(" C"), el("pre", {}, [text("code body")]), text(" D")]);
   const article = el("article", {}, [el("ul", {}, [item])]);
-  const units = buildSpeechUnits(article);
+  // The code under the item is a block of its own: it announces itself after the item's two sentences.
+  const everything = buildSpeechUnits(article);
+  assert.deepEqual(everything.map((unit) => unit.text), ["A B y C.", "D.", "Code example, 1 line."]);
+  const units = everything.filter((unit) => unit.kind !== "announcement");
   assert.deepEqual(units.map((unit) => unit.text), ["A B y C.", "D."]);
   checkUnits(article, units);
   const block = speechBlockText(item);
@@ -848,7 +851,7 @@ test("the walk that finds a text block's words and the walk that says them agree
     const item = el("li", {}, [make(), codeShell("bash", "make test"), make()]);
     const fenced = el("article", {}, [el("ul", {}, [item])]);
     assert.deepEqual(readableBlocks(fenced).map((block) => block.localName), ["pre"], `${name} counted as the words of a list item`);
-    assert.deepEqual(buildSpeechUnits(fenced), [], `${name}: a list item of a fence says nothing`);
+    assert.deepEqual(buildSpeechUnits(fenced).map((unit) => unit.text), ["Shell example, 1 line."], `${name}: only the fence speaks, never the item or the silent markup`);
     // The same markup between words is counted in the offsets and not said.
     const sentence = el("p", {}, [text("A "), make(), text(" B.")]);
     const article = el("article", {}, [sentence]);
@@ -863,7 +866,7 @@ test("a code block inside a list item leaves the label of its shell unread", () 
   const item = el("li", {}, [text("Run this first:"), codeShell("bash", "make test"), text(" then check.")]);
   const article = el("article", {}, [el("ul", {}, [item])]);
   const units = buildSpeechUnits(article);
-  assert.deepEqual(units.map((unit) => unit.text), ["Run this first:", "then check."]);
+  assert.deepEqual(units.map((unit) => unit.text), ["Run this first:", "then check.", "Shell example, 1 line."]);
   assert.deepEqual(readableBlocks(article).map((block) => block.localName), ["li", "pre"]);
   assert.equal(speechBlockText(item), "Run this first:bashCopymake test then check.");
   checkUnits(article, units);
@@ -877,6 +880,7 @@ test("whatever follows the last spoken word belongs to the last unit", () => {
   assert.deepEqual(units.map((unit) => [unit.text, unit.unit.blockIndex, unit.unit.start, unit.unit.end]), [
     ["Only words.", 0, 0, "Only wordsHIDDEN".length],
     ["Run it:", 1, 0, "Run it:make test".length],
+    ["Code example, 1 line.", 2, 0, 0],
   ]);
   checkUnits(article, units);
 });
@@ -1177,6 +1181,7 @@ test("text blocks keep working on plain fakes with no childNodes", () => {
     ["Optimization.", 0, 0, 12],
     ["Gradient descent moves downhill.", 1, 0, 33],
     ["Learning rate controls each step.", 1, 33, 66],
+    ["Code example, 1 line.", 2, 0, 0],
   ]);
   checkUnits(article, units);
 });
@@ -1232,4 +1237,392 @@ test("a tag the MathML walker keeps silent is silent in a text block too, from o
     const formula = el("math", {}, [el("mi", {}, [text("x")]), el(tag, {}, [el("mi", {}, [text("HIDDEN")])])]);
     assert.equal(verbalizeMath(formula).text, "x", `${tag} was said in a formula`);
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Table rows, code, diagrams and display math as speech units (issue #100, Task 3c).
+// ---------------------------------------------------------------------------------------------------------
+
+test("the fixture lecture speaks exactly this in every code and table setting", () => {
+  assert.deepEqual(spoken(fixture()), FIXTURE_SPOKEN);
+  for (const code of ["announce", "skip", "read"]) {
+    for (const tables of ["rows", "announce"]) assert.deepEqual(spoken(fixture(), { code, tables }), fixtureSpoken({ code, tables }), `${code}/${tables}`);
+  }
+});
+
+test("irregular tables read without empty labels", () => {
+  const cell = (tag, value) => el(tag, {}, value ? [text(value)] : []);
+  const table = (...rows) => el("table", {}, [el("tbody", {}, rows.map((cells) => el("tr", {}, cells)))]);
+  assert.deepEqual(spoken(el("article", {}, [table([cell("td", "a"), cell("td", "b")], [cell("td", "c"), cell("td", "")])])), ["Table, 2 columns.", "Row 1. a; b.", "Row 2. c."]);
+  const headed = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [cell("th", "Name"), cell("th", "")])]),
+    el("tbody", {}, [el("tr", {}, [cell("td", "x"), cell("td", "y"), cell("td", "z")])]),
+  ]);
+  assert.deepEqual(spoken(el("article", {}, [headed])), ["Table, 3 columns: Name.", "Row 1. Name: x; y; z."]);
+});
+
+test("code is announced, skipped or read, and text diagrams are always announced", () => {
+  const pre = (label, body) => el("div", { class: "code-shell" }, [el("pre", { "aria-label": `${label} code` }, [el("code", {}, [text(body)])])]);
+  assert.deepEqual(spoken(el("article", {}, [pre("text", "context -> model\n")])), ["Code example, 1 line."]);
+  assert.deepEqual(spoken(el("article", {}, [pre("js", "a()\nb()\n")])), ["JavaScript example, 2 lines."]);
+  assert.deepEqual(spoken(el("article", {}, [pre("ini", "a=1\n")])), ["INI example, 1 line."]);
+  assert.deepEqual(spoken(el("article", {}, [pre("haskell", "main = pure ()\n")])), ["Haskell example, 1 line."]);
+  for (const code of ["announce", "skip", "read"]) assert.deepEqual(spoken(el("article", {}, [pre("text", "a ─┐\n  ├─> b\n")]), { code }), ["Text diagram, 2 lines."], code);
+  const item = el("li", {}, [text("Run this first:"), pre("bash", "make test\n"), text(" then check.")]);
+  assert.deepEqual(spoken(el("article", {}, [el("ul", {}, [item])])), ["Run this first:", "then check.", "Shell example, 1 line."]);
+});
+
+test("a diagram is described from its definition, never its diagnostic", () => {
+  const shell = (status, inner, attrs = {}) => el("div", { class: "diagram-shell", "data-diagram-status": status }, [el("div", { class: "mermaid", "data-diagram-status": status, ...attrs }, inner)]);
+  const definition = "flowchart LR\n  A[Data] --> B[Model]\n  B --> C[Prediction]";
+  assert.deepEqual(spoken(el("article", {}, [shell("pending", [text(definition)])])), ["Diagram: Flowchart: Data leads to Model leads to Prediction."]);
+  assert.deepEqual(spoken(el("article", {}, [shell("rendered", [el("svg", {}, [text("DataModelPrediction")])], { "aria-label": "Flowchart: Data → Model → Prediction" })])), ["Diagram: Flowchart: Data leads to Model leads to Prediction."]);
+  assert.deepEqual(spoken(el("article", {}, [shell("error", [el("p", {}, [text("The Mermaid module could not be loaded.")]), el("pre", {}, [text(definition)])])])), ["Diagram."]);
+});
+
+// What each atomic kind hands the queue builder (the unit contract of plan-context.md): announcements have no range
+// and no map, rows are "row", the lines of code read aloud are "code", and a formula is a text unit of its own block.
+test("the fixture's atomic units carry the unit contract, in their blocks, in order", () => {
+  const root = fixture();
+  const blocks = readableBlocks(root);
+  const units = buildSpeechUnits(root, { code: "read" });
+  const kindOf = (unit) => unit.kind ?? "text";
+  const where = (kind) => units.filter((unit) => kindOf(unit) === kind).map((unit) => [unit.unit.blockIndex, blocks[unit.unit.blockIndex].localName, unit.text]);
+  assert.deepEqual(where("announcement"), [
+    [3, "tr", "Table, 3 columns: Situation, First inspect, Safe action."],
+    [6, "pre", "Python example, 6 lines."],
+    [7, "pre", "Text diagram, 3 lines."],
+    [11, "div", "Diagram: Flowchart: Data → Model → Prediction."],
+  ]);
+  for (const unit of units.filter((item) => kindOf(item) === "announcement")) assert.deepEqual([unit.unit.start, unit.unit.end, unit.map], [0, 0, []], unit.text);
+  assert.deepEqual(where("row"), [
+    [4, "tr", "Row 1. Situation: Disk full; First inspect: df -h; Safe action: Free space."],
+    [5, "tr", "Row 2. Situation: High latency; First inspect: p99 graphs; Safe action: Roll back."],
+  ]);
+  const python = ["import numpy as np", "X = np.ones((3, 2))", "y = np.zeros(3)", "w = np.linalg.lstsq(X, y, rcond=None)[0]", "print(w)", "print(w.shape)"];
+  assert.deepEqual(where("code"), python.map((line) => [6, "pre", line]));
+  assert.deepEqual(where("text").filter(([, tag]) => tag === "math"), [[10, "math", "Accuracy equals T P plus T N, over, T P plus T N plus F P plus F N."]]);
+  // The units of a block tile its text, the lines of code and the rows included; an identity piece reads the very
+  // characters it maps to everywhere but in a formula (a letter read by name).
+  checkUnits(root, units, { exact: false });
+  checkUnits(root, units.filter((unit) => ["row", "code"].includes(kindOf(unit))));
+  // Each line of code owns the stretch of the block that starts at its first word.
+  const clean = speechBlockText(blocks[6]);
+  assert.deepEqual(units.filter((unit) => unit.kind === "code").map(({ unit }) => clean.slice(unit.start, unit.end).trim()), python);
+  // Every unit after the heading belongs to its section; the first one of the section says so.
+  const after = units.slice(units.findIndex((unit) => unit.text === "6. Task taxonomy."));
+  assert.ok(after.every((unit) => unit.section === "6. Task taxonomy"));
+  assert.deepEqual(after.filter((unit) => unit.sectionStart).map((unit) => unit.text), ["6. Task taxonomy."]);
+  // Settings change what the atomic blocks say, never the blocks or the sentences: a saved position (blockIndex and
+  // offset) means the same sentence in every setting.
+  const sentences = (options) => buildSpeechUnits(root, options).filter((unit) => !unit.kind).map((unit) => [unit.unit.blockIndex, unit.unit.start, unit.unit.end, unit.text]);
+  const reference = sentences({});
+  assert.equal(reference.length, 8, "two headings, five sentences and the display formula (the long sentence is one unit; the queue splits it)");
+  for (const code of ["announce", "skip", "read"]) for (const tables of ["rows", "announce"]) assert.deepEqual(sentences({ code, tables }), reference, `${code}/${tables}`);
+});
+
+const articleOf = (...children) => el("article", {}, children);
+const cellOf = (tag, ...nodes) => el(tag, {}, nodes);
+const rowOf = (tag, values) => el("tr", {}, values.map((value) => cellOf(tag, ...(value === "" ? [] : [text(value)]))));
+// A table as marked writes it: a head of th cells and a body of td rows.
+const tableOf = (header, ...rows) => el("table", {}, [
+  ...(header ? [el("thead", {}, [rowOf("th", header)])] : []),
+  el("tbody", {}, rows.map((values) => rowOf("td", values))),
+]);
+
+test("a table is announced once, with its columns and, when only announced, its rows", () => {
+  const one = articleOf(tableOf(["A"], ["x"]));
+  assert.deepEqual(spoken(one), ["Table, 1 column: A.", "Row 1. A: x."]);
+  assert.deepEqual(spoken(one, { tables: "announce" }), ["Table, 1 column, 1 row: A."]);
+  const two = articleOf(tableOf(["A", "B"], ["x", "y"], ["z", "w"]));
+  assert.deepEqual(spoken(two), ["Table, 2 columns: A, B.", "Row 1. A: x; B: y.", "Row 2. A: z; B: w."]);
+  assert.deepEqual(spoken(two, { tables: "announce" }), ["Table, 2 columns, 2 rows: A, B."]);
+  // A header and no rows is still a table.
+  assert.deepEqual(spoken(articleOf(tableOf(["A", "B"])), { tables: "announce" }), ["Table, 2 columns, 0 rows: A, B."]);
+  assert.deepEqual(spoken(articleOf(tableOf(["A", "B"]))), ["Table, 2 columns: A, B."]);
+  // No header: the announcement is on the first row, and the rows keep their numbers.
+  const bare = articleOf(tableOf(null, ["a", "b"], ["c", "d"]));
+  assert.deepEqual(spoken(bare), ["Table, 2 columns.", "Row 1. a; b.", "Row 2. c; d."]);
+  assert.deepEqual(spoken(bare, { tables: "announce" }), ["Table, 2 columns, 2 rows."]);
+  assert.deepEqual(spoken(articleOf(tableOf(null, ["only"])), { tables: "announce" }), ["Table, 1 column, 1 row."]);
+  // Two tables are announced one after the other, each counted by itself.
+  assert.deepEqual(spoken(articleOf(tableOf(["A"], ["x"]), tableOf(["B", "C"], ["y", "z"]))), [
+    "Table, 1 column: A.", "Row 1. A: x.", "Table, 2 columns: B, C.", "Row 1. B: y; C: z.",
+  ]);
+});
+
+test("a table's labels follow its columns, whatever is empty, missing or in the way", () => {
+  // An empty cell is skipped but keeps its column: the next cell is read under its own label.
+  assert.deepEqual(spoken(articleOf(tableOf(["A", "B", "C"], ["x", "", "z"]))), ["Table, 3 columns: A, B, C.", "Row 1. A: x; C: z."]);
+  // A row with only empty cells has no text, so it is no block: it is neither read nor counted.
+  assert.deepEqual(spoken(articleOf(tableOf(["A", "B"], ["x", "y"], ["", ""], ["z", "w"]))), ["Table, 2 columns: A, B.", "Row 1. A: x; B: y.", "Row 2. A: z; B: w."]);
+  assert.deepEqual(spoken(articleOf(tableOf(["A", "B"], ["x", "y"], ["", ""], ["z", "w"])), { tables: "announce" }), ["Table, 2 columns, 2 rows: A, B."]);
+  // A header row with no text at all is no block either; the table is announced on its first row.
+  assert.deepEqual(spoken(articleOf(tableOf(["", ""], ["x", "y"]))), ["Table, 2 columns.", "Row 1. x; y."]);
+  // Row headers (th) in a body row are cells like any other, and only a first row of th cells is the header.
+  const rowHeaders = el("table", {}, [el("thead", {}, [rowOf("th", ["Model", "Score"])]), el("tbody", {}, [el("tr", {}, [cellOf("th", text("Base")), cellOf("td", text("0.8"))])])]);
+  assert.deepEqual(spoken(articleOf(rowHeaders)), ["Table, 2 columns: Model, Score.", "Row 1. Model: Base; Score: 0.8."]);
+  const later = el("table", {}, [el("tbody", {}, [rowOf("td", ["a", "b"]), rowOf("th", ["c", "d"])])]);
+  assert.deepEqual(spoken(articleOf(later)), ["Table, 2 columns.", "Row 1. a; b.", "Row 2. c; d."]);
+  const mixed = el("table", {}, [el("tbody", {}, [el("tr", {}, [cellOf("th", text("Base")), cellOf("td", text("0.8"))]), rowOf("td", ["Tuned", "0.9"])])]);
+  assert.deepEqual(spoken(articleOf(mixed)), ["Table, 2 columns.", "Row 1. Base; 0.8.", "Row 2. Tuned; 0.9."]);
+  // A header longer than its rows counts its columns too.
+  assert.deepEqual(spoken(articleOf(tableOf(["A", "B", "C"], ["x"]))), ["Table, 3 columns: A, B, C.", "Row 1. A: x."]);
+  // A cell's last punctuation ends the row, and a row ends in a full stop otherwise.
+  assert.deepEqual(spoken(articleOf(tableOf(["A"], ["done!"], ["Why?"], ["end"]))), ["Table, 1 column: A.", "Row 1. A: done!", "Row 2. A: Why?", "Row 3. A: end."]);
+  // A table inside a table cell belongs to that cell: its rows are not rows of the outer table.
+  const inner = el("table", {}, [el("tbody", {}, [rowOf("td", ["i"])])]);
+  const outer = el("table", {}, [el("thead", {}, [rowOf("th", ["A", "B"])]), el("tbody", {}, [el("tr", {}, [cellOf("td", text("x"), inner), cellOf("td", text("y"))])])]);
+  assert.deepEqual(spoken(articleOf(outer)), ["Table, 2 columns: A, B.", "Row 1. A: x i; B: y."]);
+  assert.deepEqual(spoken(articleOf(outer), { tables: "announce" }), ["Table, 2 columns, 1 row: A, B."]);
+});
+
+test("a table cell is read as a text block reads its inline content, in the row's coordinates", () => {
+  const { mi, of } = mathml;
+  const { plainOpen, plainClose, supOpen, supClose } = SPEECH_MARK;
+  // Inline code keeps its slash, a formula is said once in words (its TeX and visible copy are not), a superscript is marked.
+  const ratio = sanitizedKatex("\\frac{a}{b}", [of("mfrac", mi("a"), mi("b"))]);
+  const table = el("table", {}, [
+    el("thead", {}, [rowOf("th", ["Metric", "Formula", "Code", "Cost"])]),
+    el("tbody", {}, [el("tr", {}, [
+      cellOf("td", text("Ratio")), cellOf("td", ratio), cellOf("td", el("code", {}, [text("a/b")])), cellOf("td", text("n"), el("sup", {}, [text("2")]), el("br"), text("per step")),
+    ])]),
+  ]);
+  const article = articleOf(table);
+  assert.deepEqual(spoken(article), [
+    "Table, 4 columns: Metric, Formula, Code, Cost.",
+    "Row 1. Metric: Ratio; Formula: a over b; Code: a/b; Cost: n squared per step.",
+  ]);
+  const [, row] = buildSpeechUnits(article);
+  assert.equal(row.text, `Row 1. Metric: Ratio; Formula: a over b; Code: ${plainOpen}a/b${plainClose}; Cost: n${supOpen}2${supClose} per step.`);
+  checkUnits(article, buildSpeechUnits(article), { exact: false });
+  // A header label is read the same way: code in it keeps its equals sign and its Greek letter, in the announcement and as the label.
+  const coded = el("table", {}, [el("thead", {}, [el("tr", {}, [cellOf("th", el("code", {}, [text("x = θ")]))])]), el("tbody", {}, [rowOf("td", ["one"])])]);
+  assert.deepEqual(spoken(articleOf(coded)), ["Table, 1 column: x = θ.", "Row 1. x = θ: one."]);
+  // The full stop that ends the announcement goes after the code's own, if it has one.
+  const stopped = el("table", {}, [el("thead", {}, [el("tr", {}, [cellOf("th", el("code", {}, [text("end.")]))])])]);
+  assert.deepEqual(spoken(articleOf(stopped)), ["Table, 1 column: end."]);
+  // The map goes from the words to the row's own text: a formula's words map into the formula (the TeX and the visible
+  // copy beside it are gaps) and the words of the other cells map to themselves.
+  const block = speechBlockText(readableBlocks(article)[1]);
+  assert.equal(block, "Ratioab\\frac{a}{b}aba/bn2per step");
+  const word = (words) => row.map.find((piece) => row.text.slice(...piece.spoken) === words);
+  assert.deepEqual([word("a").source, word("over").source, word("b").source], [[5, 6], [6, 6], [6, 7]]);
+  assert.equal(block.slice(...word("Ratio").source), "Ratio");
+  assert.equal(block.slice(...word("per").source), "per");
+  assert.equal(block.slice(...word("step").source), "step");
+});
+
+test("a table cell that holds a display formula or code reads it as its own text", () => {
+  const table = el("table", {}, [
+    el("thead", {}, [rowOf("th", ["Name", "Value", "Code"])]),
+    el("tbody", {}, [el("tr", {}, [cellOf("td", text("Loss")), cellOf("td", mathml.math(mathml.mi("x"))), cellOf("td", el("pre", {}, [text("a = 1")]))])]),
+  ]);
+  const article = articleOf(table);
+  // The formula and the code are inside the row, so they are the row's to read and no blocks of their own.
+  assert.deepEqual(readableBlocks(article).map((block) => block.localName), ["tr", "tr"]);
+  assert.deepEqual(buildSpeechUnits(article).map((unit) => unit.text), ["Table, 3 columns: Name, Value, Code.", "Row 1. Name: Loss; Value: x; Code: a = 1."]);
+  checkUnits(article, buildSpeechUnits(article), { exact: false });
+});
+
+test("a long row reaches the queue as one unit and splits between its cells", () => {
+  const cell = (letter) => letter.repeat(70);
+  const article = articleOf(tableOf(["A", "B", "C"], [cell("a"), cell("b"), cell("c")]));
+  assert.equal(buildSpeechUnits(article).filter((unit) => unit.kind === "row").length, 1);
+  assert.deepEqual(spoken(article), ["Table, 3 columns: A, B, C.", `Row 1. A: ${cell("a")}; B: ${cell("b")};`, `C: ${cell("c")}.`]);
+});
+
+test("the units of a row tile it, whitespace between cells and all", () => {
+  // marked puts a line feed between the cells and the rows; they are gaps in the map and belong to the earlier unit.
+  const nl = () => text("\n");
+  const cell = (tag, value) => [el(tag, {}, [text(value)]), nl()];
+  const line = (tag, values) => el("tr", {}, [nl(), ...values.flatMap((value) => cell(tag, value))]);
+  const article = articleOf(el("table", {}, [nl(), el("thead", {}, [nl(), line("th", ["Name", "Role"]), nl()]), nl(), el("tbody", {}, [line("td", ["Ada", "  lead   engineer  "]), nl()])]));
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => unit.text), ["Table, 2 columns: Name, Role.", "Row 1. Name: Ada; Role: lead engineer."]);
+  checkUnits(article, units);
+  const [row] = units.filter((unit) => unit.kind === "row");
+  const block = speechBlockText(readableBlocks(article)[1]);
+  assert.equal(block, "Ada lead engineer");
+  assert.deepEqual([row.unit.start, row.unit.end], [0, block.length]);
+  const piece = (words) => row.map.find((item) => row.text.slice(...item.spoken) === words);
+  assert.equal(block.slice(...piece("Ada").source), "Ada");
+  assert.equal(block.slice(...piece("engineer").source), "engineer");
+  // Inserted words sit at an empty range where the cell they introduce starts; the full stop at the end of the last cell.
+  assert.deepEqual(piece("Row 1. ").source, [0, 0]);
+  assert.deepEqual(piece("Role: ").source, [block.indexOf("lead"), block.indexOf("lead")]);
+  assert.deepEqual(piece("; ").source, [3, 3]);
+  assert.deepEqual(piece(".").source, [block.length, block.length]);
+});
+
+// A fenced block as marked renders it, without the header: the pre carries the language in its label.
+const fence = (label, body) => el("div", { class: "code-shell" }, [el("pre", { "aria-label": `${label} code` }, [el("code", {}, [text(body)])])]);
+
+test("a code block is named from its label and counts its lines", () => {
+  const names = {
+    python: "Python", py: "Python",
+    js: "JavaScript", javascript: "JavaScript", jsx: "JavaScript", mjs: "JavaScript",
+    ts: "TypeScript", typescript: "TypeScript", tsx: "TypeScript",
+    bash: "Shell", sh: "Shell", shell: "Shell", zsh: "Shell", console: "Shell",
+    sql: "SQL", json: "JSON", yaml: "YAML", yml: "YAML", html: "HTML", css: "CSS",
+    c: "C", cpp: "C++", "c++": "C++", go: "Go", rust: "Rust", rs: "Rust", java: "Java", r: "R",
+    dockerfile: "Dockerfile", docker: "Dockerfile", toml: "TOML",
+    text: "Code", plaintext: "Code", txt: "Code",
+    // Any other id: capitals up to three letters, capitalised beyond.
+    ini: "INI", xml: "XML", php: "PHP", lua: "LUA", haskell: "Haskell", kotlin: "Kotlin",
+  };
+  // The unit says the name; what a voice makes of it (the pack reads JSON as "jay-son") is the text pass's.
+  const announced = (label, body = "x\n") => buildSpeechUnits(articleOf(fence(label, body))).map((unit) => unit.text);
+  for (const [id, name] of Object.entries(names)) assert.deepEqual(announced(id), [`${name} example, 1 line.`], id);
+  assert.deepEqual(spoken(articleOf(fence("json", "{}\n"))), ["jay-son example, 1 line."]);
+  assert.deepEqual(buildSpeechQueue(buildSpeechUnits(articleOf(fence("python", "x\n"))), { pronunciations: [{ term: "Python", spoken: "Pie-thon" }] }).queue.map((entry) => entry.text), ["Pie-thon example, 1 line."]);
+  // The label is lower-cased by the renderer, but a capital in it changes nothing; the words after the language are not part of it.
+  assert.deepEqual(announced("Python"), ["Python example, 1 line."]);
+  assert.deepEqual(announced("JS"), ["JavaScript example, 1 line."]);
+  assert.deepEqual(announced("python title=app.py"), ["Python example, 1 line."]);
+  // No label: a bare pre, or a label that is only the word "code".
+  assert.deepEqual(spoken(articleOf(el("pre", {}, [text("x = 1\ny = 2\n")]))), ["Code example, 2 lines."]);
+  assert.deepEqual(spoken(articleOf(el("pre", { "aria-label": "code" }, [text("x = 1\n")]))), ["Code example, 1 line."]);
+  // Trailing line feeds are not lines; the blank lines inside the code are.
+  assert.deepEqual(spoken(articleOf(fence("py", "a\n\n\nb\n\n"))), ["Python example, 4 lines."]);
+  assert.deepEqual(spoken(articleOf(fence("py", "a\nb\nc"))), ["Python example, 3 lines."]);
+});
+
+test("code read aloud is a unit per non-empty line that tiles the block, said as written but for pronunciations", () => {
+  const article = articleOf(fence("python", "alpha = 1\n    beta = 2\n\n\ngamma = 3\n"));
+  const units = buildSpeechUnits(article, { code: "read" });
+  assert.deepEqual(units.map((unit) => [unit.kind, unit.text]), [
+    ["announcement", "Python example, 5 lines."], ["code", "alpha = 1"], ["code", "beta = 2"], ["code", "gamma = 3"],
+  ]);
+  checkUnits(article, units);
+  assert.equal(speechBlockText(readableBlocks(article)[0]), "alpha = 1 beta = 2 gamma = 3");
+  // Each line owns the stretch from its first word to the next line's: the indentation and blank lines belong to the earlier one.
+  assert.deepEqual(units.slice(1).map(({ unit }) => [unit.blockIndex, unit.start, unit.end]), [[0, 0, 10], [0, 10, 19], [0, 19, 28]]);
+  assert.deepEqual(spoken(article, { code: "read" }), ["Python example, 5 lines.", "alpha = 1", "beta = 2", "gamma = 3"]);
+  // Pronunciations apply in code, math does not (the equals sign and the slash stay as written).
+  assert.deepEqual(spoken(articleOf(fence("python", "import numpy as np\nratio = a/b\n")), { code: "read" }), ["Python example, 2 lines.", "import num pie as np", "ratio = a/b"]);
+  // Skipped: nothing at all. Announced: the announcement alone. Any other setting is the default.
+  assert.deepEqual(spoken(article, { code: "skip" }), []);
+  assert.deepEqual(spoken(article, { code: "announce" }), ["Python example, 5 lines."]);
+  assert.deepEqual(spoken(article), ["Python example, 5 lines."]);
+  assert.deepEqual(spoken(article, { code: "everything" }), ["Python example, 5 lines."]);
+  // A line that is long enough to need it is split by the queue, not by the unit.
+  const long = articleOf(fence("python", `x = [${Array.from({ length: 80 }, (_, at) => `item${at}`).join(", ")}]\n`));
+  assert.equal(buildSpeechUnits(long, { code: "read" }).filter((unit) => unit.kind === "code").length, 1);
+  assert.ok(spoken(long, { code: "read" }).length > 2);
+});
+
+test("a block with a box-drawing character is a text diagram, whatever its label says and whatever is read", () => {
+  for (const label of ["text", "python", "bash"]) assert.deepEqual(spoken(articleOf(fence(label, "┌──┐\n└──┘\n"))), ["Text diagram, 2 lines."], label);
+  // The range is U+2500 to U+257F, both ends in; the blocks beside it are code.
+  assert.deepEqual(spoken(articleOf(fence("text", "a \u2500 b\n"))), ["Text diagram, 1 line."]);
+  assert.deepEqual(spoken(articleOf(fence("text", "a \u257F b\n"))), ["Text diagram, 1 line."]);
+  assert.deepEqual(spoken(articleOf(fence("text", "a \u24FF b\n"))), ["Code example, 1 line."]);
+  assert.deepEqual(spoken(articleOf(fence("text", "a \u2580 b\n"))), ["Code example, 1 line."]);
+  // One announcement with no range or map, in every code setting.
+  for (const code of ["announce", "skip", "read"]) {
+    const [unit, ...rest] = buildSpeechUnits(articleOf(fence("text", "a ─┐\n  ├─> b\n")), { code });
+    assert.deepEqual([unit.kind, unit.unit, unit.map, rest.length], ["announcement", { blockIndex: 0, start: 0, end: 0 }, [], 0], code);
+  }
+});
+
+test("a diagram says its description once, in whatever state it is, and never 'Diagram: Diagram'", () => {
+  const shell = (status, inner, attrs = {}) => el("div", { class: "diagram-shell", "data-diagram-status": status }, [el("div", { class: "mermaid", "data-diagram-status": status, ...attrs }, inner)]);
+  // The description of an unknown kind is the word itself, and one that starts with the word is the whole announcement.
+  assert.deepEqual(spoken(articleOf(shell("pending", [text("quantumDiagram")]))), ["Diagram."]);
+  assert.deepEqual(spoken(articleOf(shell("rendered", [el("svg", {}, [text("x")])], { "aria-label": "Diagram of the pipeline" }))), ["Diagram of the pipeline."]);
+  assert.deepEqual(spoken(articleOf(shell("rendering", [text("flowchart LR\n  A --> B")]))), ["Diagram: Flowchart: A leads to B."]);
+  const [unit, ...rest] = buildSpeechUnits(articleOf(shell("pending", [text("flowchart LR\n  A --> B")])));
+  assert.deepEqual([unit.kind, unit.text, unit.unit, unit.map, rest.length], ["announcement", "Diagram: Flowchart: A → B.", { blockIndex: 0, start: 0, end: 0 }, [], 0]);
+  // A diagram that cannot say anything still announces itself, and a diagram under a heading belongs to that section.
+  const under = buildSpeechUnits(articleOf(el("h2", {}, [text("Flow")]), shell("error", [el("p", {}, [text("Diagram renderer unavailable")])])));
+  assert.deepEqual(under.map((item) => [item.text, item.section]), [["Flow.", "Flow"], ["Diagram.", "Flow"]]);
+});
+
+test("display math is one unit: its words without a trailing comma, ended as a sentence", () => {
+  const { mi, mo, mn, of, math } = mathml;
+  const formula = (...nodes) => articleOf(math(...nodes));
+  assert.deepEqual(spoken(formula(of("mfrac", mn("1"), mi("n")), mo(","))), ["1 over n."]);
+  assert.deepEqual(spoken(formula(of("mfrac", mn("1"), mi("n")))), ["1 over n."]);
+  // Only a comma at the very end goes; a full stop already there is the sentence's, and the others stay.
+  assert.deepEqual(spoken(formula(mi("y"), mo("="), mi("x"), mo("."))), ["y equals x."]);
+  assert.deepEqual(spoken(formula(mi("a"), mo(","), mi("b"), mo(","))), ["a, b."]);
+  const article = formula(of("mfrac", mn("1"), mi("n")), mo(","));
+  const [unit, ...rest] = buildSpeechUnits(article);
+  assert.equal(rest.length, 0);
+  // The comma stays in the block, so the unit covers it; the full stop sits where the words end.
+  assert.deepEqual([unit.kind, unit.text, unit.unit], [undefined, "1 over n.", { blockIndex: 0, start: 0, end: 3 }]);
+  assert.deepEqual(unit.map.at(-1), { spoken: [8, 9], source: [2, 2] });
+  checkUnits(article, [unit], { exact: false });
+  // Under a heading it is in that section; KaTeX's display copy reads once.
+  assert.deepEqual(buildSpeechUnits(articleOf(el("h2", {}, [text("Loss")]), katexDisplay("y"))).map((item) => [item.text, item.section]), [["Loss.", "Loss"], ["y.", "Loss"]]);
+  // A formula that says nothing (an annotation alone) is a block and has no unit.
+  const hollow = articleOf(el("math", { display: "block" }, [el("semantics", {}, [el("annotation", {}, [text("x")])])]));
+  assert.equal(readableBlocks(hollow).length, 1);
+  assert.deepEqual(buildSpeechUnits(hollow), []);
+});
+
+test("a display formula's words map into the block's collapsed text", () => {
+  const { mi, mo } = mathml;
+  // Pretty-printed MathML: white space between the elements is in the offsets and collapses in the block.
+  const printed = el("math", { display: "block" }, [text("\n  "), el("mrow", {}, [text("\n    "), mi("a"), text("\n    "), mo("+"), text("\n    "), mi("b"), text("\n  ")]), text("\n")]);
+  const article = articleOf(printed);
+  const [unit, ...rest] = buildSpeechUnits(article);
+  assert.equal(rest.length, 0);
+  const block = speechBlockText(printed);
+  assert.equal(block, "a + b");
+  assert.equal(unit.text, "a plus b.");
+  assert.deepEqual([unit.unit.start, unit.unit.end], [0, block.length]);
+  const word = (words) => unit.map.find((piece) => unit.text.slice(...piece.spoken) === words);
+  assert.deepEqual([word("a").source, word("plus").source, word("b").source], [[0, 1], [2, 3], [4, 5]]);
+  checkUnits(article, [unit], { exact: false });
+});
+
+test("display math in the sanitized shape is said once, and the KaTeX around it adds nothing", () => {
+  const { mi, of } = mathml;
+  const display = el("span", { class: "katex-display" }, [sanitizedKatex("\\frac{a}{b}", [of("mfrac", mi("a"), mi("b"))], { display: "block" })]);
+  const article = articleOf(el("p", {}, [text("Before.")]), display, el("p", {}, [text("After.")]));
+  assert.deepEqual(readableBlocks(article).map((block) => block.localName), ["p", "math", "p"]);
+  assert.deepEqual(spoken(article), ["Before.", "a over b.", "After."]);
+  checkUnits(article, buildSpeechUnits(article), { exact: false });
+  // The words map into the formula's own text, past the TeX that sits after it.
+  const [, unit] = buildSpeechUnits(article);
+  const block = speechBlockText(readableBlocks(article)[1]);
+  assert.equal(block, "ab\\frac{a}{b}");
+  assert.deepEqual([unit.unit.start, unit.unit.end], [0, block.length]);
+  assert.ok(unit.map.every((piece) => piece.source[1] <= 2));
+});
+
+test("the document target passes the code and table settings on to the units", () => {
+  const root = fixture();
+  const read = buildSpeechTarget({ scope: "document", article: root, code: "read", tables: "announce" });
+  assert.ok(read.text.includes("Table, 3 columns, 2 rows: Situation, First inspect, Safe action. Python example, 6 lines. import numpy as np X = np.ones((3, 2))"), read.text);
+  assert.ok(!read.text.includes("Row 1."));
+  assert.deepEqual(buildSpeechTarget({ scope: "document", article: root, code: "skip" }).units.filter((unit) => unit.text.startsWith("Python")), []);
+  assert.ok(buildSpeechTarget({ scope: "document", article: root }).text.includes("Row 2. Situation: High latency; First inspect: p99 graphs; Safe action: Roll back. Python example, 6 lines. Text diagram, 3 lines."));
+  assert.equal(buildSpeechSections(root, { code: "read" }).at(-1).text, buildSpeechTarget({ scope: "document", article: root, code: "read" }).sections.at(-1).text);
+});
+
+test("tables and code build in linear time", () => {
+  const rows = Array.from({ length: 5_000 }, (_, at) => [`name ${at}`, `value ${at}`, `note ${at}`]);
+  const table = articleOf(tableOf(["Name", "Value", "Note"], ...rows));
+  const code = articleOf(fence("python", Array.from({ length: 50_000 }, (_, at) => `value_${at} = ${at}`).join("\n")));
+  const time = (work) => {
+    const started = performance.now();
+    const result = work();
+    return { result, elapsed: performance.now() - started };
+  };
+  // Generous: these guard the complexity (the table's header and counts worked out again for every row, a scan of the
+  // block for every line), not the machine.
+  const grid = time(() => buildSpeechUnits(table));
+  assert.equal(grid.result.length, 1 + 5_000);
+  assert.equal(grid.result.at(-1).text, "Row 5000. Name: name 4999; Value: value 4999; Note: note 4999.");
+  assert.ok(grid.elapsed < 4_000, `5,000 rows took ${Math.round(grid.elapsed)} ms`);
+  const lines = time(() => buildSpeechUnits(code, { code: "read" }));
+  assert.equal(lines.result.length, 1 + 50_000);
+  assert.equal(lines.result.at(-1).unit.end, speechBlockText(readableBlocks(code)[0]).length);
+  assert.ok(lines.elapsed < 4_000, `50,000 lines took ${Math.round(lines.elapsed)} ms`);
+  const first = time(() => buildSpeechTarget({ scope: "sentence", article: table, scrollContainer: lineAt(0) }));
+  assert.equal(first.result.units.length, 1);
+  assert.ok(first.elapsed < 2_000, `the sentence target took ${Math.round(first.elapsed)} ms`);
 });
