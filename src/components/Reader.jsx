@@ -50,11 +50,11 @@ import { renderReaderMarkdown, useRenderedMarkdown } from "../lib/useRenderedMar
 import { diffLines, diffSummary } from "../lib/diff.js";
 import { documentToStandaloneHtml } from "../lib/exportHtml.js";
 import { addAudioBookmark, listAudioBookmarks, removeAudioBookmark } from "../lib/audioBookmarks.js";
-import { clearPosition, locatePosition, readPosition, writePosition } from "../lib/narrationPositions.js";
+import { clearPosition, locatePosition, readPosition, unitPlace, writePosition } from "../lib/narrationPositions.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import { applyAnnotationHighlights, captureTextAnchor, resolveTextAnchor } from "../lib/annotations";
 import { copyText } from "../lib/clipboard.js";
-import { buildSpeechTarget } from "../lib/speechContent.js";
+import { blockAt, buildSpeechTarget } from "../lib/speechContent.js";
 import { useModalDialog, visibleFocusables } from "../hooks/useModalDialog.js";
 import { safeLocalStorage } from "../lib/safeStorage.js";
 import AnnotationDialog from "./AnnotationDialog";
@@ -679,14 +679,60 @@ export default function Reader({
     setFindState({ index: next, total: matches.length });
   };
 
-  const speechTarget = (scope = settings.speechScope) => buildSpeechTarget({
-    scope,
-    selectedText: selectedText || speechSelection,
-    article: articleRef.current,
-    scrollContainer: scrollRef.current,
-    sourceText: plainTextFromMarkdown(source),
-    language: settings.speechLanguage,
+  // What the article on the page holds, recorded after each commit. The
+  // lecture's speech units are built from that DOM, so their memo is keyed on
+  // it, not on the markup this render is about to commit.
+  const committedRef = useRef({ article: null, html: "" });
+  useLayoutEffect(() => {
+    committedRef.current = { article: articleRef.current, html };
   });
+  const documentTargetRef = useRef(null);
+  // The full lecture's target holds every unit of the lecture. It depends on
+  // the lecture on the page and on three settings and on nothing else. The
+  // Listen panel asks for it on every render and a slider drag renders on
+  // every input event, so it is built once for the rendered markup, the code
+  // and table choices and the voice language.
+  const documentTarget = () => {
+    const { article, html: markup } = committedRef.current;
+    const { narrationCode: code, narrationTables: tables, speechLanguage: language } = settings;
+    const cached = documentTargetRef.current;
+    if (cached && cached.article === article && cached.html === markup && cached.source === source && cached.code === code && cached.tables === tables && cached.language === language) return cached.target;
+    const target = buildSpeechTarget({ scope: "document", article, scrollContainer: scrollRef.current, sourceText: plainTextFromMarkdown(source), language, code, tables });
+    documentTargetRef.current = { article, html: markup, source, code, tables, language, target };
+    return target;
+  };
+  // The sentence and the section depend on the reading line, so they are built
+  // when they are read (Read), never from a render.
+  const speechTarget = (scope = settings.speechScope) => (scope === "sentence" || scope === "section" || scope === "selection"
+    ? buildSpeechTarget({
+      scope,
+      selectedText: selectedText || speechSelection,
+      article: articleRef.current,
+      scrollContainer: scrollRef.current,
+      language: settings.speechLanguage,
+      code: settings.narrationCode,
+      tables: settings.narrationTables,
+    })
+    : documentTarget());
+  // What the Listen panel says about its target, from every render. The
+  // sentence and the section are not built for it: it names them and says
+  // whether the lecture has anything to read (a target built with no article
+  // has their label and reason and no text).
+  const listenTarget = () => {
+    const scope = settings.speechScope;
+    if (scope !== "sentence" && scope !== "section") return speechTarget(scope);
+    return { ...buildSpeechTarget({ scope }), available: Boolean(documentTarget().units?.length) };
+  };
+  // A built target is spoken as its units when it has them (the lecture's
+  // sentences, table rows, announcements), else as its text with its sections.
+  const speakTarget = (target, options) => (target.units?.length
+    ? speech.speak(target.units, options)
+    : speech.speak(target.text, { ...options, sections: target.sections }));
+  // The queue entry being spoken. For one task after speak() the index can
+  // still belong to the previous queue (the first utterance of a replacing
+  // reading waits for the engine's cancel), so it counts only when the queue
+  // and the progress agree on how long the queue is.
+  const spokenEntry = () => (speech.progress.total === speech.queueUnits.length ? speech.queueUnits[speech.currentIndex] : undefined);
 
   // The lecture a full-lecture queue was started in. A route change renders
   // this Reader with the next lecture one commit before the stop lands, so
@@ -711,7 +757,7 @@ export default function Reader({
       return resumed.index > 2 ? resumed.index : 0;
     } : undefined;
     narratedDocumentRef.current = document.id;
-    if (speech.speak(target.text, { label: target.label, sections: target.sections, resolveStart })) {
+    if (speakTarget(target, { label: target.label, resolveStart })) {
       if (resumed?.how === "changed") onNotify?.("This lecture changed since you stopped, so narration starts at the beginning.", "warning");
       else if (resumed?.how === "section" && resumed.index > 2) onNotify?.(`This lecture changed since you stopped, so narration resumes at the start of “${saved.section}”.`, "warning");
       else if (resumed?.index > 2) onNotify?.("Narration resumed from your last position. Use Previous to go back.");
@@ -733,7 +779,7 @@ export default function Reader({
     if (!autoNarrate) return;
     const target = speechTarget("document");
     narratedDocumentRef.current = document.id;
-    if (target.available && speech.speak(target.text, { label: target.label, sections: target.sections, continueSession: true })) {
+    if (target.available && speakTarget(target, { label: target.label, continueSession: true })) {
       onNotify?.(`Continuing narration: ${document.title}`, "success", 4000);
     }
     onAutoNarrateHandled?.();
@@ -742,8 +788,12 @@ export default function Reader({
 
   // Spoken-block follow (AUDIO-001): while a lecture-wide narration is
   // speaking, tint the block containing the current sentence and keep it in
-  // view. Sentences rewritten by pronunciation overrides simply skip the
-  // highlight when no block matches; narration is never affected.
+  // view. The entry being spoken names its block (`unit.blockIndex`, an index
+  // into `readableBlocks`), so a verbalised sentence, a table row or an
+  // announcement finds its block without a search. Only a reading with no
+  // unit looks for the block that holds the sentence's opening words, and
+  // sentences rewritten by pronunciation overrides simply skip the highlight
+  // when no block matches; narration is never affected.
   useEffect(() => {
     const article = articleRef.current;
     if (!article) return;
@@ -752,13 +802,17 @@ export default function Reader({
       clear();
       return;
     }
-    const needle = speech.currentText.slice(0, 60).replace(/\s+/g, " ").trim().toLocaleLowerCase();
-    if (needle.length < 8) return;
+    const entry = spokenEntry();
     let target = null;
-    for (const block of article.querySelectorAll("h1, h2, h3, h4, p, li, blockquote")) {
-      if (block.textContent.replace(/\s+/g, " ").toLocaleLowerCase().includes(needle)) {
-        target = block;
-        break;
+    if (entry?.unit) target = blockAt(article, entry.unit.blockIndex);
+    else {
+      const needle = speech.currentText.slice(0, 60).replace(/\s+/g, " ").trim().toLocaleLowerCase();
+      if (needle.length < 8) return;
+      for (const block of article.querySelectorAll("h1, h2, h3, h4, p, li, blockquote")) {
+        if (block.textContent.replace(/\s+/g, " ").toLocaleLowerCase().includes(needle)) {
+          target = block;
+          break;
+        }
       }
     }
     clear();
@@ -766,7 +820,7 @@ export default function Reader({
     target.classList.add("narration-active");
     releaseAnchor();
     target.scrollIntoView({ block: "center", behavior: scrollBehavior() });
-  }, [speech.activeLabel, speech.currentText, speech.status]);
+  }, [speech.activeLabel, speech.currentText, speech.status, speech.currentIndex, speech.progress.total, speech.queueUnits]);
 
   // Persist the document-narration position per device so a stopped or
   // interrupted session can pick up where it left off (AUDIO-001). Storage
@@ -777,8 +831,10 @@ export default function Reader({
       clearPosition(document.id);
       return;
     }
-    writePosition(document.id, { index: speech.progress.current, total: speech.progress.total, snippet: speech.currentText, section: speech.sectionLabel });
-  }, [document.id, speech.activeLabel, speech.progress, speech.currentText, speech.sectionLabel]);
+    // The block and offset of the sentence come with it when it has them, so
+    // it is found again where it is if the words it was saved with change.
+    writePosition(document.id, { index: speech.progress.current, total: speech.progress.total, snippet: speech.currentText, section: speech.sectionLabel, ...unitPlace(spokenEntry()?.unit) });
+  }, [document.id, speech.activeLabel, speech.progress, speech.currentText, speech.sectionLabel, speech.queueUnits]);
 
   // The mini player floats over the end of the lecture (issue #97, ND8). Up
   // to 980px wide it sits a small gap above the bottom navigation, which
@@ -977,7 +1033,7 @@ export default function Reader({
   useEffect(() => setAudioBookmarks(listAudioBookmarks(document.id)), [document.id]);
   const bookmarkCurrentSentence = () => {
     if (speech.activeLabel !== "Full lecture" || narratedDocumentRef.current !== document.id) return;
-    const saved = addAudioBookmark({ documentId: document.id, index: speech.progress.current, total: speech.progress.total, snippet: speech.currentText.slice(0, 160), section: speech.sectionLabel });
+    const saved = addAudioBookmark({ documentId: document.id, index: speech.progress.current, total: speech.progress.total, snippet: speech.currentText.slice(0, 160), section: speech.sectionLabel, ...unitPlace(spokenEntry()?.unit) });
     setAudioBookmarks(listAudioBookmarks(document.id));
     if (saved) onNotify?.("Sentence bookmarked — jump back to it from the narration panel.");
     else onNotify?.("This device could not save the bookmark. Narration continues.", "warning");
@@ -992,7 +1048,7 @@ export default function Reader({
     let located = null;
     const resolveStart = (queue, sectionStarts) => (located = locatePosition(bookmark, queue, sectionStarts, { allowLast: true })).index;
     narratedDocumentRef.current = document.id;
-    if (!speech.speak(target.text, { label: target.label, sections: target.sections, resolveStart })) return;
+    if (!speakTarget(target, { label: target.label, resolveStart })) return;
     if (located?.how === "changed") onNotify?.("This lecture changed since the bookmark was saved, so narration starts at the beginning.", "warning");
     else if (located?.how === "section") onNotify?.(`This lecture changed since the bookmark was saved, so narration plays from the start of “${bookmark.section}”.`, "warning");
     setShowSpeech(false);
@@ -1090,7 +1146,7 @@ export default function Reader({
         </div>
       </header>
 
-      {showSpeech && <NarrationPanel panelRef={speechPopoverRef} settings={settings} speech={speech} hasSelection={Boolean(selectedText || speechSelection)} target={speechTarget()} onSettingsChange={onSettingsChange} onRead={readSpeechTarget} onClose={() => setShowSpeech(false)} audioBookmarks={audioBookmarks} onPlayBookmark={playFromBookmark} onDeleteBookmark={deleteAudioBookmark} />}
+      {showSpeech && <NarrationPanel panelRef={speechPopoverRef} settings={settings} speech={speech} hasSelection={Boolean(selectedText || speechSelection)} target={listenTarget()} onSettingsChange={onSettingsChange} onRead={readSpeechTarget} onClose={() => setShowSpeech(false)} audioBookmarks={audioBookmarks} onPlayBookmark={playFromBookmark} onDeleteBookmark={deleteAudioBookmark} />}
 
       {showDisplay && (
         <div ref={displayPopoverRef} id="reader-appearance-panel" className="reader-popover display-popover" role="dialog" aria-labelledby="reader-appearance-title">
@@ -1249,7 +1305,7 @@ export default function Reader({
           second line and Retry, beside Stop, replays that sentence. Retry
           takes the place of Pause, so the bar keeps seven controls. */}
       {playerVisible && <div ref={attachAudioBar} className="audio-bar" role="region" aria-label="Narration controls">{speech.hasSections && <button className="icon-button" onClick={speech.previousSection} aria-label="Previous section" title="Previous section" type="button"><ChevronsLeft size={18} /></button>}<button className="icon-button" onClick={speech.previous} disabled={!speech.canPrevious} aria-label="Previous narration sentence" type="button"><SkipBack size={18} /></button>{!speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} disabled={!speech.canPause && speech.status !== "paused"} aria-label={speech.status === "paused" ? "Resume narration" : "Pause narration"} type="button">{speech.status === "paused" ? <Play size={19} fill="currentColor" /> : <Pause size={19} fill="currentColor" />}</button>}<button className="icon-button" onClick={speech.next} disabled={!speech.canNext} aria-label="Next narration sentence" type="button"><SkipForward size={18} /></button>{speech.hasSections && <button className="icon-button" onClick={speech.nextSection} aria-label="Next section" title="Next section" type="button"><ChevronsRight size={18} /></button>}<div className="audio-label"><strong>{speech.activeLabel || "Narration"} · {speech.progress.current + 1}/{speech.progress.total}</strong>{playerNotice ? <span className="audio-message">{playerNotice.message}</span> : <span>{speech.currentText}</span>}</div>{speech.activeLabel === "Full lecture" && <button className="icon-button" onClick={bookmarkCurrentSentence} aria-label="Bookmark this sentence" title="Bookmark this sentence" type="button"><BookmarkPlus size={17} /></button>}{speech.canRetry && <button ref={playControl} className="icon-button" onClick={speech.togglePause} aria-label="Retry narration" title="Retry narration" type="button"><RotateCcw size={18} /></button>}<button className="icon-button" onClick={speech.stop} aria-label="Stop narration" type="button"><Square size={16} fill="currentColor" /></button></div>}
-      {teaching && <TeachingMode title={document.title} source={source} documentId={document.id} onClose={() => setTeaching(false)} onOpenDocument={openAfterTeaching} onNotify={onNotify} speech={speech} />}
+      {teaching && <TeachingMode title={document.title} source={source} documentId={document.id} onClose={() => setTeaching(false)} onOpenDocument={openAfterTeaching} onNotify={onNotify} speech={speech} narration={{ code: settings.narrationCode, tables: settings.narrationTables, language: settings.speechLanguage }} />}
       <AnnotationDialog draft={annotationDraft} onClose={() => setAnnotationDraft(null)} onSave={saveAnnotation} />
     </section>
   );

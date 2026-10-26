@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, Eye, EyeOff, Expand, Minus, Minimize2, Pause, Play, Plus, Printer, RotateCcw, Square } from "lucide-react";
 import { splitTeachingSections } from "../lib/markdown";
-import { plainTextFromMarkdown } from "../lib/content";
 import { LINK_NOTICES, linkTarget, teachingSlideForAnchor } from "../lib/links.js";
 import { scrollBehavior } from "../lib/motion.js";
+import { buildSpeechUnits } from "../lib/speechContent.js";
 import { useMermaidDiagrams } from "../lib/useMermaidDiagrams.js";
 import { renderReaderMarkdown, useRenderedMarkdown } from "../lib/useRenderedMarkdown.js";
 import { useModalDialog } from "../hooks/useModalDialog.js";
 
 const TEACHING_BACKGROUND = [".app-sidebar", ".app-topbar", ".bottom-nav", ".reader-view > :not(.teach-mode)"];
+// How a slide's code and tables are read when the Reader passes no choice
+// (settings.narrationCode and settings.narrationTables).
+const DEFAULT_NARRATION = Object.freeze({ code: "announce", tables: "rows" });
 
-export default function TeachingMode({ title, source, documentId, onClose, onOpenDocument, onNotify, speech }) {
+export default function TeachingMode({ title, source, documentId, onClose, onOpenDocument, onNotify, speech, narration = DEFAULT_NARRATION }) {
   const sections = useMemo(() => splitTeachingSections(source), [source]);
   const [index, setIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -123,8 +126,22 @@ export default function TeachingMode({ title, source, documentId, onClose, onOpe
   const narrating = speech.status === "speaking" || speech.status === "paused" || speech.canRetry;
   const message = speech.notice && speech.notice.code !== "sleep-ended" ? speech.notice : null;
   const narrate = () => {
-    if (narrating) speech.togglePause();
-    else speech.speak(plainTextFromMarkdown(current.markdown), { label: `Teaching section ${index + 1}` });
+    if (narrating) {
+      speech.togglePause();
+      return;
+    }
+    // The slide is read as the Reader reads a lecture: sentence by sentence,
+    // its formulas, tables, code and diagrams as the learner's settings say.
+    // Hidden for recall, the slide is not on the page, so its markup is read
+    // from an inert template (it loads no images and runs nothing).
+    let root = articleRef.current;
+    if (concealed || !root) {
+      const template = document.createElement("template");
+      template.innerHTML = renderReaderMarkdown(current.markdown);
+      root = template.content;
+    }
+    const units = buildSpeechUnits(root, narration);
+    speech.speak(units.length ? units : "", { label: `Teaching section ${index + 1}` });
   };
   // Stop leaves once narration ends (tapped or finished); focus that was on
   // it returns to the narration control. A stable callback, so re-renders

@@ -80,7 +80,7 @@ export default function NarrationPanel({
           ))}
         </div>
         <p className={target.available ? "speech-target-status" : "speech-target-status warning"}>
-          {target.available ? `${target.label} · ${target.text.length.toLocaleString()} characters` : target.reason}
+          {target.available ? `${target.label}${target.text ? ` · ${target.text.length.toLocaleString()} characters` : ""}` : target.reason}
         </p>
       </fieldset>
 

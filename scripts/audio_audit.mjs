@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { pollValue, settled, waitForTheme } from "./audit_waits.mjs";
+import { endSentence, speakable } from "../src/lib/speech.js";
 import { installSpeechMock, stepToSpokenBlock } from "./speech_mock.mjs";
+import { FIXTURE_MARKDOWN, fixtureSpoken } from "./speech_fixture.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -326,6 +328,7 @@ try {
   // Issue #97 reuses the runner with its own failure list and viewports.
   const issue96Failures = [];
   const issue97Failures = [];
+  const issue100Failures = [];
   const phoneViewport = { width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true };
   const narrationCase = (failures) => async (name, { webkitLegacy = false, prepare, viewport = phoneViewport } = {}, run) => {
     const context = await browser.createBrowserContext();
@@ -349,6 +352,7 @@ try {
   };
   const issue96Case = narrationCase(issue96Failures);
   const issue97Case = narrationCase(issue97Failures);
+  const issue100Case = narrationCase(issue100Failures);
   const openLecture = async (casePage, id = documentId) => {
     await casePage.goto(`${baseUrl}#/read/${encodeURIComponent(id)}`, { waitUntil: "networkidle2", timeout: 30_000 });
     await casePage.waitForSelector(".markdown-body h1", { timeout: 15_000 });
@@ -656,19 +660,18 @@ try {
 
   // NM1: with the Mermaid chunk unavailable, the diagram's diagnostic (its
   // message and raw source) is never narrated.
-  await issue96Case("Mermaid unavailable", {
-    prepare: async (casePage) => {
-      await casePage.setBypassServiceWorker(true);
-      await casePage.setCacheEnabled(false);
-      // Offline as far as the app can tell, so chunk recovery stays out of it.
-      await casePage.evaluateOnNewDocument(() => Object.defineProperty(Navigator.prototype, "onLine", { configurable: true, get: () => false }));
-      await casePage.setRequestInterception(true);
-      casePage.on("request", (request) => {
-        if (/\/assets\/mermaid\.core-/u.test(request.url()) || request.url().includes("/api/health")) void request.abort("failed");
-        else void request.continue();
-      });
-    },
-  }, async (casePage) => {
+  const withoutMermaid = async (casePage) => {
+    await casePage.setBypassServiceWorker(true);
+    await casePage.setCacheEnabled(false);
+    // Offline as far as the app can tell, so chunk recovery stays out of it.
+    await casePage.evaluateOnNewDocument(() => Object.defineProperty(Navigator.prototype, "onLine", { configurable: true, get: () => false }));
+    await casePage.setRequestInterception(true);
+    casePage.on("request", (request) => {
+      if (/\/assets\/mermaid\.core-/u.test(request.url()) || request.url().includes("/api/health")) void request.abort("failed");
+      else void request.continue();
+    });
+  };
+  await issue96Case("Mermaid unavailable", { prepare: withoutMermaid }, async (casePage) => {
     await openLecture(casePage);
     await casePage.waitForSelector('.diagram-shell[data-diagram-status="error"]', { timeout: 20_000 })
       .catch(() => assert.fail("the blocked Mermaid chunk did not produce the diagram failure"));
@@ -1735,9 +1738,314 @@ try {
     assert.deepEqual(problems, [], problems.join("; "));
   });
 
-  const narrationFailures = [["#96", issue96Failures], ["#97", issue97Failures]].filter(([, list]) => list.length);
+  // Issue #100: the lecture is narrated by unit. The fixture lecture
+  // (scripts/speech_fixture.mjs, the one the unit test mirrors) is seeded as a
+  // custom document: every case below has its own context, so its settings and
+  // storage are its own.
+  const FIXTURE_ID = "custom/speakable-fixture.md";
+  const FIXTURE_ROUTE = `${baseUrl}#/read/${encodeURIComponent(FIXTURE_ID)}`;
+  // Puts the fixture (and `settings`, merged over the stored ones) in the stored
+  // profile and opens it. The first load opens the database; the profile is
+  // then read, changed and written back as chunk_recovery_audit.mjs does, the
+  // page loads again from storage, and the route then opens the lecture. (A
+  // hard load of the lecture's own route from this partial profile never
+  // renders it, so the route is followed once the app has loaded the profile.)
+  const seedFixture = async (casePage, settings = {}) => {
+    await casePage.goto(baseUrl, { waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForSelector(".welcome-block", { timeout: 15_000 });
+    await casePage.evaluate((raw, patch, id) => new Promise((resolveSeed, reject) => {
+      const now = new Date().toISOString();
+      const request = indexedDB.open("lumen-ai-notes", 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const transaction = request.result.transaction("study-data", "readwrite");
+        const store = transaction.objectStore("study-data");
+        const get = store.get("profile");
+        // A fresh origin may not have saved a profile yet; the app normalizes
+        // whatever it finds, so a partial record is enough.
+        get.onsuccess = () => {
+          const stored = get.result || {};
+          store.put({
+            ...stored,
+            settings: { ...(stored.settings || {}), ...patch },
+            customDocuments: [{ id, title: "Speakable fixture", raw, createdAt: now, updatedAt: now, tags: [], collectionId: "", archived: false, pinned: false }, ...(stored.customDocuments || []).filter((doc) => doc.id !== id)],
+          }, "profile");
+        };
+        transaction.oncomplete = () => resolveSeed();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error || new Error("seeding the profile aborted"));
+      };
+    }), FIXTURE_MARKDOWN, settings, FIXTURE_ID);
+    await casePage.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+    await casePage.waitForSelector(".welcome-block", { timeout: 15_000 });
+    await casePage.goto(FIXTURE_ROUTE, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    // A seed that did not land opens a missing lecture: fail here, loudly.
+    await casePage.waitForFunction(() => document.querySelector(".markdown-body h1")?.textContent.trim() === "Speakable fixture", { timeout: 15_000 })
+      .catch(() => assert.fail("the seeded fixture lecture did not open"));
+  };
+  // speakQueue, looking at the page while each utterance is the one being spoken.
+  const speakQueueWatching = async (casePage, watch) => {
+    const { total } = await barPosition(casePage);
+    const texts = [];
+    for (let index = 0; index < total; index += 1) {
+      const text = await casePage.evaluate(() => window.speechSynthesis.current?.text ?? null);
+      if (text === null) break;
+      texts.push(text);
+      await watch(text);
+      await casePage.evaluate(() => window.speechSynthesis.current?.onend?.());
+    }
+    return texts;
+  };
+  // Opens the panel, chooses the full lecture, reads it and returns every
+  // utterance, calling `watch(text)` on the page while each is spoken.
+  const readFull = async (casePage, watch) => {
+    await openPanel(casePage);
+    await chooseScope(casePage, "Full", "full lecture");
+    await clickByText(casePage, ".speech-controls button", "Read full lecture");
+    await waitForBar(casePage, "full-lecture narration did not start");
+    return watch ? speakQueueWatching(casePage, watch) : speakQueue(casePage);
+  };
+  const firstDifference = (actual, expected) => {
+    const at = actual.findIndex((line, index) => line !== expected[index]);
+    const index = at === -1 ? Math.min(actual.length, expected.length) : at;
+    return `${actual.length} utterances, expected ${expected.length}; the first difference is no. ${index + 1}: spoke “${actual[index] ?? "(nothing)"}”, expected “${expected[index] ?? "(nothing)"}”`;
+  };
+  const sameLines = (actual, expected) => actual.length === expected.length && actual.every((line, index) => line === expected[index]);
+
+  // (a) The fixture reads as the spec says in every code and table setting,
+  // and the block being spoken is the highlighted one: the table row, the code,
+  // the formula and the diagram as much as a paragraph. [what is spoken, the
+  // block that holds it, a word of that block].
+  const SPOKEN_BLOCKS = [
+    ["Row 1.", "tr", "Disk full"],
+    ["Python example,", "pre", "import numpy"],
+    ["Text diagram,", "pre", "list object"],
+    ["The model predicts", "p", "The model predicts"],
+    ["Accuracy equals", "math", "Accuracy"],
+    ["Diagram:", ".diagram-shell", ""],
+  ];
+  for (const narrationCode of ["announce", "skip", "read"]) {
+    for (const narrationTables of ["rows", "announce"]) {
+      await issue100Case(`the fixture with code ${narrationCode} and tables ${narrationTables}`, {}, async (casePage) => {
+        await seedFixture(casePage, { narrationCode, narrationTables });
+        const followed = new Set();
+        const spoken = await readFull(casePage, async (text) => {
+          const block = SPOKEN_BLOCKS.find(([prefix]) => text.startsWith(prefix));
+          if (!block) return;
+          await casePage.waitForFunction((selector, word) => document.querySelector(`.markdown-body ${selector}.narration-active`)?.textContent.includes(word), { timeout: 5_000 }, block[1], block[2])
+            .then(() => followed.add(block[0]), () => {});
+        });
+        const expected = fixtureSpoken({ code: narrationCode, tables: narrationTables });
+        assert.ok(sameLines(spoken, expected), `the fixture read differently with code ${narrationCode} and tables ${narrationTables}: ${firstDifference(spoken, expected)}`);
+        const unfollowed = SPOKEN_BLOCKS.filter(([prefix]) => expected.some((line) => line.startsWith(prefix)) && !followed.has(prefix)).map(([prefix, selector]) => `${prefix} (${selector})`);
+        assert.deepEqual(unfollowed, [], `the block being spoken was not the highlighted one (.narration-active) while: ${unfollowed.join(", ")}`);
+      });
+    }
+  }
+
+  // (b) Chapter 1 is read one sentence at a time.
+  await issue100Case("chapter 1 speaks per sentence", {}, async (casePage) => {
+    await openLecture(casePage);
+    const spoken = await readFull(casePage);
+    const { headings, blocks } = await casePage.evaluate(() => {
+      const collapse = (node) => node.textContent.replace(/\s+/gu, " ").trim();
+      const body = document.querySelector(".markdown-body");
+      return {
+        headings: [...body.querySelectorAll("h1, h2, h3, h4")].map(collapse).filter(Boolean),
+        blocks: [...new Set([...body.querySelectorAll("h1, h2, h3, h4, p, li, td, th, blockquote, figcaption, dt, dd")].map(collapse))],
+      };
+    });
+    assert.ok(headings.length > 10 && spoken.length > 20, `chapter 1 gave ${headings.length} headings and ${spoken.length} utterances`);
+    const own = headings.filter((heading) => !spoken.includes(endSentence(speakable(heading))));
+    assert.deepEqual(own, [], `${own.length} of ${headings.length} headings are not an utterance of their own: “${own.slice(0, 3).join("”, “")}”`);
+    const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    // A run-in joins a heading to the text after it, and that text is another
+    // block's. An utterance that is part of one block's own text is a sentence
+    // that merely starts with a heading's words (“Generative AI produces new
+    // content…” under the heading “Generative AI”), not a run-in.
+    const headed = headings.flatMap((heading) => [...new Set([heading, speakable(heading)])])
+      .map((form) => new RegExp(`${escape(form)}\\s+[\\p{L}\\p{N}]`, "u"));
+    const runIns = spoken.filter((utterance) => headed.some((pattern) => pattern.test(utterance))
+      && !blocks.some((block) => block.includes(utterance.replace(/\.$/u, ""))));
+    assert.deepEqual(runIns, [], `${runIns.length} utterances run a heading into the text after it: “${runIns.slice(0, 2).join("”, “")}”`);
+    const enumerators = spoken.filter((utterance) => /^\(?(?:\d+(?:\.\d+)*|[A-Za-z]|[ivxlcdm]+)[.):]?\)?$/u.test(utterance));
+    assert.deepEqual(enumerators, [], `${enumerators.length} utterances are only an enumerator: “${enumerators.slice(0, 3).join("”, “")}”`);
+    const whole = new Set(blocks);
+    const short = spoken.filter((utterance) => utterance.split(/\s+/u).filter(Boolean).length < 3);
+    const fragments = short.filter((utterance) => !whole.has(utterance.replace(/\.$/u, "")));
+    assert.deepEqual(fragments, [], `${fragments.length} utterances of under three words are not a whole heading or item: “${fragments.slice(0, 3).join("”, “")}”`);
+    const code = spoken.filter((utterance) => utterance.includes("context/state") || utterance.includes("->"));
+    assert.deepEqual(code, [], `${code.length} utterances read code aloud: “${code.slice(0, 2).join("”, “")}”`);
+    console.log(`Chapter 1 narration: ${spoken.length} utterances; ${headings.length} headings, each its own utterance; 0 run-ins; 0 enumerator-only; ${short.length} utterance${short.length === 1 ? "" : "s"} under three words, each a whole block; 0 lines of code read.`);
+  });
+
+  // (c) A diagram is described, not its renderer or source, whether it is
+  // still loading, drawn, or failed to load.
+  const DIAGRAM_SENTENCE = "Diagram: Flowchart: Data leads to Model leads to Prediction.";
+  const DIAGRAM_LEAK = /Mermaid module|Diagram renderer|flowchart LR|-->|Show Mermaid source|Retry diagram/u;
+  const describesDiagram = async (casePage) => {
+    const spoken = await readFull(casePage);
+    assert.ok(spoken.includes(DIAGRAM_SENTENCE), `no utterance is “${DIAGRAM_SENTENCE}” (the fixture's diagram read as: ${spoken.filter((text) => /diagram|flowchart|mermaid/iu.test(text)).map((text) => `“${text}”`).join(", ") || "nothing"})`);
+    const leaked = spoken.filter((text) => DIAGRAM_LEAK.test(text));
+    assert.deepEqual(leaked, [], `the diagram's renderer or source was narrated: “${leaked.join("”, “")}”`);
+  };
+  const held = [];
+  await issue100Case("a diagram still loading is described", {
+    // The renderer's chunk is asked for and never answered until the case ends.
+    prepare: async (casePage) => {
+      await casePage.setBypassServiceWorker(true);
+      await casePage.setCacheEnabled(false);
+      await casePage.setRequestInterception(true);
+      casePage.on("request", (request) => {
+        if (/\/assets\/mermaid\.core-/u.test(request.url())) held.push(request);
+        else void request.continue();
+      });
+    },
+  }, async (casePage) => {
+    try {
+      await seedFixture(casePage);
+      await casePage.waitForSelector('.diagram-shell[data-diagram-status="pending"], .diagram-shell[data-diagram-status="rendering"]', { timeout: 15_000 })
+        .catch(() => assert.fail("the diagram was not pending while the renderer was held"));
+      await describesDiagram(casePage);
+      assert.ok(await casePage.$('.diagram-shell[data-diagram-status="pending"], .diagram-shell[data-diagram-status="rendering"]'), "the diagram was no longer pending when it was read");
+    } finally {
+      for (const request of held.splice(0)) await request.abort("failed").catch(() => {});
+    }
+  });
+  await issue100Case("a drawn diagram is described", {}, async (casePage) => {
+    await seedFixture(casePage);
+    await casePage.waitForSelector('[data-diagram-status="rendered"]', { timeout: 20_000 })
+      .catch(() => assert.fail("the diagram was not drawn"));
+    await describesDiagram(casePage);
+  });
+  await issue100Case("a diagram that failed to load is described", { prepare: withoutMermaid }, async (casePage) => {
+    await seedFixture(casePage);
+    await casePage.waitForSelector('.diagram-shell[data-diagram-status="error"]', { timeout: 20_000 })
+      .catch(() => assert.fail("the blocked Mermaid chunk did not produce the diagram failure"));
+    await describesDiagram(casePage);
+  });
+
+  // (d) Teaching Mode narrates the slide's units: the formula in words, from
+  // the slide on the page and from the slide hidden for recall.
+  await issue100Case("Teaching Mode reads the slide's math", { viewport: desktopViewport }, async (casePage) => {
+    const FORMULA = "The model predicts y hat equals w transpose x plus b for each input.";
+    // Ends utterances until `sentence` is the one being spoken, and returns what was spoken.
+    const speakUntil = async (sentence) => {
+      const heard = [];
+      for (let step = 0; step < 60; step += 1) {
+        const text = await casePage.evaluate(() => window.speechSynthesis.current?.text ?? null);
+        if (text === null) break;
+        heard.push(text);
+        if (text === sentence) break;
+        const ended = await casePage.evaluate(() => {
+          const utterance = window.speechSynthesis.current;
+          utterance.onend?.();
+          return window.speechSynthesis.current !== utterance;
+        });
+        if (!ended) break;
+      }
+      return heard;
+    };
+    await seedFixture(casePage);
+    await clickByText(casePage, ".document-tools button", "Teach");
+    await casePage.waitForSelector(".teach-mode [data-teach-narrate]", { timeout: 10_000 });
+    // The fixture has two slides; the formula is on the second.
+    await casePage.$eval('.teach-mode button[aria-label="Next section"]', (node) => node.click());
+    await casePage.waitForFunction(() => document.querySelector(".teach-mode .teaching-markdown")?.textContent.includes("The model predicts"), { timeout: 5_000 })
+      .catch(() => assert.fail("the slide holding the formula did not show"));
+    await casePage.$eval(".teach-mode [data-teach-narrate]", (node) => node.click());
+    await casePage.waitForFunction(() => Boolean(window.speechSynthesis.current), { timeout: 5_000 })
+      .catch(() => assert.fail("Teaching Mode spoke nothing"));
+    const shown = await speakUntil(FORMULA);
+    assert.equal(shown.at(-1), FORMULA, `the slide's formula was never an utterance of its own (spoken: ${shown.map((text) => `“${text.slice(0, 50)}”`).join(", ")})`);
+    // Stop, hide the slide for recall, and narrate it again.
+    await casePage.$eval('.teach-mode button[aria-label="Stop narration"]', (node) => node.click());
+    await casePage.waitForFunction(() => !document.querySelector('.teach-mode button[aria-label="Stop narration"]') && !window.speechSynthesis.current, { timeout: 5_000 });
+    await casePage.$eval('.teach-mode button[aria-label="Hide teaching content for recall"]', (node) => node.click());
+    await casePage.waitForSelector(".teach-mode .teach-recall", { timeout: 5_000 });
+    assert.equal(await casePage.$(".teach-mode .teaching-markdown"), null, "the slide was still on the page while hidden for recall");
+    await casePage.$eval(".teach-mode [data-teach-narrate]", (node) => node.click());
+    await casePage.waitForFunction(() => Boolean(window.speechSynthesis.current), { timeout: 5_000 })
+      .catch(() => assert.fail("Teaching Mode spoke nothing from the slide hidden for recall"));
+    const concealed = await speakUntil(FORMULA);
+    assert.equal(concealed.at(-1), FORMULA, `the hidden slide's formula was never an utterance of its own (spoken: ${concealed.map((text) => `“${text.slice(0, 50)}”`).join(", ")})`);
+  });
+
+  // (e) A position names the block and offset of the sentence, so it is found
+  // again when the words it was saved with no longer match any entry.
+  await issue100Case("a saved unit resumes after the spoken text changed", {}, async (casePage) => {
+    await seedFixture(casePage);
+    const key = `lumen-narration-${FIXTURE_ID}`;
+    const rowTwo = fixtureSpoken().findIndex((line) => line.startsWith("Row 2.")) + 1;
+    await startFullLecture(casePage);
+    for (let step = 2; step <= rowTwo; step += 1) {
+      await casePage.$eval('button[aria-label="Next narration sentence"]', (node) => node.click());
+      await waitForPosition(casePage, step, `Next did not reach ${step}`);
+    }
+    const stored = await casePage.waitForFunction((storageKey, index) => {
+      const value = JSON.parse(localStorage.getItem(storageKey) || "null");
+      return value?.index === index ? value : null;
+    }, { timeout: 5_000 }, key, rowTwo - 1).then((handle) => handle.jsonValue())
+      .catch(() => assert.fail(`no position was stored for Row 2. (sentence ${rowTwo})`));
+    assert.ok(Number.isInteger(stored.blockIndex) && Number.isInteger(stored.start), `the stored position holds no blockIndex and start: ${JSON.stringify(stored)}`);
+    await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+    // The words it was saved with are gone; the length of the queue is not.
+    await casePage.evaluate((storageKey, value) => localStorage.setItem(storageKey, JSON.stringify(value)), key, { ...stored, snippet: "A snippet no entry has" });
+    await startFullLecture(casePage);
+    const position = await barPosition(casePage);
+    const spoken = await casePage.evaluate(() => window.speechSynthesis.current?.text || "");
+    assert.equal(position.current, rowTwo, `a saved unit resumed at ${position.text}, not sentence ${rowTwo}`);
+    assert.ok(spoken.startsWith("Row 2."), `the resumed sentence is “${spoken.slice(0, 50)}”, not Row 2.`);
+    // Where neither the words nor the index point at it any more, the block
+    // and offset alone find it.
+    await casePage.$eval('button[aria-label="Stop narration"]', (node) => node.click());
+    await casePage.evaluate((storageKey, value) => localStorage.setItem(storageKey, JSON.stringify(value)), key, { ...stored, index: 0, snippet: "A snippet no entry has" });
+    await startFullLecture(casePage);
+    const placed = await barPosition(casePage);
+    const placedText = await casePage.evaluate(() => window.speechSynthesis.current?.text || "");
+    assert.equal(placed.current, rowTwo, `with the index and the words gone, a saved unit resumed at ${placed.text}, not sentence ${rowTwo}`);
+    assert.ok(placedText.startsWith("Row 2."), `with the index and the words gone, the resumed sentence is “${placedText.slice(0, 50)}”, not Row 2.`);
+  });
+
+  // Dragging a slider in the Listen panel re-renders the Reader on every input
+  // event: the lecture's units are not built again (the full lecture is built
+  // once for its rendered markup and settings; the section and the sentence
+  // only when Read is pressed). Counted as the Reader asks the article for its
+  // readable blocks, which every build starts with.
+  await issue100Case("dragging a narration slider does not rebuild the lecture's units", {}, async (casePage) => {
+    await openLecture(casePage);
+    await casePage.evaluate(() => {
+      window.__lumenUnitBuilds = 0;
+      const original = Element.prototype.querySelectorAll;
+      Element.prototype.querySelectorAll = function counted(selector, ...rest) {
+        if (typeof selector === "string" && selector.includes(".diagram-shell") && selector.includes("math[display")) window.__lumenUnitBuilds += 1;
+        return original.call(this, selector, ...rest);
+      };
+    });
+    const builds = () => casePage.evaluate(() => window.__lumenUnitBuilds);
+    const drag = async () => {
+      for (const label of ["Narration speed", "Narration pitch", "Narration volume"]) {
+        for (const value of label === "Narration speed" ? [0.8, 0.9, 1, 1.1, 1.2] : label === "Narration pitch" ? [0.8, 0.9, 1, 1.1, 1.2] : [0.2, 0.4, 0.6, 0.8, 1]) await setRange(casePage, label, value);
+      }
+    };
+    await openPanel(casePage);
+    for (const [scope, status] of [["Full", "full lecture"], ["Section", "current section"], ["Sentence", "current sentence"]]) {
+      await chooseScope(casePage, scope, status);
+      const before = await builds();
+      await drag();
+      const during = (await builds()) - before;
+      assert.equal(during, 0, `15 slider changes with the ${scope} target built the lecture's units ${during} times`);
+    }
+    // The count sees a build: reading the sentence builds it.
+    const before = await builds();
+    await clickByText(casePage, ".speech-controls button", "Read current sentence");
+    await waitForBar(casePage, "sentence narration did not start");
+    assert.ok((await builds()) > before, "Reading the sentence built no units: the counter sees nothing");
+  });
+
+  const narrationFailures = [["#96", issue96Failures], ["#97", issue97Failures], ["#100", issue100Failures]].filter(([, list]) => list.length);
   assert.deepEqual(narrationFailures, [], narrationFailures.map(([issue, list]) => `issue ${issue} narration cases failed:\n- ${list.join("\n- ")}`).join("\n"));
-  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone; issue #97: failed, interrupted and backgrounded sentences in the player with Retry and one announcement each, sleep expiry as one toast, no announced sentences from the open panel, a 160-character bookmark at 393, 320 and 1280 px, the Next card clear of the player, 44px controls and readable text on phones (Contrast included), the Review speed, an over-long target mid-reading, Space in Teaching Mode, Mac and iPhone wording, and measured colour contrast in Paper, Night, system-dark and Contrast; #97 review: Retry and Resume replaying the same sentence, matching tooltips, focus to Listen after Stop, the Next card in phone landscape and with a long message at 200% text, the player clear of the bottom navigation (landscape, tablet, 200% text) and of the reader toolbar, toasts above it, messages announced behind Settings and the phone menu, a toast after leaving the Reader, Retry in the Listen panel and in Teaching Mode, and Retry or Next past the sleep deadline; #97 second review: the Next card's centre and at least 40px of it between the toolbar and the player in short phone landscape at 200% text, with a real tap, toasts after leaving the Reader that name no control, and 44px Listen panel transport controls.");
+  console.log("Audio audit passed: section skip, persisted resume position, audio bookmarks (save/jump/delete), sleep-timer arming, multiple voices/languages, preview parameters, sentence/section/selection/document queues with previous/next transport, controls, iOS foreground safety, persistence, empty-voice recovery, opt-in playlist auto-advance into the next chapter, and iPhone layout; issue #96: the sleep timer across auto-advance and armed while idle, the section and sentence at the reading line, throwing storage, a missing chosen voice, bookmarks under the Sentence target, stale saved positions, an unavailable Mermaid chunk, and WebKit before 27; review follow-ups: a sleep deadline passing in a chapter's last sentence or while the next loads, Next/Previous paused past the deadline, browser Back during narration, a pronunciation override after stopping, the section-fallback wording, and a long bookmark on a phone; issue #97: failed, interrupted and backgrounded sentences in the player with Retry and one announcement each, sleep expiry as one toast, no announced sentences from the open panel, a 160-character bookmark at 393, 320 and 1280 px, the Next card clear of the player, 44px controls and readable text on phones (Contrast included), the Review speed, an over-long target mid-reading, Space in Teaching Mode, Mac and iPhone wording, and measured colour contrast in Paper, Night, system-dark and Contrast; #97 review: Retry and Resume replaying the same sentence, matching tooltips, focus to Listen after Stop, the Next card in phone landscape and with a long message at 200% text, the player clear of the bottom navigation (landscape, tablet, 200% text) and of the reader toolbar, toasts above it, messages announced behind Settings and the phone menu, a toast after leaving the Reader, Retry in the Listen panel and in Teaching Mode, and Retry or Next past the sleep deadline; #97 second review: the Next card's centre and at least 40px of it between the toolbar and the player in short phone landscape at 200% text, with a real tap, toasts after leaving the Reader that name no control, and 44px Listen panel transport controls; issue #100: the fixture lecture in every code and table setting with the spoken table row highlighted, chapter 1 spoken a sentence at a time (headings on their own, no run-ins or bare enumerators, short utterances whole blocks, code announced), diagrams described while loading, drawn and failed, Teaching Mode reading a slide's math from the slide and from the one hidden for recall, a saved block and offset resuming after the spoken words changed, and slider drags that rebuild no units.");
 } finally {
   await browser?.close();
   await rm(profileDirectory, { recursive: true, force: true });
