@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { pollValue, settleAnimations, waitForTheme } from "./audit_waits.mjs";
+import { recallFit } from "./recall_fit.mjs";
 import { installSpeechMock, stepToSpokenBlock } from "./speech_mock.mjs";
 
 // axe-core is a pinned dev dependency. The app CSP blocks injected <script>
@@ -458,10 +459,10 @@ const STATES = [
   // its value, its name, how many scheduled reviews it counts and the Adaptive target, with the
   // 7-day tile and the 12-week trend beside it, in every theme. Two cards in review, a scheduled
   // review of each and Adaptive scheduling are stored for this state only. verify: the three
-  // articles keep their contents inside their boxes (the checks the review audit's recallFit makes
-  // at 320 px and 200% text) and the page stays inside its layout viewport; and the 30-day tile's
-  // lines sit where its layout puts them: above 900 px in one column beside the icon, so none lands
-  // under it, and at 900 px and below centred, the icon too.
+  // articles keep their contents inside their boxes and the page stays inside its layout viewport
+  // (recallFit, the measurement the review audit makes at more sizes); and the 30-day tile's lines
+  // sit where its layout puts them: above 900 px in one column beside the icon, so none lands under
+  // it, and at 900 px and below centred, the icon too.
   {
     name: "review-recall",
     route: ROUTES[4],
@@ -475,29 +476,7 @@ const STATES = [
     ready: ".review-recall-target",
     verify: async (page, label) => {
       // Against the layout viewport, as in extra-practice.
-      const problems = await page.evaluate(() => {
-        const found = [];
-        const named = (node) => `${node.tagName.toLowerCase()}${typeof node.className === "string" && node.className ? `.${node.className.trim().split(/\s+/)[0]}` : ""} “${node.textContent.trim().slice(0, 30)}”`;
-        for (const selector of [".review-recall-tile", ".review-recall-week", ".review-retention-trend"]) {
-          const article = document.querySelector(selector);
-          if (!article) {
-            found.push(`${selector} is missing`);
-            continue;
-          }
-          const box = article.getBoundingClientRect();
-          for (const node of article.querySelectorAll("*")) {
-            if (!node.getClientRects().length || getComputedStyle(node).visibility === "hidden") continue;
-            const rect = node.getBoundingClientRect();
-            const outside = Math.max(box.left - rect.left, rect.right - box.right, box.top - rect.top, rect.bottom - box.bottom);
-            if (outside > 1) found.push(`${selector} ${named(node)} leaves its article by ${Math.round(outside)} px`);
-            if (node instanceof HTMLElement && node.scrollWidth > node.clientWidth + 1) found.push(`${selector} ${named(node)} holds ${node.scrollWidth} px of content in ${node.clientWidth} px`);
-            if (node instanceof SVGSVGElement && rect.width < node.width.baseVal.value - 1) found.push(`${selector} ${named(node)} is squeezed to ${Math.round(rect.width)} px of ${node.width.baseVal.value} px`);
-          }
-        }
-        const root = document.documentElement;
-        if (root.scrollWidth > root.clientWidth) found.push(`the page is ${root.scrollWidth} px wide in a ${root.clientWidth} px viewport`);
-        return found;
-      });
+      const problems = await recallFit(page);
       check(problems.length === 0, `${label}: the recall tiles overflow (${problems.join("; ")})`);
       const tile = await page.$eval(".review-recall-tile", (article) => {
         const middle = (node) => { const box = node.getBoundingClientRect(); return (box.left + box.right) / 2; };

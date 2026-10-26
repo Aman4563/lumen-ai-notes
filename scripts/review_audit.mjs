@@ -4,6 +4,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
 import { pollValue, settled, waitForTheme } from "./audit_waits.mjs";
+import { recallFit } from "./recall_fit.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -235,35 +236,6 @@ const seedRecall = async (page, { theme = "paper", reviewSettings = {}, extraCar
   const themed = await waitForTheme(page, theme);
   assert.ok(themed.ok, `the ${theme} theme did not settle after seeding the recall fixture: ${themed.reason}`);
 };
-
-// #151: what the 30-day tile, the 7-day tile and the 12-week trend let out of their boxes; empty when
-// they all fit. A problem is a visible descendant more than 1 px outside its article, an element whose
-// content is wider than its box (text that a box clips or lets spill), an icon squeezed narrower than
-// it is drawn, or a page wider than its layout viewport. Mobile emulation grows innerWidth to fit
-// overflowing content, so the page is measured against documentElement.clientWidth.
-const recallFit = (page) => page.evaluate(() => {
-  const problems = [];
-  const named = (node) => `${node.tagName.toLowerCase()}${typeof node.className === "string" && node.className ? `.${node.className.trim().split(/\s+/)[0]}` : ""} “${node.textContent.trim().slice(0, 30)}”`;
-  for (const selector of [".review-recall-tile", ".review-recall-week", ".review-retention-trend"]) {
-    const article = document.querySelector(selector);
-    if (!article) {
-      problems.push(`${selector} is missing`);
-      continue;
-    }
-    const box = article.getBoundingClientRect();
-    for (const node of article.querySelectorAll("*")) {
-      if (!node.getClientRects().length || getComputedStyle(node).visibility === "hidden") continue;
-      const rect = node.getBoundingClientRect();
-      const outside = Math.max(box.left - rect.left, rect.right - box.right, box.top - rect.top, rect.bottom - box.bottom);
-      if (outside > 1) problems.push(`${selector} ${named(node)} leaves its article by ${Math.round(outside)} px`);
-      if (node instanceof HTMLElement && node.scrollWidth > node.clientWidth + 1) problems.push(`${selector} ${named(node)} holds ${node.scrollWidth} px of content in ${node.clientWidth} px`);
-      if (node instanceof SVGSVGElement && rect.width < node.width.baseVal.value - 1) problems.push(`${selector} ${named(node)} is squeezed to ${Math.round(rect.width)} px of ${node.width.baseVal.value} px`);
-    }
-  }
-  const root = document.documentElement;
-  if (root.scrollWidth > root.clientWidth) problems.push(`the page is ${root.scrollWidth} px wide in a ${root.clientWidth} px viewport`);
-  return problems;
-});
 
 try {
   browser = await puppeteer.launch({
@@ -1762,11 +1734,15 @@ try {
     // The last change is saved before the next seed replaces the stored profile (a late save would merge into it).
     await savedProfile(recallPage, (profile) => profile.reviewSettings?.scheduler === "sm2");
 
-    // 4. Fit: both tiles and the trend stay inside their boxes, and the page inside its viewport, at
-    // 393x852, at 320x568, and at 200% text on 360x800, with the Adaptive target, in every theme.
+    // 4. Fit: both tiles and the trend stay inside their boxes, their icons keep their size, and the page
+    // stays inside its viewport, with the Adaptive target, in every theme, at 393x852, 320x568 and
+    // 360x800 (200% text on the last) and at 200% text on 320x568 and 1024x768. The page is measured at
+    // every size: on main it already fits at 1024x768 with 200% text (the hero's buttons are clipped by
+    // their own card, not by the document), and at 320x568 with 200% text it fits but for the trend's
+    // chart, which this change fixes.
     for (const theme of ["paper", "dark", "contrast"]) {
       await seedRecall(recallPage, { theme, reviewSettings: { scheduler: "fsrs" } });
-      for (const [width, height, scale] of [[393, 852, 1], [320, 568, 1], [360, 800, 2]]) {
+      for (const [width, height, scale] of [[393, 852, 1], [320, 568, 1], [360, 800, 2], [320, 568, 2], [1024, 768, 2]]) {
         const label = `${theme} at ${width}x${height}${scale > 1 ? ` with ${scale * 100}% text` : ""}`;
         await recallPage.setViewport({ width, height, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
         await recallPage.evaluate((size) => { document.documentElement.style.fontSize = `${size}px`; }, 16 * scale);
@@ -1780,7 +1756,7 @@ try {
     await recallContext.close();
   }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer or restarting its timer, a step that comes due behind the retry panel presented on the clock tick without a status line, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last, an undone grade hiding the answer of the card still on screen), and recall that counts scheduled reviews only (80% of 10 on the issue's fixture where all 35 attempts read 66%, a real grade counted and Extra practice not, the Adaptive target after the 30-day value following the Retention picker and the workload planner and leaving with Classic, and both tiles and the 12-week trend fitting at 393 px, 320 px and 200% text in Paper, Night and Contrast) verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer or restarting its timer, a step that comes due behind the retry panel presented on the clock tick without a status line, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last, an undone grade hiding the answer of the card still on screen), and recall that counts scheduled reviews only (80% of 10 on the issue's fixture where all 35 attempts read 66%, a real grade counted and Extra practice not, the Adaptive target after the 30-day value following the Retention picker and the workload planner and leaving with Classic, and both tiles and the 12-week trend fitting at 393 px and 320 px, and at 200% text at 360 px, 320 px and 1024 px, in Paper, Night and Contrast) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

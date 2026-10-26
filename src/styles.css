@@ -2950,6 +2950,14 @@ input[type="range"] {
   .review-stat-grid .review-recall-tile > :not(svg) { grid-column: 2; }
 }
 
+/* A word wider than its column breaks inside itself rather than leaving the tile or squeezing its
+   icon. At 200% text a desktop 30-day tile has 87 px beside its icon for "80%" (93 px) and
+   "scheduled" (108 px), and the 7-day tile 69 px for "scheduled" (93 px). `anywhere` also counts
+   those break points in the lines' minimum widths, so the tile's grid or flex layout may shrink
+   them and the icon keeps its size. Where every word fits, nothing moves. */
+.review-recall-tile,
+.review-recall-week { overflow-wrap: anywhere; }
+
 .review-analytics {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 0.75fr)) minmax(220px, 1.5fr);
