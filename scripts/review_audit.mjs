@@ -1504,11 +1504,33 @@ try {
     } finally {
       await chainPage.close();
     }
+
+    // Scenario I: undoing a grade hides the answer again when the card it brings back is the
+    // one already on screen. With one card in the pool, failing it asks it again at once, so
+    // Undo restores the card shown: the answer revealed on its second ask and the focus on it
+    // must not outlast the grade taken back.
+    const undoPage = await relearnPage();
+    try {
+      await seedRelearn(undoPage, { cards: [crunchLone] });
+      await startExtraPractice(undoPage);
+      await revealAndRate(undoPage, crunchLone, "1");
+      await promptFocused(undoPage, crunchLone);
+      await undoPage.keyboard.press("Space");
+      await undoPage.waitForFunction(() => document.activeElement?.classList.contains("review-answer") && document.querySelectorAll(".review-rating").length === 4, { timeout: 5_000 })
+        .catch(() => assert.fail(`revealing the second ask of “${crunchLone.id}” must focus its answer and show the rating buttons`));
+      await undoByKeyboard(undoPage);
+      assert.deepEqual((await savedProfile(undoPage, (profile) => profile.reviewAttempts?.length === 0)).reviewAttempts, [], "undo must remove the attempt");
+      await undoPage.waitForFunction(() => !document.querySelector(".review-answer"), { timeout: 5_000 })
+        .catch(() => assert.fail("undoing the grade of the card on screen must hide its answer again"));
+      await promptFocused(undoPage, crunchLone);
+    } finally {
+      await undoPage.close();
+    }
   } finally {
     await relearnContext.close();
   }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last) verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last, an undone grade hiding the answer of the card still on screen) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

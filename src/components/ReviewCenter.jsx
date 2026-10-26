@@ -738,6 +738,11 @@ export default function ReviewCenter({
     }
     setSessionDone((done) => Math.max(0, done - 1));
     setCurrentId(lastAttempt.reviewItemId);
+    // The card brought back can be the one already on screen, which the per-card reset below
+    // never sees: hide its answer again and start its confidence and timer over.
+    setRevealed(false);
+    setConfidence(3);
+    startedAt.current = Date.now();
     // A step that was shown early comes back not yet due: admit it again so it
     // returns as the current card. A due card or a longer interval admits nothing.
     setLearnAheadIds((ids) => (ids.includes(lastAttempt.reviewItemId) ? ids : [...ids, lastAttempt.reviewItemId]));
