@@ -151,6 +151,21 @@ const keysBeforeProbe = [...backing.keys()];
 assert.equal(await db.checkStudyDataStorage(), true, "a working database takes the probe write");
 assert.deepEqual([...backing.keys()], keysBeforeProbe, "the study-data probe leaves no record behind");
 
+// Issue #147: with the database refusing to open and Web Storage refusing
+// too, as under Chrome's cookie blocking, the workspace cannot be measured.
+// Storage health must read that as "Not measured", not as an empty workspace.
+failOpen = true;
+localBlocked = true;
+const unmeasuredDb = await import("../src/lib/db.js?storage-audit-budget");
+await assert.rejects(unmeasuredDb.getStorageBudgetSummary(), (error) => error?.code === "BUDGET_STATE_UNAVAILABLE", "a workspace that could not be measured was summarized as a measured one");
+localBlocked = false;
+failOpen = false;
+assert.ok((await db.getStorageBudgetSummary()).maximumBytes > 0, "a working database's workspace budget was not measured");
+// That module's ledger cache is warm by now. A fresh one has none, like a
+// healthy browser's first read, so it must measure from the database.
+const coldDb = await import("../src/lib/db.js?storage-audit-cold-budget");
+assert.ok((await coldDb.getStorageBudgetSummary()).maximumBytes > 0, "a working database read on a cold ledger cache was not measured");
+
 await db.setData("board:removed-by-restore", { pages: ["private old work"] });
 failTransactions = true;
 await db.replaceAllData({ profile: { revision: "restored", notes: ["imported"] } });
@@ -239,4 +254,4 @@ assert.equal(backing.get("profile").raw.length, shrunkLegacyLength);
 await db.deleteData("profile");
 assert.equal(backing.has("profile"), false, "legacy oversized state must always be removable");
 
-console.log("Storage audit passed: recovery, generation fencing, aggregate byte/board budgets, fallback parity, the in-memory journal with Web Storage blocked, the study-data write probe, hidden ledger metadata, and legacy shrink/delete verified.");
+console.log("Storage audit passed: recovery, generation fencing, aggregate byte/board budgets, fallback parity, the in-memory journal with Web Storage blocked, the study-data write probe, an unmeasurable workspace budget reported as unknown, hidden ledger metadata, and legacy shrink/delete verified.");
