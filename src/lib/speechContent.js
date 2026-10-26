@@ -1,14 +1,104 @@
-import { SPEECH_SCOPES, splitSpeechSentences } from "./speech.js";
+import { verbalizeMath } from "./mathSpeech.js";
+import {
+  SPEECH_MARK,
+  SPEECH_SCOPES,
+  collapseWithOffsets,
+  endSentence,
+  sliceMap,
+  splitSpeechSentenceRanges,
+  splitSpeechSentences,
+  stripSpeechMarks,
+} from "./speech.js";
+import { createSpokenBuilder } from "./spokenMap.js";
 
-const READABLE_SELECTOR = "h1, h2, h3, h4, p, li, blockquote, figcaption, td, th, pre";
+/**
+ * The rendered lecture as speech units (issue #100). A block is an element the
+ * narration reads on its own; a unit is one sentence of a text block, or what
+ * an atomic block (a table row, code, a diagram, a formula) says.
+ *
+ * Every offset in a unit indexes `speechBlockText(block)`, the block's
+ * `textContent` with its whitespace collapsed, so the Reader can highlight a
+ * sentence (issue #101) without searching for it: `unit.start/end` tile the
+ * block's text, and `unit.map` says which characters of it each spoken
+ * character came from.
+ *
+ * This file is the Reader chunk's; no entry module may import it.
+ */
+
+// Text blocks are read sentence by sentence. Atomic blocks are read as a whole
+// by their own verbalizer, and anything inside one is read by it.
+const TEXT_BLOCKS = "h1, h2, h3, h4, p, li, blockquote, figcaption";
+const ATOMIC_BLOCKS = "tr, pre, .diagram-shell, math[display=\"block\"]";
+const READABLE_SELECTOR = `${TEXT_BLOCKS}, ${ATOMIC_BLOCKS}`;
 
 const cleanText = (value) => String(value || "").replace(/\s+/gu, " ").trim();
+const hasText = (value) => /\S/u.test(String(value ?? ""));
+const WHITESPACE = /\s/u;
 
-// A diagram's failure diagnostic (its message and raw Mermaid source) sits in
-// .diagram-shell as <p> and <pre>; it is screen furniture, never narration.
-const readableBlocks = (article) => [...(article?.querySelectorAll?.(READABLE_SELECTOR) || [])]
-  .filter((node) => !node.parentElement?.closest?.("p, li, blockquote, figcaption, td, th, pre, .diagram-shell"))
-  .filter((node) => cleanText(node.textContent));
+/** The block's text as the narration indexes it: the coordinate space of every `unit.start/end`. */
+export const speechBlockText = (block) => cleanText(block?.textContent);
+
+// The tag, however the node was made: a DOM element, or a test double that has
+// only a tagName.
+const tagOf = (node) => String(node?.localName || node?.tagName || "").toLowerCase();
+const hasClass = (node, name) => Boolean(node?.classList?.contains?.(name));
+
+/** Which atomic kind `node` is: "row", "code", "diagram" or "math"; "" for anything else. */
+const atomicKind = (node) => {
+  if (hasClass(node, "diagram-shell")) return "diagram";
+  const tag = tagOf(node);
+  if (tag === "tr") return "row";
+  if (tag === "pre") return "code";
+  if (tag === "math" && node.getAttribute?.("display") === "block") return "math";
+  return "";
+};
+
+// True when a text block has words of its own: a list item that is only code,
+// or a paragraph that is only a formula, has none (its atomic block is read
+// as a block of its own). Walks without recursion, skipping atomic subtrees.
+const hasTextOutsideAtoms = (block) => {
+  if (!block.querySelector?.(ATOMIC_BLOCKS)) return true;
+  const stack = [block];
+  while (stack.length) {
+    const children = stack.pop().childNodes || [];
+    for (let at = 0; at < children.length; at += 1) {
+      const child = children[at];
+      if (child.nodeType === 3 || child.nodeType === 4) {
+        if (hasText(child.data ?? child.textContent)) return true;
+      } else if (child.nodeType === 1 && !atomicKind(child)) stack.push(child);
+    }
+  }
+  return false;
+};
+
+/**
+ * The blocks the narration reads, in document order: text blocks (headings,
+ * paragraphs, list items, quotes, captions) and atomic blocks (table rows,
+ * code, diagrams, display math). `unit.blockIndex` indexes this list.
+ *
+ * A candidate inside an atomic block is read by it (a diagram's failure
+ * diagnostic is screen furniture). A text block inside another is read by the
+ * outer one, which breaks a sentence at the inner block's edges; an atomic
+ * block inside a text block stays a block of its own. A text block with no
+ * words outside its atomic descendants, and any node with no text, are not
+ * blocks.
+ */
+export const readableBlocks = (root) => {
+  const blocks = [];
+  for (const node of root?.querySelectorAll?.(READABLE_SELECTOR) || []) {
+    const parent = node.parentElement;
+    if (parent?.closest?.(ATOMIC_BLOCKS)) continue;
+    const atomic = atomicKind(node);
+    if (!atomic && parent?.closest?.(TEXT_BLOCKS)) continue;
+    if (!hasText(node.textContent)) continue;
+    if (!atomic && !hasTextOutsideAtoms(node)) continue;
+    blocks.push(node);
+  }
+  return blocks;
+};
+
+/** The block `unit.blockIndex` names, or null. */
+export const blockAt = (root, index) => (Number.isInteger(index) && index >= 0 ? readableBlocks(root)[index] ?? null : null);
 
 const headingLevel = (node) => Number(/^H([1-4])$/u.exec(node?.tagName || "")?.[1] || 0);
 // Sections are built from H1–H3; an H4 is read as part of its section's body.
@@ -22,17 +112,22 @@ const readingLine = (scrollContainer) => {
     : 120;
 };
 
-const blockAtLine = (blocks, target) => {
-  if (!blocks.length) return null;
-  const measured = blocks.map((node) => ({ node, rect: node.getBoundingClientRect?.() || { top: 0, bottom: 0 } }));
+// The index of the block under `target`: the one that contains it, else the
+// last one above it, else the nearest below. -1 for no blocks.
+const blockIndexAtLine = (blocks, target) => {
+  if (!blocks.length) return -1;
+  const measured = blocks.map((node, index) => ({ index, rect: node.getBoundingClientRect?.() || { top: 0, bottom: 0 } }));
   const containing = measured.find(({ rect }) => rect.top <= target && rect.bottom >= target);
-  if (containing) return containing.node;
+  if (containing) return containing.index;
   const above = measured.filter(({ rect }) => rect.top <= target).at(-1);
-  if (above) return above.node;
-  return measured.sort((left, right) => Math.abs(left.rect.top - target) - Math.abs(right.rect.top - target))[0]?.node || blocks[0];
+  if (above) return above.index;
+  return measured.sort((left, right) => Math.abs(left.rect.top - target) - Math.abs(right.rect.top - target))[0].index;
 };
 
-export const currentSpeechBlock = (article, scrollContainer) => blockAtLine(readableBlocks(article), readingLine(scrollContainer));
+export const currentSpeechBlock = (article, scrollContainer) => {
+  const blocks = readableBlocks(article);
+  return blocks[blockIndexAtLine(blocks, readingLine(scrollContainer))] ?? null;
+};
 
 /**
  * The index, in `splitSpeechSentences(text)`, of the sentence that contains
@@ -92,66 +187,406 @@ const offsetAtLine = (block, line) => {
   return collapsed(before);
 };
 
-const sentenceTarget = (blocks, currentBlock, line, language) => {
-  // On a heading, the sentence under the line is the first one of the text
-  // that follows it.
-  const block = headingLevel(currentBlock)
-    ? blocks.slice(blocks.indexOf(currentBlock) + 1).find((node) => !headingLevel(node)) || currentBlock
-    : currentBlock;
-  const text = cleanText(block?.textContent);
-  const sentences = splitSpeechSentences(text, language);
-  const offset = block === currentBlock ? offsetAtLine(block, line) : null;
-  return sentences[offset === null ? 0 : sentenceIndexAt(text, offset, language)] || "";
+// ---------------------------------------------------------------------------
+// Text blocks as sentences
+// ---------------------------------------------------------------------------
+
+// Markup the walk counts in the offsets and never says: a formula's TeX
+// annotation and its hidden parts. (KaTeX's visible copy of a formula, which it
+// also writes as MathML, is the `katex-html` class.)
+const SILENT_TAGS = new Set(["annotation", "annotation-xml", "mphantom"]);
+// Elements whose edges end a sentence whatever their punctuation: a line
+// break and the edges of a nested block.
+const BREAK_TAGS = new Set(["br", "div", "table", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "p", "li", "blockquote", "figcaption"]);
+// Inline elements the text pass reads differently, as its markers.
+const MARKS = new Map([
+  ["code", [SPEECH_MARK.plainOpen, SPEECH_MARK.plainClose]],
+  ["sub", [SPEECH_MARK.subOpen, SPEECH_MARK.subClose]],
+  ["sup", [SPEECH_MARK.supOpen, SPEECH_MARK.supClose]],
+]);
+// They bracket a piece that no sentence may be cut inside (a marker group, a
+// formula's words) while a segment is put together, and are gone before the
+// sentences are split.
+const WHOLE_OPEN = "\uE006";
+const WHOLE_CLOSE = "\uE007";
+
+// One stretch of a text block between hard breaks, put together from the walk:
+// the spoken text with its whitespace collapsed, and a map whose sources are
+// raw offsets into `block.textContent` until `finish` turns them into offsets
+// of `speechBlockText`.
+const createSegment = () => {
+  const builder = createSpokenBuilder();
+  let spoken = false;
+  return {
+    // A text node's data, character for character from `start`.
+    text(data, start) {
+      builder.append(data, start, start + data.length);
+      if (hasText(data)) spoken = true;
+    },
+    // Words that read the source range [start, end).
+    words(value, start, end) {
+      builder.append(value, start, end);
+      if (hasText(value)) spoken = true;
+    },
+    // A marker: one character that the source does not have, at `at`.
+    mark(character, at) {
+      builder.append(character, at, at);
+    },
+    // null when nothing was said. Otherwise the text without the brackets, the
+    // map in `speechBlockText` offsets (`toBlock` turns a raw offset into one)
+    // and the stretches that must stay whole, as [start, end) in that text.
+    finish(toBlock) {
+      if (!spoken) return null;
+      const { text, map } = builder.build();
+      const pieces = [];
+      const parts = [];
+      const wholes = [];
+      let removed = 0;
+      let depth = 0;
+      let from = 0;
+      for (const piece of map) {
+        const [start, end] = piece.spoken;
+        const [sourceStart, sourceEnd] = piece.source;
+        // A bracket is a piece of its own with no source.
+        const bracket = end - start === 1 && sourceStart === sourceEnd ? text[start] : "";
+        if (bracket === WHOLE_OPEN || bracket === WHOLE_CLOSE) {
+          if (bracket === WHOLE_OPEN) {
+            if (depth === 0) from = start - removed;
+            depth += 1;
+          } else if (depth > 0) {
+            depth -= 1;
+            if (depth === 0) wholes.push([from, start - removed]);
+          }
+          removed += 1;
+          continue;
+        }
+        parts.push(text.slice(start, end));
+        pieces.push({ spoken: [start - removed, end - removed], source: [toBlock(sourceStart), toBlock(sourceEnd)] });
+      }
+      if (depth > 0) wholes.push([from, text.length - removed]);
+      return { text: parts.join(""), map: pieces, wholes };
+    },
+  };
+};
+
+// Where each sentence of a segment ends, in order, the last at the end of the
+// text. The segmenter may end a sentence inside a piece that must stay whole
+// (a full stop and a capital in inline code, or between a code span's last
+// character and its closing marker); that end moves to the end of the piece.
+const sentenceEnds = (text, wholes, language) => {
+  const ranges = splitSpeechSentenceRanges(text, language);
+  const ends = [];
+  let whole = 0;
+  for (let at = 0; at < ranges.length - 1; at += 1) {
+    let { end } = ranges[at];
+    while (whole < wholes.length && wholes[whole][1] <= end) whole += 1;
+    if (whole < wholes.length && wholes[whole][0] < end) end = wholes[whole][1];
+    if (end > (ends.at(-1) ?? 0) && end < text.length) ends.push(end);
+  }
+  ends.push(text.length);
+  return ends;
+};
+
+// A segment's sentences, added to `out` as { text, map, start }: the trimmed
+// sentence, a map from it to the block, and where it starts in the block.
+// The last one ends as a sentence, with a full stop that has an empty source
+// range at the end of its words unless it already ends in punctuation.
+const addSentences = (out, { text, map, wholes }, language) => {
+  const kept = [];
+  let cursor = 0;
+  let from = 0;
+  for (const end of sentenceEnds(text, wholes, language)) {
+    let start = from;
+    let stop = end;
+    from = end;
+    while (start < stop && WHITESPACE.test(text[start])) start += 1;
+    while (stop > start && WHITESPACE.test(text[stop - 1])) stop -= 1;
+    const sentence = text.slice(start, stop);
+    // White space or markers alone say nothing: not a unit.
+    if (!hasText(stripSpeechMarks(sentence))) continue;
+    // The pieces over this sentence, found by sweeping: the sentences of a
+    // segment together cost one pass over its map, not one pass each.
+    while (cursor < map.length && map[cursor].spoken[1] <= start) cursor += 1;
+    let last = cursor;
+    while (last < map.length && map[last].spoken[0] < stop) last += 1;
+    const sentenceMap = sliceMap(map.slice(cursor, last), start, stop);
+    kept.push({ text: sentence, map: sentenceMap, start: sentenceMap[0].source[0] });
+  }
+  const closing = kept.at(-1);
+  if (closing) {
+    const plain = stripSpeechMarks(closing.text);
+    if (endSentence(plain) !== plain) {
+      const at = closing.map.at(-1).source[1];
+      closing.map.push({ spoken: [closing.text.length, closing.text.length + 1], source: [at, at] });
+      closing.text += ".";
+    }
+  }
+  for (const sentence of kept) out.push(sentence);
+};
+
+const childrenOf = (node) => node.childNodes || [];
+
+// The sentences of one text block, as { text, map, start }, and the length of
+// the block's text.
+const textSentences = (block, language) => {
+  const { text: blockText, offsets } = collapseWithOffsets(block.textContent);
+  const lastOffset = offsets.length - 1;
+  const toBlock = (raw) => offsets[raw < lastOffset ? raw : lastOffset];
+  const sentences = [];
+  let segment = createSegment();
+  // Offset in `block.textContent`: every text node moves it, the ones that
+  // are not spoken included, so the offsets match what the DOM reports.
+  let raw = 0;
+  // Open marker groups (code, sub, sup): written at the first words inside
+  // them, so an empty one leaves nothing, and closed and written again around
+  // a hard break so every segment holds balanced markers.
+  const groups = [];
+  const open = (at) => {
+    for (const group of groups) {
+      if (group.written) continue;
+      segment.mark(WHOLE_OPEN, at);
+      segment.mark(group.open, at);
+      group.written = true;
+    }
+  };
+  const close = (group) => {
+    if (!group.written) return;
+    segment.mark(group.close, raw);
+    segment.mark(WHOLE_CLOSE, raw);
+  };
+  const breakSentence = () => {
+    for (let at = groups.length - 1; at >= 0; at -= 1) close(groups[at]);
+    const done = segment.finish(toBlock);
+    segment = createSegment();
+    for (const group of groups) group.written = false;
+    if (done) addSentences(sentences, done, language);
+  };
+  const skip = (node) => { raw += String(node.textContent ?? "").length; };
+  const speakMath = (node) => {
+    const start = raw;
+    skip(node);
+    const reading = verbalizeMath(node);
+    if (!hasText(reading.text)) return;
+    open(start);
+    segment.mark(WHOLE_OPEN, start);
+    if (reading.map.length) {
+      for (const piece of reading.map) segment.words(reading.text.slice(piece.spoken[0], piece.spoken[1]), start + piece.source[0], start + piece.source[1]);
+    } else segment.words(reading.text, start, raw);
+    segment.mark(WHOLE_CLOSE, raw);
+  };
+
+  // A test double with no child nodes is one text node holding its textContent.
+  const frames = [{ nodes: block.childNodes || [{ nodeType: 3, data: block.textContent }], index: 0, marked: false, breaks: false }];
+  while (frames.length) {
+    const frame = frames.at(-1);
+    if (frame.index >= frame.nodes.length) {
+      frames.pop();
+      if (frame.marked) close(groups.pop());
+      if (frame.breaks) breakSentence();
+      continue;
+    }
+    const node = frame.nodes[frame.index];
+    frame.index += 1;
+    if (node.nodeType === 3 || node.nodeType === 4) {
+      const data = String(node.data ?? node.textContent ?? "");
+      if (hasText(data)) open(raw);
+      segment.text(data, raw);
+      raw += data.length;
+      continue;
+    }
+    if (node.nodeType !== 1) continue;
+    const tag = tagOf(node);
+    if (atomicKind(node)) {
+      // The block is read on its own: say what came before, and none of it.
+      breakSentence();
+      skip(node);
+    } else if (SILENT_TAGS.has(tag) || hasClass(node, "katex-html")) skip(node);
+    else if (tag === "math") speakMath(node);
+    else if (tag === "br") breakSentence();
+    else {
+      const mark = MARKS.get(tag);
+      const breaks = BREAK_TAGS.has(tag);
+      if (breaks) breakSentence();
+      if (mark) groups.push({ open: mark[0], close: mark[1], written: false });
+      frames.push({ nodes: childrenOf(node), index: 0, marked: Boolean(mark), breaks });
+    }
+  }
+  breakSentence();
+  return { sentences, length: blockText.length };
+};
+
+// The units of one text block. The sentences tile the block's text: the first
+// starts at 0, each starts where the previous one ended, and the last ends at
+// the end of the text, so whatever lies between two sentences (the space, a
+// hidden copy of a formula, the code inside a list item) belongs to the
+// earlier one.
+const textUnits = (block, blockIndex, { language }) => {
+  const { sentences, length } = textSentences(block, language);
+  return sentences.map((sentence, at) => ({
+    text: sentence.text,
+    unit: {
+      blockIndex,
+      start: at ? sentence.start : 0,
+      end: at + 1 < sentences.length ? sentences[at + 1].start : length,
+    },
+    map: sentence.map,
+  }));
+};
+
+// ---------------------------------------------------------------------------
+// Atomic blocks
+// ---------------------------------------------------------------------------
+
+// An atomic block is a block of its own (it counts in `readableBlocks` and in
+// every `blockIndex`) but says nothing yet: Task 3c plugs each kind's
+// verbalizer in here. A verbalizer is called with (block, blockIndex,
+// { code, tables, language }) and returns that block's units, each
+// { text, unit: { blockIndex, start, end }, map, kind } without a section.
+const ATOMIC_UNITS = Object.freeze({
+  row: () => [], // tr: the table's header announcement and its "Row k." units
+  code: () => [], // pre: "Python example, N lines." and, with code "read", its lines
+  diagram: () => [], // .diagram-shell: "Diagram: …"
+  math: () => [], // math[display="block"]: the formula in words
+});
+
+const blockUnits = (block, blockIndex, context) => {
+  const kind = atomicKind(block);
+  return kind ? ATOMIC_UNITS[kind](block, blockIndex, context) : textUnits(block, blockIndex, context);
+};
+
+// ---------------------------------------------------------------------------
+// Sections, units and targets
+// ---------------------------------------------------------------------------
+
+const sectionLabel = (heading) => speechBlockText(heading).slice(0, 80);
+
+// The label of the section that holds blocks[index]: the nearest H1–H3 at or
+// above it; text before the first heading is the Introduction.
+const sectionLabelAt = (blocks, index) => {
+  for (let at = Math.min(index, blocks.length - 1); at >= 0; at -= 1) if (sectionLevel(blocks[at])) return sectionLabel(blocks[at]);
+  return "Introduction";
+};
+
+// The units of each block in [from, to), with the section each belongs to, a
+// block at a time so that a caller can stop at the one it wants: the sentence
+// target never builds the rest of the lecture. The first unit of each section
+// is marked.
+function* sectionedUnits(blocks, from, context, to = blocks.length) {
+  let section = sectionLabelAt(blocks, from);
+  let fresh = from === 0;
+  for (let index = from; index < to; index += 1) {
+    const block = blocks[index];
+    if (sectionLevel(block)) {
+      section = sectionLabel(block);
+      fresh = true;
+    }
+    const units = [];
+    for (const own of blockUnits(block, index, context)) {
+      units.push(fresh ? { ...own, section, sectionStart: true } : { ...own, section });
+      fresh = false;
+    }
+    yield { index, units };
+  }
+}
+
+const speechContext = ({ code = "announce", tables = "rows", language = "auto" } = {}) => ({ code, tables, language });
+
+const unitsOfBlocks = (blocks, context) => {
+  const units = [];
+  for (const { units: own } of sectionedUnits(blocks, 0, context)) for (const unit of own) units.push(unit);
+  return units;
 };
 
 /**
- * The section at the reading line. It starts at the nearest H1–H3 at or above
- * the line and ends at the next heading whose level is at most max(level, 2):
- * an H2 includes its H3s, an H3 stops at the next H3 or H2, and an H1 reads
- * its introduction up to the first H2. A heading with no body text of its own
- * continues through the next section. Text before the first heading ends at
- * the first heading.
+ * The speech units of the rendered lecture, in reading order. Each is
+ * `{ text, unit: { blockIndex, start, end }, map, section, sectionStart?, kind? }`:
+ * `text` is what the text pass starts from (formulas already in words, the
+ * markers of code, subscripts and superscripts kept); `unit.blockIndex`
+ * indexes `readableBlocks(root)`; `unit.start/end` are offsets in
+ * `speechBlockText(block)` and `map` goes from `text` to them (see
+ * spokenMap.js). `kind` is absent for a sentence of a text block.
+ *
+ * Options: `code` ("announce", "skip" or "read") and `tables` ("rows" or
+ * "announce") say how atomic blocks are read (Task 3c); `language` is the
+ * voice language sentences are split for.
  */
-const sectionText = (blocks, currentBlock) => {
-  if (!blocks.length) return "";
-  let start = Math.max(0, blocks.indexOf(currentBlock));
+export const buildSpeechUnits = (root, options) => unitsOfBlocks(readableBlocks(root), speechContext(options));
+
+const unitsText = (units) => units.map((unit) => stripSpeechMarks(unit.text)).join(" ");
+
+const sectionsOfUnits = (units) => {
+  const sections = [];
+  let current = null;
+  for (const unit of units) {
+    if (!current || unit.sectionStart) {
+      current = { label: unit.section, parts: [] };
+      sections.push(current);
+    }
+    current.parts.push(stripSpeechMarks(unit.text));
+  }
+  return sections.map(({ label, parts }) => ({ label, text: parts.join(" ") }));
+};
+
+/**
+ * The lecture in narration sections (AUDIO-001 heading skip): per H1–H3, its
+ * units' text joined with spaces. Text before the first heading is the
+ * Introduction; a lecture with nothing to read has none.
+ */
+export const buildSpeechSections = (root, options) => sectionsOfUnits(buildSpeechUnits(root, options));
+
+/**
+ * The section at the reading line, as the range [start, end) of block
+ * indices. It starts at the nearest H1–H3 at or above the line and ends at the
+ * next heading whose level is at most max(level, 2): an H2 includes its H3s,
+ * an H3 stops at the next H3 or H2, and an H1 reads its introduction up to the
+ * first H2. A heading with no body text of its own continues through the next
+ * section. Text before the first heading ends at the first heading.
+ */
+const sectionRange = (blocks, currentIndex) => {
+  let start = Math.max(0, currentIndex);
   while (start > 0 && !sectionLevel(blocks[start])) start -= 1;
   const level = sectionLevel(blocks[start]);
   let stopAt = level ? Math.max(level, 2) : 3;
   let hasBody = !level;
-  const parts = [cleanText(blocks[start].textContent)];
-  for (let cursor = start + 1; cursor < blocks.length; cursor += 1) {
-    const block = blocks[cursor];
-    const blockLevel = sectionLevel(block);
+  let end = start + 1;
+  for (; end < blocks.length; end += 1) {
+    const blockLevel = sectionLevel(blocks[end]);
     if (blockLevel && blockLevel <= stopAt) {
       if (hasBody) break;
       stopAt = Math.max(blockLevel, 2);
     } else if (!blockLevel) hasBody = true;
-    parts.push(cleanText(block.textContent));
   }
-  return cleanText(parts.join(" "));
+  return [start, end];
 };
 
-/**
- * Splits the rendered article into narration sections at H1–H3 boundaries
- * (AUDIO-001 heading skip). Falls back to one section for heading-free text.
- */
-export const buildSpeechSections = (article) => {
-  const blocks = readableBlocks(article);
-  if (!blocks.length) return [];
-  const sections = [];
-  let current = null;
-  for (const block of blocks) {
-    const text = cleanText(block.textContent);
-    if (/^H[1-3]$/u.test(block.tagName) || !current) {
-      current = { label: /^H[1-3]$/u.test(block.tagName) ? text.slice(0, 80) : "Introduction", parts: [] };
-      sections.push(current);
-    }
-    current.parts.push(text);
+const sectionUnits = (blocks, currentIndex, context) => {
+  const [start, end] = sectionRange(blocks, currentIndex);
+  const units = [];
+  for (const { units: own } of sectionedUnits(blocks, start, context, end)) for (const unit of own) units.push(unit);
+  return units;
+};
+
+// The unit of a block that holds `offset`: the units tile the block, so it is
+// the last one that starts at or before it (the last one for an offset past
+// the end).
+const unitAtOffset = (units, offset) => units.findLast((unit) => unit.unit.start <= offset) ?? units[0];
+
+// On a heading the sentence under the line is the first one of the text that
+// follows it. A block that says nothing hands over to the next one that does.
+// Only the block under the line is measured against the line.
+const sentenceUnit = (blocks, currentIndex, line, context) => {
+  let at = currentIndex;
+  if (headingLevel(blocks[currentIndex])) {
+    const next = blocks.findIndex((node, index) => index > currentIndex && !headingLevel(node));
+    if (next >= 0) at = next;
   }
-  return sections
-    .map((section) => ({ label: section.label, text: cleanText(section.parts.join(" ")) }))
-    .filter((section) => section.text);
+  for (const { index, units } of sectionedUnits(blocks, at, context)) {
+    if (!units.length) continue;
+    if (index !== currentIndex) return units[0];
+    const offset = offsetAtLine(blocks[index], line);
+    return offset === null ? units[0] : unitAtOffset(units, offset);
+  }
+  return null;
 };
 
 export const buildSpeechTarget = ({
@@ -161,6 +596,8 @@ export const buildSpeechTarget = ({
   scrollContainer,
   sourceText = "",
   language = "auto",
+  code,
+  tables,
 } = {}) => {
   const normalizedScope = SPEECH_SCOPES.some((item) => item.id === scope) ? scope : "document";
   if (normalizedScope === "selection") {
@@ -169,24 +606,27 @@ export const buildSpeechTarget = ({
       ? { available: true, scope: normalizedScope, label: "Selection", text }
       : { available: false, scope: normalizedScope, label: "Selection", text: "", reason: "Select text in the lecture first." };
   }
+  const context = speechContext({ code, tables, language });
   if (normalizedScope === "sentence" || normalizedScope === "section") {
     const blocks = readableBlocks(article);
     const line = readingLine(scrollContainer);
-    const currentBlock = blockAtLine(blocks, line);
+    const currentIndex = blockIndexAtLine(blocks, line);
     if (normalizedScope === "sentence") {
-      const sentence = sentenceTarget(blocks, currentBlock, line, language);
-      return sentence
-        ? { available: true, scope: normalizedScope, label: "Current sentence", text: sentence }
+      const unit = currentIndex < 0 ? null : sentenceUnit(blocks, currentIndex, line, context);
+      return unit
+        ? { available: true, scope: normalizedScope, label: "Current sentence", text: unitsText([unit]), units: [unit] }
         : { available: false, scope: normalizedScope, label: "Current sentence", text: "", reason: "No readable sentence is visible." };
     }
-    const text = sectionText(blocks, currentBlock);
-    return text
-      ? { available: true, scope: normalizedScope, label: "Current section", text }
+    const units = currentIndex < 0 ? [] : sectionUnits(blocks, currentIndex, context);
+    return units.length
+      ? { available: true, scope: normalizedScope, label: "Current section", text: unitsText(units), units }
       : { available: false, scope: normalizedScope, label: "Current section", text: "", reason: "No readable section is visible." };
   }
-  const sections = buildSpeechSections(article);
-  const text = sections.length ? sections.map((section) => section.text).join(" ") : cleanText(article?.innerText || sourceText);
+  const units = unitsOfBlocks(readableBlocks(article), context);
+  if (units.length) return { available: true, scope: "document", label: "Full lecture", text: unitsText(units), units, sections: sectionsOfUnits(units) };
+  // Nothing in the page makes a unit: speak whatever text it has.
+  const text = cleanText(article?.innerText || sourceText);
   return text
-    ? { available: true, scope: "document", label: "Full lecture", text, sections }
+    ? { available: true, scope: "document", label: "Full lecture", text, sections: [] }
     : { available: false, scope: "document", label: "Full lecture", text: "", reason: "This lecture has no readable text." };
 };

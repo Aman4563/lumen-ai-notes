@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { marked } from "marked";
+import { FIXTURE_MARKDOWN } from "../../scripts/speech_fixture.mjs";
+// markdown.js configures the shared marked renderer on import: tables, code shells and diagram shells.
+import "./markdown.js";
 import { verbalizeMath } from "./mathSpeech.js";
 import * as speakable from "./speakable.js";
+import { SPEECH_MARK, buildSpeechQueue } from "./speech.js";
+import { blockAt, buildSpeechSections, buildSpeechTarget, buildSpeechUnits, readableBlocks, speechBlockText } from "./speechContent.js";
 
 // A stub DOM for the speech-unit tests: just the parts of the DOM the walkers
 // read, and no layout, so a sentence target takes its no-layout fallbacks.
@@ -573,4 +579,508 @@ test("the MathML map is contiguous, ordered and anchors inserted words to an emp
   const cell = (...nodes) => of("mtd", ...nodes);
   const line = (...cells) => of("mtr", ...cells);
   check(math(of("munderover", mo("∑"), side(mi("i"), mo("="), mn("1")), mi("n")), of("msub", mi("x"), mi("i")), mo("="), of("msqrt", side(mi("a"), mo("+"), mn("1"))), mo("|", { form: "prefix" }), mi("z"), mo("|", { form: "prefix" }), of("mtable", line(cell(mi("a")), cell(mi("b"))), line(cell(mi("c")), cell(mi("d")))), mo(".")), "mixed");
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Speech units for text blocks, sections and targets (issue #100, Task 3b).
+// ---------------------------------------------------------------------------------------------------------
+
+const spoken = (root, options) => buildSpeechQueue(buildSpeechUnits(root, options)).queue.map((entry) => entry.text);
+
+// The fixture lecture as the app's marked renders it (scripts/speech_fixture.mjs), as stub DOM: tables hold "\n"
+// text nodes between their cells and rows, code is div.code-shell > div.code-label + pre > code, the block
+// formula sits inside a <p>, and a Mermaid fence is a div.diagram-shell.
+const fixture = () => {
+  const nl = () => text("\n");
+  const cell = (tag, value) => [el(tag, {}, [text(value)]), nl()];
+  const line = (tag, values) => el("tr", {}, [nl(), ...values.flatMap((value) => cell(tag, value))]);
+  const code = (label, body) => el("div", { class: "code-shell" }, [
+    el("div", { class: "code-label" }, [el("span", {}, [text(label)]), el("button", { class: "code-copy", type: "button", "aria-label": `Copy ${label} code` }, [text("Copy")])]),
+    el("pre", { tabindex: "0", role: "group", "aria-label": `${label} code` }, [el("code", { class: `language-${label === "text" ? "" : label}` }, [text(body)])]),
+  ]);
+  const { mi, mo, mtext, row, of, math } = mathml;
+  const side = (...letters) => row(...letters.map((letter) => (letter === "+" ? mo("+") : mi(letter))));
+  return el("article", {}, [
+    el("h1", {}, [text("Speakable fixture")]), nl(),
+    el("h2", {}, [text("6. Task taxonomy")]), nl(),
+    el("p", {}, [text("Classification predicts a label.")]), nl(),
+    el("div", { class: "table-scroll", tabindex: "0", role: "group", "aria-label": "Table" }, [
+      el("table", {}, [
+        nl(),
+        el("thead", {}, [nl(), line("th", ["Situation", "First inspect", "Safe action"]), nl()]),
+        nl(),
+        el("tbody", {}, [line("td", ["Disk full", "df -h", "Free space"]), nl(), line("td", ["High latency", "p99 graphs", "Roll back"]), nl()]),
+      ]),
+      nl(),
+    ]),
+    code("python", "import numpy as np\nX = np.ones((3, 2))\ny = np.zeros(3)\nw = np.linalg.lstsq(X, y, rcond=None)[0]\nprint(w)\nprint(w.shape)"),
+    code("text", "name a ─┐\n        ├──> list object\nname b ─┘"),
+    el("p", {}, [text("First line"), el("br"), text("Second line")]), nl(),
+    el("p", {}, [text("The model predicts ŷ = wᵀx + b for each input.")]), nl(),
+    el("p", {}, [math(mtext("Accuracy"), mo("="), of("mfrac", side("T", "P", "+", "T", "N"), side("T", "P", "+", "T", "N", "+", "F", "P", "+", "F", "N")), mo(","))]), nl(),
+    el("div", { class: "diagram-shell", "data-diagram-status": "pending", tabindex: "0", role: "group", "aria-label": "Diagram" }, [
+      el("div", { class: "mermaid", "data-diagram-status": "pending", role: "img", "aria-label": "Mermaid diagram awaiting rendering" }, [text("flowchart LR\n  A[Data] --> B[Model]\n  B --> C[Prediction]")]),
+    ]),
+    el("p", {}, [text("Gradient descent repeats three steps for every batch of examples, measuring the loss on that batch, computing the gradient of the loss for every single weight, and moving each weight a smaller step against its gradient until the loss stops improving.")]), nl(),
+  ]);
+};
+
+// An edited copy's inline KaTeX: the MathML is read, its TeX annotation never, and the visible copy not at all.
+const katexInline = (letter) => el("span", { class: "katex" }, [
+  el("span", { class: "katex-mathml" }, [el("math", {}, [el("semantics", {}, [el("mrow", {}, [el("mi", {}, [text(letter)])]), el("annotation", { encoding: "application/x-tex" }, [text(letter)])])])]),
+  el("span", { class: "katex-html", "aria-hidden": "true" }, [text(letter)]),
+]);
+
+// Reading-line geometry for the stub: the target's line sits 140 px below the container's top.
+const placed = (node, top, bottom) => Object.assign(node, { getBoundingClientRect: () => ({ top, bottom }) });
+const lineAt = (top) => ({ getBoundingClientRect: () => ({ top: top - 140, height: 800 }) });
+
+// What issue #101 relies on (it highlights from these offsets): every text unit's map starts at 0 and tiles its text,
+// its sources are non-decreasing and stay inside the unit's range, an identity piece (spoken and source of equal
+// length) reads the very characters it maps to unless the unit holds math (a letter read by name), and the units of a
+// block tile the block.
+const checkUnits = (root, units, { exact = true } = {}) => {
+  const blocks = readableBlocks(root);
+  const clean = blocks.map(speechBlockText);
+  const ends = new Map();
+  for (const unit of units) {
+    if (unit.kind === "announcement") continue;
+    const { blockIndex, start, end } = unit.unit;
+    const label = `“${unit.text}” of block ${blockIndex}`;
+    assert.ok(blocks[blockIndex], `${label}: no such block`);
+    assert.ok(0 <= start && start <= end && end <= clean[blockIndex].length, `${label}: range ${start}-${end}`);
+    assert.ok(stripMarks(unit.text).trim(), `${label}: says nothing`);
+    assert.equal(ends.has(blockIndex) ? ends.get(blockIndex) : 0, start, `${label}: the units of a block tile it`);
+    ends.set(blockIndex, end);
+    assert.equal(unit.map[0].spoken[0], 0, label);
+    assert.equal(unit.map.at(-1).spoken[1], unit.text.length, label);
+    let previous = null;
+    for (const piece of unit.map) {
+      const [spokenStart, spokenEnd] = piece.spoken;
+      const [from, to] = piece.source;
+      assert.ok(spokenStart < spokenEnd, `${label}: an empty piece`);
+      assert.ok(start <= from && from <= to && to <= end, `${label}: a piece reaches outside ${start}-${end}`);
+      if (previous) {
+        assert.equal(spokenStart, previous.spoken[1], `${label}: a gap before ${spokenStart}`);
+        assert.ok(from >= previous.source[1], `${label}: pieces overlap in the block`);
+      }
+      if (exact && spokenEnd - spokenStart === to - from) assert.equal(unit.text.slice(spokenStart, spokenEnd), clean[blockIndex].slice(from, to), `${label}: an identity piece reads other characters`);
+      previous = piece;
+    }
+  }
+  for (const [blockIndex, end] of ends) assert.equal(end, clean[blockIndex].length, `block ${blockIndex}: its last unit ends at the end of the block`);
+};
+const stripMarks = (value) => value.replace(/[\uE000-\uE005]/gu, "");
+
+test("the stub fixture reads as the text marked renders for the fixture lecture", () => {
+  const html = marked.parse(FIXTURE_MARKDOWN);
+  const rendered = html.replace(/<[^>]*>/gu, "").replaceAll("&gt;", ">").replaceAll("&lt;", "<").replaceAll("&amp;", "&");
+  assert.equal(fixture().textContent, rendered);
+});
+
+test("every unit carries blockIndex, start, end and map, and text units tile their block", () => {
+  const root = fixture();
+  const blocks = readableBlocks(root);
+  const units = buildSpeechUnits(root, { code: "read" });
+  for (const unit of units) {
+    const block = blocks[unit.unit.blockIndex];
+    assert.ok(block, `unit “${unit.text}” names block ${unit.unit.blockIndex}`);
+    if (unit.kind === "announcement") assert.deepEqual([unit.unit.start, unit.unit.end, unit.map], [0, 0, []]);
+  }
+  blocks.forEach((block, index) => {
+    const own = units.filter((unit) => unit.unit.blockIndex === index && unit.kind !== "announcement");
+    if (!own.length) return;
+    assert.equal(own[0].unit.start, 0);
+    own.forEach((unit, at) => { if (at) assert.equal(unit.unit.start, own[at - 1].unit.end); });
+    assert.equal(own.at(-1).unit.end, speechBlockText(block).length);
+  });
+  assert.equal(blockAt(root, 2), blocks[2]);
+  // A plain paragraph's units are its source sentences.
+  const paragraph = el("p", {}, [text("Gradient descent moves downhill.  Learning rate\ncontrols each step.")]);
+  const article = el("article", {}, [paragraph]);
+  assert.deepEqual(buildSpeechUnits(article).map(({ unit }) => speechBlockText(paragraph).slice(unit.start, unit.end).trim()), ["Gradient descent moves downhill.", "Learning rate controls each step."]);
+});
+
+test("an edited copy's KaTeX is read once and inline math joins its sentence", () => {
+  const katex = el("span", { class: "katex" }, [
+    el("span", { class: "katex-mathml" }, [el("math", {}, [el("semantics", {}, [el("mrow", {}, [el("mi", {}, [text("L")])]), el("annotation", { encoding: "application/x-tex" }, [text("L")])])])]),
+    el("span", { class: "katex-html", "aria-hidden": "true" }, [text("L")]),
+  ]);
+  const paragraph = el("p", {}, [text("The loss "), katex, text(" is low. Next.")]);
+  assert.deepEqual(spoken(el("article", {}, [paragraph])), ["The loss L is low.", "Next."]);
+});
+
+test("<br> and nested blocks are sentence breaks; headings end as sentences", () => {
+  assert.deepEqual(spoken(el("article", {}, [el("h2", {}, [text("6. Task taxonomy")]), el("p", {}, [text("First line"), el("br"), text("Second line")])])), ["6. Task taxonomy.", "First line.", "Second line."]);
+  assert.deepEqual(spoken(el("article", {}, [el("blockquote", {}, [el("p", {}, [text("One idea")]), el("p", {}, [text("Another idea")])])])), ["One idea.", "Another idea."]);
+  // The text before a nested block and the text after it are sentences of their own.
+  const nested = el("li", {}, [text("Outer item"), el("ul", {}, [el("li", {}, [text("Inner item")]), el("li", {}, [text("Next item")])]), text("Closing words")]);
+  assert.deepEqual(spoken(el("article", {}, [el("ul", {}, [nested])])), ["Outer item.", "Inner item.", "Next item.", "Closing words."]);
+  const units = buildSpeechUnits(el("article", {}, [el("p", {}, [text("Call "), el("code", {}, [text("a/b = c")]), text(" ≈ 2.")])]));
+  assert.ok(units[0].text.includes(SPEECH_MARK.plainOpen));
+  assert.deepEqual(buildSpeechQueue(units).queue.map((entry) => entry.text), ["Call a/b = c approximately 2."]);
+});
+
+test("the sentence target is one unit and the document target carries units", () => {
+  const root = fixture();
+  const documentTarget = buildSpeechTarget({ scope: "document", article: root });
+  assert.equal(documentTarget.units.length, buildSpeechUnits(root).length);
+  assert.ok(documentTarget.text.startsWith("Speakable fixture. 6. Task taxonomy."));
+  const sentence = buildSpeechTarget({ scope: "sentence", article: root, scrollContainer: { getBoundingClientRect: () => ({ top: 0, height: 800 }) } });
+  assert.equal(sentence.units.length, 1);
+});
+
+test("readableBlocks lists text blocks and atomic blocks in document order and drops what is read elsewhere", () => {
+  const code = () => el("pre", {}, [el("code", {}, [text("x = 1")])]);
+  const outer = el("li", {}, [text("Outer "), el("ul", {}, [el("li", {}, [text("Inner")])])]);
+  const quote = el("blockquote", {}, [el("p", {}, [text("Quoted")])]);
+  const onlyCode = el("li", {}, [code()]);
+  const formula = mathml.math(mathml.mi("x"));
+  const onlyFormula = el("p", {}, [formula]);
+  const inline = el("p", {}, [text("Let "), el("math", {}, [el("mi", {}, [text("x")])]), text(" be.")]);
+  const diagramError = el("div", { class: "diagram-shell" }, [el("p", {}, [text("The Mermaid module could not be loaded.")]), el("pre", {}, [text("flowchart LR")])]);
+  const empty = el("p", {}, [text(" \n ")]);
+  const caption = el("figcaption", {}, [text("Figure 1")]);
+  const cellParagraph = el("p", {}, [text("cell")]);
+  const row = el("tr", {}, [el("td", {}, [cellParagraph])]);
+  const withCode = el("li", {}, [text("Run this:"), code()]);
+  const article = el("article", {}, [outer, quote, el("ul", {}, [onlyCode]), onlyFormula, inline, diagramError, empty, caption, el("table", {}, [el("tbody", {}, [row])]), el("ul", {}, [withCode])]);
+  const blocks = readableBlocks(article);
+  // Named, so that a wrong list reads as names rather than as two dumps of circular stub nodes.
+  const names = new Map([[outer, "outer"], [quote, "quote"], [onlyCode.childNodes[0], "code"], [formula, "formula"], [inline, "inline"], [diagramError, "diagram"], [caption, "caption"], [row, "row"], [withCode, "withCode"], [withCode.childNodes[1], "withCode code"]]);
+  assert.deepEqual(blocks.map((block) => names.get(block) ?? `${block.localName} “${block.textContent}”`), ["outer", "quote", "code", "formula", "inline", "diagram", "caption", "row", "withCode", "withCode code"]);
+  assert.equal(blockAt(article, 5), diagramError);
+  assert.equal(blockAt(article, blocks.length), null);
+  assert.equal(blockAt(article, -1), null);
+  assert.deepEqual(readableBlocks(el("article")), []);
+  assert.deepEqual(readableBlocks(null), []);
+});
+
+test("a unit's map indexes the block's text exactly, whatever is skipped or collapsed around it", () => {
+  const { subOpen, subClose, supOpen, supClose, plainOpen, plainClose } = SPEECH_MARK;
+  const paragraph = el("p", {}, [
+    text("  Mass  "), el("span", { class: "katex-html" }, [text("XYZ")]), text("  of x"),
+    el("sub", {}, [text("i")]), text(" and "), el("sup", {}, [text("2")]), text(" and "), el("code", {}, [text("np.ones")]), text(".\n"),
+    el("em", {}, [text("Second  "), el("strong", {}, [text("sentence")])]), text(" ends here"),
+  ]);
+  const article = el("article", {}, [paragraph]);
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => unit.text), [
+    `Mass of x${subOpen}i${subClose} and ${supOpen}2${supClose} and ${plainOpen}np.ones${plainClose}.`,
+    "Second sentence ends here.",
+  ]);
+  checkUnits(article, units);
+  const block = speechBlockText(paragraph);
+  assert.equal(block, "Mass XYZ of xi and 2 and np.ones. Second sentence ends here");
+  // The source of a word is the very word in the block, and the added full stop sits at the end of its sentence.
+  const second = units[1];
+  const piece = (words) => second.map.find((item) => second.text.slice(...item.spoken) === words);
+  assert.equal(block.slice(...piece("sentence").source), "sentence");
+  assert.deepEqual(piece(".").source, [block.length, block.length]);
+  assert.deepEqual([units[0].unit.start, units[0].unit.end, units[1].unit.start, units[1].unit.end], [0, block.indexOf("Second"), block.indexOf("Second"), block.length]);
+  assert.deepEqual(units.map((unit) => unit.kind), [undefined, undefined]);
+  // Markers sit where their element's content starts and ends, with empty source ranges.
+  const first = units[0];
+  const open = first.map.find((item) => first.text[item.spoken[0]] === subOpen);
+  assert.deepEqual(open.source, [block.indexOf("i and"), block.indexOf("i and")]);
+});
+
+test("skipped markup counts in the offsets and speaks nothing", () => {
+  const hidden = (value) => el("span", { class: "katex-html", "aria-hidden": "true" }, [text(value)]);
+  const math = el("math", {}, [el("semantics", {}, [
+    el("mrow", {}, [el("mi", {}, [text("y")]), el("mphantom", {}, [el("mi", {}, [text("PH")])])]),
+    el("annotation-xml", {}, [text("AX")]),
+    el("annotation", { encoding: "application/x-tex" }, [text("y")]),
+  ])]);
+  // The code inside the list item is a block of its own: the item neither reads it nor joins its two sides.
+  const item = el("li", {}, [text("A"), hidden("HIDDEN"), text(" B "), math, text(" C"), el("pre", {}, [text("code body")]), text(" D")]);
+  const article = el("article", {}, [el("ul", {}, [item])]);
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => unit.text), ["A B y C.", "D."]);
+  checkUnits(article, units);
+  const block = speechBlockText(item);
+  assert.equal(block, "AHIDDEN B yPHAXy Ccode body D");
+  assert.deepEqual(units.map(({ unit }) => [unit.blockIndex, unit.start, unit.end]), [[0, 0, 28], [0, 28, 29]]);
+  const word = (unit, words) => unit.map.find((piece) => unit.text.slice(...piece.spoken) === words);
+  assert.deepEqual(word(units[0], "y").source, [10, 11], "a formula's word maps into the formula's own text");
+  assert.deepEqual(word(units[0], "C").source, [17, 18]);
+  assert.deepEqual(word(units[1], "D").source, [28, 29]);
+});
+
+test("whatever follows the last spoken word belongs to the last unit", () => {
+  const trailing = el("p", {}, [text("Only words"), el("span", { class: "katex-html" }, [text("HIDDEN")]), text("  ")]);
+  const withCode = el("li", {}, [text("Run it:"), el("pre", {}, [text("make test")])]);
+  const article = el("article", {}, [trailing, el("ul", {}, [withCode])]);
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => [unit.text, unit.unit.blockIndex, unit.unit.start, unit.unit.end]), [
+    ["Only words.", 0, 0, "Only wordsHIDDEN".length],
+    ["Run it:", 1, 0, "Run it:make test".length],
+  ]);
+  checkUnits(article, units);
+});
+
+test("an inline code span with nothing to say leaves no marker, and a hard break inside one keeps every unit balanced", () => {
+  const { plainOpen, plainClose } = SPEECH_MARK;
+  const empty = el("p", {}, [text("Use "), el("code", {}, []), text(" and "), el("code", {}, [text(" ")]), text(" here.")]);
+  assert.deepEqual(buildSpeechUnits(el("article", {}, [empty])).map((unit) => unit.text), ["Use and here."]);
+  const broken = el("article", {}, [el("p", {}, [text("Run "), el("code", {}, [text("one"), el("br"), text("two")]), text(" now")])]);
+  const units = buildSpeechUnits(broken);
+  assert.deepEqual(units.map((unit) => unit.text), [`Run ${plainOpen}one${plainClose}.`, `${plainOpen}two${plainClose} now.`]);
+  checkUnits(broken, units);
+  assert.deepEqual(spoken(broken), ["Run one.", "two now."]);
+});
+
+test("a sentence boundary never falls inside inline code, a script or inline math", () => {
+  const { plainOpen, plainClose, supOpen, supClose } = SPEECH_MARK;
+  const code = (...children) => el("code", {}, children.length ? children : [text("print(\"Hello. World\")")]);
+  const unitsOf = (...children) => buildSpeechUnits(el("article", {}, [el("p", {}, children)]));
+  // A full stop and a capital inside the code is a sentence end to the segmenter; the unit keeps the code whole.
+  const hello = unitsOf(text("Call "), code(), text(" to greet. Next one."));
+  assert.ok(hello.some((unit) => unit.text.includes(`${plainOpen}print("Hello. World")${plainClose}`)), JSON.stringify(hello.map((unit) => unit.text)));
+  assert.equal(hello.at(-1).text, "Next one.");
+  // The segmenter ends the sentence between the full stop and the closing marker: the boundary follows the marker.
+  const stop = unitsOf(text("Use "), code(text("foo.")), text(" Next sentence here."));
+  assert.deepEqual(stop.map((unit) => unit.text), [`Use ${plainOpen}foo.${plainClose}`, "Next sentence here."]);
+  const power = unitsOf(text("The cost is O(n)"), el("sup", {}, [text("2.")]), text(" Next sentence here."));
+  assert.deepEqual(power.map((unit) => unit.text), [`The cost is O(n)${supOpen}2.${supClose}`, "Next sentence here."]);
+  // Inline math whose reading holds a sentence end stays one piece.
+  const prose = el("math", {}, [el("mtext", {}, [text("Step one. Step two")])]);
+  const read = unitsOf(text("See "), prose, text(" now. Next sentence."));
+  assert.ok(read.some((unit) => unit.text.includes("Step one. Step two")), JSON.stringify(read.map((unit) => unit.text)));
+  assert.equal(read.at(-1).text, "Next sentence.");
+  checkUnits(el("article", {}, [el("p", {}, [text("See "), prose, text(" now. Next sentence.")])]), read, { exact: false });
+});
+
+test("inline math keeps the map of its own words, shifted into the block", () => {
+  const paragraph = el("p", {}, [text("Take  "), el("math", {}, [el("msqrt", {}, [el("mi", {}, [text("x")])])]), text(" and "), el("math", {}, [el("mfrac", {}, [el("mn", {}, [text("1")]), el("mi", {}, [text("n")])])]), text(" next.")]);
+  const article = el("article", {}, [paragraph]);
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => unit.text), ["Take square root of x and 1 over n next."]);
+  checkUnits(article, units);
+  const block = speechBlockText(paragraph);
+  assert.equal(block, "Take x and 1n next.");
+  const [unit] = units;
+  const word = (words) => unit.map.find((piece) => unit.text.slice(...piece.spoken) === words);
+  assert.equal(block.slice(...word("x").source), "x");
+  assert.equal(block.slice(...word("1").source), "1");
+  assert.equal(block.slice(...word("n").source), "n");
+  // An inserted word keeps an empty range where the source implies it.
+  assert.deepEqual(word("square root of").source, [5, 5]);
+  assert.deepEqual(word("over").source, [block.indexOf("1") + 1, block.indexOf("1") + 1]);
+});
+
+test("sections start at H1-H3, text before the first heading is the Introduction, and each first unit says so", () => {
+  const long = "A".repeat(100);
+  const article = el("article", {}, [
+    el("p", {}, [text("Intro text.")]),
+    el("h1", {}, [text("Title")]), el("p", {}, [text("Alpha.")]),
+    el("h2", {}, [text(long)]), el("p", {}, [text("Bravo.")]), el("h4", {}, [text("Note")]), el("p", {}, [text("Charlie.")]),
+    el("h3", {}, [text("Sub")]), el("p", {}, [text("Delta one. Delta two.")]),
+  ]);
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => [unit.text, unit.section, unit.sectionStart === true]), [
+    ["Intro text.", "Introduction", true],
+    ["Title.", "Title", true],
+    ["Alpha.", "Title", false],
+    [`${long}.`, long.slice(0, 80), true],
+    ["Bravo.", long.slice(0, 80), false],
+    ["Note.", long.slice(0, 80), false],
+    ["Charlie.", long.slice(0, 80), false],
+    ["Sub.", "Sub", true],
+    ["Delta one.", "Sub", false],
+    ["Delta two.", "Sub", false],
+  ]);
+  assert.ok(units.every((unit) => unit.sectionStart === undefined || unit.sectionStart === true), "sectionStart is true or absent");
+  assert.deepEqual(buildSpeechSections(article), [
+    { label: "Introduction", text: "Intro text." },
+    { label: "Title", text: "Title. Alpha." },
+    { label: long.slice(0, 80), text: `${long}. Bravo. Note. Charlie.` },
+    { label: "Sub", text: "Sub. Delta one. Delta two." },
+  ]);
+  // A lecture that opens with a heading has no Introduction, and nothing readable has no sections.
+  assert.deepEqual(buildSpeechSections(el("article", {}, [el("h2", {}, [text("Only")])])), [{ label: "Only", text: "Only." }]);
+  assert.deepEqual(buildSpeechSections(el("article", {}, [])), []);
+});
+
+test("sections are built from the text units without their markers", () => {
+  const article = el("article", {}, [el("h2", {}, [text("Powers")]), el("p", {}, [text("Take x"), el("sup", {}, [text("2")]), text(" and "), el("code", {}, [text("a/b")]), text(".")])]);
+  const [section] = buildSpeechSections(article);
+  assert.equal(section.text, "Powers. Take x2 and a/b.");
+  const units = buildSpeechUnits(article);
+  assert.ok(units[1].text.includes(SPEECH_MARK.supOpen), "the unit keeps its markers for the text pass");
+});
+
+test("the document target carries units, sections made from them, and the text they read", () => {
+  const root = fixture();
+  const target = buildSpeechTarget({ scope: "document", article: root });
+  assert.deepEqual([target.available, target.scope, target.label], [true, "document", "Full lecture"]);
+  assert.deepEqual(target.sections, buildSpeechSections(root));
+  assert.equal(target.text, target.sections.map((section) => section.text).join(" "));
+  assert.equal(target.text, target.units.map((unit) => stripMarks(unit.text)).join(" "));
+  assert.deepEqual(target.sections.map((section) => section.label), ["Speakable fixture", "6. Task taxonomy"]);
+  // With no unit to read, the target falls back to the page's text.
+  const hidden = el("article", {}, [el("p", {}, [el("span", { class: "katex-html" }, [text("x")])])]);
+  const fallback = buildSpeechTarget({ scope: "document", article: hidden, sourceText: " Source  text " });
+  assert.deepEqual([fallback.available, fallback.text, fallback.units], [true, "Source text", undefined]);
+  assert.equal(buildSpeechTarget({ scope: "document", article: hidden }).available, false);
+  assert.equal(buildSpeechTarget({ scope: "selection", selectedText: " chosen  text " }).text, "chosen text");
+  assert.equal(buildSpeechTarget({ scope: "selection", selectedText: " chosen  text " }).units, undefined);
+});
+
+test("the section target is the units of the blocks in the section range", () => {
+  const article = el("article", {}, [
+    placed(el("h1", {}, [text("Chapter")]), 0, 40),
+    placed(el("h2", {}, [text("Alpha")]), 50, 90),
+    placed(el("p", {}, [text("Alpha body one. Alpha body two.")]), 95, 140),
+    placed(el("h3", {}, [text("Beta")]), 150, 190),
+    placed(el("p", {}, [text("Beta body.")]), 195, 240),
+    placed(el("h2", {}, [text("Gamma")]), 250, 290),
+    placed(el("p", {}, [text("Gamma body.")]), 295, 340),
+  ]);
+  const target = buildSpeechTarget({ scope: "section", article, scrollContainer: lineAt(100) });
+  assert.deepEqual([target.available, target.scope, target.label], [true, "section", "Current section"]);
+  assert.equal(target.text, "Alpha. Alpha body one. Alpha body two. Beta. Beta body.");
+  assert.deepEqual(target.units.map((unit) => [unit.unit.blockIndex, unit.section, unit.sectionStart === true]), [
+    [1, "Alpha", true], [2, "Alpha", false], [2, "Alpha", false], [3, "Beta", true], [4, "Beta", false],
+  ]);
+  assert.equal(target.sections, undefined);
+  // The last section runs to the end, and a line before every block starts the first one.
+  assert.equal(buildSpeechTarget({ scope: "section", article, scrollContainer: lineAt(300) }).text, "Gamma. Gamma body.");
+  assert.equal(buildSpeechTarget({ scope: "section", article, scrollContainer: lineAt(-300) }).units[0].unit.blockIndex, 0);
+  assert.equal(buildSpeechTarget({ scope: "section", article: el("article", {}), scrollContainer: lineAt(0) }).available, false);
+});
+
+test("the sentence target is the first unit of the next block that has one", () => {
+  const silent = () => el("p", {}, [el("span", { class: "katex-html" }, [text("x")])]);
+  const article = el("article", {}, [
+    placed(el("h2", {}, [text("Setup")]), 0, 40),
+    placed(silent(), 45, 90),
+    placed(el("p", {}, [text("After the gap. Second one.")]), 95, 140),
+  ]);
+  const target = (top) => buildSpeechTarget({ scope: "sentence", article, scrollContainer: lineAt(top) });
+  // On a heading, and on a block that speaks nothing, the sentence is the next one there is to read.
+  for (const top of [10, 60, 100]) assert.deepEqual([target(top).text, target(top).units.length, target(top).units[0].unit.blockIndex], ["After the gap.", 1, 2], `at ${top}`);
+  assert.deepEqual([target(10).available, target(10).scope, target(10).label], [true, "sentence", "Current sentence"]);
+  assert.deepEqual([target(100).units[0].section, target(100).units[0].sectionStart], ["Setup", undefined], "the unit keeps its section whichever way it was found");
+  assert.equal(target(100).sections, undefined);
+  const nothing = buildSpeechTarget({ scope: "sentence", article: el("article", {}, [placed(silent(), 0, 40)]), scrollContainer: lineAt(10) });
+  assert.deepEqual([nothing.available, nothing.reason], [false, "No readable sentence is visible."]);
+  assert.equal(buildSpeechTarget({ scope: "sentence", article: el("article", {}) }).available, false);
+});
+
+// Just enough of Range and TreeWalker for the sentence target's line-to-offset measure: the block's text flows at
+// `perLine` characters a line, 20 px a line from `top`.
+const flowedText = (block, { perLine, top = 0, lineHeight = 20 }) => {
+  const nodes = [];
+  const starts = new Map();
+  let length = 0;
+  const visit = (node) => node.childNodes.forEach((child) => {
+    if (child.nodeType !== 3) return visit(child);
+    starts.set(child, length);
+    length += child.data.length;
+    nodes.push(child);
+  });
+  visit(block);
+  const lines = (node, from, to) => {
+    if (to <= from) return [];
+    const first = Math.floor((starts.get(node) + from) / perLine);
+    const last = Math.floor((starts.get(node) + to - 1) / perLine);
+    return Array.from({ length: last - first + 1 }, (_, at) => ({ top: top + (first + at) * lineHeight, bottom: top + (first + at + 1) * lineHeight, height: lineHeight }));
+  };
+  block.ownerDocument = {
+    createTreeWalker: () => { let at = 0; return { nextNode: () => nodes[at++] ?? null }; },
+    createRange: () => {
+      let node = null;
+      let from = 0;
+      let to = 0;
+      const rects = () => lines(node, from, to);
+      return {
+        selectNodeContents: (target) => { node = target; from = 0; to = target.data.length; },
+        setStart: (target, offset) => { node = target; from = offset; },
+        setEnd: (target, offset) => { node = target; to = offset; },
+        getClientRects: rects,
+        getBoundingClientRect: () => {
+          const all = rects();
+          return all.length ? { top: all[0].top, bottom: all.at(-1).bottom, height: all.at(-1).bottom - all[0].top } : { top: 0, bottom: 0, height: 0 };
+        },
+      };
+    },
+  };
+  return block;
+};
+
+test("the sentence target is the unit under the reading line, measured in the block's collapsed text", () => {
+  // Raw characters 18-19 are two spaces and 29 a line feed, so the collapsed text is 1 + 1 characters shorter by the
+  // time the second line starts at raw character 38, the space after “here.”: collapsed offset 37, inside sentence 2.
+  const paragraph = flowedText(placed(el("p", {}, [text("Alpha one is here.  Bravo two"), text("\nis here. Charlie three is here.")]), 0, 60), { perLine: 38 });
+  const article = el("article", {}, [paragraph]);
+  const sentence = (line) => buildSpeechTarget({ scope: "sentence", article, scrollContainer: lineAt(line) });
+  assert.equal(speechBlockText(paragraph), "Alpha one is here. Bravo two is here. Charlie three is here.");
+  assert.equal(sentence(30).text, "Bravo two is here.");
+  assert.equal(sentence(30).units[0].unit.start, 19);
+  assert.equal(sentence(5).text, "Alpha one is here.");
+  assert.equal(sentence(55).text, "Charlie three is here.", "a line below the text is the last sentence");
+  assert.equal(sentence(30).units.length, 1);
+});
+
+test("units build in linear time for a lecture of 500,000 characters", () => {
+  const sentence = "The quick brown fox jumps over the lazy dog again. ";
+  const lecture = el("article", {}, Array.from({ length: 400 }, (_, index) => (index % 40
+    ? el("p", {}, [text(`Block ${index}. ${sentence.repeat(24)}`)])
+    : el("h2", {}, [text(`Heading ${index}`)]))));
+  const oneBlock = el("article", {}, [el("p", {}, [text(sentence.repeat(9_800))])]);
+  const time = (work) => {
+    const started = performance.now();
+    const result = work();
+    return { result, elapsed: performance.now() - started };
+  };
+  // Generous: these guard the complexity (a scan per block or per sentence took minutes), not the machine.
+  const many = time(() => buildSpeechUnits(lecture));
+  assert.equal(many.result.length, 10 * 1 + 390 * 25, "a heading and 25 sentences a block");
+  assert.ok(many.elapsed < 4_000, `400 blocks took ${Math.round(many.elapsed)} ms`);
+  const target = time(() => buildSpeechTarget({ scope: "document", article: lecture }));
+  assert.equal(target.result.units.length, many.result.length);
+  assert.ok(target.elapsed < 4_000, `the document target took ${Math.round(target.elapsed)} ms`);
+  const near = time(() => buildSpeechTarget({ scope: "sentence", article: lecture, scrollContainer: lineAt(0) }));
+  assert.equal(near.result.units.length, 1);
+  assert.ok(near.elapsed < 2_000, `the sentence target took ${Math.round(near.elapsed)} ms`);
+  const one = time(() => buildSpeechUnits(oneBlock));
+  assert.equal(one.result.length, 9_800);
+  assert.ok(one.elapsed < 4_000, `one 500,000-character block took ${Math.round(one.elapsed)} ms`);
+  assert.equal(one.result.at(-1).unit.end, speechBlockText(oneBlock.childNodes[0]).length);
+  assert.equal(one.result[1].unit.start, sentence.length);
+});
+
+test("the language of the target reaches the sentence segmenter", () => {
+  const Real = Intl.Segmenter;
+  const locales = [];
+  Intl.Segmenter = class extends Real {
+    constructor(locale, options) {
+      locales.push(locale);
+      super(locale, options);
+    }
+  };
+  try {
+    const article = el("article", {}, [el("p", {}, [text("पहला वाक्य। दूसरा वाक्य!")])]);
+    assert.deepEqual(buildSpeechUnits(article, { language: "hi-IN" }).map((unit) => unit.text), ["पहला वाक्य।", "दूसरा वाक्य!"]);
+    assert.ok(locales.includes("hi-IN"), `segmented with ${locales}`);
+    locales.length = 0;
+    assert.equal(buildSpeechTarget({ scope: "document", article, language: "ja-JP" }).units.length, 2);
+    assert.ok(locales.includes("ja-JP"), `segmented with ${locales}`);
+  } finally {
+    Intl.Segmenter = Real;
+  }
+});
+
+test("text blocks keep working on plain fakes with no childNodes", () => {
+  const fake = (tagName, textContent) => ({ tagName, textContent, parentElement: { closest: () => null } });
+  const article = { querySelectorAll: () => [fake("H2", "Optimization"), fake("P", "Gradient descent moves downhill.  Learning rate\ncontrols each step."), fake("LI", "  "), fake("PRE", "x = 1")] };
+  assert.deepEqual(readableBlocks(article).map((block) => block.tagName), ["H2", "P", "PRE"]);
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => [unit.text, unit.unit.blockIndex, unit.unit.start, unit.unit.end]), [
+    ["Optimization.", 0, 0, 12],
+    ["Gradient descent moves downhill.", 1, 0, 33],
+    ["Learning rate controls each step.", 1, 33, 66],
+  ]);
+  checkUnits(article, units);
 });

@@ -72,7 +72,7 @@ test("speech targets resolve visible sentence, section, selection, and full lect
   const scrollContainer = { getBoundingClientRect: () => ({ top: 0, height: 800 }) };
   assert.equal(currentSpeechBlock(article, scrollContainer), blocks[2]);
   assert.equal(buildSpeechTarget({ scope: "sentence", article, scrollContainer }).text, "Gradient descent moves downhill.");
-  assert.equal(buildSpeechTarget({ scope: "section", article, scrollContainer }).text, "Optimization Gradient descent moves downhill. Learning rate controls each step. Momentum smooths updates.");
+  assert.equal(buildSpeechTarget({ scope: "section", article, scrollContainer }).text, "Optimization. Gradient descent moves downhill. Learning rate controls each step. Momentum smooths updates.");
   assert.equal(buildSpeechTarget({ scope: "selection", selectedText: " chosen  text " }).text, "chosen text");
   assert.equal(buildSpeechTarget({ scope: "selection" }).available, false);
   assert.ok(buildSpeechTarget({ scope: "document", article }).text.includes("Measure held-out error."));
@@ -107,21 +107,21 @@ test("a section runs to the next heading at its own level or above, with H2 as t
   const section = (top) => buildSpeechTarget({ scope: "section", article, scrollContainer: lineAt(top) }).text;
   assert.equal(
     section(260),
-    "5. Learning paradigms 5.1 Supervised learning Labels guide the fit. A note Labels cost money. 5.2 Unsupervised learning Structure without labels.",
+    "5. Learning paradigms. 5.1 Supervised learning. Labels guide the fit. A note. Labels cost money. 5.2 Unsupervised learning. Structure without labels.",
     "an H2 must read through its H3 subsections until the next H2",
   );
-  assert.equal(section(310), "5.1 Supervised learning Labels guide the fit. A note Labels cost money.", "an H3 stops at the next H3");
+  assert.equal(section(310), "5.1 Supervised learning. Labels guide the fit. A note. Labels cost money.", "an H3 stops at the next H3");
   assert.equal(
     section(10),
-    "Chapter 1 1. Intelligence Products act on context. Artificial intelligence AI is the broad field.",
+    "Chapter 1. 1. Intelligence. Products act on context. Artificial intelligence. AI is the broad field.",
     "a title with no introduction continues through the first section",
   );
-  assert.equal(section(620), "6. Task taxonomy Tasks differ by output.");
+  assert.equal(section(620), "6. Task taxonomy. Tasks differ by output.");
 
   const withIntro = [fakeBlock("H1", "Title", 0, 40), fakeBlock("P", "Intro text.", 45, 90), fakeBlock("H3", "Aside", 95, 130), fakeBlock("P", "Aside text.", 135, 170), fakeBlock("H2", "1. First", 175, 210), fakeBlock("P", "Body.", 215, 250)];
   assert.equal(
     buildSpeechTarget({ scope: "section", article: { querySelectorAll: () => withIntro }, scrollContainer: lineAt(10) }).text,
-    "Title Intro text. Aside Aside text.",
+    "Title. Intro text. Aside. Aside text.",
     "an H1 reads its introduction up to the first H2",
   );
 });
