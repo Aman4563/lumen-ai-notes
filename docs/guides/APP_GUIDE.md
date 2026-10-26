@@ -27,7 +27,11 @@ like an ordinary app. No account or server-side database is required.
   its 10-minute step is never held back until tomorrow by the daily review
   limit. With the Adaptive (FSRS) scheduler, a new card rated Hard or Good
   also comes back after 10 minutes, as its learning step, and is offered the
-  same way;
+  same way. The 7-day and 30-day recall figures and the 12-week trend count
+  only scheduled reviews: the first grade you give a card in review each day,
+  outside Extra practice. The two recall tiles show how many reviews they
+  count, and with the Adaptive (FSRS) scheduler the 30-day tile also shows
+  your target retention;
 - editable local copies of built-in lectures;
 - creation and upload of `.md`, `.markdown`, and `.txt` notes;
 - text-to-speech using the voices the device and browser report (on iPhone,
