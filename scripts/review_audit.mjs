@@ -3,7 +3,8 @@ import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
-import { pollValue } from "./audit_waits.mjs";
+import { pollValue, settled, waitForTheme } from "./audit_waits.mjs";
+import { recallFit } from "./recall_fit.mjs";
 
 const baseUrl = process.env.LUMEN_URL || "http://127.0.0.1:4173/";
 const chromePath = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -153,6 +154,89 @@ const seedRelearn = async (page, { cards, reviewSettings = {}, reviewCompletedTo
   return todayKey;
 };
 
+// #151: the issue's recall fixture, stored as seedRelearn stores its cards (the cards, attempts,
+// mistakes and daily usage replaced by a read-modify-write of the profile, then a reload), with the
+// theme and the review settings merged over Classic at 90%. It is 13 cards and 35 attempts, all from
+// 12:00 UTC yesterday on (today's UTC midnight less 12 h, built from the page's clock): the page runs
+// in UTC, so they share one local day. Ten attempts are scheduled reviews of cards in review (r01 and
+// r02 failed). The other 25 are not: the failed cards' re-grades ten minutes later, the first grades
+// of three new cards (n01 to n03) and twenty Extra practice grades. Recall reads 80% of 10 where all
+// 35 attempts would read 66%. `extraCards` join the deck in seedRelearn's card shape. Under Adaptive
+// the fixture's cards carry FSRS state, as enabling it gives cards, so the workload planner has a
+// curve to show.
+const seedRecall = async (page, { theme = "paper", reviewSettings = {}, extraCards = [] } = {}) => {
+  await page.evaluate((seed) => new Promise((resolve, reject) => {
+    const MINUTE = 60_000;
+    const HOUR = 60 * MINUTE;
+    const DAY = 24 * HOUR;
+    const base = Date.now();
+    const stamp = (time) => new Date(time).toISOString();
+    const today = new Date(base);
+    const noon = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) - 12 * HOUR;
+    const sessionKey = `${stamp(noon).slice(0, 10)}@UTC`;
+    const settings = { scheduler: "sm2", requestRetention: 0.9, ...seed.reviewSettings };
+    const card = ({ id, front, intervalDays, repetitions, reviewCount, lapses = 0, reviewedAgoMs, dueInMs }) => ({
+      id, type: "basic", front, back: `The answer to ${id}.`, tags: [],
+      documentId: "notes/part-05-supervised-learning/01-linear-regression.md",
+      suspended: false, archived: false, buriedOnDay: "", intervalDays, ease: 2.5, repetitions, reviewCount, lapses,
+      ...(settings.scheduler === "fsrs" ? { stability: intervalDays, difficulty: 5, fsrsState: "review" } : {}),
+      lastReviewedAt: stamp(base - reviewedAgoMs), dueAt: stamp(base + dueInMs), createdAt: stamp(base - 60 * DAY), updatedAt: stamp(base - reviewedAgoMs),
+    });
+    const attempt = (id, reviewItemId, rating, minute, { previousIntervalDays, sessionKind, crunch }) => {
+      const reviewedAt = noon + minute * MINUTE;
+      const nextIntervalDays = rating === "again" ? 10 / 1_440 : 3;
+      return {
+        id, reviewItemId, rating, elapsedMs: 4_000, confidence: 3,
+        reviewedAt: stamp(reviewedAt), previousDueAt: stamp(reviewedAt), nextDueAt: stamp(reviewedAt + nextIntervalDays * DAY),
+        previousIntervalDays, nextIntervalDays, sessionKind, sessionKey, crunch, scheduleRule: 3,
+      };
+    };
+    const names = (prefix, count) => Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1).padStart(2, "0")}`);
+    const inReview = names("r", 10);
+    const firstGraded = names("n", 3);
+    const cards = [
+      ...inReview.map((id, index) => card({ id, front: `Recall fixture ${id}: a card in review`, intervalDays: 3, repetitions: 2, reviewCount: 3, lapses: index < 2 ? 1 : 0, reviewedAgoMs: base - (noon + 59 * MINUTE), dueInMs: 2 * DAY })),
+      ...firstGraded.map((id, index) => card({ id, front: `Recall fixture ${id}: a new card graded once`, intervalDays: 1, repetitions: 1, reviewCount: 1, reviewedAgoMs: base - (noon + (30 + index) * MINUTE), dueInMs: DAY })),
+      ...seed.extraCards.map(card),
+    ];
+    const attempts = [
+      // Ten scheduled reviews at 12:00 + i min; r01 and r02 are rated Again.
+      ...inReview.map((id, index) => attempt(`recall-scheduled-${id}`, id, index < 2 ? "again" : "good", index, { previousIntervalDays: 3, sessionKind: "review", crunch: false })),
+      // The two failures passed again at 12:20 and 12:21: a 10-minute step, not a review.
+      ...inReview.slice(0, 2).map((id, index) => attempt(`recall-regrade-${id}`, id, "good", 20 + index, { previousIntervalDays: 10 / 1_440, sessionKind: "review", crunch: false })),
+      // The first grades of three new cards at 12:30 to 12:32.
+      ...firstGraded.map((id, index) => attempt(`recall-first-${id}`, id, "good", 30 + index, { previousIntervalDays: 0, sessionKind: "new", crunch: false })),
+      // Twenty Extra practice grades from 12:40: r01 to r10 twice, Again and Good alternately.
+      ...Array.from({ length: 20 }, (_, index) => attempt(`recall-extra-${index + 1}`, inReview[index % 10], index % 2 ? "good" : "again", 40 + index, { previousIntervalDays: 3, sessionKind: "crunch", crunch: true })),
+    ];
+    const request = indexedDB.open("lumen-ai-notes", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("study-data", "readwrite");
+      const store = transaction.objectStore("study-data");
+      const get = store.get("profile");
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => {
+        const profile = get.result && typeof get.result === "object" ? get.result : {};
+        profile.reviewItems = cards;
+        profile.reviewAttempts = attempts;
+        profile.mistakes = [];
+        profile.reviewSessions = [];
+        profile.settings = { ...profile.settings, theme: seed.theme };
+        profile.reviewSettings = { ...profile.reviewSettings, ...settings };
+        store.put(profile, "profile");
+      };
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  }), { theme, reviewSettings, extraCards });
+  await page.reload({ waitUntil: "networkidle2", timeout: 30_000 });
+  await page.waitForSelector(".review-center-page", { timeout: 10_000 });
+  const themed = await waitForTheme(page, theme);
+  assert.ok(themed.ok, `the ${theme} theme did not settle after seeding the recall fixture: ${themed.reason}`);
+};
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -242,7 +326,8 @@ try {
   await page.waitForFunction(() => document.querySelector(".review-hero strong")?.textContent === "0");
   assert.ok((await page.$eval(".review-center-page [role='status']", (node) => node.textContent)).includes("Rated Good: next review in 1 day"), "the grade outcome must be announced");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("1 day interval"), "Good rating did not schedule a one-day interval");
-  assert.ok((await page.$eval(".review-stat-grid", (node) => node.textContent)).includes("100%"), "recall rate was not updated");
+  assert.deepEqual(await page.$eval(".review-recall-tile", (tile) => [tile.querySelector("strong").textContent, tile.querySelector(".review-recall-count")?.textContent]), ["—", "0 scheduled reviews"], "a new card's first grade must not count as recall (#151)");
+  assert.equal(await page.$eval(".review-retention-trend .forecast-empty", (node) => node.textContent), "Your weekly recall trend appears after your first scheduled reviews.", "with only a first grade the 12-week trend must show its empty state (#151)");
   // Issue #54 (REV-5): ending a crunch practice session returns the hero to
   // today's queue; it used to keep counting the weak-card practice pool.
   await clickByText(page, ".review-hero-actions button", "Crunch weak cards");
@@ -1563,8 +1648,117 @@ try {
   } finally {
     await relearnContext.close();
   }
+
+  // Issue #151: the recall figures counted every attempt, so Extra practice, a new card's first
+  // grade and a failed card's 10-minute re-grade blended into one number that could not be compared
+  // with the target retention. They count scheduled reviews only, and each tile says how many.
+  // A fresh context in UTC hosts these checks: the fixture's attempts all fall on yesterday's UTC
+  // day, and the matrix of sizes below resizes its one page.
+  const recallContext = await browser.createBrowserContext();
+  try {
+    const HOUR = 60 * 60_000;
+    const DAY = 24 * HOUR;
+    const recallPage = await recallContext.newPage();
+    recallPage.on("pageerror", (error) => errors.push(error.message));
+    await recallPage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    await recallPage.emulateTimezone("UTC");
+    await recallPage.goto(`${baseUrl}#/review`, { waitUntil: "networkidle2", timeout: 30_000 });
+    await recallPage.waitForSelector(".review-center-page", { timeout: 10_000 });
+    // A tile's value and count line, and the target line the 30-day tile adds under Adaptive (null when absent).
+    const tileReading = (selector) => recallPage.$eval(selector, (tile) => [tile.querySelector("strong").textContent, tile.querySelector(".review-recall-count")?.textContent]);
+    const targetReading = () => recallPage.$eval(".review-recall-tile", (tile) => tile.querySelector(".review-recall-target")?.textContent ?? null);
+    const waitForTile = (selector, [value, count], why) => recallPage.waitForFunction((tileSelector, expected) => {
+      const tile = document.querySelector(tileSelector);
+      return tile?.querySelector("strong")?.textContent === expected[0] && tile.querySelector(".review-recall-count")?.textContent === expected[1];
+    }, { timeout: 5_000 }, selector, [value, count])
+      .catch(async () => assert.fail(`${why}: the ${selector} tile must read ${value} and ${count}, not ${(await tileReading(selector).catch(() => ["nothing"])).join(" and ")}`));
+    const waitForTarget = (expected, why) => recallPage.waitForFunction((text) => document.querySelector(".review-recall-tile .review-recall-target")?.textContent === text, { timeout: 5_000 }, expected)
+      .catch(async () => assert.fail(`${why}: the 30-day tile must read “${expected}”, not “${await targetReading().catch(() => "nothing")}”`));
+
+    // 1. Classic: 80% of 10 on the issue's fixture (main blends all 35 attempts into 66%), on both
+    // tiles and the trend, and no target. r11 is a card in review that is due, for check 2.
+    const r11 = { id: "r11", front: "Recall fixture r11: a card in review that is due", intervalDays: 3, repetitions: 2, reviewCount: 3, reviewedAgoMs: 3 * DAY, dueInMs: -HOUR };
+    await seedRecall(recallPage, { extraCards: [r11] });
+    assert.deepEqual(await tileReading(".review-recall-tile"), ["80%", "10 scheduled reviews"], "the 30-day tile must read 80% of 10 scheduled reviews on the issue's fixture");
+    assert.equal(await targetReading(), null, "under Classic the 30-day tile must show no target");
+    assert.deepEqual(await tileReading(".review-recall-week"), ["80%", "10 scheduled reviews"], "the 7-day tile must read 80% of 10 scheduled reviews on the issue's fixture");
+    const trend = await recallPage.$eval(".review-retention-trend", (article) => ({
+      label: article.querySelector('[role="img"]')?.getAttribute("aria-label") ?? "",
+      lastBar: article.querySelector(".forecast-bars > span:last-child")?.getAttribute("title") ?? "",
+    }));
+    assert.ok(trend.label.includes("scheduled reviews") && trend.label.endsWith("80% of 10 scheduled reviews"), `the trend's label must say what it counts and end with this week's 80% of 10: ${trend.label}`);
+    assert.equal(trend.lastBar, "This week: 80% recalled over 10 scheduled reviews", "the trend's last bar must name this week's sample");
+
+    // 2. A real grade counts; Extra practice does not. Good on r11 is the 11th scheduled review (9 of 11
+    // are not Again). Crunch weak cards then grades one more card, which changes nothing the tile reads.
+    await clickByText(recallPage, ".review-hero button", "Start review");
+    await recallPage.waitForSelector(".review-session-page", { timeout: 5_000 });
+    await clickByText(recallPage, ".review-session-page button", "Show answer");
+    await recallPage.waitForSelector(".review-answer", { timeout: 5_000 });
+    await clickByText(recallPage, ".review-rating", "Good");
+    await recallPage.waitForSelector(".review-center-page", { timeout: 5_000 });
+    await waitForTile(".review-recall-tile", ["82%", "11 scheduled reviews"], "a graded card in review");
+    await clickByText(recallPage, ".review-hero-actions button", "Crunch weak cards");
+    await recallPage.waitForFunction(() => document.querySelector(".review-session-header")?.textContent.includes("practice cards left"), { timeout: 5_000 })
+      .catch(() => assert.fail("Crunch weak cards must open an Extra practice session"));
+    await clickByText(recallPage, ".review-session-page button", "Show answer");
+    await recallPage.waitForSelector(".review-answer", { timeout: 5_000 });
+    await clickByText(recallPage, ".review-rating", "Good");
+    await recallPage.waitForFunction(() => !document.querySelector(".review-answer"), { timeout: 5_000 })
+      .catch(() => assert.fail("grading the first Extra practice card must bring up the next one"));
+    await clickByText(recallPage, ".review-session-header button", "End session");
+    await recallPage.waitForSelector(".review-center-page", { timeout: 5_000 });
+    assert.deepEqual(await tileReading(".review-recall-tile"), ["82%", "11 scheduled reviews"], "an Extra practice grade must not change the 30-day tile");
+    assert.deepEqual(await tileReading(".review-recall-week"), ["82%", "11 scheduled reviews"], "an Extra practice grade must not change the 7-day tile");
+    const graded = await savedProfile(recallPage, (profile) => profile.reviewAttempts?.length === 37);
+    assert.equal(graded.reviewAttempts.length, 37, "the fixture's 35 attempts and the two new grades must be stored");
+
+    // 3. Adaptive: the 30-day tile reads value, name, count and target in that order, top to bottom, none
+    // of it hidden from a screen reader. The target follows the Retention picker and the workload
+    // planner, and leaves with Classic.
+    await seedRecall(recallPage, { reviewSettings: { scheduler: "fsrs" } });
+    const reading = await recallPage.$eval(".review-recall-tile", (tile) => [...tile.querySelectorAll("strong, span")].map((node) => ({
+      text: node.textContent, top: node.getBoundingClientRect().top, hidden: Boolean(node.closest('[aria-hidden="true"]')),
+    })));
+    assert.deepEqual(reading.map((line) => line.text), ["80%", "30-day recall", "10 scheduled reviews", "Target 90%"], "the 30-day tile must read value, name, count and target in DOM order");
+    assert.ok(reading.every((line, index) => index === 0 || line.top >= reading[index - 1].top), `the 30-day tile's lines must not run upward: ${JSON.stringify(reading.map((line) => Math.round(line.top)))}`);
+    assert.deepEqual(reading.filter((line) => line.hidden).map((line) => line.text), [], "no line of the 30-day tile may be hidden from a screen reader");
+    await recallPage.select('select[aria-label="Target retention"]', "0.85");
+    await waitForTarget("Target 85%", "choosing 85% in the Retention picker");
+    await recallPage.waitForSelector(".review-workload-options", { timeout: 5_000 });
+    await clickByText(recallPage, ".review-workload-options button", "95%");
+    await waitForTarget("Target 95%", "choosing 95% in the workload planner");
+    await recallPage.select('select[aria-label="Scheduling algorithm"]', "sm2");
+    await recallPage.waitForFunction(() => !document.querySelector(".review-recall-tile .review-recall-target"), { timeout: 5_000 })
+      .catch(() => assert.fail("switching back to Classic must remove the target from the 30-day tile"));
+    assert.deepEqual(await tileReading(".review-recall-tile"), ["80%", "10 scheduled reviews"], "switching to Classic must leave the 30-day recall and its count alone");
+    // The last change is saved before the next seed replaces the stored profile (a late save would merge into it).
+    assert.equal((await savedProfile(recallPage, (profile) => profile.reviewSettings?.scheduler === "sm2")).reviewSettings?.scheduler, "sm2", "the switch back to Classic was never saved, so a late save could merge into the next seed");
+
+    // 4. Fit: both tiles and the trend stay inside their boxes, their icons keep their size, and the page
+    // stays inside its viewport, with the Adaptive target, in every theme, at 393x852, 320x568 and
+    // 360x800 (200% text on the last) and at 200% text on 320x568 and 1024x768. The page is measured at
+    // every size: on main it already fits at 1024x768 with 200% text (the hero's buttons are clipped by
+    // their own card, not by the document), and at 320x568 with 200% text it fits but for the trend's
+    // chart, which this change fixes.
+    for (const theme of ["paper", "dark", "contrast"]) {
+      await seedRecall(recallPage, { theme, reviewSettings: { scheduler: "fsrs" } });
+      assert.equal(await targetReading(), "Target 90%", `${theme}: the Adaptive target must be on screen before the tiles are measured`);
+      for (const [width, height, scale] of [[393, 852, 1], [320, 568, 1], [360, 800, 2], [320, 568, 2], [1024, 768, 2]]) {
+        const label = `${theme} at ${width}x${height}${scale > 1 ? ` with ${scale * 100}% text` : ""}`;
+        await recallPage.setViewport({ width, height, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+        await recallPage.evaluate((size) => { document.documentElement.style.fontSize = `${size}px`; }, 16 * scale);
+        await settled(recallPage, label);
+        assert.deepEqual(await recallFit(recallPage), [], `the recall tiles and the 12-week trend must fit in ${label}`);
+      }
+      await recallPage.setViewport({ width: 393, height: 852, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+      await recallPage.evaluate(() => { document.documentElement.style.fontSize = ""; });
+    }
+  } finally {
+    await recallContext.close();
+  }
   assert.deepEqual(errors, [], `runtime errors: ${errors.join(" | ")}`);
-  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer or restarting its timer, a step that comes due behind the retry panel presented on the clock tick without a status line, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last, an undone grade hiding the answer of the card still on screen) verified.");
+  console.log("Review audit passed: creation, grading, confidence, ledger limits, undo, edit, archive/restore, mistake notebook (auto-log on Again, merge on repeat, manual capture, persisted corrections, linked and unlinked corrective scheduling, corrected/category filters), duplicate-card rejection, Home due-count agreement, crunch practice leaving today's queue count intact, session progress/focus/announcement and short-phone grade reach, archive focus handoff, keyboard deck import with duplicate and malformed-file feedback, phone Daily limits strip, inert mistake dialog, in-place on-screen mistake and clipping undo (focused strips never expire), burst-typed clipping notes, corrections saved on page hide, cloze Enter-to-submit and the leave guard in a readiness check, timed interview round with miss capture, FSRS opt-in with one-time migration, honest thin-history calibration refusal, the retention-vs-workload planner, authored track rounds with rubric reveal, worksheet-lab miss capture, analytics, reload persistence, 10,000-card mobile pagination, saved AI cards rendered as untrusted text (no forged control, image fetch or app link in the deck, session, interview round or edit preview; ai-draft kept through edits), the Extra practice notice under Classic and FSRS, early Crunch grades that keep their interval and Mastered count, and a retry offered for a failed last card (a 10-minute step due to the minute, undo, Retry now showing steps early by keyboard, a step rejoining mid-session without hiding a revealed answer or restarting its timer, a step that comes due behind the retry panel presented on the clock tick without a status line, each outcome announced once, 44px session targets, and a step back past a spent daily limit that Home counts only once due), and Extra practice asking a failed card once more after the rest of the session (undo taking that back, a lone card announced and buried on its second ask, an undone second grade queueing the card once and leaving its second ask last, an undone grade hiding the answer of the card still on screen), and recall that counts scheduled reviews only (80% of 10 on the issue's fixture where all 35 attempts read 66%, a real grade counted and Extra practice not, the Adaptive target after the 30-day value following the Retention picker and the workload planner and leaving with Classic, and both tiles and the 12-week trend fitting at 393 px and 320 px, and at 200% text at 360 px, 320 px and 1024 px, in Paper, Night and Contrast) verified.");
 } finally {
   if (browser) await browser.close();
   await rm(profileDirectory, { recursive: true, force: true });

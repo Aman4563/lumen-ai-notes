@@ -4608,3 +4608,160 @@ Run alone with `LUMEN_BROWSER_RETRIES=0`, `annotations` passed on the branch
 and on a build of main 28b9009, and `visual` passed on the branch. This branch
 changes neither suite nor any app file, so the annotation failure under load
 is a separate flake.
+
+## Bugs reproduced on 2026-10-26: recall percentages count Crunch, first and same-day grades (#151)
+
+Against main (1a20c29), `reviewAnalytics` (`src/lib/review.js`) counted every
+attempt in each window, and a retained attempt was any rating other than
+Again. Running the new tests against it, and a read-only probe that logs their
+assertions' actual values, showed:
+
+- The issue's fixture reads 66% over 35 attempts, where it should read 80% of
+  10. The fixture is:
+  - 10 scheduled reviews, 2 of them Again;
+  - both failures re-passed 10 minutes later;
+  - 3 new cards' first grades;
+  - 20 Extra practice ("Crunch") grades, 10 of them Again.
+- Each kind alone, on top of the 10 scheduled reviews (80% of 10):
+  - Crunch: 60% of 30.
+  - First grades: 85% of 13.
+  - Same-day re-grades: 83% of 12. This is the issue's example, where the
+    honest figure is 80% of 10.
+- The same card graded on two devices the same day counted twice.
+- With only excluded attempts (Crunch, first grades, re-grades), main showed a
+  blended 60% where nothing should show.
+- The tiles showed a bare percentage, with no sample size.
+- A layout bug on main: with any graded review, at 320×568 the 12-week
+  trend's chart ended 22 px outside its article and the page scrolled to
+  326 px. `audit:responsive` seeds no attempts, so it never saw this.
+
+What changed:
+
+- **One rule, used by every recall figure** (7-day, 30-day and 12-week
+  trend). An attempt counts when all of these hold:
+  - `sessionKind === "review"`;
+  - `crunch` is false;
+  - `previousIntervalDays >= 1`, so the card was in review. A new card's first
+    grade stores 0 and a learning step stores under a day. A legacy attempt
+    has no interval, and the normalizer stores 0 for it;
+  - it is the card's first such attempt that local day (`localDayKey`).
+
+  Recall is the share of counted attempts not rated Again. It stays a single
+  pass, with a Set of `reviewItemId|day`. Attempts are stored oldest first, so
+  "first" is the first in the list. Median answer time and the streak still
+  use every attempt.
+- **The return shape.**
+  - Two new numbers, `scheduledReviews7` and `scheduledReviews30`.
+  - `streak` is unchanged (#152 replaces it next).
+  - `retentionTrend` entries keep `{ count, percent }`, where `count` now
+    counts scheduled reviews.
+- **The Review center.**
+  - The 30-day tile reads the value, "30-day recall", "N scheduled reviews"
+    ("1 scheduled review"; "0 scheduled reviews" beside "—") and, with
+    Adaptive (FSRS) on, "Target N%". The target follows the Retention picker
+    and the workload planner.
+  - The 7-day tile adds its count the same way.
+  - The 12-week trend's spoken label reads "Twelve-week recall on scheduled
+    reviews, oldest first: …", then each week as "80% of 10 scheduled
+    reviews" or "no scheduled reviews". Its bar titles read "This week: 80%
+    recalled over 10 scheduled reviews" or "…: no scheduled reviews". Its
+    empty state reads "Your weekly recall trend appears after your first
+    scheduled reviews."
+- **Layout** (theme tokens only).
+  - Above 900 px the 30-day icon spans every text row.
+  - The 7-day icon keeps its size. On the branch's first build it was
+    squeezed from 18 to 14 px at 320 px.
+  - At 320 px the trend's chart drops below its heading, and only there.
+  - A word wider than its column may break inside the two recall tiles, as a
+    last resort at 200% text. On the first build, at 1024×768 with 200% text
+    the 30-day icon had collapsed to 0 px and "scheduled" stuck 9 px out of
+    the 7-day tile; both now fit.
+- **Persisted data:** no new field, so the `db.js` normalizer, the backup
+  fixture and `profileSync` are unchanged.
+
+How each is now checked (each fails on main first, except the median guard):
+
+- **`src/lib/review.test.mjs`:** 10 new tests. On main, 9 fail with the
+  figures above; the median guard passes by design. They cover:
+  - the issue's fixture;
+  - Crunch, including attempts flagged by only one of `crunch` and
+    `sessionKind`;
+  - a new card's first grade, and a same-day re-grade (one test each);
+  - first-per-local-day, including two devices before a sync;
+  - the local day in New York against UTC;
+  - legacy attempts and learning steps (exactly 1 day counts);
+  - only excluded attempts give null recall with 0 scheduled reviews;
+  - the 7- and 30-day windows and the trend, by hand count;
+  - the median guard: answer time still uses every attempt.
+- **`src/lib/review.scale.test.mjs`:** 50,000 attempts with realistic fields
+  (Extra practice, first grades, steps, legacy attempts and two grades per
+  card per day). Its hand counts are 5,000 scheduled reviews in 7 days and
+  19,375 in 30, checked against an oracle. `reviewAnalytics` takes about 165
+  to 190 ms (limit 4,000 ms). On main it fails at `scheduledReviews7`
+  (undefined).
+- **`scripts/unit_audit.mjs`:** the trend block now holds attempts with the
+  stored fields, plus excluded attempts beside them. On main it fails at
+  `trend[11].percent`, which reads 80 where the audit expects 50. Its earlier
+  assertions on the weekly buckets keep their values, and it gains two checks:
+  - the 7- and 30-day figures read 50% of 2 and 75% of 4 (`retention7`,
+    `scheduledReviews7`, `retention30` and `scheduledReviews30` are
+    `[50, 2, 75, 4]`);
+  - a legacy attempt run through the real normalizer, which stores a missing
+    interval as 0, is left out (`scheduledReviews30` is 0).
+- **`scripts/review_audit.mjs`:**
+  - **Line 329, changed on purpose.** After a new card's first Good, the
+    30-day tile reads "—" and "0 scheduled reviews". It read "100%" on main,
+    which counted the first grade; it changed on purpose because a first grade
+    is not recall.
+  - **The seeded fixture.** In Classic both tiles read 80% and "10 scheduled
+    reviews" with no target, and the trend's label ends "80% of 10 scheduled
+    reviews".
+  - **A real grade counts; Extra practice does not.** A real scheduled grade
+    makes it 82% of 11, and an Extra practice grade leaves it there (37
+    attempts stored).
+  - **Adaptive.** The 30-day tile shows "Target 90%", which becomes 85%
+    through the Retention picker and 95% through the workload planner.
+    Switching to Classic removes it. The tile's lines read value, name,
+    count and target, top to bottom.
+  - **Fit.** The tiles and the trend are measured at 393×852 and 320×568, and
+    at 200% text at 360×800, 320×568 and 1024×768, in Paper, Night and
+    Contrast.
+- **`scripts/a11y_audit.mjs`:** a new `review-recall` state (Adaptive with two
+  scheduled reviews) is scanned in Paper, Night and Contrast at 393×852 and
+  1280×800 (138 axe runs in all, empty allowlist). It also runs the fit check
+  and checks where the 30-day tile puts its lines: above 900 px in one column
+  beside the icon, and at 900 px and below centred, icon included.
+- **`scripts/recall_fit.mjs`** is the fit check both audits share, as
+  `scripts/select_contract.mjs` is for selects. It reports anything that
+  leaves its article by more than 1 px, text wider than its box, an icon
+  squeezed narrower than it is drawn, and a page wider than its layout
+  viewport.
+- **On the pre-change UI** `audit:review` fails at the first-grade check (no
+  `.review-recall-tile`), and `audit:a11y` reports "the state could not be
+  scanned" 6 times (3 themes × 2 viewports).
+
+Assertions changed on purpose:
+
+- `review_audit`'s line 329: after a new card's first Good it expected "100%"
+  on the stat grid, and it now expects "—" and "0 scheduled reviews".
+
+Found and not fixed here:
+
+- At 200% text, the 7-day forecast's weekday ticks clip by 3 to 5 px
+  (pre-existing).
+- The trend's "12 wk / Now" row is 112 px wide under a 188 px chart
+  (pre-existing).
+- At 1024×768 with 200% text, the hero buttons clip on main (pre-existing).
+
+Budgets (`npm run size` on df7848d):
+
+- entry 623,762 of 750,000 bytes (headroom 126,238), unchanged from main;
+- install route screens 698,082 of 900,000 bytes (headroom 201,918), 517
+  bytes more than main's 697,565.
+
+Gate on the branch (df7848d, Node 26): `npm run check` passed (notes, unit,
+scale, storage, backup-memory, `audit:ai` 647/647, ai-eval and app). The full
+`npm run check:browser` passed all 14 suites on the first attempt, with no
+"Passed only on retry" (workflow, audio, review, annotations, sync, visual,
+controls, ai-ui, phone-ai-ui, mermaid, chunks, storage-blocked, responsive
+and a11y).

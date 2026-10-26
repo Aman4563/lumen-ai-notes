@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { pollValue, settleAnimations, waitForTheme } from "./audit_waits.mjs";
+import { recallFit } from "./recall_fit.mjs";
 import { installSpeechMock, stepToSpokenBlock } from "./speech_mock.mjs";
 
 // axe-core is a pinned dev dependency. The app CSP blocks injected <script>
@@ -32,9 +33,9 @@ const THEMES = [["paper", "Paper"], ["dark", "Night"], ["contrast", "Contrast"]]
 // must hold focus. A state with its own `viewport` is scanned once per theme,
 // in that viewport, during the phone pass. An optional `verify(page, label)`
 // records structural findings once axe has run. A state that needs cards the
-// routes' empty profile lacks (extra-practice, #148; review-retry, #149)
-// stores them in `setup` and removes them in `close`, so the route scans keep
-// their empty deck.
+// routes' empty profile lacks (extra-practice, #148; review-retry, #149;
+// review-recall, #151) stores them in `setup` and removes them in `close`, so
+// the route scans keep their empty deck.
 // Issue #98 adds its dialog states to this list.
 const clickText = (page, selector, text) => page.$$eval(selector, (nodes, expected) => {
   const node = nodes.find((item) => item.textContent.replace(/\s+/g, " ").trim().includes(expected));
@@ -135,6 +136,54 @@ const storedBuriedDay = (page, id) => page.evaluate((cardId) => new Promise((res
     get.onerror = () => { db.close(); reject(get.error); };
   };
 }), id);
+// The recall tiles (#151) need two cards in review, a scheduled review of each and Adaptive
+// scheduling, which adds the target to the 30-day tile. A read-modify-write that keeps the rest
+// of the stored profile, the theme the route scans chose included: on, it adds the cards and
+// their reviews, yesterday, one Good and one Again, and turns Adaptive on; off, it takes the
+// cards and reviews out by id and returns to Classic, so a repeated close finds nothing to do.
+const RECALL_CARD_IDS = ["a11y-recall-1", "a11y-recall-2"];
+const RECALL_ATTEMPT_IDS = ["a11y-recall-attempt-1", "a11y-recall-attempt-2"];
+const storeRecallAudit = (page, on) => page.evaluate((cardIds, attemptIds, enable) => new Promise((resolve, reject) => {
+  const request = indexedDB.open("lumen-ai-notes", 1);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const db = request.result;
+    const transaction = db.transaction("study-data", "readwrite");
+    const store = transaction.objectStore("study-data");
+    const get = store.get("profile");
+    get.onerror = () => reject(get.error);
+    get.onsuccess = () => {
+      const profile = get.result;
+      if (!profile || typeof profile !== "object") {
+        reject(new Error("there is no stored profile to put the recall audit data into"));
+        return;
+      }
+      const base = Date.now();
+      const stamp = (days) => new Date(base + days * 86_400_000).toISOString();
+      const cards = enable ? cardIds.map((id, index) => ({
+        id, type: "basic", front: `Recall audit ${index + 1}: which split tunes hyperparameters?`, back: "The validation split.", tags: [],
+        documentId: "notes/part-05-supervised-learning/01-linear-regression.md",
+        suspended: false, archived: false, buriedOnDay: "", intervalDays: 3, ease: 2.5, repetitions: 2, reviewCount: 3, lapses: 0,
+        lastReviewedAt: stamp(-1), dueAt: stamp(2), createdAt: stamp(-60), updatedAt: stamp(-1),
+      })) : [];
+      // The Good review schedules 3 days on; the Again review, the 10-minute step.
+      const attempts = enable ? cardIds.map((id, index) => {
+        const nextIntervalDays = index ? 10 / 1_440 : 3;
+        return {
+          id: attemptIds[index], reviewItemId: id, rating: index ? "again" : "good", elapsedMs: 4_000, confidence: 3, reviewedAt: stamp(-1),
+          previousDueAt: stamp(-1), nextDueAt: stamp(-1 + nextIntervalDays), previousIntervalDays: 3, nextIntervalDays,
+          sessionKind: "review", sessionKey: "", crunch: false, scheduleRule: 3,
+        };
+      }) : [];
+      profile.reviewItems = [...(profile.reviewItems || []).filter((item) => !cardIds.includes(item.id)), ...cards];
+      profile.reviewAttempts = [...(profile.reviewAttempts || []).filter((attempt) => !attemptIds.includes(attempt.id)), ...attempts];
+      profile.reviewSettings = { ...profile.reviewSettings, scheduler: enable ? "fsrs" : "sm2" };
+      store.put(profile, "profile");
+    };
+    transaction.oncomplete = () => { db.close(); resolve(); };
+    transaction.onerror = () => { db.close(); reject(transaction.error); };
+  };
+}), RECALL_CARD_IDS, RECALL_ATTEMPT_IDS, on);
 // A reload brings the theme back from the stored profile: wait until the page
 // wears it again, so axe never reads the previous theme's colours (#138).
 const reloadInTheme = async (page, ready) => {
@@ -404,6 +453,53 @@ const STATES = [
       for (const id of RETRY_CARD_IDS) {
         assert.equal(await page.$(`.review-deck-card[data-card-id="${id}"]`), null, `the ${id} card is still in the deck, so the next route scans would not see an empty one`);
       }
+    },
+  },
+  // The recall tiles (#151), never scanned with a sample size or a target: the 30-day tile reading
+  // its value, its name, how many scheduled reviews it counts and the Adaptive target, with the
+  // 7-day tile and the 12-week trend beside it, in every theme. Two cards in review, a scheduled
+  // review of each and Adaptive scheduling are stored for this state only. verify: the three
+  // articles keep their contents inside their boxes and the page stays inside its layout viewport
+  // (recallFit, the measurement the review audit makes at more sizes); and the 30-day tile's lines
+  // sit where its layout puts them: above 900 px in one column beside the icon, so none lands under
+  // it, and at 900 px and below centred, the icon too.
+  {
+    name: "review-recall",
+    route: ROUTES[4],
+    setup: async (page) => {
+      await storeRecallAudit(page, true);
+      await reloadInTheme(page, ".review-recall-target");
+      // Axe cannot measure text over the page's radial-gradient background (see
+      // extra-practice): scan it on the theme's paper colour.
+      await page.evaluate(() => { document.body.style.backgroundImage = "none"; });
+    },
+    ready: ".review-recall-target",
+    verify: async (page, label) => {
+      // Against the layout viewport, as in extra-practice.
+      const problems = await recallFit(page);
+      check(problems.length === 0, `${label}: the recall tiles overflow (${problems.join("; ")})`);
+      const tile = await page.$eval(".review-recall-tile", (article) => {
+        const middle = (node) => { const box = node.getBoundingClientRect(); return (box.left + box.right) / 2; };
+        return {
+          iconRight: article.querySelector("svg").getBoundingClientRect().right,
+          iconMiddle: middle(article.querySelector("svg")),
+          tileMiddle: middle(article),
+          lines: [...article.querySelectorAll("strong, span")].map((line) => ({ text: line.textContent, left: line.getBoundingClientRect().left, middle: middle(line) })),
+        };
+      });
+      if (page.viewport().width > 900) {
+        const stray = tile.lines.filter((line) => Math.abs(line.left - tile.lines[0].left) > 1 || line.left < tile.iconRight);
+        check(stray.length === 0, `${label}: the 30-day tile's lines are not in one column beside its icon (${JSON.stringify({ iconRight: tile.iconRight, lines: tile.lines.map((line) => `${line.text} at ${Math.round(line.left)}`) })})`);
+      } else {
+        const off = [{ text: "icon", middle: tile.iconMiddle }, ...tile.lines].filter((line) => Math.abs(line.middle - tile.tileMiddle) > 1);
+        check(off.length === 0, `${label}: the 30-day tile is not a centred stack (${off.map((line) => `${line.text} off by ${Math.round(line.middle - tile.tileMiddle)}`).join(", ")})`);
+      }
+    },
+    close: async (page) => {
+      await storeRecallAudit(page, false);
+      await reloadInTheme(page, ".review-center-page");
+      assert.equal(await page.$(".review-recall-target"), null, "the 30-day tile still shows a target, so the next route scans would not see Classic");
+      assert.equal(await page.$(".review-deck-card"), null, "a recall audit card is still in the deck, so the next route scans would not see an empty one");
     },
   },
 ];

@@ -2939,6 +2939,25 @@ input[type="range"] {
 .review-stat-grid strong { color: var(--ink); font-family: "Manrope", sans-serif; font-size: 1.55rem; letter-spacing: -0.04em; }
 .review-stat-grid span { color: var(--ink-faint); font-size: 0.69rem; font-weight: 700; }
 
+/* The 30-day tile (#151) adds how many scheduled reviews it counts and, with Adaptive on, its
+   target: one or two more lines under its name. Above 900 px the icon spans every line and each
+   line sits in the text column, so none auto-places under the icon. At 900 px and below nothing
+   changes: the tile stays the centred stack the block further down makes it. */
+@media (min-width: 901px) {
+  .review-stat-grid .review-recall-tile { grid-template-rows: repeat(3, auto); }
+  .review-stat-grid .review-recall-tile:has(.review-recall-target) { grid-template-rows: repeat(4, auto); }
+  .review-stat-grid .review-recall-tile svg { grid-row: 1 / -1; }
+  .review-stat-grid .review-recall-tile > :not(svg) { grid-column: 2; }
+}
+
+/* A word wider than its column breaks inside itself rather than leaving the tile or squeezing its
+   icon. At 200% text a desktop 30-day tile has 87 px beside its icon for "80%" (93 px) and
+   "scheduled" (108 px), and the 7-day tile 69 px for "scheduled" (93 px). `anywhere` also counts
+   those break points in the lines' minimum widths, so the tile's grid or flex layout may shrink
+   them and the icon keeps its size. Where every word fits, nothing moves. */
+.review-recall-tile,
+.review-recall-week { overflow-wrap: anywhere; }
+
 .review-analytics {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 0.75fr)) minmax(220px, 1.5fr);
@@ -2947,6 +2966,9 @@ input[type="range"] {
 }
 .review-analytics > article { display: flex; min-height: 78px; align-items: center; gap: 11px; padding: 14px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
 .review-analytics svg { color: var(--violet); }
+/* With its count line this tile's text out-sizes the room beside the icon at 320 px and at large
+   text: the icon keeps its size and the text wraps, instead of the icon being squeezed. */
+.review-recall-week > svg { flex: none; }
 .review-analytics strong,
 .review-analytics span { display: block; }
 .review-analytics strong { color: var(--ink); font-size: 0.82rem; }
@@ -6856,6 +6878,19 @@ html[data-ai-typing] .bottom-nav { visibility: hidden; }
    mobile layout viewport wider than the screen. */
 .review-retention-trend {
   grid-column: 1 / -1;
+}
+
+/* At 320 px the card leaves 260 px inside, and the heading (96 px at least), the gap and the 188 px
+   chart need 295: the chart ran 22 px out of the card and the page 6 px wider than the screen.
+   With a chart, the card now drops it below the heading once the heading is down to its 96 px;
+   wherever the two fit side by side nothing moves. The empty state's note stays out of this: it
+   shrinks beside the heading as it always did. */
+.review-retention-trend:has(> .forecast-chart) {
+  flex-wrap: wrap;
+}
+
+.review-retention-trend:has(> .forecast-chart) > div:first-child {
+  flex: 1 1 96px;
 }
 
 .review-retention-trend .forecast-bars {

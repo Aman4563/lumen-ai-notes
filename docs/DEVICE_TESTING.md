@@ -408,3 +408,56 @@ evidence report in issue #7.
    nothing. Tab must reach Retry now, then End session, and Enter or Space
    must activate them. Command-Z must undo the grade and show the card again
    with its answer hidden.
+
+## Recall tile checks that need a device (issue #151)
+
+`audit:review` checks the recall tiles in Chrome with data: the issue's
+fixture reads 80% of 10 scheduled reviews on both tiles, a real grade counts
+and an Extra practice grade does not, the 30-day tile reads its value, name,
+count and Adaptive target in that order, and the target follows the Retention
+picker and the workload planner. It also measures that both tiles and the
+12-week trend fit at 393×852 and 320×568, and at 200% text at 360×800,
+320×568 and 1024×768, in Paper, Night and Contrast. `audit:a11y` scans the
+same screen with axe in Paper, Night and Contrast at 393×852 and 1280×800.
+`audit:responsive` checks the Review center at 11 viewports (320 px, 200% text
+and phone landscape among them) in Paper, but it seeds no attempts, so it sees
+only the empty tiles and the trend's empty message. Only an iPhone shows what
+VoiceOver reads, how iOS text sizes wrap, and how the iOS Retention picker
+drives the target. Note the iOS version and whether Lumen ran in a Safari tab
+or from the Home Screen, and add the verdict to the device evidence report in
+issue #7. None of the three checks below has been run on a device yet.
+
+For all three checks, open Review and set Scheduler to Adaptive (FSRS) in
+Daily limits. Then, in Start review, grade at least one card that is not
+labelled "New card" and whose interval is in days, such as "Learning · 3 days
+interval", "Review · 20 days interval" or "Overdue by 2 days", so the tiles
+have a count. A card in its 10-minute step ("Learning · 10 min interval"), a
+new card's first grade and an Extra practice grade do not count. On a new
+profile, the first such card is due the day after its first grade. With no
+scheduled review yet, the tile reads "—" and "0 scheduled reviews", which is
+worth checking too.
+
+1. **The 30-day tile with VoiceOver.** Turn VoiceOver on and swipe right from
+   the Mastered tile into the 30-day tile. Keep swiping through it.
+   - VoiceOver must read, in this order and once each: the value (such as
+     "80%", read as "80 percent", or "—"), "30-day recall", the count ("10
+     scheduled reviews", "1 scheduled review" or "0 scheduled reviews") and
+     "Target 90%", or the target you chose.
+   - It must not stop on the tile's icon.
+2. **Larger text.** Set Settings → Accessibility → Display & Text Size →
+   Larger Text to its largest size short of the accessibility sizes, then
+   open Review. The 30-day tile, the 7-day tile and the 12-week trend must
+   wrap inside the screen: nothing cut off or running past a tile's edge, no
+   icon squeezed or missing, and no sideways scrolling. Check portrait and
+   landscape, in Paper, Night and Contrast. In Chrome at 200% text a word
+   wider than its column, such as "scheduled" ("schedul" and "ed" on two
+   lines), "80%" or "100%" ("100" and "%"), breaks inside itself. iOS Larger
+   Text scales less and may not show this. If it happens, it is the accepted
+   last resort, not a failure; record that it happened.
+3. **The target follows the Retention picker.** In Daily limits, tap
+   Retention, choose 85% on the wheel and close the picker. The 30-day tile
+   must read "Target 85%" at once, with no reload. Choose 95% and then 80%:
+   the tile must follow each time. If the Workload planner is listed, tap its
+   95% button: the tile must read "Target 95%" and Retention must read 95%.
+   Then set Scheduler to Classic: the target line must go, and the value and
+   the count must not change.

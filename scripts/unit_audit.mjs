@@ -297,22 +297,34 @@ assert.equal(renderClozePrompt("Escaped {single} braces stay"), "Escaped {single
   assert.deepEqual(normalized.filter((entry) => !("scheduleRule" in entry)).map((entry) => entry.id), ["legacy", "fraction", "zero", "text"], "an attempt without a valid rule stores none, so older attempts keep their size");
 }
 
-// 12-week retention trend buckets attempts oldest-first with null-safe weeks.
+// 12-week retention trend buckets attempts oldest-first with null-safe weeks. Since #151 it
+// counts scheduled reviews only: a card in review's first attempt of the day, outside Extra practice.
 {
   const trendNow = new Date("2026-08-21T12:00:00.000Z");
-  const attempt = (daysAgo, rating) => ({ reviewedAt: new Date(trendNow.getTime() - daysAgo * 86_400_000).toISOString(), rating, elapsedMs: 1_000 });
-  const trend = reviewAnalytics([
-    attempt(1, "good"), attempt(2, "again"),            // current week: 50%
-    attempt(10, "good"), attempt(11, "good"),           // week -1: 100%
-    attempt(80, "again"),                                // week -11: 0%
-    attempt(200, "good"),                                // outside the window
-  ], [], trendNow, "UTC").retentionTrend;
+  const attempt = (daysAgo, rating, extra = {}) => ({ reviewItemId: `trend-${daysAgo}`, reviewedAt: new Date(trendNow.getTime() - daysAgo * 86_400_000).toISOString(), rating, elapsedMs: 1_000, sessionKind: "review", crunch: false, previousIntervalDays: 3, ...extra });
+  const crunch = (daysAgo) => attempt(daysAgo, "good", { reviewItemId: `trend-${daysAgo}-crunch`, sessionKind: "crunch", crunch: true });
+  const analytics = reviewAnalytics([
+    attempt(200, "good"),                                                 // outside the window
+    attempt(80, "again"), crunch(80),                                     // week -11: 0%
+    attempt(11, "good"), attempt(10, "good"),                             // week -1: 100%
+    attempt(3, "good", { sessionKind: "new", previousIntervalDays: 0 }),  // a first grade
+    attempt(2, "again"), attempt(2, "good"),                              // the same card twice that day
+    attempt(1, "good"), crunch(1),                                        // current week: 50%
+  ], [], trendNow, "UTC");
+  const trend = analytics.retentionTrend;
   assert.equal(trend.length, 12);
   assert.equal(trend[11].percent, 50);
-  assert.equal(trend[11].count, 2);
+  assert.equal(trend[11].count, 2, "the current week counts its two scheduled reviews, not the first grade, the re-grade or Extra practice");
   assert.equal(trend[10].percent, 100);
-  assert.equal(trend[0].percent, 0, "the oldest bucket holds the ~80-day-old lapse");
+  assert.equal(trend[0].percent, 0, "the oldest bucket holds the ~80-day-old lapse, not the Extra practice pass beside it");
   assert.equal(trend[5].percent, null, "weeks without attempts stay null, not zero");
+  // The review-stats shape both suites assert: recall and its sample sizes.
+  assert.deepEqual([analytics.retention7, analytics.scheduledReviews7, analytics.retention30, analytics.scheduledReviews30], [50, 2, 75, 4]);
+  // An attempt recorded before intervals were stored normalizes to a 0-day interval and never counts.
+  const legacyCard = createReviewItem({ front: "legacy recall", back: "a" }, trendNow);
+  const [legacy] = normalizeProfile({ reviewItems: [legacyCard], reviewAttempts: [{ id: "legacy", reviewItemId: legacyCard.id, rating: "good", reviewedAt: new Date(trendNow.getTime() - 86_400_000).toISOString() }] }).reviewAttempts;
+  assert.deepEqual([legacy.sessionKind, legacy.previousIntervalDays, legacy.crunch], ["review", 0, false]);
+  assert.equal(reviewAnalytics([legacy], [], trendNow, "UTC").scheduledReviews30, 0, "a legacy attempt is left out of recall");
 }
 
 // LEARN-003: queue classes are explicit and mutually exclusive with defined
