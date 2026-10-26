@@ -4512,3 +4512,99 @@ with no retries, in 45 minutes. It ran at a load average of 2 to 8, beside
 another gate, which slowed `audio` (960 s) and `review` (769 s). `responsive`
 took 141 s, with 500 checks and 378 controls, and `a11y` 79 s, with 132 axe
 runs and 10 states.
+
+## Flaky browser audits on 2026-10-26: a facet chip clicked after it was replaced (#200)
+
+`audit:workflow` failed "clicking a facet chip did not focus its Part" on
+PR #202's first CI attempt (run 39945231427) and in 2 of 20 local runs with
+`LUMEN_BROWSER_RETRIES=0`. The check types "gradients" into the Library
+search. It waits until the grid mentions "gradient" and `.library-facets`
+exists, then reads the first facet chip and clicks it with `page.$eval`.
+
+The Library keeps the last result set on screen until the newest search
+returns, and it rebuilds the facet chips each time a set lands. While
+"gradients" was typed, the chips were rebuilt six or seven times. The first
+chip was Part 1 for the "g" and "grad" sets but Part 2 for the final set,
+which has no Part 1. Every wait before the click was already met by an
+earlier prefix's set.
+
+In puppeteer-core 25.8.0, `page.$eval` is two round trips: `$()` returns a
+handle, and then `evaluate()` runs. When the final set landed between the
+two, React removed the Part 1 button. The click fired on a detached node
+that React's root listener never sees, so the filter stayed "All".
+
+A scratch probe pinned that state. The worker's "g" results landed and
+later result sets were held for 1.5 s. The audit's `$eval` click then waited
+between its two round trips until the chips re-rendered.
+
+- The old path failed 3 of 3. A second run failed 2 of 3: its passing
+  iteration pinned the metadata-only set, whose first chip (Part 7) the
+  final set keeps.
+- Each failure clicked a "Part 1 9" chip that was no longer connected.
+
+The check now finds, reads and clicks the chip in one page task. It waits
+with `pollValue` until the active filter is exactly that chip's Part, and
+asserts it. Before, any active chip other than "All" passed. In the probe,
+the new path passed 6 of 6, clicking both before and after the final set
+landed. A real tap is hit-tested when it happens, so the app needs no
+change.
+
+The first 20-run block on that fix stopped at run 10, on the next click in
+the same audit: "Waiting for selector `.reader-view` failed" after the
+Library card click that opens the uploaded note. It was the same race on
+the result grid:
+
+- After Clear, the Library lists every document, so the wait for "Uploaded
+  Persistence Proof" in the grid passed before the typed search landed.
+- `page.$eval` then found the first card of an earlier prefix's set ("AI/ML
+  Curriculum Navigator", sorted by title). It clicked that card a round trip
+  later, after the final set had removed it.
+- A click that did land on that card would have opened the wrong lecture.
+
+With the upload seeded and the "U" set pinned, the old path clicked a
+detached card and opened no reader in 2 of 3 runs. The check now opens the
+card titled "Uploaded Persistence Proof" in one page task and waits until
+the reader's heading is that note's. The probe opened it 3 of 3 times.
+
+The outline-sheet case (g) that the issue names ("Jump to second behind the
+outline sheet") was not reproduced:
+
+- 24 runs of its steps at 4× CPU throttling all opened the sheet, and no CI
+  run since #150 shows its message.
+- The same runs showed that `goto` between hash routes is a same-document
+  navigation, so case (g) runs on the page that case (f) left.
+- The #150 diagnostic, which names what the tap hit, stays in place.
+
+Not changed here: the plural-folding wait just above the facets cannot
+fail, because the grid already mentions "gradient" when the query is empty.
+
+Gate before the rebase, on main bb2467f (Node 26.12.1). `npm run check`
+passed on 05ebc79, with the entry at 623,753 bytes and the install route
+screens at 695,105 bytes in 42 files, both as on main.
+
+The full `npm run check:browser` passed all 14 suites on 05ebc79. At a load
+average of about 14, `review` printed its pass and then sat idle in teardown
+for 11 minutes, with no Chrome left and no socket open. It was stopped by its
+PID and passed its retry. Run alone with `LUMEN_BROWSER_RETRIES=0`, it passed
+in 47 s.
+
+The 20-run proof held one gate slot, and one `npm run build` loop ran in a
+separate checkout of main as load. On 05ebc79, runs 1 to 9 passed and run 10
+failed at the card click, which is fixed above. On f5446fd, which has both
+fixes, 20 consecutive runs with `LUMEN_BROWSER_RETRIES=0` passed, each in 45
+to 48 s, at load averages from 5 to 18, with no retries.
+
+The branch was then rebased onto main 28b9009 (#149's review changes), with
+conflicts only in these notes. After the rebase, `npm run check` passed with
+`audit:ai` 637/637, the entry at 623,762 bytes and the install route screens
+at 697,565 bytes in 42 files, both as on main.
+
+In the full `npm run check:browser`, 12 suites passed on the first attempt
+and `visual` passed on its retry. At a load average of about 10, `annotations`
+failed both attempts with "selection tools are off-screen or under the bottom
+nav": the toolbar sat at 775–835 px and the bottom nav at 805 px.
+
+Run alone with `LUMEN_BROWSER_RETRIES=0`, `annotations` passed on the branch
+and on a build of main 28b9009, and `visual` passed on the branch. This branch
+changes neither suite nor any app file, so the annotation failure under load
+is a separate flake.
