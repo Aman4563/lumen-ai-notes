@@ -80,3 +80,36 @@ test("bookmarks keep the queue length and section that relocate them", () => {
   legacy.setItem("lumen-audio-bookmarks-v1", JSON.stringify([{ id: "ab-old", documentId: "doc-a", index: 5, snippet: "old", savedAt: "2026-09-02T12:00:00.000Z" }]));
   assert.deepEqual(listAudioBookmarks("doc-a", legacy).map(({ v, index, total, section }) => ({ v, index, total, section })), [{ v: 1, index: 5, total: 0, section: "" }], "a version 1 bookmark still lists");
 });
+
+// Issue #100: a bookmark also names the block and offset of its sentence, so
+// it is found again by where it is when the words were reworded.
+test("bookmarks keep the block and offset of their sentence", () => {
+  const storage = memoryStorage();
+  const now = new Date("2026-10-26T09:00:00.000Z");
+  const saved = addAudioBookmark({ documentId: "doc-a", index: 12, total: 107, snippet: "Row 2. Situation: High latency", section: "6. Task taxonomy", blockIndex: 3, start: 40 }, storage, now);
+  assert.equal(saved.blockIndex, 3);
+  assert.equal(saved.start, 40);
+  assert.deepEqual(listAudioBookmarks("doc-a", storage), [saved], "both fields list back");
+  // The first block and the first offset are places too.
+  const first = addAudioBookmark({ documentId: "doc-a", index: 0, total: 107, snippet: "Title.", section: "", blockIndex: 0, start: 0 }, storage, new Date(now.getTime() + 1000));
+  assert.deepEqual(first && [first.blockIndex, first.start], [0, 0]);
+  // One saved without them lists without them (and has no such keys).
+  const bare = addAudioBookmark({ documentId: "doc-a", index: 20, total: 107, snippet: "A sentence.", section: "" }, storage, new Date(now.getTime() + 2000));
+  assert.equal("blockIndex" in bare || "start" in bare, false);
+  assert.deepEqual(listAudioBookmarks("doc-a", storage).find((entry) => entry.index === 20), bare);
+  // A bookmark stored before issue #100, and damaged coordinates, list without them.
+  const stored = memoryStorage();
+  stored.setItem("lumen-audio-bookmarks-v1", JSON.stringify([
+    { id: "ab-old", documentId: "doc-a", v: 2, index: 5, total: 9, snippet: "old", section: "", savedAt: "2026-09-28T09:00:00.000Z" },
+    { id: "ab-half", documentId: "doc-a", v: 2, index: 6, total: 9, snippet: "half", section: "", blockIndex: 2, savedAt: "2026-09-28T09:00:00.000Z" },
+    { id: "ab-bad", documentId: "doc-a", v: 2, index: 7, total: 9, snippet: "bad", section: "", blockIndex: -1, start: 1.5, savedAt: "2026-09-28T09:00:00.000Z" },
+    { id: "ab-new", documentId: "doc-a", v: 2, index: 8, total: 9, snippet: "new", section: "", blockIndex: 4, start: 17, savedAt: "2026-09-28T09:00:00.000Z" },
+  ]));
+  const listed = listAudioBookmarks("doc-a", stored);
+  assert.deepEqual(listed.map((entry) => ["blockIndex" in entry, "start" in entry]), [[false, false], [false, false], [false, false], [true, true]]);
+  assert.deepEqual(listed.at(-1), { id: "ab-new", documentId: "doc-a", v: 2, index: 8, total: 9, snippet: "new", section: "", savedAt: "2026-09-28T09:00:00.000Z", blockIndex: 4, start: 17 });
+  // Re-bookmarking the sentence refreshes it with its new place.
+  const again = addAudioBookmark({ documentId: "doc-a", index: 12, total: 110, snippet: "Row 2. Situation: High latency", section: "6. Task taxonomy", blockIndex: 4, start: 40 }, storage, new Date(now.getTime() + 3000));
+  assert.equal(listAudioBookmarks("doc-a", storage).filter((entry) => entry.index === 12).length, 1);
+  assert.deepEqual(listAudioBookmarks("doc-a", storage)[0], again);
+});

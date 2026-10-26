@@ -1,3 +1,4 @@
+import { unitPlace } from "./narrationPositions.js";
 import { durableLocalStorage, guardStorage } from "./safeStorage.js";
 
 /**
@@ -7,7 +8,9 @@ import { durableLocalStorage, guardStorage } from "./safeStorage.js";
  * bounded at 100, newest first. The stored snippet lets the learner pick a
  * bookmark by what was being said. Since issue #96 a bookmark also keeps the
  * queue length and its section label, so `locatePosition` in
- * narrationPositions.js finds it again after an edit shifts the indices.
+ * narrationPositions.js finds it again after an edit shifts the indices. Since
+ * issue #100 it keeps the block and offset of its sentence too (`blockIndex`
+ * and `start`, both or neither), which `locatePosition` tries first.
  *
  * Storage goes through safeStorage.js (issue #139), which resolves it inside
  * `try`. The durable store keeps no memory copy: where storage is blocked or
@@ -44,6 +47,8 @@ const normalize = (entry) => ({
   snippet: String(entry.snippet || "").slice(0, 160),
   section: String(entry.section || "").slice(0, 80),
   savedAt: String(entry.savedAt || "").slice(0, 40),
+  // Bookmarks saved before issue #100, or by a text queue, have no place.
+  ...unitPlace(entry),
 });
 
 export const listAudioBookmarks = (documentId, storage) => readAll(storage)
@@ -51,7 +56,7 @@ export const listAudioBookmarks = (documentId, storage) => readAll(storage)
   .filter((entry) => entry.documentId === documentId);
 
 /** Saves a bookmark and returns it, or null when this device could not store it. */
-export const addAudioBookmark = ({ documentId, index, total, snippet, section }, storage, now = new Date()) => {
+export const addAudioBookmark = ({ documentId, index, total, snippet, section, blockIndex, start }, storage, now = new Date()) => {
   const bookmarks = readAll(storage).map(normalize);
   // One bookmark per (document, sentence): re-bookmarking refreshes it.
   const remaining = bookmarks.filter((entry) => !(entry.documentId === documentId && entry.index === index));
@@ -64,6 +69,8 @@ export const addAudioBookmark = ({ documentId, index, total, snippet, section },
     snippet,
     section,
     savedAt: now.toISOString(),
+    blockIndex,
+    start,
   });
   return writeAll(storage, [entry, ...remaining]) ? entry : null;
 };

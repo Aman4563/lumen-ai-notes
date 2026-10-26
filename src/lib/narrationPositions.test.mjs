@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { POSITION_SNIPPET_LENGTH, clearPosition, locatePosition, readPosition, writePosition } from "./narrationPositions.js";
+import { POSITION_SNIPPET_LENGTH, clearPosition, locatePosition, normalizePosition, readPosition, writePosition } from "./narrationPositions.js";
 
 const memoryStorage = () => {
   const map = new Map();
@@ -150,4 +150,83 @@ test("positions are found in a queue of entries", () => {
   const queue = ["One.", "Two sentence here.", "Three.", "Four."].map(entry);
   assert.deepEqual(locatePosition({ v: 2, index: 1, total: 4, snippet: "Two sentence", section: "" }, queue, []), { index: 1, how: "exact" });
   assert.deepEqual(locatePosition({ v: 2, index: 0, total: 9, snippet: "Three.", section: "" }, queue, []), { index: 2, how: "snippet" });
+});
+
+// Issue #100: a position also names the block and offset of the sentence, so a
+// reworded sentence (an override, a new rule) is found again by where it is.
+const unitEntry = (text, blockIndex, start, end, section = "S") => ({ text, unit: { blockIndex, start, end }, map: [], section });
+
+test("a saved unit is tried first and confirmed by its snippet or the queue length", () => {
+  const queue = [unitEntry("Title.", 0, 0, 5), unitEntry("First sentence.", 1, 0, 16), unitEntry("Second, reworded.", 1, 16, 34), unitEntry("End.", 2, 0, 4)];
+  // Reworded by an override: same queue length, so the coordinates stand.
+  assert.deepEqual(locatePosition({ v: 2, index: 0, total: 4, snippet: "Second sentence", section: "S", blockIndex: 1, start: 16 }, queue, []), { index: 2, how: "unit" });
+  // Snippet confirms even when the length changed.
+  assert.deepEqual(locatePosition({ v: 2, index: 9, total: 7, snippet: "Second, re", section: "S", blockIndex: 1, start: 20 }, queue, []), { index: 2, how: "unit" });
+  // Shifted blocks: the coordinates point at another sentence, the length differs, so the snippet search decides.
+  assert.deepEqual(locatePosition({ v: 2, index: 1, total: 9, snippet: "First sentence.", section: "S", blockIndex: 2, start: 0 }, queue, []), { index: 1, how: "exact" });
+  // Never the last chunk.
+  assert.equal(locatePosition({ v: 2, index: 0, total: 4, snippet: "", section: "S", blockIndex: 2, start: 0 }, queue, []).index !== 3, true);
+  assert.deepEqual(normalizePosition({ index: 2, total: 4, snippet: "x", section: "S", blockIndex: 1, start: 16 }), { v: 2, index: 2, total: 4, snippet: "x", section: "S", blockIndex: 1, start: 16 });
+  assert.deepEqual(normalizePosition({ index: 2, blockIndex: -1, start: 1.5 }), { v: 2, index: 2, total: 0, snippet: "", section: "" });
+});
+
+test("a block and an offset are kept together or not at all", () => {
+  const base = { v: 2, index: 2, total: 4, snippet: "x", section: "S" };
+  assert.deepEqual(normalizePosition({ ...base, blockIndex: 0, start: 0 }), { ...base, blockIndex: 0, start: 0 }, "zero is a whole number");
+  for (const lone of [{ blockIndex: 3 }, { start: 3 }, { blockIndex: 3, start: -1 }, { blockIndex: "3", start: 4 }, { blockIndex: 3, start: Number.NaN }, { blockIndex: null, start: null }]) {
+    assert.deepEqual(normalizePosition({ ...base, ...lone }), base, `${JSON.stringify(lone)} names no place`);
+  }
+  // Stored and read back through storage, the pair survives.
+  const storage = memoryStorage();
+  const written = writePosition("doc-a", { ...base, blockIndex: 7, start: 120 }, storage);
+  assert.deepEqual(readPosition("doc-a", storage), written);
+  assert.deepEqual(JSON.parse(storage.raw.get("lumen-narration-doc-a")), { ...base, blockIndex: 7, start: 120 });
+  // A version 1 integer and a record without the pair have neither key.
+  assert.deepEqual(Object.keys(normalizePosition(5)), ["v", "index", "total", "snippet", "section"]);
+  assert.deepEqual(Object.keys(normalizePosition(base)), ["v", "index", "total", "snippet", "section"]);
+});
+
+test("a saved unit with no snippet resumes at its sentence", () => {
+  const queue = [unitEntry("Title.", 0, 0, 5), unitEntry("One.", 1, 0, 4), unitEntry("Two.", 1, 4, 8), unitEntry("Three.", 2, 0, 6), unitEntry("End.", 3, 0, 4)];
+  assert.deepEqual(locatePosition({ v: 2, index: 0, total: 0, snippet: "", section: "", blockIndex: 1, start: 4 }, queue, []), { index: 2, how: "unit" });
+  // The last offset of a range and one past it.
+  assert.deepEqual(locatePosition({ v: 2, index: 0, total: 0, snippet: "", section: "", blockIndex: 1, start: 7 }, queue, []), { index: 2, how: "unit" });
+  assert.deepEqual(locatePosition({ v: 2, index: 1, total: 0, snippet: "", section: "", blockIndex: 1, start: 8 }, queue, []), { index: 1, how: "index" }, "no entry holds offset 8 of block 1: the index chain runs");
+});
+
+test("a block that is not in the queue, or a queue of text, leaves the old rules in charge", () => {
+  const queue = [unitEntry("Title.", 0, 0, 5), unitEntry("One.", 1, 0, 4), unitEntry("Two.", 1, 4, 8), unitEntry("End.", 2, 0, 4)];
+  assert.deepEqual(locatePosition({ v: 2, index: 1, total: 4, snippet: "One.", section: "S", blockIndex: 9, start: 0 }, queue, []), { index: 1, how: "exact" });
+  // Text entries (Selection, a tutor's answer) have no unit.
+  const text = ["One.", "Two sentence here.", "Three.", "Four."].map((value) => ({ text: value, unit: null, map: [], section: "" }));
+  assert.deepEqual(locatePosition({ v: 2, index: 0, total: 4, snippet: "Three.", section: "", blockIndex: 0, start: 0 }, text, []), { index: 2, how: "snippet" });
+  assert.deepEqual(locatePosition({ v: 2, index: 1, total: 4, snippet: "Two sentence", section: "", blockIndex: 0, start: 0 }, ["One.", "Two sentence here.", "Three.", "Four."], []), { index: 1, how: "exact" }, "plain strings carry no unit");
+});
+
+// An announcement (start 0, end 0) and the first line of the same block both
+// hold offset 0: the snippet says which one was playing.
+test("among the entries that hold the saved offset, the one that starts with the snippet wins", () => {
+  const queue = [
+    unitEntry("Intro.", 0, 0, 6),
+    unitEntry("Python example, 2 lines.", 1, 0, 0),
+    unitEntry("import num pie as np", 1, 0, 20),
+    unitEntry("print(w)", 1, 20, 28),
+    unitEntry("After.", 2, 0, 6),
+    unitEntry("End.", 3, 0, 4),
+  ];
+  const saved = (snippet, total = 99) => ({ v: 2, index: 0, total, snippet, section: "S", blockIndex: 1, start: 0 });
+  assert.deepEqual(locatePosition(saved("Python example"), queue, []), { index: 1, how: "unit" });
+  assert.deepEqual(locatePosition(saved("import num pie"), queue, []), { index: 2, how: "unit" });
+  // Neither starts with the snippet: the first one that holds the offset, confirmed by the queue length.
+  assert.deepEqual(locatePosition(saved("A reworded line", queue.length), queue, []), { index: 1, how: "unit" });
+  // Not confirmed (other length, other words): the snippet search finds nothing, so the old rules say changed.
+  assert.deepEqual(locatePosition(saved("A reworded line", 99), queue, []), { index: 0, how: "changed" });
+});
+
+test("a bookmark on the closing sentence plays it by unit; a resume does not", () => {
+  const queue = [unitEntry("Title.", 0, 0, 5), unitEntry("One.", 1, 0, 4), unitEntry("End.", 2, 0, 4)];
+  const saved = { v: 2, index: 2, total: 3, snippet: "End.", section: "S", blockIndex: 2, start: 0 };
+  assert.deepEqual(locatePosition(saved, queue, [], { allowLast: true }), { index: 2, how: "unit" });
+  assert.equal(locatePosition(saved, queue, []).how !== "unit", true);
+  assert.equal(locatePosition(saved, queue, []).index !== 2, true, "resume never lands on the last chunk");
 });
