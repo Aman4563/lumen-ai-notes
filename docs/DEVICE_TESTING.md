@@ -425,7 +425,7 @@ only the empty tiles and the trend's empty message. Only an iPhone shows what
 VoiceOver reads, how iOS text sizes wrap, and how the iOS Retention picker
 drives the target. Note the iOS version and whether Lumen ran in a Safari tab
 or from the Home Screen, and add the verdict to the device evidence report in
-issue #7.
+issue #7. None of the three checks below has been run on a device yet.
 
 For all three checks, open Review and set Scheduler to Adaptive (FSRS) in
 Daily limits. Grade at least one card whose label reads "Review · N days

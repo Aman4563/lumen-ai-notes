@@ -4641,9 +4641,9 @@ What changed:
   trend). An attempt counts when all of these hold:
   - `sessionKind === "review"`;
   - `crunch` is false;
-  - `previousIntervalDays >= 1`, so the card was in review, not a new card's
-    first grade, a learning step or a legacy attempt (the normalizer stores
-    those as 0);
+  - `previousIntervalDays >= 1`, so the card was in review. A new card's first
+    grade stores 0 and a learning step stores under a day. A legacy attempt
+    has no interval, and the normalizer stores 0 for it;
   - it is the card's first such attempt that local day (`localDayKey`).
 
   Recall is the share of counted attempts not rated Again. It stays a single
@@ -4700,9 +4700,14 @@ How each is now checked (each fails on main first, except the median guard):
   to 190 ms (limit 4,000 ms). On main it fails at `scheduledReviews7`
   (undefined).
 - **`scripts/unit_audit.mjs`:** the trend block now holds attempts with the
-  stored fields, plus excluded attempts beside them. It asserts the same
-  values as before. On main it fails at `trend[11].percent`: 80, not 50. A
-  legacy attempt run through the real normalizer is also left out.
+  stored fields, plus excluded attempts beside them. On main it fails at
+  `trend[11].percent`, which reads 80 where the audit expects 50. Its earlier
+  assertions on the weekly buckets keep their values, and it gains two checks:
+  - the 7- and 30-day figures read 50% of 2 and 75% of 4 (`retention7`,
+    `scheduledReviews7`, `retention30` and `scheduledReviews30` are
+    `[50, 2, 75, 4]`);
+  - a legacy attempt run through the real normalizer, which stores a missing
+    interval as 0, is left out (`scheduledReviews30` is 0).
 - **`scripts/review_audit.mjs`:**
   - **Line 329, changed on purpose.** After a new card's first Good, the
     30-day tile reads "—" and "0 scheduled reviews". It read "100%" before,
