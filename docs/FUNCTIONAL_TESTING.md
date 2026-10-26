@@ -4251,12 +4251,14 @@ per visit per kind, through a visually hidden status region that is on
 screen empty first, is filled 250 ms after the message appears, and empties
 5 s later. Refresh and reopening Settings do not repeat it.
 
-A measurement that failed reads "Not measured". `getStorageBudgetSummary()`
-now rejects with `BUDGET_STATE_UNAVAILABLE` when no budget ledger was
-measured, and the panel then reads the workspace, Study profile and
-Whiteboards as "Not measured" and drops the workspace meter. A refused quota
-estimate on its own keeps the plain "Browser quota estimate unavailable"
-line.
+A measurement that failed is never shown as a measured 0 B.
+`getStorageBudgetSummary()` now rejects with `BUDGET_STATE_UNAVAILABLE` when
+no budget ledger was measured, and the panel then reads the workspace, Study
+profile and Whiteboards as "Not measured" and drops the workspace meter.
+Offline assets reads "Not measured" when Cache Storage refused. A refused
+quota estimate on its own keeps the plain "Browser quota estimate
+unavailable" line, and a failed On-device AI model measurement leaves its row
+out.
 
 Where `caches` does not exist at all (an insecure context), nothing can be
 stored offline, so Offline assets reads "0 B · 0 files", a real zero, and the
@@ -4343,16 +4345,25 @@ Found and not fixed here:
   announcement's 5 s, that kind could be announced twice. The Settings notice
   has the same pattern. A stable refusal never does this.
 
-Budgets (`npm run size`, against main 986b759 built the same way): the
+Budgets (`npm run size`, against main 986b759 built the same way; b731975,
+which the branch is rebased on, changes no app code): the
 startup entry is 623,753 bytes against 623,709, +44, because the lazy
 screens' preload list now names the shared `storageFailure` chunk. The
 JavaScript the HTML loads is 653,704 bytes against 653,660. The install route
 screens are 695,105 bytes in 42 files against 692,990 in 41, +2,115, with
 204,895 bytes of headroom. The warm tools are unchanged at 304,647.
 
-Gate on the branch (868c50c, rebased on main 986b759, Node 26.12.1):
-`npm run check` passed, with `audit:ai` 624/624 and `audit:ai-eval` 27 cases
+Gate on the branch (15e767d, rebased on main b731975, Node 26.12.1):
+`npm run check` passed, with `audit:ai` 627/627 and `audit:ai-eval` 27 cases
 (hit@1 0.913). `npm run check:browser` passed all 14 suites on the first
 attempt with no retries and no "Passed only on retry": `storage-blocked` ran
 13 cases with 18 axe runs, and `a11y` 126 axe runs with the empty allowlist.
-The load average was 4 to 7.
+The load average reached 14 from other agents' runs.
+
+Before the rebase, the same full gate passed in the same way twice. The
+first run was on 868c50c, before the final-review fixes, with `audit:ai`
+624/624. The second was on b1c7781, the final code then. One post-rebase
+attempt is not evidence. The Mac, lid closed and on battery, slept for 927 s
+inside `audit:ai`, so three timing tests failed after about 925 s each. The
+browser run that followed was stopped while the machine kept sleeping. The
+gate above ran with the machine awake throughout.
