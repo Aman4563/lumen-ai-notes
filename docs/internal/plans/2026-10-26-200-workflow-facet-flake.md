@@ -44,6 +44,7 @@
 
 - Ruling: fix the test, not the app. A real tap is hit-tested at event time and cannot reach a detached chip, and every click on an attached chip focused its Part. Cost if wrong: a learner could lose a tap only in the few milliseconds when a result set lands mid-tap; no report or probe shows it.
 - Ruling: case (g) gets no code change in this branch. Evidence: a scratch probe ran (g)'s exact steps 24 times under 4x CPU throttling with zero failures, and no CI run since #150 shows its message. The probe also showed that `goto` between hash routes is a same-document navigation, so (g) runs on the page case (f) left. The #150 diagnostic names the tap's target if (g) fails. Cost if wrong: one extra 20-run block after a fix written from that message.
+- Ruling: Task 2 (the card click at line 1522) joins this branch. The issue's acceptance is 20 consecutive passing `workflow` runs, the first block failed there, and it is the same race in the same file. Cost if wrong: the branch fixes one check beyond the two the issue names.
 - Ruling: the scratch probe is the before/after evidence for a test-harness race and is described in the PR, not committed; the acceptance is the 20-run proof. Cost if wrong: a future regression of the two-round-trip pattern is caught by the next flake, not by a dedicated check.
 
 ---
@@ -71,7 +72,31 @@ git add scripts/workflow_audit.mjs
 git commit -m "Click the facet chip in one task and wait for its Part"
 ```
 
-## Verification (orchestrator, after Task 1)
+### Task 2: Open the uploaded note's card in the task that finds it
+
+Found by the first 20-run block: run 10 of 20 failed with "Waiting for selector `.reader-view` failed" (`workflow_audit.mjs:1523`). It is the same race as Task 1. After Clear, the Library lists every document, so the wait for "Uploaded Persistence Proof" in the grid passes before the typed search lands. `page.$eval(".document-grid .document-card", click)` then finds the first card from an earlier prefix's set ("AI/ML Curriculum Navigator", sorted by title) and clicks it a round trip later, after the final set has removed it. A click that does land on such a card opens the wrong lecture. Reproduced with the scratch probe: on the old path, 2 of 3 runs clicked a detached card and no reader opened. Opening the card titled "Uploaded Persistence Proof" in one page task opened that note 3 of 3 times.
+
+**Files:**
+- Modify: `scripts/workflow_audit.mjs:1522-1523` (the card click before "Edit copy")
+
+**Interfaces:**
+- Consumes: nothing from Task 1.
+- Produces: nothing other tasks use.
+
+- [ ] **Step 1: Replace line 1522's `$eval` click.** Add a two-line comment on why. One `page.evaluate((title) => ..., "Uploaded Persistence Proof")` finds the first `.document-grid .document-card` whose `strong` text includes the title, clicks it, and returns whether it found one. Then `assert.ok(found, "the uploaded note's card was not in the grid to open")`. Keep `await page.waitForSelector(".reader-view");`. Then `await page.waitForFunction((title) => document.querySelector(".reader-view .markdown-body h1")?.textContent.includes(title), { timeout: 10_000 }, "Uploaded Persistence Proof").catch(() => assert.fail("the card opened another lecture, not the uploaded note"));`. The upload's Markdown is `# Uploaded Persistence Proof` (line 1143), so the note's `h1` is its title. Lines 1518-1520 (type, wait, sort by title) stay as they are.
+
+- [ ] **Step 2: Prove it against the pinned race.** Done by the orchestrator: probe `MODE=card` failed 2 of 3, and `MODE=card-fixed` opened the note 3 of 3 times.
+
+- [ ] **Step 3: Run the suite once.** Run: `/Users/macbookpro/Desktop/ML-learning/.claude/bin/gate-slot env LUMEN_BROWSER_RETRIES=0 npm run check:browser -- workflow`. Expected: `{"audit":"workflow","ok":true,...}` with no `attempts`.
+
+- [ ] **Step 4: Commit.**
+
+```bash
+git add scripts/workflow_audit.mjs
+git commit -m "Open the uploaded note's card in the task that finds it"
+```
+
+## Verification (orchestrator, after Task 2)
 
 - `npm run check` (budgets from `audit:app`), then the full `gate-slot npm run check:browser`.
 - 20-run proof: a scratch worktree of origin/main runs one `npm run build` loop as the load (PID recorded, stopped by PID), never this tree, whose `dist/` the audit serves. One slot is held for the whole block: `gate-slot bash -c 'for i in $(seq 20); do LUMEN_BROWSER_RETRIES=0 npm run check:browser -- workflow || exit 1; done'`, logged with each run's result and duration. Any failure of either check stops the block and goes back to debugging.
