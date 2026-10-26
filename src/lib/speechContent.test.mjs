@@ -187,6 +187,9 @@ test("big operators read their limits, and Pandoc's inline form reads the same",
   assert.equal(readMath(mi("𝔼"), mo("["), mi("X"), mo("]")), "expected value of [X]");
   assert.equal(readMath(of("msub", mi("𝔼"), row(mi("x"), mo("∼"), mi("p"))), mo("["), mi("f"), mo("]")), "expected value over x distributed as p of [f]");
   assert.equal(readMath(of("munder", mi("lim"), row(mi("x"), mo("→"), mn("0"))), mi("f")), "lim over x leads to 0 f");
+  // A capital sigma is a sum as an operator and the letter as an identifier; KaTeX's 𝔼 is a double-struck E.
+  assert.equal(readMath(of("munder", mo("Σ"), mi("i")), mi("x")), "sum over i of x");
+  assert.equal(readMath(of("msub", mi("E", { mathvariant: "double-struck" }), mi("x")), mi("f")), "expected value over x of f");
   assert.equal(readMath(of("munder", row(mi("arg"), mo("\u{2061}"), mi("max")), mi("θ")), mi("L")), "arg max over theta L");
 });
 
@@ -272,10 +275,11 @@ test("silent markup, spaces and strange input", () => {
   assert.equal(readMath(mtext("Precision@K"), mo("="), mn("1"), mo(","), el("mspace", { width: "2.0em" }), mtext("Recall@K")), "Precision@K equals 1, Recall@K");
   assert.deepEqual(verbalizeMath(el("math", {}, [])), { text: "", map: [] });
   assert.equal(verbalizeMath(el("math", {}, [text("x")])).text, "x", "text outside a token is read as written");
-  // Nesting far deeper than any formula is read as written, not recursed into.
-  let deep = mi("x");
-  for (let level = 0; level < 1000; level += 1) deep = row(deep);
-  assert.equal(verbalizeMath(el("math", {}, [deep])).text, "x");
+  // Nesting far deeper than any formula is read as its text, not recursed into: these plain nodes
+  // hold their text up front, so only the walker could overflow the stack.
+  let deep = { nodeType: 1, localName: "mi", childNodes: [{ nodeType: 3, textContent: "x" }], textContent: "x" };
+  for (let level = 0; level < 100000; level += 1) deep = { nodeType: 1, localName: "mrow", childNodes: [deep], textContent: "x" };
+  assert.equal(verbalizeMath({ nodeType: 1, localName: "math", childNodes: [deep], textContent: "x" }).text, "x");
 });
 
 test("the MathML walker needs only the minimal node interface", () => {
