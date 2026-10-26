@@ -858,6 +858,40 @@ test("a sentence boundary never falls inside inline code, a script or inline mat
   checkUnits(el("article", {}, [el("p", {}, [text("See "), prose, text(" now. Next sentence.")])]), read, { exact: false });
 });
 
+// A paragraph of the given nodes, and inline code holding the given text.
+const paragraphOf = (...children) => el("article", {}, [el("p", {}, children)]);
+const inlineCode = (value) => el("code", {}, [text(value)]);
+
+test("a sentence goes on past an atomic piece that holds a sentence end", () => {
+  const { plainOpen, plainClose, supOpen, supClose } = SPEECH_MARK;
+  const call = () => inlineCode("print(\"Hello. World\")");
+  // The full stop and the capital inside the code are no sentence end: the unit goes on past the code.
+  const greet = paragraphOf(text("Call "), call(), text(" to greet."));
+  assert.deepEqual(buildSpeechUnits(greet).map((unit) => unit.text), [`Call ${plainOpen}print("Hello. World")${plainClose} to greet.`]);
+  assert.deepEqual(spoken(greet), ["Call print(\"Hello. World\") to greet."]);
+  checkUnits(greet, buildSpeechUnits(greet));
+  assert.deepEqual(spoken(paragraphOf(text("Call "), call(), text(" to greet. Next one."))), ["Call print(\"Hello. World\") to greet.", "Next one."]);
+  // The same for a script and for a formula whose reading holds a sentence end.
+  const note = paragraphOf(text("The note"), el("sup", {}, [text("See above. Then below")]), text(" ends here. Next one."));
+  assert.deepEqual(buildSpeechUnits(note).map((unit) => unit.text), [`The note${supOpen}See above. Then below${supClose} ends here.`, "Next one."]);
+  const formula = paragraphOf(text("See "), el("math", {}, [el("mtext", {}, [text("Step one. Step two")])]), text(" now. Next one."));
+  assert.deepEqual(spoken(formula), ["See Step one. Step two now.", "Next one."]);
+  checkUnits(formula, buildSpeechUnits(formula), { exact: false });
+});
+
+test("a sentence ends after an atomic piece that closes on its end", () => {
+  const { plainOpen, plainClose, supOpen, supClose } = SPEECH_MARK;
+  // The segmenter puts the closing marker in the next sentence; the boundary follows the marker.
+  const stop = paragraphOf(text("Use "), inlineCode("foo."), text(" Next one."));
+  assert.deepEqual(buildSpeechUnits(stop).map((unit) => unit.text), [`Use ${plainOpen}foo.${plainClose}`, "Next one."]);
+  assert.deepEqual(spoken(stop), ["Use foo.", "Next one."]);
+  checkUnits(stop, buildSpeechUnits(stop));
+  // Two groups closing together, and one that closes on the end of the text.
+  const nested = paragraphOf(text("Cost"), el("sup", {}, [text("see "), inlineCode("n."), text(" ")]), text(" Next one."));
+  assert.deepEqual(buildSpeechUnits(nested).map((unit) => unit.text), [`Cost${supOpen}see ${plainOpen}n.${plainClose} ${supClose}`, "Next one."]);
+  assert.deepEqual(spoken(paragraphOf(text("Use "), inlineCode("foo."))), ["Use foo."]);
+});
+
 test("inline math keeps the map of its own words, shifted into the block", () => {
   const paragraph = el("p", {}, [text("Take  "), el("math", {}, [el("msqrt", {}, [el("mi", {}, [text("x")])])]), text(" and "), el("math", {}, [el("mfrac", {}, [el("mn", {}, [text("1")]), el("mi", {}, [text("n")])])]), text(" next.")]);
   const article = el("article", {}, [paragraph]);

@@ -273,10 +273,21 @@ const createSegment = () => {
   };
 };
 
+const MARK_CHARACTERS = new Set(Object.values(SPEECH_MARK));
+
+// True when text[from, to) holds only markers and white space.
+const saysNothing = (text, from, to) => {
+  for (let at = from; at < to; at += 1) if (!MARK_CHARACTERS.has(text[at]) && !WHITESPACE.test(text[at])) return false;
+  return true;
+};
+
 // Where each sentence of a segment ends, in order, the last at the end of the
-// text. The segmenter may end a sentence inside a piece that must stay whole
-// (a full stop and a capital in inline code, or between a code span's last
-// character and its closing marker); that end moves to the end of the piece.
+// text. A sentence end the segmenter finds strictly inside a piece that must
+// stay whole (a full stop and a capital in inline code or in a formula's
+// words) is no end: the sentence goes on past the piece. The exception is an
+// end with only closing markers left in the piece: the segmenter starts the
+// next sentence at a closing marker (`foo.` and then the marker of its code
+// span), so the sentence ends with the piece.
 const sentenceEnds = (text, wholes, language) => {
   const ranges = splitSpeechSentenceRanges(text, language);
   const ends = [];
@@ -284,7 +295,10 @@ const sentenceEnds = (text, wholes, language) => {
   for (let at = 0; at < ranges.length - 1; at += 1) {
     let { end } = ranges[at];
     while (whole < wholes.length && wholes[whole][1] <= end) whole += 1;
-    if (whole < wholes.length && wholes[whole][0] < end) end = wholes[whole][1];
+    if (whole < wholes.length && wholes[whole][0] < end) {
+      if (!saysNothing(text, end, wholes[whole][1])) continue;
+      end = wholes[whole][1];
+    }
     if (end > (ends.at(-1) ?? 0) && end < text.length) ends.push(end);
   }
   ends.push(text.length);
