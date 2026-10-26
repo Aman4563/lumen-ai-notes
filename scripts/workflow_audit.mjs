@@ -1519,8 +1519,18 @@ try {
   await page.waitForFunction(() => document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"), { timeout: 10_000 });
   await page.select('.library-view-controls select', "title");
 
-  await page.$eval(".document-grid .document-card", (node) => node.click());
+  // The grid lists other lectures until the typed search lands, and its cards are rebuilt as each set lands:
+  // pick the note's card by its title and click it in one page task, not the first card found a round trip ago.
+  const found = await page.evaluate((title) => {
+    const card = [...document.querySelectorAll(".document-grid .document-card")]
+      .find((node) => node.querySelector("strong")?.textContent.includes(title));
+    card?.click();
+    return Boolean(card);
+  }, "Uploaded Persistence Proof");
+  assert.ok(found, "the uploaded note's card was not in the grid to open");
   await page.waitForSelector(".reader-view");
+  await page.waitForFunction((title) => document.querySelector(".reader-view .markdown-body h1")?.textContent.includes(title), { timeout: 10_000 }, "Uploaded Persistence Proof")
+    .catch(() => assert.fail("the card opened another lecture, not the uploaded note"));
   await clickByText(page, ".document-tools button", "Edit copy");
   await page.waitForSelector(".markdown-editor");
   await page.type(".markdown-editor", "\nUnsaved navigation guard marker.");
