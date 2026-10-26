@@ -20,7 +20,14 @@ like an ordinary app. No account or server-side database is required.
   daily limits. With the default Classic scheduler, a card in review that you
   answer before it is due keeps its interval unless the time since its last
   review earns a longer one, so practising ahead of an interview never pushes
-  cards months away. The rating buttons show when each card comes back;
+  cards months away. The rating buttons show when each card comes back. A card
+  you fail comes back 10 minutes later. When the last card of a session is one
+  you just failed, the session offers to show it again now (Retry now) instead
+  of ending. Extra practice asks a failed card once more at the end. A card in
+  its 10-minute step is never held back until tomorrow by the daily review
+  limit. With the Adaptive (FSRS) scheduler, a new card rated Hard or Good
+  also comes back after 10 minutes, as its learning step, and is offered the
+  same way;
 - editable local copies of built-in lectures;
 - creation and upload of `.md`, `.markdown`, and `.txt` notes;
 - text-to-speech using the voices the device and browser report (on iPhone,

@@ -366,3 +366,45 @@ in issue #7.
      browser sentence. Record the names.
 4. **Recovery.** Turn Block All Cookies off and reload. Storage health shows
    sizes again and no message.
+
+## Retry checks that need a device (issue #149)
+
+`audit:review` checks the retry state by keyboard in Chrome at 393×852: failing
+the last card offers Retry now and End session, a step that comes due
+mid-session rejoins it, the daily limit never holds a step back, and Extra
+practice asks a failed card once more. `audit:responsive` and `audit:a11y`
+check the retry panel at 320 px, 393×852 and 200% text, in Paper, Night and
+Contrast, and scan it with axe. Only an iPhone shows what VoiceOver reads and
+how iOS text sizes wrap. Note the iOS version and whether Lumen ran in a
+Safari tab or from the Home Screen, and add the verdict to the device
+evidence report in issue #7.
+
+1. **The retry state with VoiceOver.**
+   - Open Review with one card due. Double-tap Start review, then Show
+     answer, then Again.
+   - Focus must land on the heading "1 card to retry · due in 10 min".
+     VoiceOver must read "Rated Again: next review in 10 min. 1 card to
+     retry." once, and never "Session complete".
+   - Swipe right: Retry now, then End session.
+   - Double-tap Retry now. Focus must move to the prompt, and VoiceOver must
+     read "Retrying 1 card." once.
+   - Show the answer and rate it Good. VoiceOver must read "Rated Good: next
+     review in 3 days. Session complete." once.
+2. **The same outcome twice.** Fail the last card, double-tap Undo in the
+   session header, then fail the card again. Record whether VoiceOver reads
+   the second "Rated Again …", which has the same words as the first. The
+   page clears and rewrites the status line, which Chrome announces each
+   time; iOS is unconfirmed.
+3. **Coming back later.** In the retry state, lock the phone for 11 minutes,
+   then unlock it. The card itself must show, with focus on its prompt, not
+   the retry panel.
+4. **Larger text.** Set Settings → Accessibility → Display & Text Size →
+   Larger Text to its largest size short of the accessibility sizes. The
+   retry panel's heading and text must wrap inside the screen with nothing
+   cut off, and Retry now, End session and the header's buttons must stay at
+   least 44 points tall, in portrait and landscape and in Paper, Night and
+   Contrast.
+5. **A hardware keyboard.** In the retry state, Space, 1 to 4 and B must do
+   nothing. Tab must reach Retry now, then End session, and Enter or Space
+   must activate them. Command-Z must undo the grade and show the card again
+   with its answer hidden.

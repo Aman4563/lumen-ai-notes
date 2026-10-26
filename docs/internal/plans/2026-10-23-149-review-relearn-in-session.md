@@ -184,7 +184,7 @@ git commit -m "Store the 10-minute relearning step to the minute" -m "Every inte
   - `export const LEARN_AHEAD_MINUTES = 20;`
   - `export const isLearningStep = (item) => boolean`: not new (`isNewReviewItem`) and `0 < intervalDays < 1`.
   - `export const learnAheadCards = (items, now = new Date(), { minutes = LEARN_AHEAD_MINUTES, timeZone = currentTimeZone() } = {}) => item[]`: learning steps that are not suspended, archived or buried today (`localDayKey(now, timeZone)`), with `now < Date.parse(dueAt) ≤ now + minutes × 60_000`, sorted by `dueAt`, then `id`.
-  - `buildReviewQueue(items, settings, now, sessions, options)`, daily path: due learning steps bypass the `reviewRemaining` slice and keep their `dueAt` order among the due reviews, while other due reviews fill only the remaining slots. `options.learnAheadIds` (default none): the `learnAheadCards(items, now, { timeZone })` whose ids are listed, appended after the due and new cards, earliest first. The crunch path is unchanged. `actionableReviewCount` never passes `learnAheadIds`.
+  - `buildReviewQueue(items, settings, now, sessions, options)`, daily path: due learning steps bypass the `reviewRemaining` slice and keep their `dueAt` order among the due reviews, while other due reviews fill only the remaining slots. (As built, a due step takes a slot while one remains and passes the limit only when none does: see As built.) `options.learnAheadIds` (default none): the `learnAheadCards(items, now, { timeZone })` whose ids are listed, appended after the due and new cards, earliest first. The crunch path is unchanged. `actionableReviewCount` never passes `learnAheadIds`.
 
 - [ ] **Step 1: Write the failing tests** in `src/lib/review.test.mjs` (import `actionableReviewCount`, `buildReviewQueue`, `emptyReviewSession`, `isLearningStep`, `LEARN_AHEAD_MINUTES`, `learnAheadCards`, `localDayKey`, `recordReviewUsage`):
 
@@ -491,3 +491,48 @@ git commit -m "Check the retry state's layout and accessibility" -m "The respons
    - `docs/guides/APP_GUIDE.md`: the review bullet gains the exact 10-minute step, the retry state and Extra practice's second try.
    - `docs/DEVICE_TESTING.md`: a section for VoiceOver and iOS text sizes in the retry state (what is read, where focus lands, the announcement once per step).
 4. **PR body.** What changed, the tests that fail before and pass after, the guards that pass on both, the assertions changed on purpose, gate results with any retries, budgets, the rulings, and `Closes #149` last.
+
+## As built (2026-10-26)
+
+The five tasks shipped as planned, with these changes. The branch was rebased onto main bb2467f before the gate. The rulings below give each reason and its cost.
+
+- **The daily limit.**
+  - The final whole-branch review found that a step that never takes a review slot, but whose grade still spends one, makes the queue (and the hero, Home, the badges and the plan) show one more card per step than the learner can grade on limit-bound days.
+  - A due step now takes a slot while one is left and passes the limit only when none is.
+  - The slot-rule case the branch had added now expects two cards. A walk-through test pins that every shown card can be graded.
+- **Audit robustness.**
+  - The relearn pages run in an emulated time zone near local midday, so no clock advance crosses midnight.
+  - Every grade waits for its announcement before the next key.
+  - The a11y state waits for the bury to be saved before it removes its cards.
+- **Extra practice.**
+  - The queue effect also keys on the failed and retried lists, because failing the last unseen card leaves the queue's ids unchanged.
+  - Undo of a card's second grade keeps its first Again, so its second ask stays last.
+- **The shared predicate.** The "available today" check is one exported helper, `isAvailableToday`.
+- **Undo.** Undo also hides the answer and resets the answer timer when it restores the card on screen.
+- **Added scenarios.**
+  - E: a lone card, buried on its second ask.
+  - F and G: undo chains.
+  - H: a pending card presented on the clock tick.
+  - I: undo hiding the answer.
+  - Two pins: the answer timer kept on rejoin, and the status log.
+
+### Rulings made during execution
+
+- Ruling: an overdue step from an earlier day (legacy 0.01 included) still passes a spent limit. The issue says sub-day steps bypass the slice, and their grades still count. Cost if wrong: a learner with many abandoned steps sees more cards than the limit until they relearn them.
+- Ruling (superseded by the final review's slot ruling): steps never took a review slot in the queue.
+- Ruling: `focusAndHold` replaced the #148 block's inline Crunch focus wait. Cost if wrong: a few lines of the #148 block change without changing what they check.
+- Ruling: the race fix that makes each grade wait for its announcement was accepted outside fix round 1's scope. Scenario A failed 4 of 6 runs without it. Cost if wrong: one helper's wait semantics.
+- Ruling: one exported `isAvailableToday` replaces four copies of the predicate. Cost if wrong: a small refactor of `review.js` outside Task 4's file list.
+- Ruling: Task 4's effect deps and scenarios E and F were accepted as in scope. Cost if wrong: about 12 s more suite time.
+- Ruling: M1's nowrap evidence was accepted at 360 px with 200% text, not 320 px, where the title stays on screen. Cost if wrong: a title that overflows only the panel padding at 320 px goes unflagged.
+- Ruling (supersedes the Task 2 slot ruling): a due learning step takes a review slot while one remains, and passes the limit only when none remains. Cost if wrong: on capped days a step can take a slot a due review would have used.
+- Ruling: undo resets the answer, confidence and timer. Cost if wrong: none.
+- Ruling: the spec's "to retry" copy is kept for every pending step, FSRS learning steps included, and documented. Cost if wrong: an FSRS learner who passed a new card reads "to retry".
+- Ruling: scenario I's first save wait (which the seeded profile can satisfy) was parked, because its real assertions fail closed. Cost if wrong: a less specific failure message.
+
+### Known risks and follow-ups
+
+- **Steps left from earlier days.** Legacy 0.01-day steps included, they pass a spent limit with no bound. That belongs to the day-boundary work the issue defers.
+- **Over-limit counts.** A step graded past the limit counts in the day's reviews, so the hero can read "21/20 reviews".
+- **Older builds.** A tab still on the #148 build that replays a rule-3 attempt stores the 0.01-day step until it reloads.
+- **VoiceOver on iOS.** Whether it re-reads an identical repeated announcement is unconfirmed (see DEVICE_TESTING).
