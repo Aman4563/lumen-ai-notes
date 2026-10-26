@@ -590,14 +590,14 @@ const spoken = (root, options) => buildSpeechQueue(buildSpeechUnits(root, option
 // The fixture lecture as the app's marked renders it (scripts/speech_fixture.mjs), as stub DOM: tables hold "\n"
 // text nodes between their cells and rows, code is div.code-shell > div.code-label + pre > code, the block
 // formula sits inside a <p>, and a Mermaid fence is a div.diagram-shell.
+const codeShell = (label, body) => el("div", { class: "code-shell" }, [
+  el("div", { class: "code-label" }, [el("span", {}, [text(label)]), el("button", { class: "code-copy", type: "button", "aria-label": `Copy ${label} code` }, [text("Copy")])]),
+  el("pre", { tabindex: "0", role: "group", "aria-label": `${label} code` }, [el("code", { class: `language-${label === "text" ? "" : label}` }, [text(body)])]),
+]);
 const fixture = () => {
   const nl = () => text("\n");
   const cell = (tag, value) => [el(tag, {}, [text(value)]), nl()];
   const line = (tag, values) => el("tr", {}, [nl(), ...values.flatMap((value) => cell(tag, value))]);
-  const code = (label, body) => el("div", { class: "code-shell" }, [
-    el("div", { class: "code-label" }, [el("span", {}, [text(label)]), el("button", { class: "code-copy", type: "button", "aria-label": `Copy ${label} code` }, [text("Copy")])]),
-    el("pre", { tabindex: "0", role: "group", "aria-label": `${label} code` }, [el("code", { class: `language-${label === "text" ? "" : label}` }, [text(body)])]),
-  ]);
   const { mi, mo, mtext, row, of, math } = mathml;
   const side = (...letters) => row(...letters.map((letter) => (letter === "+" ? mo("+") : mi(letter))));
   return el("article", {}, [
@@ -613,8 +613,8 @@ const fixture = () => {
       ]),
       nl(),
     ]),
-    code("python", "import numpy as np\nX = np.ones((3, 2))\ny = np.zeros(3)\nw = np.linalg.lstsq(X, y, rcond=None)[0]\nprint(w)\nprint(w.shape)"),
-    code("text", "name a ─┐\n        ├──> list object\nname b ─┘"),
+    codeShell("python", "import numpy as np\nX = np.ones((3, 2))\ny = np.zeros(3)\nw = np.linalg.lstsq(X, y, rcond=None)[0]\nprint(w)\nprint(w.shape)"),
+    codeShell("text", "name a ─┐\n        ├──> list object\nname b ─┘"),
     el("p", {}, [text("First line"), el("br"), text("Second line")]), nl(),
     el("p", {}, [text("The model predicts ŷ = wᵀx + b for each input.")]), nl(),
     el("p", {}, [math(mtext("Accuracy"), mo("="), of("mfrac", side("T", "P", "+", "T", "N"), side("T", "P", "+", "T", "N", "+", "F", "P", "+", "F", "N")), mo(","))]), nl(),
@@ -624,12 +624,6 @@ const fixture = () => {
     el("p", {}, [text("Gradient descent repeats three steps for every batch of examples, measuring the loss on that batch, computing the gradient of the loss for every single weight, and moving each weight a smaller step against its gradient until the loss stops improving.")]), nl(),
   ]);
 };
-
-// An edited copy's inline KaTeX: the MathML is read, its TeX annotation never, and the visible copy not at all.
-const katexInline = (letter) => el("span", { class: "katex" }, [
-  el("span", { class: "katex-mathml" }, [el("math", {}, [el("semantics", {}, [el("mrow", {}, [el("mi", {}, [text(letter)])]), el("annotation", { encoding: "application/x-tex" }, [text(letter)])])])]),
-  el("span", { class: "katex-html", "aria-hidden": "true" }, [text(letter)]),
-]);
 
 // Reading-line geometry for the stub: the target's line sits 140 px below the container's top.
 const placed = (node, top, bottom) => Object.assign(node, { getBoundingClientRect: () => ({ top, bottom }) });
@@ -805,6 +799,17 @@ test("skipped markup counts in the offsets and speaks nothing", () => {
   assert.deepEqual(word(units[0], "y").source, [10, 11], "a formula's word maps into the formula's own text");
   assert.deepEqual(word(units[0], "C").source, [17, 18]);
   assert.deepEqual(word(units[1], "D").source, [28, 29]);
+});
+
+test("a code block inside a list item leaves the label of its shell unread", () => {
+  // marked wraps a fence in div.code-shell, with the language and a Copy button above the pre.
+  const item = el("li", {}, [text("Run this first:"), codeShell("bash", "make test"), text(" then check.")]);
+  const article = el("article", {}, [el("ul", {}, [item])]);
+  const units = buildSpeechUnits(article);
+  assert.deepEqual(units.map((unit) => unit.text), ["Run this first:", "then check."]);
+  assert.deepEqual(readableBlocks(article).map((block) => block.localName), ["li", "pre"]);
+  assert.equal(speechBlockText(item), "Run this first:bashCopymake test then check.");
+  checkUnits(article, units);
 });
 
 test("whatever follows the last spoken word belongs to the last unit", () => {

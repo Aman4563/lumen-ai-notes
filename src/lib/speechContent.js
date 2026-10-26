@@ -192,9 +192,13 @@ const offsetAtLine = (block, line) => {
 // ---------------------------------------------------------------------------
 
 // Markup the walk counts in the offsets and never says: a formula's TeX
-// annotation and its hidden parts. (KaTeX's visible copy of a formula, which it
-// also writes as MathML, is the `katex-html` class.)
+// annotation and its hidden parts...
 const SILENT_TAGS = new Set(["annotation", "annotation-xml", "mphantom"]);
+// ...and screen furniture beside words that are read elsewhere: KaTeX's visible
+// copy of a formula it also writes as MathML, and the header of a code block's
+// shell (its language and Copy button; the code is a block of its own, and a
+// fence under a list item sits inside that item).
+const SILENT_CLASSES = ["katex-html", "code-label"];
 // Elements whose edges end a sentence whatever their punctuation: a line
 // break and the edges of a nested block.
 const BREAK_TAGS = new Set(["br", "div", "table", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "p", "li", "blockquote", "figcaption"]);
@@ -400,7 +404,7 @@ const textSentences = (block, language) => {
       // The block is read on its own: say what came before, and none of it.
       breakSentence();
       skip(node);
-    } else if (SILENT_TAGS.has(tag) || hasClass(node, "katex-html")) skip(node);
+    } else if (SILENT_TAGS.has(tag) || SILENT_CLASSES.some((name) => hasClass(node, name))) skip(node);
     else if (tag === "math") speakMath(node);
     else if (tag === "br") breakSentence();
     else {
