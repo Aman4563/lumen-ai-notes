@@ -434,7 +434,7 @@ const readTable = (item, out) => {
       .filter(({ atoms }) => real(atoms).length);
     if (!cells.length) continue;
     if (previousRow && lastAtom(out).kind !== "attach") out.push(inserted(";", previousRow.end, "attach"));
-    cells.forEach(({ cell, atoms }, index) => {
+    cells.forEach(({ atoms }, index) => {
       if (index && lastAtom(out).kind !== "attach") out.push(inserted(",", cells[index - 1].cell.end, "attach"));
       out.push(...atoms);
     });
