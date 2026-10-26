@@ -327,6 +327,7 @@ try {
   assert.ok((await page.$eval(".review-center-page [role='status']", (node) => node.textContent)).includes("Rated Good: next review in 1 day"), "the grade outcome must be announced");
   assert.ok((await page.$eval(".review-deck-card", (node) => node.textContent)).includes("1 day interval"), "Good rating did not schedule a one-day interval");
   assert.deepEqual(await page.$eval(".review-recall-tile", (tile) => [tile.querySelector("strong").textContent, tile.querySelector(".review-recall-count")?.textContent]), ["—", "0 scheduled reviews"], "a new card's first grade must not count as recall (#151)");
+  assert.equal(await page.$eval(".review-retention-trend .forecast-empty", (node) => node.textContent), "Your weekly recall trend appears after your first scheduled reviews.", "with only a first grade the 12-week trend must show its empty state (#151)");
   // Issue #54 (REV-5): ending a crunch practice session returns the hero to
   // today's queue; it used to keep counting the weak-card practice pool.
   await clickByText(page, ".review-hero-actions button", "Crunch weak cards");
@@ -1732,7 +1733,7 @@ try {
       .catch(() => assert.fail("switching back to Classic must remove the target from the 30-day tile"));
     assert.deepEqual(await tileReading(".review-recall-tile"), ["80%", "10 scheduled reviews"], "switching to Classic must leave the 30-day recall and its count alone");
     // The last change is saved before the next seed replaces the stored profile (a late save would merge into it).
-    await savedProfile(recallPage, (profile) => profile.reviewSettings?.scheduler === "sm2");
+    assert.equal((await savedProfile(recallPage, (profile) => profile.reviewSettings?.scheduler === "sm2")).reviewSettings?.scheduler, "sm2", "the switch back to Classic was never saved, so a late save could merge into the next seed");
 
     // 4. Fit: both tiles and the trend stay inside their boxes, their icons keep their size, and the page
     // stays inside its viewport, with the Adaptive target, in every theme, at 393x852, 320x568 and
@@ -1742,6 +1743,7 @@ try {
     // chart, which this change fixes.
     for (const theme of ["paper", "dark", "contrast"]) {
       await seedRecall(recallPage, { theme, reviewSettings: { scheduler: "fsrs" } });
+      assert.equal(await targetReading(), "Target 90%", `${theme}: the Adaptive target must be on screen before the tiles are measured`);
       for (const [width, height, scale] of [[393, 852, 1], [320, 568, 1], [360, 800, 2], [320, 568, 2], [1024, 768, 2]]) {
         const label = `${theme} at ${width}x${height}${scale > 1 ? ` with ${scale * 100}% text` : ""}`;
         await recallPage.setViewport({ width, height, deviceScaleFactor: 1, isMobile: true, hasTouch: true });

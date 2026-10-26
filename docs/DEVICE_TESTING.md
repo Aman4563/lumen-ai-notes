@@ -428,10 +428,14 @@ or from the Home Screen, and add the verdict to the device evidence report in
 issue #7. None of the three checks below has been run on a device yet.
 
 For all three checks, open Review and set Scheduler to Adaptive (FSRS) in
-Daily limits. Grade at least one card whose label reads "Review · N days
-interval" in Start review, so the tiles have a count. A new card's first grade
-and an Extra practice grade do not count. With no scheduled review yet, the
-tile reads "—" and "0 scheduled reviews", which is worth checking too.
+Daily limits. Then, in Start review, grade at least one card that is not
+labelled "New card" and whose interval is in days, such as "Learning · 3 days
+interval", "Review · 20 days interval" or "Overdue by 2 days", so the tiles
+have a count. A card in its 10-minute step ("Learning · 10 min interval"), a
+new card's first grade and an Extra practice grade do not count. On a new
+profile, the first such card is due the day after its first grade. With no
+scheduled review yet, the tile reads "—" and "0 scheduled reviews", which is
+worth checking too.
 
 1. **The 30-day tile with VoiceOver.** Turn VoiceOver on and swipe right from
    the Mastered tile into the 30-day tile. Keep swiping through it.
@@ -445,9 +449,10 @@ tile reads "—" and "0 scheduled reviews", which is worth checking too.
    open Review. The 30-day tile, the 7-day tile and the 12-week trend must
    wrap inside the screen: nothing cut off or running past a tile's edge, no
    icon squeezed or missing, and no sideways scrolling. Check portrait and
-   landscape, in Paper, Night and Contrast. A word wider than its column,
-   such as "scheduled" ("schedul" and "ed" on two lines) or "80%" ("80" and
-   "%"), may break inside itself at the largest sizes. That is the accepted
+   landscape, in Paper, Night and Contrast. In Chrome at 200% text a word
+   wider than its column, such as "scheduled" ("schedul" and "ed" on two
+   lines), "80%" or "100%" ("100" and "%"), breaks inside itself. iOS Larger
+   Text scales less and may not show this. If it happens, it is the accepted
    last resort, not a failure; record that it happened.
 3. **The target follows the Retention picker.** In Daily limits, tap
    Retention, choose 85% on the wheel and close the picker. The 30-day tile

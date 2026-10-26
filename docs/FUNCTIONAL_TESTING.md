@@ -4710,8 +4710,9 @@ How each is now checked (each fails on main first, except the median guard):
     interval as 0, is left out (`scheduledReviews30` is 0).
 - **`scripts/review_audit.mjs`:**
   - **Line 329, changed on purpose.** After a new card's first Good, the
-    30-day tile reads "—" and "0 scheduled reviews". It read "100%" before,
-    because a first grade is not recall.
+    30-day tile reads "—" and "0 scheduled reviews". It read "100%" on main,
+    which counted the first grade; it changed on purpose because a first grade
+    is not recall.
   - **The seeded fixture.** In Classic both tiles read 80% and "10 scheduled
     reviews" with no target, and the trend's label ends "80% of 10 scheduled
     reviews".
