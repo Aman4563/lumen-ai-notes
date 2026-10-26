@@ -5,6 +5,10 @@ import pack from "../data/pronunciations.ml.v1.json" with { type: "json" };
  * The text pass every narrated utterance goes through (issue #100): the
  * learner's pronunciations and the built-in ML pack in one pass, then Unicode
  * math read in words, with a map from the spoken text back to its source.
+ *
+ * The tables that name symbols (Greek letters, operators, superscripts,
+ * accents) are exported so the MathML walker, mathSpeech.js, says each symbol
+ * in the same words. They are read-only: nothing may change them.
  */
 
 /**
@@ -134,7 +138,7 @@ const SUBSCRIPTS = new Map(Object.entries({
 
 // A superscript that is exactly one of these is its word; any other reads
 // "to the power of …".
-const SUPERSCRIPT_WORDS = new Map(Object.entries({
+export const SUPERSCRIPT_WORDS = new Map(Object.entries({
   "ᵀ": "transpose", "⊤": "transpose", T: "transpose",
   "⁻¹": "inverse", "−1": "inverse", "-1": "inverse",
   "²": "squared", 2: "squared", "³": "cubed", 3: "cubed",
@@ -142,9 +146,9 @@ const SUPERSCRIPT_WORDS = new Map(Object.entries({
 }));
 
 // Combining marks, read after the letter they sit on.
-const COMBINING_MARKS = new Map(Object.entries({ "\u0302": "hat", "\u0303": "tilde", "\u0304": "bar", "\u0305": "bar", "\u0307": "dot", "\u20D7": "vector" }));
+export const COMBINING_MARKS = new Map(Object.entries({ "\u0302": "hat", "\u0303": "tilde", "\u0304": "bar", "\u0305": "bar", "\u0307": "dot", "\u20D7": "vector" }));
 
-const SYMBOLS = new Map(Object.entries({
+export const SYMBOLS = new Map(Object.entries({
   α: "alpha", β: "beta", γ: "gamma", δ: "delta", ε: "epsilon", ϵ: "epsilon", ζ: "zeta", η: "eta", θ: "theta", ϑ: "theta",
   ι: "iota", κ: "kappa", λ: "lambda", μ: "mu", ν: "nu", ξ: "xi", ο: "omicron", π: "pi", ρ: "rho", σ: "sigma", ς: "sigma",
   τ: "tau", υ: "upsilon", φ: "phi", ϕ: "phi", χ: "chi", ψ: "psi", ω: "omega",
@@ -162,12 +166,12 @@ const SYMBOLS = new Map(Object.entries({
   ℕ: "N", ℤ: "Z", ℚ: "Q", ℂ: "C",
 }));
 
-const BIG_OPERATORS = new Map(Object.entries({ "Σ": "sum", "∑": "sum", "∏": "product", "∫": "integral", "𝔼": "expected value" }));
-const NORM_BARS = new Set(["‖", "∥"]);
-const REALS = "ℝ";
+export const BIG_OPERATORS = new Map(Object.entries({ "Σ": "sum", "∑": "sum", "∏": "product", "∫": "integral", "𝔼": "expected value" }));
+export const NORM_BARS = new Set(["‖", "∥"]);
+export const REALS = "ℝ";
 
 // ASCII operators are words only alone, and only inside a formula run.
-const LONE_OPERATORS = new Map([["=", { word: "equals", partners: "=<>!" }], ["+", { word: "plus", partners: "+" }], ["/", { word: "over", partners: "/" }]]);
+export const LONE_OPERATORS = new Map([["=", { word: "equals", partners: "=<>!" }], ["+", { word: "plus", partners: "+" }], ["/", { word: "over", partners: "/" }]]);
 
 // What makes a marked subscript compound, so it says "sub": r sub t plus k plus 1.
 const COMPOUND_SCRIPT = /[\s+\-*\/=<>^±∓×÷·⋅−∘⊙⊗∧∨¬≈≤≥≠≡≪≫∈∉⊂⊆∩∪→←⇒⇔∝∼∣]/u;
@@ -179,7 +183,7 @@ const SYMBOLIC = new RegExp(`[${[
 ].map((char) => `\\u{${char.codePointAt(0).toString(16)}}`).join("")}\\uE000-\\uE003]`, "u");
 const FORMULA_CHARACTERS = /^[\p{L}\p{N}_.,;:!?%'"()[\]{}|*^=+\-\/<>~&]+$/u;
 const LONG_WORD = /\p{L}{4}/u;
-const FUNCTION_NAMES = Object.freeze(["log", "exp", "max", "min", "softmax", "sigmoid", "tanh", "sin", "cos", "tan", "det", "tr", "Var", "Cov", "lim", "clip", "sign"]);
+export const FUNCTION_NAMES = Object.freeze(["log", "exp", "max", "min", "softmax", "sigmoid", "tanh", "sin", "cos", "tan", "det", "tr", "Var", "Cov", "lim", "clip", "sign"]);
 // A function name counts only as a whole word: "tr(A)" and "log" join a
 // formula run, "true", "train" and "minimum" do not.
 const FUNCTION_PREFIX = new RegExp(`^(?:${FUNCTION_NAMES.join("|")})(?!\\p{L})`, "u");

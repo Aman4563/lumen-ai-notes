@@ -1,3 +1,14 @@
+import {
+  BIG_OPERATORS,
+  COMBINING_MARKS,
+  FUNCTION_NAMES,
+  LONE_OPERATORS,
+  NORM_BARS,
+  REALS,
+  SUPERSCRIPT_WORDS,
+  SYMBOLS,
+} from "./speakable.js";
+
 /**
  * MathML read in words (issue #100): "Accuracy equals T P plus T N, over, T P
  * plus T N plus F P plus F N". The Reader chunk imports this through
@@ -6,6 +17,8 @@
  * It walks a `math` element through the smallest part of the DOM interface it
  * can (nodeType, localName or tagName, childNodes, textContent and, when there
  * is one, getAttribute), so a test double serves as well as a browser node.
+ * The words for symbols are speakable.js's own tables, so the text pass and
+ * this walker cannot name one symbol two ways.
  *
  * `verbalizeMath(math)` returns { text, map }. The map is the spokenMap.js
  * kind: MapPiece[] whose sources are offsets into `math.textContent`, the text
@@ -31,59 +44,48 @@ const TOKENS = new Set(["mi", "mn", "mo", "mtext"]);
 const SILENT = new Set(["annotation", "annotation-xml", "mphantom"]);
 // Wrappers that add nothing to the reading of what they hold.
 const WRAPPERS = new Set(["mrow", "mstyle", "mpadded"]);
+// The elements whose children after the first are scripts: a subscript, a
+// superscript, what sits under or over.
+const SCRIPT_PARENTS = new Set(["msub", "msup", "msubsup", "munder", "mover", "munderover"]);
 // U+2061–U+2064: function application, invisible times, separator and plus.
 const INVISIBLE = /^[\u{2061}-\u{2064}]+$/u;
 const ATTACHED = /^[,.;:]+$/u;
+// Pandoc writes \mathbf, \mathcal and \mathbb letters as single characters from
+// this block; NFKC turns them into the plain letters.
+const MATH_ALPHANUMERIC = /[\u{1D400}-\u{1D7FF}]/gu;
+// Letters in a row that make a word inside a script: P_{train}.
+const WORD_RUN = 3;
 
-// The words below are the ones speakable.js reads the same characters as; the
-// two files are kept in step by hand (its tables are not exported).
-const NAMES = new Map(Object.entries({
-  α: "alpha", β: "beta", γ: "gamma", δ: "delta", ε: "epsilon", ϵ: "epsilon", ζ: "zeta", η: "eta", θ: "theta", ϑ: "theta",
-  ι: "iota", κ: "kappa", λ: "lambda", μ: "mu", ν: "nu", ξ: "xi", ο: "omicron", π: "pi", ρ: "rho", σ: "sigma", ς: "sigma",
-  τ: "tau", υ: "upsilon", φ: "phi", ϕ: "phi", χ: "chi", ψ: "psi", ω: "omega",
-  Γ: "Gamma", Δ: "Delta", Θ: "Theta", Λ: "Lambda", Ξ: "Xi", Π: "Pi", Φ: "Phi", Ψ: "Psi", Ω: "Omega",
-  ℓ: "ell", "∞": "infinity", ℝ: "R", "𝔼": "expected value of",
-}));
+const FUNCTIONS = new Set(FUNCTION_NAMES);
 
-// Operators and relations, read wherever they stand: Pandoc spells some of them
-// (/ + −) as identifiers.
-const OPERATORS = new Map(Object.entries({
-  "=": "equals", "+": "plus", "−": "minus", "-": "minus", "±": "plus or minus",
-  "×": "times", "·": "times", "⋅": "times", "/": "over", "÷": "divided by",
-  "<": "less than", ">": "greater than", "≤": "less than or equal to", "≥": "greater than or equal to",
-  "≠": "not equal to", "≈": "approximately", "∈": "in", "∉": "not in", "∝": "proportional to",
-  "→": "leads to", "⇒": "implies", "⇔": "if and only if", "∼": "distributed as", "∣": "given",
-  "∂": "partial", "∇": "gradient of", "′": "prime", "*": "star", "∗": "star", "!": "factorial",
-  "∑": "sum of", "∏": "product of", "∫": "integral of",
-}));
-
-const FUNCTION_NAMES = new Set(["log", "exp", "max", "min", "sin", "cos", "tan", "tanh", "det", "tr", "Var", "Cov", "softmax"]);
+// What the text pass leaves as written in prose (it reads = + / only inside a
+// formula run) but MathML has already marked as math, and a few only the
+// walker says.
+const OPERATORS = new Map([
+  ...[...LONE_OPERATORS].map(([char, { word }]) => [char, word]),
+  ["-", "minus"], ["<", "less than"], [">", "greater than"], ["*", "star"], ["\u{2217}", "star"], ["!", "factorial"],
+]);
 
 // Operators that take limits, read around them: "sum from i equals 1 to n of",
 // "min over theta". The big ones end in "of"; min, max and lim do not.
-const BIG_OPERATORS = new Map(Object.entries({ "∑": "sum", "∏": "product", "∫": "integral", "𝔼": "expected value" }));
 const LIMIT_NAMES = new Set(["min", "max", "lim", "arg min", "arg max"]);
 
-// What a mover's mark says: hat, bar, tilde, dot and vector, as Pandoc spells
-// them (combining characters) and as KaTeX does (^ ~ and the modifier macron).
-const ACCENTS = new Map(Object.entries({
-  "^": "hat", "\u{0302}": "hat",
-  "\u{203E}": "bar", "\u{00AF}": "bar", "\u{0304}": "bar", "\u{0305}": "bar", "\u{02C9}": "bar",
-  "\u{02DC}": "tilde", "~": "tilde", "\u{0303}": "tilde",
-  "\u{02D9}": "dot", "\u{0307}": "dot",
-  "\u{2192}": "vector", "\u{20D7}": "vector",
-}));
+// What a mover's mark says: the combining marks Pandoc writes (hat, tilde,
+// bar, dot, vector) and the plain marks KaTeX writes.
+const ACCENTS = new Map([
+  ...COMBINING_MARKS,
+  ["^", "hat"], ["\u{203E}", "bar"], ["\u{00AF}", "bar"], ["\u{02C9}", "bar"],
+  ["\u{02DC}", "tilde"], ["~", "tilde"], ["\u{02D9}", "dot"], ["\u{2192}", "vector"],
+]);
 
-// A superscript that is exactly one of these is its word; any other reads
-// "to the power of …".
-const SUPERSCRIPT_WORDS = new Map(Object.entries({
-  T: "transpose", "⊤": "transpose", "ᵀ": "transpose",
-  "−1": "inverse", "-1": "inverse", "⁻¹": "inverse",
-  2: "squared", "²": "squared", 3: "cubed", "³": "cubed",
-  "*": "star", "∗": "star", "′": "prime", "″": "double prime", "′′": "double prime",
-}));
+// A script that is exactly one of these is its word; any other reads "to the
+// power of …". Pandoc writes two primes as one character.
+const SCRIPT_WORDS = new Map([...SUPERSCRIPT_WORDS, ["\u{2033}", "double prime"], ["\u{2032}\u{2032}", "double prime"]]);
+// A square on a norm bar: ‖w‖₂² is "the squared L2 norm of w".
+const SQUARES = new Set(["2", "²"]);
 
-const BAR_WORDS = new Map([["|", "the absolute value of"], ["‖", "the norm of"], ["∥", "the norm of"]]);
+const ABSOLUTE_VALUE = "the absolute value of";
+const NORM = "the norm of";
 
 // The reading is a list of atoms, laid out into spoken text at the end, so a
 // construct can look at what a part says ("one token") before it spaces it.
@@ -103,12 +105,14 @@ const attribute = (item, name) => item.node?.getAttribute?.(name) ?? null;
 const isTextItem = (item) => item.name === undefined;
 const elementsOf = (item) => item.children.filter((child) => !isTextItem(child));
 const tokenText = (item) => item.children.map((child) => child.text).join("");
+const fold = (text) => text.replace(MATH_ALPHANUMERIC, (char) => char.normalize("NFKC"));
 
-// The tree with, on every node, where its text sits in `math.textContent`.
-// Text nodes of every kind count, so the offsets match what textContent holds.
+// The tree with, on every node, where its text sits in `math.textContent` and
+// whether it is inside a script. Text nodes of every kind count, so the
+// offsets match what textContent holds.
 const annotate = (root) => {
   let offset = 0;
-  const visit = (node, depth) => {
+  const visit = (node, depth, inScript) => {
     if (node.nodeType === TEXT_NODE || node.nodeType === CDATA_SECTION_NODE) {
       const data = String(node.textContent ?? "");
       const item = { text: data, start: offset, end: offset + data.length };
@@ -116,22 +120,25 @@ const annotate = (root) => {
       return item;
     }
     if (node.nodeType !== ELEMENT_NODE) return null;
-    const item = { name: String(node.localName || node.tagName || "").toLowerCase(), node, start: offset, end: offset, children: [] };
+    const item = { name: String(node.localName || node.tagName || "").toLowerCase(), node, start: offset, end: offset, children: [], inScript };
     if (depth >= MAX_DEPTH) {
       const data = String(node.textContent ?? "");
       item.name = "mtext";
       item.children.push({ text: data, start: offset, end: offset + data.length });
       offset += data.length;
     } else {
+      let elements = 0;
       for (const child of node.childNodes || []) {
-        const parsed = visit(child, depth + 1);
+        const isElement = child.nodeType === ELEMENT_NODE;
+        const parsed = visit(child, depth + 1, inScript || (isElement && elements >= 1 && SCRIPT_PARENTS.has(item.name)));
+        if (isElement) elements += 1;
         if (parsed) item.children.push(parsed);
       }
     }
     item.end = offset;
     return item;
   };
-  return visit(root, 0);
+  return visit(root, 0, false);
 };
 
 // `raw` as written: trimmed, inner whitespace collapsed, its source range the
@@ -145,11 +152,25 @@ const writtenAtom = (raw, start) => {
 
 // A single letter, a Greek letter or a listed function name can be applied to
 // (…). 𝔼 is a letter too, but its reading already ends in "of".
-const isFunction = (symbol) => FUNCTION_NAMES.has(symbol) || (symbol !== "𝔼" && /^\p{L}$/u.test(symbol));
+const isFunction = (symbol) => FUNCTIONS.has(symbol) || (symbol !== "𝔼" && /^\p{L}$/u.test(symbol));
 
-// Pandoc gives both bars of |y − z| the prefix form, so bars pair up inside
-// their parent: the first opens ("the absolute value of"), the next closes.
-// A postfix bar always closes. A | with no form is the conditioning bar.
+// \mathbb{E} and \mathbb{R} are a double-struck E and R in KaTeX, and 𝔼 and ℝ in Pandoc.
+const DOUBLE_STRUCK = new Map([["E", "𝔼"], ["R", REALS]]);
+const symbolOf = (item, text) => (item.name === "mi" && attribute(item, "mathvariant") === "double-struck" ? DOUBLE_STRUCK.get(text) ?? text : text);
+
+// The words for a symbol, from speakable.js's tables. A capital sigma is the
+// letter in an identifier and the sum in an operator.
+const wordFor = (name, symbol) => {
+  if (name === "mi" && symbol === "Σ") return "Sigma";
+  if (BIG_OPERATORS.has(symbol)) return `${BIG_OPERATORS.get(symbol)} of`;
+  if (symbol === REALS) return "R";
+  return SYMBOLS.get(symbol) ?? OPERATORS.get(symbol);
+};
+
+// Pandoc gives both bars of |y − z| the prefix form, so | pairs up inside its
+// row: the first opens ("the absolute value of"), the next closes. A postfix
+// bar always closes. A | with no form is the conditioning bar. A norm bar
+// that has no partner in its row reads the same way.
 const readBar = (item, symbol, written, out, parent) => {
   const form = attribute(item, "form");
   const family = symbol === "|" ? "|" : "‖";
@@ -164,10 +185,83 @@ const readBar = (item, symbol, written, out, parent) => {
       return;
     }
     state[family] = true;
-    out.push({ ...written, text: BAR_WORDS.get(symbol) });
+    out.push({ ...written, text: symbol === "|" ? ABSOLUTE_VALUE : NORM });
     return;
   }
   out.push({ ...written, text: "given" });
+};
+
+const NORM_SCRIPTED = new Set(["msub", "msup", "msubsup"]);
+const isNormBar = (item) => (item.name === "mo" || item.name === "mi") && item.children.every(isTextItem) && NORM_BARS.has(tokenText(item).trim());
+
+// The norm bars of a row in order, each with the script construct it is the
+// base of (the closing bar of ‖w‖₂²), if any, and the partner it pairs with
+// (-1 for none). A pair encloses a balanced stretch: the bars of D(P ∥ M) +
+// D(Q ∥ M) are two separators, since the first stretch closes a bracket it did
+// not open. The brackets are counted along the row, and a bracket may carry a
+// script, as in (a + b)².
+const normBars = (row) => {
+  if (!row.norms) {
+    const bars = [];
+    let depth = 0;
+    let low = 0;
+    for (const child of row.children) {
+      const construct = NORM_SCRIPTED.has(child.name) ? child : null;
+      const token = construct ? elementsOf(child)[0] : child;
+      if (!token) continue;
+      const mark = token.name === "mo" && token.children.every(isTextItem) ? tokenText(token).trim() : "";
+      if (mark === "(" || mark === "[") depth += 1;
+      else if (mark === ")" || mark === "]") low = Math.min(low, (depth -= 1));
+      else if (isNormBar(token)) {
+        token.normAt = bars.length;
+        bars.push({ token, construct, partner: -1, depth, low });
+        low = depth;
+      }
+    }
+    for (let at = 0; at < bars.length;) {
+      const next = bars[at + 1];
+      if (next && next.depth === bars[at].depth && next.low >= bars[at].depth) {
+        bars[at].partner = at + 1;
+        next.partner = at;
+        at += 2;
+      } else {
+        at += 1;
+      }
+    }
+    row.norms = bars;
+  }
+  return row.norms;
+};
+
+// "the squared L2 norm of", "the Frobenius norm of", "the L infinity norm of":
+// the closing bar's subscript names the norm and a square on it says squared,
+// as the text pass reads ‖w‖₂². `used` is what it took; any other script is
+// left for the construct to read after the content.
+const normReading = (construct) => {
+  const [, first, second] = construct ? elementsOf(construct) : [];
+  const sub = construct && construct.name !== "msup" ? first : null;
+  const sup = construct && construct.name !== "msub" ? (construct.name === "msup" ? first : second) : null;
+  const order = sub ? plainText(sub) : null;
+  const squared = sup ? SQUARES.has(plainText(sup)) : false;
+  const label = order === "∞" ? "L infinity " : order === "F" ? "Frobenius " : order ? `L${order} ` : "";
+  return { words: `the ${squared ? "squared " : ""}${label}norm of`, used: { sub: Boolean(order), sup: squared } };
+};
+
+// Norm bars pair off in order, 1st with 2nd, 3rd with 4th, whatever their form:
+// Pandoc marks both bars of \|w\| postfix, KaTeX gives them no form. The pair
+// reads at its opening bar and the closing bar says nothing. A bar without a
+// partner (a lone one, or the last of an odd count) is left to read as it did.
+const readNormBar = (item, row, written, out) => {
+  const bars = normBars(row);
+  const bar = bars[item.normAt];
+  if (bar?.token !== item || bar.partner < 0) return false;
+  if (bar.partner > item.normAt) {
+    const { construct } = bars[bar.partner];
+    const { words, used } = normReading(construct);
+    if (construct) construct.norm = used;
+    out.push({ ...written, text: words });
+  }
+  return true;
 };
 
 const readToken = (item, out, parent) => {
@@ -175,6 +269,7 @@ const readToken = (item, out, parent) => {
   const core = raw.trim();
   if (!core || INVISIBLE.test(core)) return;
   const written = writtenAtom(raw, item.start);
+  if (NORM_BARS.has(core) && (item.name === "mo" || item.name === "mi") && parent && readNormBar(item, parent, written, out)) return;
   if (item.name === "mo") {
     if (core === "{" || core === "}") return;
     if (core === "(" || core === "[") {
@@ -188,7 +283,7 @@ const readToken = (item, out, parent) => {
       out.push({ ...written, kind: "close" });
       return;
     }
-    if (BAR_WORDS.has(core)) {
+    if (core === "|" || NORM_BARS.has(core)) {
       readBar(item, core, written, out, parent);
       return;
     }
@@ -197,11 +292,55 @@ const readToken = (item, out, parent) => {
     out.push(written);
     return;
   }
-  // \mathbb{E} is a double-struck E in KaTeX and 𝔼 in Pandoc. A capital sigma
-  // is the letter in an identifier and the sum in an operator.
-  const symbol = item.name === "mi" && core === "E" && attribute(item, "mathvariant") === "double-struck" ? "𝔼" : core;
-  const said = item.name === "mo" && symbol === "Σ" ? OPERATORS.get("∑") : item.name === "mi" && symbol === "Σ" ? "Sigma" : NAMES.get(symbol) ?? OPERATORS.get(symbol);
-  out.push({ ...written, text: said ?? written.text, kind: said ? "word" : written.kind, fn: item.name === "mi" && isFunction(symbol) });
+  let symbol = symbolOf(item, core);
+  let said = wordFor(item.name, symbol);
+  let spoken = written.text;
+  // A letter the tables do not know may be a bold or script letter, a single
+  // character that reads as the plain one. The tables come first: 𝔼 and ℓ
+  // would fold into E and l.
+  if (said === undefined && item.name === "mi") {
+    spoken = fold(spoken);
+    symbol = fold(symbol);
+    said = wordFor(item.name, symbol);
+  }
+  out.push({
+    ...written,
+    text: said ?? spoken,
+    kind: said ? "word" : written.kind,
+    fn: item.name === "mi" && isFunction(symbol),
+    by: symbol === "×" || symbol === "ˣ",
+  });
+};
+
+// An identifier letter that reads as itself: not Greek, ℓ, ℝ, 𝔼 or Σ, which
+// have words, not a double-struck E or R, and not a modifier letter such as ˣ
+// (the "by" of ℝᵐˣⁿ).
+const plainLetter = (item) => {
+  if (item.name !== "mi" || !item.children.every(isTextItem)) return null;
+  const text = fold(tokenText(item).trim());
+  const named = SYMBOLS.has(text) || BIG_OPERATORS.has(text) || text === REALS || symbolOf(item, text) !== text;
+  return /^(?!\p{Lm})\p{L}$/u.test(text) && !named ? text : null;
+};
+
+// Inside a script, three or more such letters in a row are one word:
+// P_{train} says "train", not "t r a i n". Spaces between them in
+// pretty-printed markup do not break the run. Outside a script letters stay
+// spelled, so TP is "T P".
+const letterRun = (children, at) => {
+  if (plainLetter(children[at]) === null) return null;
+  let letters = "";
+  let count = 0;
+  let last = at;
+  for (let next = at; next < children.length; next += 1) {
+    const child = children[next];
+    if (isTextItem(child) && !child.text.trim()) continue;
+    const letter = plainLetter(child);
+    if (letter === null) break;
+    letters += letter;
+    count += 1;
+    last = next;
+  }
+  return count >= WORD_RUN ? { word: atom(letters, children[at].start, children[last].end), last } : null;
 };
 
 const read = (item, out, parent) => {
@@ -220,7 +359,16 @@ const read = (item, out, parent) => {
 };
 
 const readChildren = (item, out) => {
-  for (const child of item.children) read(child, out, item);
+  const { children } = item;
+  for (let at = 0; at < children.length; at += 1) {
+    const run = item.inScript ? letterRun(children, at) : null;
+    if (run) {
+      out.push(run.word);
+      at = run.last;
+    } else {
+      read(children[at], out, item);
+    }
+  }
 };
 
 const atomsOf = (item, parent) => {
@@ -272,21 +420,33 @@ const tokensIn = (item, found = []) => {
   return found;
 };
 
+// The tokens under `base` that say something, as { name, text, symbol }.
+const spokenTokens = (base) => tokensIn(base)
+  .map((token) => {
+    const text = tokenText(token).trim();
+    return { name: token.name, text, symbol: symbolOf(token, text) };
+  })
+  .filter(({ text }) => text && !INVISIBLE.test(text));
+
 // The operator a base is, if it is one that takes limits: ∑ ∏ ∫ 𝔼 (or a
 // double-struck E), min max lim, and arg min or arg max (split by the
-// invisible function application, or not).
+// invisible function application, or not). A capital sigma is the sum only
+// as an operator.
 const limitsOperator = (base) => {
-  const tokens = tokensIn(base)
-    .map((token) => ({ name: token.name, text: tokenText(token).trim(), variant: attribute(token, "mathvariant") }))
-    .filter(({ text }) => text && !INVISIBLE.test(text));
+  const tokens = spokenTokens(base);
   if (tokens.length === 2 && tokens[0].text === "arg" && (tokens[1].text === "min" || tokens[1].text === "max")) {
     return { word: `arg ${tokens[1].text}`, of: false };
   }
   if (tokens.length !== 1) return null;
-  const [{ name, text, variant }] = tokens;
-  const symbol = name === "mo" && text === "Σ" ? "∑" : name === "mi" && text === "E" && variant === "double-struck" ? "𝔼" : text;
+  const { name, symbol } = tokens[0];
+  if (name === "mi" && symbol === "Σ") return null;
   if (BIG_OPERATORS.has(symbol)) return { word: BIG_OPERATORS.get(symbol), of: true };
   return LIMIT_NAMES.has(symbol) ? { word: symbol, of: false } : null;
+};
+
+const isReals = (base) => {
+  const tokens = spokenTokens(base);
+  return tokens.length === 1 && tokens[0].symbol === REALS;
 };
 
 // <op> from <under> to <over> of | <op> over <under> | <op> to <over>, with
@@ -305,16 +465,16 @@ const readLimits = (item, out, operator, base, under, over) => {
 };
 
 // A function with a script or an accent is still applied to a bracket after it:
-// f_θ(x), f*(x), f-hat(x). The call reads "of" after the last word of the construct.
+// f_θ(x), f*(x), f-hat(x), f-hat_ens(x). The call reads "of" after the last
+// word of the construct, when the base ends in a function.
 const keepsFunction = (head, out) => {
-  const [only, extra] = real(head);
   const last = lastAtom(out);
-  if (only?.fn && !extra && last) last.fn = true;
+  if (lastAtom(head)?.fn && last) last.fn = true;
 };
 
 const readSuperscript = (sup, out, parent, before) => {
   const key = plainText(sup);
-  const said = key === null ? undefined : SUPERSCRIPT_WORDS.get(key);
+  const said = key === null ? undefined : SCRIPT_WORDS.get(key);
   if (said) {
     out.push(atom(said, sup.start, sup.end));
     return;
@@ -342,12 +502,20 @@ const readScripts = (item, out, parent) => {
   }
   const head = atomsOf(base, parent);
   out.push(...head);
-  if (sub) {
+  // ℝ^{m×n} is a space of matrices, not a power, and × is "by" in it: "R m by
+  // n", as the text pass reads ℝᵐˣⁿ.
+  if (item.name === "msup" && isReals(base)) {
+    out.push(...atomsOf(sup, item).map((entry) => (entry.by ? { ...entry, text: "by" } : entry)));
+    return;
+  }
+  // A norm's opening bar has already read the scripts of its closing bar.
+  const used = item.norm;
+  if (sub && !used?.sub) {
     const tail = atomsOf(sub, item);
     if (real(tail).length > 1) out.push(inserted("sub", base.end));
     out.push(...tail);
   }
-  if (sup) readSuperscript(sup, out, item, sub ?? base);
+  if (sup && !used?.sup) readSuperscript(sup, out, item, sub ?? base);
   keepsFunction(head, out);
 };
 

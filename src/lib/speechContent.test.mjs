@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { verbalizeMath } from "./mathSpeech.js";
+import * as speakable from "./speakable.js";
 
 // A stub DOM for the speech-unit tests: just the parts of the DOM the walkers
 // read, and no layout, so a sentence target takes its no-layout fallbacks.
@@ -173,7 +174,7 @@ test("vertical bars read as an absolute value, a norm or the conditioning bar", 
   assert.equal(readMath(bar("prefix", "∥"), mi("w"), bar("prefix", "∥")), "the norm of w");
   // The closing bar can carry a script: |x|² and ‖w‖₂ are bars with a script.
   assert.equal(readMath(bar("prefix"), mi("x"), of("msup", bar("prefix"), mn("2"))), "the absolute value of x squared");
-  assert.equal(readMath(bar("prefix", "‖"), mi("w"), of("msub", bar("postfix", "‖"), mn("2"))), "the norm of w 2");
+  assert.equal(readMath(bar("prefix", "‖"), mi("w"), of("msub", bar("postfix", "‖"), mn("2"))), "the L2 norm of w");
 });
 
 test("big operators read their limits, and Pandoc's inline form reads the same", () => {
@@ -267,6 +268,111 @@ test("fractions, roots and tables", () => {
   assert.equal(readMath(mo("{"), of("mtable", line(cell(mn("1"), comma()), cell(row(mi("x"), mo(">"), mn("0")), comma())), line(cell(mn("0"), comma()), cell(mtext("otherwise"))))), "1, x greater than 0, 0, otherwise");
 });
 
+test("the walker reads the text pass's own word tables", () => {
+  const { mi, mo, of } = mathml;
+  for (const name of ["SYMBOLS", "SUPERSCRIPT_WORDS", "COMBINING_MARKS", "BIG_OPERATORS", "LONE_OPERATORS", "FUNCTION_NAMES", "NORM_BARS", "REALS"]) {
+    assert.ok(speakable[name], `speakable.js exports ${name}`);
+  }
+  const named = (text) => `U+${text.codePointAt(0).toString(16).toUpperCase()}`;
+  // Whatever the text pass names, the walker names the same way: Greek letters, operators, relations, arrows.
+  for (const [symbol, word] of speakable.SYMBOLS) {
+    assert.equal(readMath(mi(symbol)), word, `${named(symbol)} as an identifier`);
+    assert.equal(readMath(mo(symbol)), word, `${named(symbol)} as an operator`);
+  }
+  for (const [script, word] of speakable.SUPERSCRIPT_WORDS) assert.equal(readMath(of("msup", mi("x"), mi(script))), `x ${word}`, script);
+  for (const [mark, word] of speakable.COMBINING_MARKS) assert.equal(readMath(of("mover", mi("x"), mo(mark))), `x ${word}`, named(mark));
+  for (const [operator, name] of speakable.BIG_OPERATORS) assert.equal(readMath(mo(operator)), `${name} of`, operator);
+  for (const [operator, { word }] of speakable.LONE_OPERATORS) assert.equal(readMath(mo(operator)), word, operator);
+  for (const name of speakable.FUNCTION_NAMES) assert.equal(readMath(mi(name), mo("("), mi("x"), mo(")")), `${name} of (x)`, name);
+  assert.equal(readMath(mi(speakable.REALS)), "R");
+  for (const bar of speakable.NORM_BARS) assert.equal(readMath(mi(bar), mi("x"), mi(bar)), "the norm of x", named(bar));
+});
+
+test("norm bars pair off in a row whatever their form, and the closing bar's scripts name the norm", () => {
+  const { mi, mo, mn, of } = mathml;
+  const bar = (form, mark = "‖") => mo(mark, form ? { form } : {});
+  // Pandoc gives both bars of \|w\| the postfix form, and puts the order and the square on the closing bar.
+  assert.equal(readMath(bar("postfix"), mi("w"), bar("postfix")), "the norm of w");
+  assert.equal(readMath(bar("postfix", "∥"), mi("w"), of("msubsup", bar("postfix", "∥"), mn("2"), mn("2"))), "the squared L2 norm of w");
+  assert.equal(readMath(bar("postfix"), mi("w"), of("msub", bar("postfix"), mn("2"))), "the L2 norm of w");
+  assert.equal(readMath(bar("postfix"), mi("w"), of("msup", bar("postfix"), mn("2"))), "the squared norm of w");
+  assert.equal(readMath(bar("postfix"), mi("A"), of("msub", bar("postfix"), mi("F"))), "the Frobenius norm of A");
+  assert.equal(readMath(bar("postfix"), mi("x"), of("msub", bar("postfix"), mi("∞"))), "the L infinity norm of x");
+  assert.equal(readMath(bar("postfix"), mi("x"), of("msub", bar("postfix"), mi("p"))), "the Lp norm of x");
+  // A superscript that is not a square stays in the reading, after the content.
+  assert.equal(readMath(bar("postfix"), mi("x"), of("msup", bar("postfix"), mi("p"))), "the norm of x to the power of p");
+  // Two norms in a row pair off in order.
+  assert.equal(readMath(bar("postfix"), mi("a"), bar("postfix"), mo("+"), bar("postfix"), mi("b"), of("msub", bar("postfix"), mn("1"))), "the norm of a plus the L1 norm of b");
+  // KaTeX spells the bars as identifiers, and Pandoc's \left\| ... \right\| marks them prefix and postfix.
+  assert.equal(readMath(mi("∥"), mi("w"), of("msub", mi("∥"), mn("2"))), "the L2 norm of w");
+  assert.equal(readMath(bar("prefix", "∥"), mi("w"), bar("postfix", "∥")), "the norm of w");
+  // Bars pair only around a balanced stretch: the bars of two KL terms in one row are separators, not a norm
+  // (the corpus's Jensen-Shannon formula), and a norm after a KL term still pairs.
+  const kl = (left, right) => [mi("D"), mo("("), mi(left), bar("postfix", "∥"), mi(right), mo(")")];
+  assert.equal(readMath(kl("P", "M"), mo("+"), kl("Q", "M")), "D of (P M) plus D of (Q M)");
+  assert.equal(readMath(kl("P", "Q"), mo("+"), bar("postfix"), mi("w"), bar("postfix")), "D of (P Q) plus the norm of w");
+  assert.equal(readMath(bar("postfix"), mi("w"), bar("postfix"), mo("+"), kl("P", "Q")), "the norm of w plus D of (P Q)");
+  assert.equal(readMath(bar("postfix"), mo("("), mi("a"), mo("+"), mi("b"), mo(")"), bar("postfix")), "the norm of (a plus b)");
+  // A bar alone in its row reads as before: the KL divergence's bar is postfix and says nothing, a lone prefix bar opens, a lone identifier stays as written.
+  assert.equal(readMath(mi("D"), mo("("), mi("P"), bar("postfix", "∥"), mi("Q"), mo(")")), "D of (P Q)");
+  assert.equal(readMath(bar("prefix"), mi("w")), "the norm of w");
+  assert.equal(readMath(mi("P"), mi("∥"), mi("Q")), "P ∥ Q");
+});
+
+test("a power of the reals reads as the text pass reads it: R m by n", () => {
+  const { mi, mo, mn, row, of } = mathml;
+  const reals = () => mi("ℝ", { mathvariant: "double-struck" });
+  assert.equal(readMath(of("msup", reals(), row(mi("m"), mo("×"), mi("n")))), "R m by n");
+  assert.equal(readMath(of("msup", reals(), mi("d"))), "R d");
+  assert.equal(readMath(of("msup", reals(), mn("2"))), "R 2");
+  assert.equal(readMath(of("msup", reals(), row(mi("m"), mi("ˣ"), mi("n")))), "R m by n");
+  // KaTeX writes a double-struck R.
+  assert.equal(readMath(of("msup", mi("R", { mathvariant: "double-struck" }), row(mi("m"), mo("×"), mi("n")))), "R m by n");
+  // A nested exponent reads as math.
+  assert.equal(readMath(of("msup", reals(), of("msub", mi("d"), row(mi("m"), mi("o"), mi("d"), mi("e"), mi("l"))))), "R d model");
+  // × says "times" everywhere else, and a power of anything else is still a power.
+  assert.equal(readMath(mi("a"), mo("×"), mi("b")), "a times b");
+  assert.equal(readMath(of("msup", mi("x"), row(mi("m"), mo("×"), mi("n")))), "x to the power of m times n");
+});
+
+test("Mathematical Alphanumeric letters read as the plain letter, after the table lookup", () => {
+  const { mi, mo } = mathml;
+  assert.equal(readMath(mi("𝒟", { mathvariant: "script" })), "D");
+  assert.equal(readMath(mi("\u{1D431}", { mathvariant: "bold" })), "x");
+  assert.equal(readMath(mi("\u{1D499}", { mathvariant: "bold-italic" })), "x");
+  assert.equal(readMath(mi("\u{1D6C2}", { mathvariant: "bold" })), "alpha", "a bold Greek letter is looked up again once it is plain");
+  assert.equal(readMath(mi("\u{1D41F}"), mo("("), mi("x"), mo(")")), "f of (x)", "a bold f is still a letter that can be applied");
+  // 𝔼 and ℓ would fold into E and l: the table comes first.
+  assert.equal(readMath(mi("𝔼")), "expected value of");
+  assert.equal(readMath(mi("ℓ")), "ell");
+  assert.equal(readMath(mi("\u{1D431}\u{1D432}")), "xy", "every letter of an identifier folds");
+});
+
+test("inside a script a run of three or more single letters reads as one word", () => {
+  const { mi, mo, mn, row, of } = mathml;
+  const letters = (word) => row(...[...word].map((letter) => mi(letter)));
+  assert.equal(readMath(of("msub", mi("P"), letters("train"))), "P train");
+  assert.equal(readMath(of("msub", mi("π"), letters("ref"))), "pi ref");
+  assert.equal(readMath(of("msup", mi("x"), letters("abc"))), "x to the power of abc");
+  assert.equal(readMath(of("munder", mi("min"), letters("abc"))), "min over abc");
+  assert.equal(readMath(of("mover", mi("x"), letters("abc"))), "x with abc above");
+  assert.equal(readMath(of("msubsup", mi("x"), letters("abc"), mn("2"))), "x abc squared");
+  // The run is one token, so P_{train}(x) is a function with a one-word subscript, and a hat on the function
+  // keeps it one: \hat{f}_{ens}(x).
+  assert.equal(readMath(of("msub", mi("P"), letters("train")), mo("("), mi("x"), mo(")")), "P train of (x)");
+  assert.equal(readMath(of("msub", of("mover", mi("f"), mo("\u{0302}", { accent: "true" })), letters("ens")), mo("("), mi("x"), mo(")")), "f hat ens of (x)");
+  // Fewer than three stay spelled, and so do letters outside any script.
+  assert.equal(readMath(of("msub", mi("C"), letters("FP"))), "C sub F P");
+  assert.equal(readMath(mi("T"), mi("P"), mi("R")), "T P R");
+  assert.equal(readMath(of("msub", mi("x"), row(mi("a"), mi("b"), mo("+"), mi("c"), mi("d"), mi("e")))), "x sub a b plus cde");
+  // A letter that is read by name (Greek, ℓ) or is not a letter breaks a run.
+  assert.equal(readMath(of("msub", mi("x"), row(mi("a"), mi("θ"), mi("b"), mi("c")))), "x sub a theta b c");
+  assert.equal(readMath(of("msub", mi("x"), row(mi("a"), mi("b"), mn("1"), mi("c"), mi("d")))), "x sub a b 1 c d");
+  // Spaces between the letters of pretty-printed markup do not break the run, and the run reaches into a nested fraction.
+  assert.equal(readMath(of("msub", mi("x"), el("mrow", {}, [text("\n"), mi("t"), text(" "), mi("r"), text("\n"), mi("a")]))), "x tra");
+  assert.equal(readMath(of("msup", mi("x"), of("mfrac", letters("num"), letters("den")))), "x to the power of num over den", "each side of the fraction is one word, so one token");
+});
+
 test("silent markup, spaces and strange input", () => {
   const { mi, mo, mn, mtext, row, of } = mathml;
   assert.equal(readMath(mi("a"), of("mphantom", mi("b")), mi("c")), "a c");
@@ -352,6 +458,22 @@ test("the MathML map is contiguous, ordered and anchors inserted words to an emp
   const padded = check(math(mtext(" latency ")), "padded");
   assert.equal(padded.spoken, "latency");
   assert.deepEqual(padded.map[0].source, [1, 8]);
+  // The newer constructs keep them too: a norm whose order and square sit on the closing bar, a power
+  // of the reals, bold letters (two UTF-16 units each) and a run of letters read as one word.
+  const closing = () => mo("‖", { form: "postfix" });
+  const norm = check(math(closing(), mi("w"), of("msubsup", closing(), mn("2"), mn("2"))), "norm");
+  assert.equal(norm.spoken, "the squared L2 norm of w");
+  assert.deepEqual(norm.pieceOf("the squared L2 norm of").source, [0, 1], "the words sit on the opening bar and the closing bar's scripts are a gap");
+  assert.deepEqual(norm.pieceOf("w").source, [1, 2]);
+  const reals = check(math(of("msup", mi("ℝ", { mathvariant: "double-struck" }), row(mi("m"), mo("×"), mi("n")))), "reals");
+  assert.equal(reals.spoken, "R m by n");
+  assert.deepEqual(reals.pieceOf("by").source, [2, 3]);
+  const bold = check(math(mi("\u{1D431}"), mi("𝒟")), "bold letters");
+  assert.equal(bold.spoken, "x D");
+  assert.deepEqual([bold.pieceOf("x").source, bold.pieceOf("D").source], [[0, 2], [2, 4]]);
+  const word = check(math(of("msub", mi("P"), row(...[..."train"].map((letter) => mi(letter))))), "letter run");
+  assert.equal(word.spoken, "P train");
+  assert.deepEqual(word.pieceOf("train").source, [1, 6]);
   // Bigger formulas keep the invariants too.
   const cell = (...nodes) => of("mtd", ...nodes);
   const line = (...cells) => of("mtr", ...cells);
