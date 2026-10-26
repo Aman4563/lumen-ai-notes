@@ -4,7 +4,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 import puppeteer from "puppeteer-core";
-import { settled } from "./audit_waits.mjs";
+import { pollValue, settled } from "./audit_waits.mjs";
 
 /**
  * Minimal EPUB fixture (issue #12), zipped by hand: local headers + central
@@ -1442,11 +1442,23 @@ try {
     { timeout: 10_000 },
   ).catch(() => assert.fail("plural folding did not match the singular form"));
   await page.waitForSelector(".library-facets", { timeout: 5_000 });
-  const facetLabel = await page.$eval(".library-facets button", (node) => node.textContent);
-  assert.match(facetLabel, /Part \d+\s*\d+/, `facet chips must show a part and its count, saw “${facetLabel}”`);
-  await page.$eval(".library-facets button", (node) => node.click());
-  await page.waitForFunction(() => document.querySelector(".filter-row button.active")?.textContent !== "All", { timeout: 5_000 })
-    .catch(() => assert.fail("clicking a facet chip did not focus its Part"));
+  // The chips are rebuilt as each result set lands: a chip found in one round trip can be gone by
+  // the next, and its click would reach no one. So find, read and click it in one page task.
+  const facet = await page.evaluate(() => {
+    const chip = document.querySelector(".library-facets button");
+    if (!chip) return null;
+    const record = { label: chip.textContent, part: chip.getAttribute("aria-label").split(":")[0] };
+    chip.click();
+    return record;
+  });
+  assert.ok(facet, "no facet chip was on the page to click");
+  assert.match(facet.label, /Part \d+\s*\d+/, `facet chips must show a part and its count, saw “${facet.label}”`);
+  const active = await pollValue(
+    () => page.$eval(".filter-row", (row) => row.querySelector("button.active")?.textContent ?? "no active chip"),
+    (text) => text === facet.part,
+    { timeout: 5_000 },
+  );
+  assert.equal(active, facet.part, `clicking a facet chip did not focus its Part: clicked “${facet.label}”, the active filter is ${active}`);
   await page.$$eval(".filter-row button", (nodes) => nodes.find((node) => node.textContent === "All")?.click());
   await page.click('button[aria-label="Clear search"]');
   // The worker caps ranked results at 100, while the pre-search candidate list
@@ -1507,8 +1519,18 @@ try {
   await page.waitForFunction(() => document.querySelector(".document-grid")?.innerText.includes("Uploaded Persistence Proof"), { timeout: 10_000 });
   await page.select('.library-view-controls select', "title");
 
-  await page.$eval(".document-grid .document-card", (node) => node.click());
+  // The grid lists other lectures until the typed search lands, and its cards are rebuilt as each set lands:
+  // pick the note's card by its title and click it in one page task, not the first card found a round trip ago.
+  const found = await page.evaluate((title) => {
+    const card = [...document.querySelectorAll(".document-grid .document-card")]
+      .find((node) => node.querySelector("strong")?.textContent.includes(title));
+    card?.click();
+    return Boolean(card);
+  }, "Uploaded Persistence Proof");
+  assert.ok(found, "the uploaded note's card was not in the grid to open");
   await page.waitForSelector(".reader-view");
+  await page.waitForFunction((title) => document.querySelector(".reader-view .markdown-body h1")?.textContent.includes(title), { timeout: 10_000 }, "Uploaded Persistence Proof")
+    .catch(() => assert.fail("the card opened another lecture, not the uploaded note"));
   await clickByText(page, ".document-tools button", "Edit copy");
   await page.waitForSelector(".markdown-editor");
   await page.type(".markdown-editor", "\nUnsaved navigation guard marker.");
