@@ -7,6 +7,7 @@ import {
   REALS,
   SUPERSCRIPT_WORDS,
   SYMBOLS,
+  normPhrase,
 } from "./speakable.js";
 
 /**
@@ -51,8 +52,11 @@ const SCRIPT_PARENTS = new Set(["msub", "msup", "msubsup", "munder", "mover", "m
 const INVISIBLE = /^[\u{2061}-\u{2064}]+$/u;
 const ATTACHED = /^[,.;:]+$/u;
 // Pandoc writes \mathbf, \mathcal and \mathbb letters as single characters from
-// this block; NFKC turns them into the plain letters.
-const MATH_ALPHANUMERIC = /[\u{1D400}-\u{1D7FF}]/gu;
+// the Mathematical Alphanumeric block, and \mathcal{L} as the Letterlike ℒ;
+// NFKC turns them into the plain letters. The Letterlike block also holds
+// symbols (ℵ ™ ℃) that must stay, so there only a Latin or Greek letter folds.
+const FOLDED = /[\u{2100}-\u{214F}\u{1D400}-\u{1D7FF}]/gu;
+const PLAIN_LETTER = /^(?:[A-Za-z]|\p{Script=Greek})$/u;
 // Letters in a row that make a word inside a script: P_{train}.
 const WORD_RUN = 3;
 
@@ -84,9 +88,6 @@ const SCRIPT_WORDS = new Map([...SUPERSCRIPT_WORDS, ["\u{2033}", "double prime"]
 // A square on a norm bar: ‖w‖₂² is "the squared L2 norm of w".
 const SQUARES = new Set(["2", "²"]);
 
-const ABSOLUTE_VALUE = "the absolute value of";
-const NORM = "the norm of";
-
 // The reading is a list of atoms, laid out into spoken text at the end, so a
 // construct can look at what a part says ("one token") before it spaces it.
 // An atom's kind decides its spacing: an opening bracket takes no space after
@@ -105,7 +106,10 @@ const attribute = (item, name) => item.node?.getAttribute?.(name) ?? null;
 const isTextItem = (item) => item.name === undefined;
 const elementsOf = (item) => item.children.filter((child) => !isTextItem(child));
 const tokenText = (item) => item.children.map((child) => child.text).join("");
-const fold = (text) => text.replace(MATH_ALPHANUMERIC, (char) => char.normalize("NFKC"));
+const fold = (text) => text.replace(FOLDED, (char) => {
+  const plain = char.normalize("NFKC");
+  return char.codePointAt(0) >= 0x1D400 || PLAIN_LETTER.test(plain) ? plain : char;
+});
 
 // The tree with, on every node, where its text sits in `math.textContent` and
 // whether it is inside a script. Text nodes of every kind count, so the
@@ -167,70 +171,73 @@ const wordFor = (name, symbol) => {
   return SYMBOLS.get(symbol) ?? OPERATORS.get(symbol);
 };
 
-// Pandoc gives both bars of |y − z| the prefix form, so | pairs up inside its
-// row: the first opens ("the absolute value of"), the next closes. A postfix
-// bar always closes. A | with no form is the conditioning bar. A norm bar
-// that has no partner in its row reads the same way.
-const readBar = (item, symbol, written, out, parent) => {
-  const form = attribute(item, "form");
-  const family = symbol === "|" ? "|" : "‖";
-  const state = parent ? (parent.bars ??= {}) : {};
-  if (form === "postfix") {
-    state[family] = false;
-    return;
-  }
-  if (form === "prefix" || (family === "‖" && form !== "postfix")) {
-    if (state[family]) {
-      state[family] = false;
-      return;
-    }
-    state[family] = true;
-    out.push({ ...written, text: symbol === "|" ? ABSOLUTE_VALUE : NORM });
-    return;
-  }
-  out.push({ ...written, text: "given" });
+const NORM = "the norm of";
+const ABSOLUTE_VALUE = "the absolute value of";
+const BAR_SCRIPTED = new Set(["msub", "msup", "msubsup"]);
+
+// The bars that pair: a norm bar (‖ or ∥, as an operator or an identifier) and
+// a typed bar, Pandoc's | in either form and KaTeX's ∣ written as an
+// identifier. The operator ∣ is \mid, never pairs and says "given".
+const barKind = (item) => {
+  if ((item.name !== "mo" && item.name !== "mi") || !item.children.every(isTextItem)) return null;
+  const text = tokenText(item).trim();
+  if (NORM_BARS.has(text)) return "norm";
+  return (item.name === "mo" && text === "|") || (item.name === "mi" && text === "\u{2223}") ? "typed" : null;
 };
 
-const NORM_SCRIPTED = new Set(["msub", "msup", "msubsup"]);
-const isNormBar = (item) => (item.name === "mo" || item.name === "mi") && item.children.every(isTextItem) && NORM_BARS.has(tokenText(item).trim());
-
-// The norm bars of a row in order, each with the script construct it is the
-// base of (the closing bar of ‖w‖₂²), if any, and the partner it pairs with
-// (-1 for none). A pair encloses a balanced stretch: the bars of D(P ∥ M) +
-// D(Q ∥ M) are two separators, since the first stretch closes a bracket it did
-// not open. The brackets are counted along the row, and a bracket may carry a
-// script, as in (a + b)².
-const normBars = (row) => {
-  if (!row.norms) {
-    const bars = [];
+// The tree carries state for the reading: a row's bars (row.bars) and a bar's
+// place among them (item.barAt), the scripts a norm's opening bar has taken
+// (construct.norm), a lone norm bar's toggle (row.openNorm). They assume each
+// subtree is read once, in document order, which is how read() walks it.
+//
+// The bars of a row, by kind and in order, each with the script construct it
+// is the base of (the closing bar of ‖w‖₂² or |x|²), if any, and the partner it
+// pairs with (-1 for none). Bars pair off in order whatever their form: Pandoc
+// marks both bars of |y − z| prefix and both of \|w\| postfix, KaTeX gives them
+// none. A pair encloses a balanced stretch of brackets: the bars of D(P ∥ M) +
+// D(Q ∥ M) or of P(a|b) + P(c|d) are separators, since the first stretch
+// closes a bracket it did not open. The brackets are counted along the row,
+// and a bracket may carry a script, as in (a + b)².
+const barsOf = (row) => {
+  if (!row.bars) {
+    const lists = { norm: [], typed: [] };
+    const lows = { norm: 0, typed: 0 };
     let depth = 0;
-    let low = 0;
     for (const child of row.children) {
-      const construct = NORM_SCRIPTED.has(child.name) ? child : null;
+      const construct = BAR_SCRIPTED.has(child.name) ? child : null;
       const token = construct ? elementsOf(child)[0] : child;
       if (!token) continue;
       const mark = token.name === "mo" && token.children.every(isTextItem) ? tokenText(token).trim() : "";
-      if (mark === "(" || mark === "[") depth += 1;
-      else if (mark === ")" || mark === "]") low = Math.min(low, (depth -= 1));
-      else if (isNormBar(token)) {
-        token.normAt = bars.length;
-        bars.push({ token, construct, partner: -1, depth, low });
-        low = depth;
-      }
-    }
-    for (let at = 0; at < bars.length;) {
-      const next = bars[at + 1];
-      if (next && next.depth === bars[at].depth && next.low >= bars[at].depth) {
-        bars[at].partner = at + 1;
-        next.partner = at;
-        at += 2;
+      if (mark === "(" || mark === "[") {
+        depth += 1;
+      } else if (mark === ")" || mark === "]") {
+        depth -= 1;
+        lows.norm = Math.min(lows.norm, depth);
+        lows.typed = Math.min(lows.typed, depth);
       } else {
-        at += 1;
+        const kind = barKind(token);
+        if (kind) {
+          token.barAt = lists[kind].length;
+          lists[kind].push({ token, construct, partner: -1, depth, low: lows[kind] });
+          lows[kind] = depth;
+        }
       }
     }
-    row.norms = bars;
+    for (const list of Object.values(lists)) {
+      for (let at = 0; at < list.length;) {
+        const next = list[at + 1];
+        if (next && next.depth === list[at].depth && next.low >= list[at].depth) {
+          list[at].partner = at + 1;
+          next.partner = at;
+          at += 2;
+        } else {
+          at += 1;
+        }
+      }
+    }
+    row.bars = lists;
   }
-  return row.norms;
+  return row.bars;
 };
 
 // "the squared L2 norm of", "the Frobenius norm of", "the L infinity norm of":
@@ -243,25 +250,39 @@ const normReading = (construct) => {
   const sup = construct && construct.name !== "msub" ? (construct.name === "msup" ? first : second) : null;
   const order = sub ? plainText(sub) : null;
   const squared = sup ? SQUARES.has(plainText(sup)) : false;
-  const label = order === "∞" ? "L infinity " : order === "F" ? "Frobenius " : order ? `L${order} ` : "";
-  return { words: `the ${squared ? "squared " : ""}${label}norm of`, used: { sub: Boolean(order), sup: squared } };
+  return { words: normPhrase(order ?? "", squared), used: { sub: Boolean(order), sup: squared } };
 };
 
-// Norm bars pair off in order, 1st with 2nd, 3rd with 4th, whatever their form:
-// Pandoc marks both bars of \|w\| postfix, KaTeX gives them no form. The pair
-// reads at its opening bar and the closing bar says nothing. A bar without a
-// partner (a lone one, or the last of an odd count) is left to read as it did.
-const readNormBar = (item, row, written, out) => {
-  const bars = normBars(row);
-  const bar = bars[item.normAt];
+// A pair reads at its opening bar and the closing bar says nothing. True when
+// the bar belongs to a pair; a bar without a partner (a lone one, or the last
+// of an odd count) is left to read on its own.
+const readPairedBar = (kind, item, row, written, out) => {
+  const list = barsOf(row)[kind];
+  const bar = list[item.barAt];
   if (bar?.token !== item || bar.partner < 0) return false;
-  if (bar.partner > item.normAt) {
-    const { construct } = bars[bar.partner];
-    const { words, used } = normReading(construct);
-    if (construct) construct.norm = used;
-    out.push({ ...written, text: words });
+  if (bar.partner > item.barAt) {
+    if (kind === "typed") {
+      out.push({ ...written, text: ABSOLUTE_VALUE });
+    } else {
+      const { construct } = list[bar.partner];
+      const { words, used } = normReading(construct);
+      if (construct) construct.norm = used;
+      out.push({ ...written, text: words });
+    }
   }
   return true;
+};
+
+// A norm bar without a partner: a postfix bar says nothing (the bar of
+// D(P ∥ Q)), any other opens a norm and the next one closes it.
+const readLoneNormBar = (item, written, out, parent) => {
+  const row = parent ?? {};
+  if (attribute(item, "form") !== "postfix" && !row.openNorm) {
+    row.openNorm = true;
+    out.push({ ...written, text: NORM });
+    return;
+  }
+  row.openNorm = false;
 };
 
 const readToken = (item, out, parent) => {
@@ -269,7 +290,8 @@ const readToken = (item, out, parent) => {
   const core = raw.trim();
   if (!core || INVISIBLE.test(core)) return;
   const written = writtenAtom(raw, item.start);
-  if (NORM_BARS.has(core) && (item.name === "mo" || item.name === "mi") && parent && readNormBar(item, parent, written, out)) return;
+  const kind = barKind(item);
+  if (kind && parent && readPairedBar(kind, item, parent, written, out)) return;
   if (item.name === "mo") {
     if (core === "{" || core === "}") return;
     if (core === "(" || core === "[") {
@@ -283,8 +305,12 @@ const readToken = (item, out, parent) => {
       out.push({ ...written, kind: "close" });
       return;
     }
-    if (core === "|" || NORM_BARS.has(core)) {
-      readBar(item, core, written, out, parent);
+    if (kind === "typed") {
+      out.push({ ...written, text: "given" });
+      return;
+    }
+    if (kind === "norm") {
+      readLoneNormBar(item, written, out, parent);
       return;
     }
   }
@@ -317,9 +343,10 @@ const readToken = (item, out, parent) => {
 // (the "by" of ℝᵐˣⁿ).
 const plainLetter = (item) => {
   if (item.name !== "mi" || !item.children.every(isTextItem)) return null;
-  const text = fold(tokenText(item).trim());
-  const named = SYMBOLS.has(text) || BIG_OPERATORS.has(text) || text === REALS || symbolOf(item, text) !== text;
-  return /^(?!\p{Lm})\p{L}$/u.test(text) && !named ? text : null;
+  const raw = tokenText(item).trim();
+  const text = fold(raw);
+  const named = (letter) => SYMBOLS.has(letter) || BIG_OPERATORS.has(letter) || letter === REALS || symbolOf(item, letter) !== letter;
+  return /^(?!\p{Lm})\p{L}$/u.test(text) && !named(raw) && !named(text) ? text : null;
 };
 
 // Inside a script, three or more such letters in a row are one word:
@@ -452,6 +479,7 @@ const isReals = (base) => {
 // <op> from <under> to <over> of | <op> over <under> | <op> to <over>, with
 // "of" after the big operators.
 const readLimits = (item, out, operator, base, under, over) => {
+  const start = out.length;
   out.push(atom(operator.word, base.start, base.end));
   if (under) {
     out.push(inserted(over ? "from" : "over", base.end));
@@ -462,14 +490,21 @@ const readLimits = (item, out, operator, base, under, over) => {
     read(over, out, item);
   }
   if (operator.of) out.push(inserted("of", item.end));
+  endsAs(out, start, !operator.of);
 };
 
-// A function with a script or an accent is still applied to a bracket after it:
-// f_θ(x), f*(x), f-hat(x), f-hat_ens(x). The call reads "of" after the last
-// word of the construct, when the base ends in a function.
-const keepsFunction = (head, out) => {
-  const last = lastAtom(out);
-  if (lastAtom(head)?.fn && last) last.fn = true;
+// Whether a bracket after a construct is applied to it. A token says so for
+// itself; a construct says so from its head: f_θ, f*, f-hat, f-hat_ens and
+// log_2 are functions, but the last word of a fraction, a root, a table or a
+// power such as 2^k is not one, whatever token it ends in. A min, max or lim
+// with limits takes its argument in a bracket: min_θ (f).
+const endsAs = (out, start, isFunctionLike) => {
+  for (let at = out.length - 1; at >= start; at -= 1) {
+    if (!out[at].space) {
+      out[at].fn = isFunctionLike;
+      return;
+    }
+  }
 };
 
 const readSuperscript = (sup, out, parent, before) => {
@@ -500,12 +535,14 @@ const readScripts = (item, out, parent) => {
     readLimits(item, out, operator, base, sub, sup);
     return;
   }
+  const start = out.length;
   const head = atomsOf(base, parent);
   out.push(...head);
   // ℝ^{m×n} is a space of matrices, not a power, and × is "by" in it: "R m by
   // n", as the text pass reads ℝᵐˣⁿ.
   if (item.name === "msup" && isReals(base)) {
     out.push(...atomsOf(sup, item).map((entry) => (entry.by ? { ...entry, text: "by" } : entry)));
+    endsAs(out, start, false);
     return;
   }
   // A norm's opening bar has already read the scripts of its closing bar.
@@ -516,7 +553,7 @@ const readScripts = (item, out, parent) => {
     out.push(...tail);
   }
   if (sup && !used?.sup) readSuperscript(sup, out, item, sub ?? base);
-  keepsFunction(head, out);
+  endsAs(out, start, Boolean(lastAtom(head)?.fn));
 };
 
 // munder, mover and munderover.
@@ -528,11 +565,12 @@ const readUnderOver = (item, out, parent) => {
     readChildren(item, out);
     return;
   }
+  const start = out.length;
   const accent = over && !under ? ACCENTS.get(plainText(over)) : undefined;
   if (accent) {
     const head = atomsOf(base, parent);
     out.push(...head, atom(accent, over.start, over.end));
-    keepsFunction(head, out);
+    endsAs(out, start, Boolean(lastAtom(head)?.fn));
     return;
   }
   const operator = limitsOperator(base);
@@ -551,6 +589,7 @@ const readUnderOver = (item, out, parent) => {
     read(over, out, item);
     out.push(inserted("above", over.end));
   }
+  endsAs(out, start, false);
 };
 
 // Two single tokens read "1 over n"; anything longer gets commas around the
@@ -562,6 +601,7 @@ const readFraction = (item, out) => {
     readChildren(item, out);
     return;
   }
+  const start = out.length;
   const above = atomsOf(top, item);
   const below = atomsOf(bottom, item);
   const short = real(above).length === 1 && real(below).length === 1;
@@ -570,20 +610,23 @@ const readFraction = (item, out) => {
   out.push(inserted("over", top.end));
   if (!short) out.push(inserted(",", top.end, "attach"));
   out.push(...below);
+  endsAs(out, start, false);
 };
 
 // "root 3 of x" is spoken index first; the source holds the base first, so the
 // construct is one piece over all of its source.
 const readRoot = (item, out) => {
   const [base, index] = elementsOf(item);
+  const start = out.length;
   const radicand = base ? atomsOf(base, item) : [];
   const degree = index ? atomsOf(index, item) : [];
   // A root missing its base or its index is malformed: say what is there.
   if (!real(radicand).length || !real(degree).length) {
     out.push(...radicand, ...degree);
-    return;
+  } else {
+    out.push(atom(`root ${sayAtoms(degree)} of ${sayAtoms(radicand)}`, item.start, item.end));
   }
-  out.push(atom(`root ${sayAtoms(degree)} of ${sayAtoms(radicand)}`, item.start, item.end));
+  endsAs(out, start, false);
 };
 
 // Cells joined ", ", rows "; ". An empty cell or row is skipped, not read as
@@ -595,6 +638,7 @@ const readTable = (item, out) => {
     readChildren(item, out);
     return;
   }
+  const start = out.length;
   let previousRow = null;
   for (const row of rows) {
     const cells = elementsOf(row)
@@ -608,6 +652,7 @@ const readTable = (item, out) => {
     });
     previousRow = row;
   }
+  endsAs(out, start, false);
 };
 
 const READERS = new Map([
@@ -618,8 +663,10 @@ const READERS = new Map([
   ["mspace", (_item, out) => out.push(SPACE)],
   ["mfrac", readFraction],
   ["msqrt", (item, out) => {
+    const start = out.length;
     out.push(inserted("square root of", item.start));
     readChildren(item, out);
+    endsAs(out, start, false);
   }],
   ["mroot", readRoot],
   ["msub", readScripts],

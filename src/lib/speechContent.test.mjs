@@ -175,6 +175,18 @@ test("vertical bars read as an absolute value, a norm or the conditioning bar", 
   // The closing bar can carry a script: |x|² and ‖w‖₂ are bars with a script.
   assert.equal(readMath(bar("prefix"), mi("x"), of("msup", bar("prefix"), mn("2"))), "the absolute value of x squared");
   assert.equal(readMath(bar("prefix", "‖"), mi("w"), of("msub", bar("postfix", "‖"), mn("2"))), "the L2 norm of w");
+  // Typed bars pair off in order around a balanced stretch, whatever their form: Pandoc's | in either form and
+  // KaTeX's ∣ (U+2223) written as an identifier. A typed bar with no partner is the conditioning bar. \mid is
+  // the operator ∣, never pairs and always says "given".
+  const mid = "\u{2223}";
+  const cond = (left, right) => [mi("P"), mo("(", { form: "prefix" }), mi(left), bar("prefix"), mi(right), mo(")", { form: "postfix" })];
+  assert.equal(readMath(cond("y", "x")), "P of (y given x)");
+  assert.equal(readMath(mi(mid), mi("x"), mi(mid)), "the absolute value of x");
+  assert.equal(readMath(mi("P"), mo("(", { stretchy: "false" }), mi("y"), mi(mid), mi("x"), mo(")", { stretchy: "false" })), "P of (y given x)");
+  assert.equal(readMath(bar("postfix"), mi("x")), "given x", "a lone bar says given whatever its form");
+  assert.equal(readMath(mo(mid), mi("x"), mo(mid)), "given x given");
+  assert.equal(readMath(cond("a", "b"), mo("+"), cond("c", "d")), "P of (a given b) plus P of (c given d)", "the bars of two conditionals in one row are separators");
+  assert.equal(readMath(mi("P"), mo("("), bar("prefix"), mi("x"), bar("prefix"), mo(">"), mn("1"), bar("prefix"), mi("y"), mo(")")), "P of (the absolute value of x greater than 1 given y)");
 });
 
 test("big operators read their limits, and Pandoc's inline form reads the same", () => {
@@ -210,6 +222,39 @@ test("a single letter, a Greek letter or a listed function applied to parenthese
   assert.equal(readMath(call(mi("x")), call(mi("y"))), "(x) (y)");
   assert.equal(readMath(of("msub", mo("∑"), mi("i")), call(mi("x"))), "sum over i of (x)");
   assert.equal(readMath(mi("𝔼"), call(mi("X"))), "expected value of (X)");
+});
+
+test("a bracket applies to a function, not to whatever a construct happens to end in", () => {
+  const { mi, mo, mn, row, of } = mathml;
+  const call = (...args) => [mo("("), ...args, mo(")")];
+  const cell = (...nodes) => of("mtd", ...nodes);
+  // Pandoc's \frac{1}{N}(X^T X), \frac{1}{n}(x-y)^2, 2^k(x+1), (1-\alpha)^t(x) and \sqrt{x}(y).
+  assert.equal(readMath(of("mfrac", mn("1"), mi("N")), call(of("msup", mi("X"), mi("T")), mi("X"))), "1 over N (X transpose X)");
+  assert.equal(readMath(of("mfrac", mn("1"), mi("n")), mo("("), mi("x"), mo("−"), mi("y"), of("msup", mo(")"), mn("2"))), "1 over n (x minus y) squared");
+  assert.equal(readMath(of("msup", mn("2"), mi("k")), call(mi("x"), mo("+"), mn("1"))), "2 to the power of k (x plus 1)");
+  assert.equal(readMath(mo("("), mn("1"), mo("−"), mi("α"), of("msup", mo(")"), mi("t")), call(mi("x"))), "(1 minus alpha) to the power of t (x)");
+  assert.equal(readMath(of("msqrt", mi("x")), call(mi("y"))), "square root of x (y)");
+  // The same for a root with an index, a table, a subscript on a number and what sits under a letter.
+  assert.equal(readMath(of("mroot", mi("x"), mi("n")), call(mi("y"))), "root n of x (y)");
+  assert.equal(readMath(of("mtable", of("mtr", cell(mi("a")), cell(mi("b")))), call(mi("x"))), "a, b (x)");
+  assert.equal(readMath(of("msub", mn("2"), mi("i")), call(mi("x"))), "2 i (x)");
+  assert.equal(readMath(of("munder", mi("x"), mi("a")), call(mi("y"))), "x with a below (y)");
+  assert.equal(readMath(of("msup", mi("ℝ", { mathvariant: "double-struck" }), mi("d")), call(mi("x"))), "R d (x)");
+  // A function with a script, an accent or a word for a subscript still takes its bracket.
+  const hat = () => of("mover", mi("f"), mo("\u{0302}", { accent: "true" }));
+  assert.equal(readMath(of("msub", mi("f"), mi("θ")), call(mi("x"))), "f theta of (x)");
+  assert.equal(readMath(of("msup", mi("f"), mo("*")), call(mi("x"))), "f star of (x)");
+  assert.equal(readMath(hat(), call(mi("x"))), "f hat of (x)");
+  assert.equal(readMath(of("msub", hat(), row(mi("e"), mi("n"), mi("s"))), call(mi("x"))), "f hat ens of (x)");
+  assert.equal(readMath(of("msub", row(mi("log"), mo("\u{2061}")), mn("2")), call(mi("i"), mo("+"), mn("1"))), "log 2 of (i plus 1)");
+  assert.equal(readMath(of("msub", mi("P"), row(mi("t"), mi("r"), mi("a"), mi("i"), mi("n"))), call(mi("x"))), "P train of (x)");
+  assert.equal(readMath(of("msub", mo("∑"), mi("i")), call(mi("x"))), "sum over i of (x)");
+  assert.equal(readMath(of("msup", mi("γ"), mi("k")), call(mi("r"))), "gamma to the power of k of (r)", "γ is a function base, so the brief's rule stands");
+  // An operator with limits that does not end in "of" keeps one before a bracket: \min_\theta (f).
+  assert.equal(readMath(of("msub", row(mi("min"), mo("\u{2061}")), mi("θ")), call(mi("f"))), "min over theta of (f)");
+  assert.equal(readMath(of("munder", row(mi("arg"), mo("\u{2061}"), mi("max")), mi("θ")), call(mi("f"))), "arg max over theta of (f)");
+  assert.equal(readMath(of("munder", mi("lim"), row(mi("x"), mo("→"), mn("0"))), call(mi("f"))), "lim over x leads to 0 of (f)");
+  assert.equal(readMath(of("munder", mi("max"), mi("i")), call(mi("a"))), "max over i of (a)");
 });
 
 test("accents are read after their base and any other mover says what sits above", () => {
@@ -270,7 +315,7 @@ test("fractions, roots and tables", () => {
 
 test("the walker reads the text pass's own word tables", () => {
   const { mi, mo, of } = mathml;
-  for (const name of ["SYMBOLS", "SUPERSCRIPT_WORDS", "COMBINING_MARKS", "BIG_OPERATORS", "LONE_OPERATORS", "FUNCTION_NAMES", "NORM_BARS", "REALS"]) {
+  for (const name of ["SYMBOLS", "SUPERSCRIPT_WORDS", "COMBINING_MARKS", "BIG_OPERATORS", "LONE_OPERATORS", "FUNCTION_NAMES", "NORM_BARS", "REALS", "normPhrase"]) {
     assert.ok(speakable[name], `speakable.js exports ${name}`);
   }
   const named = (text) => `U+${text.codePointAt(0).toString(16).toUpperCase()}`;
@@ -319,6 +364,24 @@ test("norm bars pair off in a row whatever their form, and the closing bar's scr
   assert.equal(readMath(mi("P"), mi("∥"), mi("Q")), "P ∥ Q");
 });
 
+test("a norm says the same words in MathML as in the text pass", () => {
+  const { mi, mo, mn, of } = mathml;
+  const { subOpen, subClose } = speakable.SPEECH_MARK;
+  const bar = () => mo("‖", { form: "postfix" });
+  const cases = [
+    ["‖w‖", [bar(), mi("w"), bar()]],
+    ["‖w‖₂", [bar(), mi("w"), of("msub", bar(), mn("2"))]],
+    ["‖w‖²", [bar(), mi("w"), of("msup", bar(), mn("2"))]],
+    ["‖w‖₂²", [bar(), mi("w"), of("msubsup", bar(), mn("2"), mn("2"))]],
+    ["‖x‖ₚ", [bar(), mi("x"), of("msub", bar(), mi("p"))]],
+    [`‖A‖${subOpen}F${subClose}`, [bar(), mi("A"), of("msub", bar(), mi("F"))]],
+    ["‖x‖∞", [bar(), mi("x"), of("msub", bar(), mi("∞"))]],
+  ];
+  for (const [unicode, nodes] of cases) assert.equal(readMath(nodes), speakable.speakable(unicode), unicode);
+  assert.equal(speakable.normPhrase("2", true), "the squared L2 norm of");
+  assert.equal(speakable.normPhrase("", false), "the norm of");
+});
+
 test("a power of the reals reads as the text pass reads it: R m by n", () => {
   const { mi, mo, mn, row, of } = mathml;
   const reals = () => mi("ℝ", { mathvariant: "double-struck" });
@@ -346,6 +409,13 @@ test("Mathematical Alphanumeric letters read as the plain letter, after the tabl
   assert.equal(readMath(mi("𝔼")), "expected value of");
   assert.equal(readMath(mi("ℓ")), "ell");
   assert.equal(readMath(mi("\u{1D431}\u{1D432}")), "xy", "every letter of an identifier folds");
+  // The Letterlike block folds too (\mathcal{L} is U+2112), the table still first, and its symbols stay.
+  assert.equal(readMath(mi("\u{2112}", { mathvariant: "script" }), mo("("), mi("θ"), mo(")")), "L of (theta)");
+  assert.equal(readMath(mi("\u{211D}")), "R");
+  assert.equal(readMath(mi("\u{2115}")), "N");
+  assert.equal(readMath(mi("\u{2126}")), "Omega", "the ohm sign is a capital omega");
+  assert.equal(readMath(mi("\u{2135}")), "\u{2135}", "alef is not turned into a Hebrew letter");
+  assert.equal(readMath(mi("\u{2122}")), "\u{2122}", "a symbol of the block is left as written");
 });
 
 test("inside a script a run of three or more single letters reads as one word", () => {
@@ -367,6 +437,7 @@ test("inside a script a run of three or more single letters reads as one word", 
   assert.equal(readMath(of("msub", mi("x"), row(mi("a"), mi("b"), mo("+"), mi("c"), mi("d"), mi("e")))), "x sub a b plus cde");
   // A letter that is read by name (Greek, ℓ) or is not a letter breaks a run.
   assert.equal(readMath(of("msub", mi("x"), row(mi("a"), mi("θ"), mi("b"), mi("c")))), "x sub a theta b c");
+  assert.equal(readMath(of("msub", mi("x"), row(mi("a"), mi("b"), mi("ℓ"), mi("c"), mi("d")))), "x sub a b ell c d", "ℓ would fold into an l, so it is checked before folding");
   assert.equal(readMath(of("msub", mi("x"), row(mi("a"), mi("b"), mn("1"), mi("c"), mi("d")))), "x sub a b 1 c d");
   // Spaces between the letters of pretty-printed markup do not break the run, and the run reaches into a nested fraction.
   assert.equal(readMath(of("msub", mi("x"), el("mrow", {}, [text("\n"), mi("t"), text(" "), mi("r"), text("\n"), mi("a")]))), "x tra");
@@ -395,27 +466,51 @@ test("the MathML walker needs only the minimal node interface", () => {
   assert.equal(verbalizeMath(math).text, "x equals 1");
 });
 
-test("the MathML map is contiguous, ordered and anchors inserted words to an empty range", () => {
-  const { mi, mo, mn, mtext, row, of, math } = mathml;
-  // The invariants of a map (see spokenMap.js): contiguous over the spoken text,
-  // sources in bounds, non-decreasing and non-overlapping.
-  const check = (root, label) => {
-    const { text: spoken, map } = verbalizeMath(root);
-    const source = root.textContent;
-    assert.ok(map.length, `${label}: a reading has a map`);
+// The invariants of a map (see spokenMap.js): contiguous over the spoken text, sources in bounds,
+// non-decreasing and non-overlapping; nothing spoken means no map.
+const checkMap = (root, label) => {
+  const { text: spoken, map } = verbalizeMath(root);
+  const source = root.textContent;
+  assert.equal(map.length > 0, spoken !== "", `${label}: a reading has a map and nothing else does`);
+  if (map.length) {
     assert.equal(map[0].spoken[0], 0, label);
     assert.equal(map.at(-1).spoken[1], spoken.length, label);
-    map.forEach((piece, index) => {
-      const [start, end] = piece.source;
-      assert.ok(piece.spoken[0] < piece.spoken[1], `${label}: piece ${index} is empty`);
-      assert.ok(start >= 0 && start <= end && end <= source.length, `${label}: piece ${index} is out of bounds`);
-      if (index) {
-        assert.equal(piece.spoken[0], map[index - 1].spoken[1], `${label}: a gap before piece ${index}`);
-        assert.ok(start >= map[index - 1].source[1], `${label}: piece ${index} overlaps the one before`);
-      }
-    });
-    const pieceOf = (words) => map.find((piece) => spoken.slice(...piece.spoken) === words);
-    return { spoken, map, source, pieceOf };
+  }
+  map.forEach((piece, index) => {
+    const [start, end] = piece.source;
+    assert.ok(piece.spoken[0] < piece.spoken[1], `${label}: piece ${index} is empty`);
+    assert.ok(start >= 0 && start <= end && end <= source.length, `${label}: piece ${index} is out of bounds`);
+    if (index) {
+      assert.equal(piece.spoken[0], map[index - 1].spoken[1], `${label}: a gap before piece ${index}`);
+      assert.ok(start >= map[index - 1].source[1], `${label}: piece ${index} overlaps the one before`);
+    }
+  });
+  const pieceOf = (words) => map.find((piece) => spoken.slice(...piece.spoken) === words);
+  return { spoken, map, source, pieceOf };
+};
+
+test("malformed trees never throw and keep the map contract", () => {
+  const { mi, mo, mn } = mathml;
+  const parts = () => [mi("x"), mo("+"), mn("1"), mi("θ"), mo("‖"), mo("|")];
+  const tags = ["mfrac", "msub", "msup", "msubsup", "munder", "mover", "munderover", "msqrt", "mroot", "mtable", "mtr", "mtd", "mrow", "mstyle", "semantics", "mphantom", "annotation", "annotation-xml", "mspace", "mi", "mo", "mn", "mtext", "unknown"];
+  for (const tag of tags) {
+    // Every child count, from none to more than any construct takes.
+    for (let count = 0; count <= parts().length; count += 1) checkMap(mathml.math(el(tag, {}, parts().slice(0, count))), `${tag} with ${count} children`);
+    // An element holding only itself empty, and one holding only spaces.
+    checkMap(mathml.math(el(tag, {}, [el(tag, {}, []), text("  ")])), `${tag} in ${tag}`);
+    checkMap(mathml.math(el(tag, {}, [text("\n ")])), `${tag} of spaces`);
+  }
+  checkMap(mathml.math(el("mtable", {}, [mi("a"), el("mtr", {}, [mi("b"), el("mtd", {}, [])]), el("mtr", {}, [])])), "a table of strange rows");
+  checkMap(mathml.math(el("msub", {}, [text("x"), text("y")])), "scripts of text");
+  checkMap(mathml.math(el("mfrac", {}, [el("mrow", {}, []), mi("n")])), "a fraction with an empty top");
+});
+
+test("the MathML map is contiguous, ordered and anchors inserted words to an empty range", () => {
+  const { mi, mo, mn, mtext, row, of, math } = mathml;
+  const check = (root, label) => {
+    const result = checkMap(root, label);
+    assert.ok(result.map.length, `${label}: a reading has a map`);
+    return result;
   };
   const side = (...children) => row(...children);
   const accuracy = math(mtext("Accuracy"), mo("="), of("mfrac", side(mi("T"), mi("P"), mo("+"), mi("T"), mi("N")), side(mi("T"), mi("P"), mo("+"), mi("T"), mi("N"), mo("+"), mi("F"), mi("P"), mo("+"), mi("F"), mi("N"))));

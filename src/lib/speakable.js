@@ -308,6 +308,16 @@ const readSubscript = (script, out) => {
   return script.next;
 };
 
+/**
+ * The words for a norm of the given order ("2", "F", "∞", "p"; "" for none),
+ * squared or not: "the squared L2 norm of", "the Frobenius norm of". The
+ * MathML walker, mathSpeech.js, says a norm with this too.
+ */
+export const normPhrase = (order, squared) => {
+  const label = order === "∞" ? "L infinity " : order === "F" ? "Frobenius " : order ? `L${order} ` : "";
+  return `the ${squared ? "squared " : ""}${label}norm of`;
+};
+
 // ‖x‖₂ → "the L2 norm of x", ½‖w‖² → "one half the squared norm of w",
 // ‖A‖_F → "the Frobenius norm of A". A bar opens a norm only before a
 // non-space and closes it only after one, so the bar in KL(P ‖ Q) stays a
@@ -345,8 +355,7 @@ const readNorm = (items, index, out) => {
   const sup = scriptAt(items, next, "sup");
   const squared = sup?.text === "²" || sup?.text === "2";
   if (squared) next = sup.next;
-  const lp = order === "∞" ? "L infinity " : order === "F" ? "Frobenius " : order ? `L${order} ` : "";
-  out.word(`the ${squared ? "squared " : ""}${lp}norm of`, bar.start, bar.end);
+  out.word(normPhrase(order, squared), bar.start, bar.end);
   readItems(items.slice(index + 1, close), out);
   return next;
 };
