@@ -688,3 +688,13 @@ test("cross-tab attempt replay under the merged FSRS scheduler is deterministic 
   assert.equal(cardAgain.stability, cardForward.stability, "re-merging must be idempotent for FSRS state");
   assert.equal(cardAgain.fsrsState, cardForward.fsrsState);
 });
+
+test("narration settings changed in two tabs merge per key", () => {
+  const base = normalizeProfile(initialProfile);
+  const local = normalizeProfile({ ...base, settings: { ...base.settings, narrationCode: "skip" } });
+  const remote = normalizeProfile({ ...base, settings: { ...base.settings, narrationTables: "announce", pronunciations: [{ term: "um", spoken: "" }] } });
+  const { profile } = mergeProfileVersions(base, local, remote, { now: NOW, writerId: "tab-a" });
+  assert.equal(profile.settings.narrationCode, "skip");
+  assert.equal(profile.settings.narrationTables, "announce");
+  assert.deepEqual(profile.settings.pronunciations, [{ term: "um", spoken: "" }]);
+});

@@ -63,6 +63,7 @@ const records = () => ({
       { id: "attempt-rule-2", reviewItemId: "card-1", rating: "good", elapsedMs: 1_200, reviewedAt: fixedTime, sessionKind: "crunch", crunch: true, scheduleRule: 2 },
       { id: "attempt-legacy", reviewItemId: "card-1", rating: "again", elapsedMs: 900, reviewedAt: fixedTime, sessionKind: "review" },
     ],
+    settings: { ...initialProfile.settings, narrationCode: "skip", narrationTables: "announce", pronunciations: [{ term: "ReLU", spoken: "ray loo" }, { term: "um", spoken: "" }] },
   },
   "board:notes/part-01": {
     version: 2,
@@ -106,6 +107,9 @@ test("v4 backup round-trips with canonical SHA-256 integrity and inventory", asy
   assert.equal(restoredTrash.collectionId, "col-1");
   assert.equal(checked.data.profile.activity[0].kind, "upload");
   assert.equal(checked.data.profile.revisions[0].text, "# earlier draft");
+  assert.equal(checked.data.profile.settings.narrationCode, "skip", "how code blocks are read survives a backup round trip");
+  assert.equal(checked.data.profile.settings.narrationTables, "announce", "how tables are read survives a backup round trip");
+  assert.deepEqual(checked.data.profile.settings.pronunciations, [{ term: "ReLU", spoken: "ray loo" }, { term: "um", spoken: "" }], "an override with an empty spoken form (a skipped term) survives a backup round trip");
   assert.equal(checked.data["board:notes/part-01"].pages[0].objects[0].tool, "line");
 });
 

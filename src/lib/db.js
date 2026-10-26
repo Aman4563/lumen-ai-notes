@@ -940,11 +940,16 @@ export const initialProfile = {
     aiHistoryRetention: 50,
     // Saved library searches (SEARCH-001); recents stay device-local.
     savedSearches: [],
-    // Narration pronunciation overrides (AUDIO-001): [{ term, spoken }].
+    // Narration pronunciation overrides (AUDIO-001): [{ term, spoken }]. An
+    // empty spoken form skips the term when narrating.
     pronunciations: [],
     // Opt-in app-icon badge with today's due-review count (PLAN-002).
     dueBadgeEnabled: false,
     narrationAutoAdvance: false,
+    // How narration reads code blocks ("announce", "skip" or "read") and
+    // tables ("rows" or "announce"); the first is the default (issue #100).
+    narrationCode: "announce",
+    narrationTables: "rows",
   },
 };
 
@@ -1439,6 +1444,8 @@ export const normalizeProfile = (value) => {
       keepScreenAwake: Boolean(rawSettings.keepScreenAwake),
       dueBadgeEnabled: Boolean(rawSettings.dueBadgeEnabled),
       narrationAutoAdvance: rawSettings.narrationAutoAdvance === true,
+      narrationCode: ["announce", "skip", "read"].includes(rawSettings.narrationCode) ? rawSettings.narrationCode : initialProfile.settings.narrationCode,
+      narrationTables: ["rows", "announce"].includes(rawSettings.narrationTables) ? rawSettings.narrationTables : initialProfile.settings.narrationTables,
       aiFeaturesEnabled: rawSettings.aiFeaturesEnabled !== false,
       aiHistoryRetention: [0, 10, 25, 50].includes(rawSettings.aiHistoryRetention)
         ? rawSettings.aiHistoryRetention
@@ -1446,8 +1453,9 @@ export const normalizeProfile = (value) => {
       savedSearches: [...new Set((Array.isArray(rawSettings.savedSearches) ? rawSettings.savedSearches : [])
         .filter((entry) => typeof entry === "string" && entry.trim())
         .map((entry) => entry.trim().slice(0, 120)))].slice(0, 20),
+      // An empty spoken form stays: it makes narration skip the term.
       pronunciations: (Array.isArray(rawSettings.pronunciations) ? rawSettings.pronunciations : [])
-        .filter((entry) => isRecord(entry) && typeof entry.term === "string" && typeof entry.spoken === "string" && entry.term.trim() && entry.spoken.trim())
+        .filter((entry) => isRecord(entry) && typeof entry.term === "string" && typeof entry.spoken === "string" && entry.term.trim())
         .map((entry) => ({ term: entry.term.trim().slice(0, 60), spoken: entry.spoken.trim().slice(0, 120) }))
         .slice(0, 50),
     },

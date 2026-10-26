@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chunkSpeechText, normalizePronunciations, speakable } from "../src/lib/speech.js";
+import { chunkSpeechText, NARRATION_CODE_MODES, NARRATION_TABLE_MODES, normalizePronunciations, speakable } from "../src/lib/speech.js";
 import { normalizeBoardDocument, normalizeBoardStrokes, normalizeProfile, PROFILE_VERSION } from "../src/lib/db.js";
 import { contentCapabilities, foldPluralTerm, pruneRecentSearches, pushRecentSearch, searchDocuments, spellingAlternates, tokenizeExclusions, tokenizeFieldFilters, tokenizeQuery, withinOneEdit } from "../src/lib/search.js";
 import { synonymAlternatesFor } from "../src/lib/searchSynonyms.js";
@@ -92,6 +92,22 @@ assert.equal(normalized.settings.speechScope, "document");
 assert.equal(normalized.settings.keepScreenAwake, true);
 assert.deepEqual(normalized.reviewItems, [], "v2 profiles should migrate with an empty review deck");
 assert.deepEqual(normalized.reviewAttempts, [], "v2 profiles should migrate without fabricated attempts");
+
+// Narration settings (issue #100): how code blocks and tables are read, and a
+// pronunciation override with an empty spoken form, which skips its term.
+{
+  const narration = normalizeProfile({ settings: { narrationCode: "read", narrationTables: "announce", pronunciations: [{ term: "um", spoken: "" }, { term: " ", spoken: "x" }, { term: "ReLU", spoken: " ray loo " }] } });
+  assert.equal(narration.settings.narrationCode, "read");
+  assert.equal(narration.settings.narrationTables, "announce");
+  assert.deepEqual(narration.settings.pronunciations, [{ term: "um", spoken: "" }, { term: "ReLU", spoken: "ray loo" }]);
+  const invalidNarration = normalizeProfile({ settings: { narrationCode: "verbatim", narrationTables: 3 } });
+  assert.equal(invalidNarration.settings.narrationCode, "announce");
+  assert.equal(invalidNarration.settings.narrationTables, "rows");
+  assert.equal(normalizeProfile({}).settings.narrationCode, "announce");
+  // db.js lists the modes as literals; every mode the speech layer reads must be kept.
+  for (const mode of NARRATION_CODE_MODES) assert.equal(normalizeProfile({ settings: { narrationCode: mode } }).settings.narrationCode, mode);
+  for (const mode of NARRATION_TABLE_MODES) assert.equal(normalizeProfile({ settings: { narrationTables: mode } }).settings.narrationTables, mode);
+}
 
 // LEARN-002 cloze mechanics: {{spans}} conceal until reveal and never touch
 // text outside the braces.
