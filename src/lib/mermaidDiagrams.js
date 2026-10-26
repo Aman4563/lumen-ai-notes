@@ -260,6 +260,24 @@ export const describeMermaidDefinition = (definition) => {
   return text.length > MAX_DESCRIPTION_CHARACTERS ? `${text.slice(0, MAX_DESCRIPTION_CHARACTERS - 1).trimEnd()}…` : text;
 };
 
+/**
+ * What narration says for a diagram, whether it is drawn yet or not (issue
+ * #100): the description of its definition, never a diagnostic or the text of
+ * the drawn SVG. `node` is the .diagram-shell or its .mermaid. The definition
+ * a render preserved comes first, since a redraw (a theme change) leaves the
+ * old SVG's text in the node. A diagram not drawn yet still holds its
+ * definition as text; a drawn one carries the description as its label.
+ * Anything else, such as a failed diagram that was never rendered, has none.
+ */
+export const diagramDescriptionFor = (node) => {
+  const diagram = node?.classList?.contains?.("mermaid") ? node : node?.querySelector?.(".mermaid");
+  if (!diagram) return "";
+  if (sourceByNode.has(diagram)) return describeMermaidDefinition(sourceByNode.get(diagram));
+  const status = diagram.dataset?.diagramStatus;
+  if (!status || status === "pending" || status === "rendering") return describeMermaidDefinition(diagram.textContent);
+  return status === "rendered" ? diagram.getAttribute?.("aria-label") || "" : "";
+};
+
 export const mermaidErrorLocation = (error) => {
   const location = error?.hash?.loc || error?.loc || error?.location;
   const lineCandidate = location?.first_line ?? location?.line ?? error?.line;

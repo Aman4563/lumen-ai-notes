@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   MERMAID_RENDER_LIMITS,
   describeMermaidDefinition,
+  diagramDescriptionFor,
   mermaidDefinitionForFence,
   mermaidDefinitionNamesResource,
   mermaidErrorLocation,
   mermaidSiteConfig,
+  renderMermaidDiagrams,
   subscribeToMermaidTheme,
 } from "./mermaidDiagrams.js";
 
@@ -120,6 +122,38 @@ test("rendered diagrams get a text alternative built from the preserved definiti
   assert.equal(describeMermaidDefinition('flowchart LR\n  A["<img src=x onerror=alert(1)> Safe"] --> B[Done]'), "Flowchart: Safe → Done");
   const long = `flowchart LR\n${Array.from({ length: 80 }, (_, index) => `  N${index}[Step number ${index}] --> N${index + 1}[Step number ${index + 1}]`).join("\n")}`;
   assert.ok(describeMermaidDefinition(long).length <= 700, "the accessible name stays bounded");
+});
+
+test("diagramDescriptionFor reads a pending diagram's definition and a drawn one's label", () => {
+  const node = (status, textContent, label = "") => ({ dataset: { diagramStatus: status }, textContent, getAttribute: (name) => (name === "aria-label" ? label : null), classList: { contains: (name) => name === "mermaid" }, querySelector: () => null });
+  assert.equal(diagramDescriptionFor(node("pending", "flowchart LR\n  A[Data] --> B[Model]")), "Flowchart: Data → Model");
+  assert.equal(diagramDescriptionFor(node("rendering", "flowchart LR\n  A --> B")), "Flowchart: A → B");
+  assert.equal(diagramDescriptionFor(node("rendered", "DataModel", "Flowchart: Data → Model")), "Flowchart: Data → Model");
+  assert.equal(diagramDescriptionFor(node("error", "Diagram renderer unavailable The Mermaid module could not be loaded.")), "");
+});
+
+test("diagramDescriptionFor takes the shell or its diagram, and keeps the definition a render preserved", async () => {
+  const definition = "flowchart LR\n  A[Data] --> B[Model]";
+  const mermaid = { dataset: { diagramStatus: "pending" }, textContent: definition, isConnected: true, classList: { contains: (name) => name === "mermaid" }, closest: () => null, setAttribute() {}, removeAttribute() {}, getAttribute: () => null, querySelector: () => null };
+  const shell = { dataset: { diagramStatus: "pending" }, textContent: definition, classList: { contains: (name) => name === "diagram-shell" }, getAttribute: () => null, querySelector: (selector) => (selector === ".mermaid" ? mermaid : null) };
+  assert.equal(diagramDescriptionFor(shell), "Flowchart: Data → Model", "a shell reads the diagram inside it");
+  assert.equal(diagramDescriptionFor({ classList: { contains: () => false }, querySelector: () => null }), "", "a shell without a diagram has no description");
+  assert.equal(diagramDescriptionFor(null), "");
+  // A render preserves the definition before it draws. Aborting inside mermaid.render ends the pass
+  // there, so no DOM is needed, and the node is then as a redraw leaves it: the drawn SVG's text.
+  const controller = new AbortController();
+  const root = { isConnected: true, querySelectorAll: () => [mermaid] };
+  await renderMermaidDiagrams(root, {
+    signal: controller.signal,
+    theme: "neutral",
+    importer: async () => ({ initialize() {}, render: async () => { controller.abort(); throw new Error("stop"); } }),
+  });
+  mermaid.dataset.diagramStatus = "rendering";
+  mermaid.textContent = "DataModel";
+  assert.equal(diagramDescriptionFor(mermaid), "Flowchart: Data → Model");
+  assert.equal(diagramDescriptionFor(shell), "Flowchart: Data → Model");
+  mermaid.dataset.diagramStatus = "error";
+  assert.equal(diagramDescriptionFor(mermaid), "Flowchart: Data → Model", "a diagram that failed to draw is still described by its definition");
 });
 
 // Issue #81: each of these fetched https://tracker.example from a tutor
