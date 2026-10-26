@@ -53,9 +53,23 @@ const atomicKind = (node) => {
   return "";
 };
 
-// True when a text block has words of its own: a list item that is only code,
-// or a paragraph that is only a formula, has none (its atomic block is read
-// as a block of its own). Walks without recursion, skipping atomic subtrees.
+// Markup that is counted in the offsets and never said: a formula's TeX
+// annotation and its hidden parts...
+const SILENT_TAGS = new Set(["annotation", "annotation-xml", "mphantom"]);
+// ...and screen furniture beside words that are read elsewhere: KaTeX's visible
+// copy of a formula it also writes as MathML, and the header of a code block's
+// shell (its language and Copy button; the code is a block of its own, and a
+// fence under a list item sits inside that item).
+const SILENT_CLASSES = ["katex-html", "code-label"];
+// One answer for both walks, the one that finds a text block's words and the
+// one that says them, so they cannot disagree about what is silent.
+const isSilent = (node) => SILENT_TAGS.has(tagOf(node)) || SILENT_CLASSES.some((name) => hasClass(node, name));
+
+// True when a text block has words of its own: a list item that is only a
+// fenced block, or a paragraph that is only a formula, has none (its atomic
+// block is read as a block of its own, and the shell's header or KaTeX's
+// visible copy beside it says nothing). Walks without recursion, skipping
+// atomic and silent subtrees.
 const hasTextOutsideAtoms = (block) => {
   if (!block.querySelector?.(ATOMIC_BLOCKS)) return true;
   const stack = [block];
@@ -65,7 +79,7 @@ const hasTextOutsideAtoms = (block) => {
       const child = children[at];
       if (child.nodeType === 3 || child.nodeType === 4) {
         if (hasText(child.data ?? child.textContent)) return true;
-      } else if (child.nodeType === 1 && !atomicKind(child)) stack.push(child);
+      } else if (child.nodeType === 1 && !atomicKind(child) && !isSilent(child)) stack.push(child);
     }
   }
   return false;
@@ -191,17 +205,9 @@ const offsetAtLine = (block, line) => {
 // Text blocks as sentences
 // ---------------------------------------------------------------------------
 
-// Markup the walk counts in the offsets and never says: a formula's TeX
-// annotation and its hidden parts...
-const SILENT_TAGS = new Set(["annotation", "annotation-xml", "mphantom"]);
-// ...and screen furniture beside words that are read elsewhere: KaTeX's visible
-// copy of a formula it also writes as MathML, and the header of a code block's
-// shell (its language and Copy button; the code is a block of its own, and a
-// fence under a list item sits inside that item).
-const SILENT_CLASSES = ["katex-html", "code-label"];
-// Elements whose edges end a sentence whatever their punctuation: a line
-// break and the edges of a nested block.
-const BREAK_TAGS = new Set(["br", "div", "table", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "p", "li", "blockquote", "figcaption"]);
+// Elements whose edges end a sentence whatever their punctuation: the edges of
+// a nested block. (A line break has its own branch in the walk.)
+const BREAK_TAGS = new Set(["div", "table", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "p", "li", "blockquote", "figcaption"]);
 // Inline elements the text pass reads differently, as its markers.
 const MARKS = new Map([
   ["code", [SPEECH_MARK.plainOpen, SPEECH_MARK.plainClose]],
@@ -418,7 +424,7 @@ const textSentences = (block, language) => {
       // The block is read on its own: say what came before, and none of it.
       breakSentence();
       skip(node);
-    } else if (SILENT_TAGS.has(tag) || SILENT_CLASSES.some((name) => hasClass(node, name))) skip(node);
+    } else if (isSilent(node)) skip(node);
     else if (tag === "math") speakMath(node);
     else if (tag === "br") breakSentence();
     else {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { marked } from "marked";
-import { FIXTURE_MARKDOWN } from "../../scripts/speech_fixture.mjs";
+import { FIXTURE_MARKDOWN, FIXTURE_SPOKEN } from "../../scripts/speech_fixture.mjs";
 // markdown.js configures the shared marked renderer on import: tables, code shells and diagram shells.
 import "./markdown.js";
 import { verbalizeMath } from "./mathSpeech.js";
@@ -593,6 +593,12 @@ const codeShell = (label, body) => el("div", { class: "code-shell" }, [
   el("pre", { tabindex: "0", role: "group", "aria-label": `${label} code` }, [el("code", { class: `language-${label === "text" ? "" : label}` }, [text(body)])]),
 ]);
 
+// KaTeX's display math: the MathML, which the narration reads, beside the visible copy, which it does not.
+const katexDisplay = (letter) => el("span", { class: "katex-display" }, [el("span", { class: "katex" }, [
+  el("span", { class: "katex-mathml" }, [mathml.math(mathml.mi(letter))]),
+  el("span", { class: "katex-html", "aria-hidden": "true" }, [text(letter)]),
+])]);
+
 // The fixture lecture as the app's marked renders it (scripts/speech_fixture.mjs), as stub DOM: tables hold "\n"
 // text nodes between their cells and rows, code is a codeShell, the block formula sits inside a <p>, and a
 // Mermaid fence is a div.diagram-shell.
@@ -726,26 +732,49 @@ test("the sentence target is one unit and the document target carries units", ()
   assert.equal(sentence.units.length, 1);
 });
 
+test("the fixture's text blocks speak exactly the text-block lines of FIXTURE_SPOKEN", () => {
+  const root = fixture();
+  const blocks = readableBlocks(root);
+  const textUnits = buildSpeechUnits(root).filter((unit) => /^(?:h[1-4]|p|li|blockquote|figcaption)$/u.test(blocks[unit.unit.blockIndex].localName));
+  // The table, the code and text diagram, the display formula and the diagram say the other lines (Task 3c).
+  const others = /^(?:Table,|Row \d+\.|Python example,|Text diagram,|Accuracy equals|Diagram:)/u;
+  assert.deepEqual(buildSpeechQueue(textUnits).queue.map((entry) => entry.text), FIXTURE_SPOKEN.filter((line) => !others.test(line)));
+});
+
 test("readableBlocks lists text blocks and atomic blocks in document order and drops what is read elsewhere", () => {
-  const code = () => el("pre", {}, [el("code", {}, [text("x = 1")])]);
+  const bareCode = () => el("pre", {}, [el("code", {}, [text("x = 1")])]);
   const outer = el("li", {}, [text("Outer "), el("ul", {}, [el("li", {}, [text("Inner")])])]);
   const quote = el("blockquote", {}, [el("p", {}, [text("Quoted")])]);
-  const onlyCode = el("li", {}, [code()]);
+  // What marked writes for a fence that is all a list item or a quote holds: a shell with a header above the pre.
+  const stepShell = codeShell("bash", "make test");
+  const onlyFence = el("li", {}, [stepShell]);
+  const quoteShell = codeShell("python", "print(1)");
+  const quoteOfFence = el("blockquote", {}, [quoteShell]);
+  const onlyBare = el("li", {}, [bareCode()]);
   const formula = mathml.math(mathml.mi("x"));
   const onlyFormula = el("p", {}, [formula]);
+  const displayShell = katexDisplay("y");
+  const onlyDisplay = el("p", {}, [displayShell]);
   const inline = el("p", {}, [text("Let "), el("math", {}, [el("mi", {}, [text("x")])]), text(" be.")]);
   const diagramError = el("div", { class: "diagram-shell" }, [el("p", {}, [text("The Mermaid module could not be loaded.")]), el("pre", {}, [text("flowchart LR")])]);
   const empty = el("p", {}, [text(" \n ")]);
   const caption = el("figcaption", {}, [text("Figure 1")]);
   const cellParagraph = el("p", {}, [text("cell")]);
   const row = el("tr", {}, [el("td", {}, [cellParagraph])]);
-  const withCode = el("li", {}, [text("Run this:"), code()]);
-  const article = el("article", {}, [outer, quote, el("ul", {}, [onlyCode]), onlyFormula, inline, diagramError, empty, caption, el("table", {}, [el("tbody", {}, [row])]), el("ul", {}, [withCode])]);
+  const runShell = codeShell("bash", "make test");
+  const withFence = el("li", {}, [text("Run this:"), runShell]);
+  const article = el("article", {}, [outer, quote, el("ul", {}, [onlyFence]), quoteOfFence, el("ul", {}, [onlyBare]), onlyFormula, onlyDisplay, inline, diagramError, empty, caption, el("table", {}, [el("tbody", {}, [row])]), el("ul", {}, [withFence])]);
   const blocks = readableBlocks(article);
   // Named, so that a wrong list reads as names rather than as two dumps of circular stub nodes.
-  const names = new Map([[outer, "outer"], [quote, "quote"], [onlyCode.childNodes[0], "code"], [formula, "formula"], [inline, "inline"], [diagramError, "diagram"], [caption, "caption"], [row, "row"], [withCode, "withCode"], [withCode.childNodes[1], "withCode code"]]);
-  assert.deepEqual(blocks.map((block) => names.get(block) ?? `${block.localName} “${block.textContent}”`), ["outer", "quote", "code", "formula", "inline", "diagram", "caption", "row", "withCode", "withCode code"]);
-  assert.equal(blockAt(article, 5), diagramError);
+  const names = new Map([
+    [outer, "outer"], [quote, "quote"], [stepShell.childNodes[1], "step fence"], [quoteShell.childNodes[1], "quote fence"], [onlyBare.childNodes[0], "bare fence"],
+    [formula, "formula"], [displayShell.querySelector("math"), "display formula"], [inline, "inline"], [diagramError, "diagram"], [caption, "caption"], [row, "row"],
+    [withFence, "withFence"], [runShell.childNodes[1], "withFence fence"],
+  ]);
+  assert.deepEqual(blocks.map((block) => names.get(block) ?? `${block.localName} “${block.textContent}”`), [
+    "outer", "quote", "step fence", "quote fence", "bare fence", "formula", "display formula", "inline", "diagram", "caption", "row", "withFence", "withFence fence",
+  ]);
+  assert.equal(blockAt(article, 8), diagramError);
   assert.equal(blockAt(article, blocks.length), null);
   assert.equal(blockAt(article, -1), null);
   assert.deepEqual(readableBlocks(el("article")), []);
@@ -801,6 +830,29 @@ test("skipped markup counts in the offsets and speaks nothing", () => {
   assert.deepEqual(word(units[0], "y").source, [10, 11], "a formula's word maps into the formula's own text");
   assert.deepEqual(word(units[0], "C").source, [17, 18]);
   assert.deepEqual(word(units[1], "D").source, [28, 29]);
+});
+
+test("the walk that finds a text block's words and the walk that says them agree on what is silent", () => {
+  const silent = [
+    ["annotation", () => el("annotation", { encoding: "application/x-tex" }, [text("TEX")])],
+    ["annotation-xml", () => el("annotation-xml", {}, [text("AX")])],
+    ["mphantom", () => el("mphantom", {}, [text("PH")])],
+    ["katex-html", () => el("span", { class: "katex-html", "aria-hidden": "true" }, [text("HTML")])],
+    ["code-label", () => el("div", { class: "code-label" }, [text("bash"), el("button", {}, [text("Copy")])])],
+  ];
+  for (const [name, make] of silent) {
+    // Only a fenced block and something silent: no words, so the item is no block and only the fence is.
+    const item = el("li", {}, [make(), codeShell("bash", "make test"), make()]);
+    const fenced = el("article", {}, [el("ul", {}, [item])]);
+    assert.deepEqual(readableBlocks(fenced).map((block) => block.localName), ["pre"], `${name} counted as the words of a list item`);
+    assert.deepEqual(buildSpeechUnits(fenced), [], `${name}: a list item of a fence says nothing`);
+    // The same markup between words is counted in the offsets and not said.
+    const sentence = el("p", {}, [text("A "), make(), text(" B.")]);
+    const article = el("article", {}, [sentence]);
+    const units = buildSpeechUnits(article);
+    assert.deepEqual(units.map((unit) => unit.text), ["A B."], `${name} was said`);
+    checkUnits(article, units);
+  }
 });
 
 test("a code block inside a list item leaves the label of its shell unread", () => {
